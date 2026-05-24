@@ -90,6 +90,8 @@ const RAFT_APPEND_HEADER_LEN: usize = 32;
 const RAFT_ACK_LEN: usize = 16;
 const SECTOR_SIZE: usize = 512;
 const TCP_READY_BYTE: u8 = 0xa5;
+const TCP_ACK_BYTE: u8 = 0x5a;
+const TCP_START_BYTE: u8 = 0xc3;
 const IORING_MAX_REG_BUFFERS: usize = 1 << 14;
 const BLKGETSIZE64: libc::c_ulong = 0x80081272;
 const BY_PARTUUID_DIR: &str = "/dev/disk/by-partuuid";
@@ -3548,40 +3550,59 @@ fn ready_handshake_enabled() -> bool {
     env_truthy("URING_PLAY_READY_HANDSHAKE")
 }
 
+fn start_handshake_enabled() -> bool {
+    env_truthy("URING_PLAY_START_HANDSHAKE")
+}
+
+fn send_tcp_control_byte(
+    streams: &[TcpStream],
+    byte: u8,
+    label: &str,
+    phase: &str,
+) -> io::Result<()> {
+    for stream in streams {
+        let mut stream = stream;
+        stream.write_all(&[byte])?;
+    }
+    println!("{label}: {phase}=sent streams={}", streams.len());
+    Ok(())
+}
+
+fn recv_tcp_control_byte(
+    streams: &mut [TcpStream],
+    expected: u8,
+    label: &str,
+    phase: &str,
+) -> io::Result<()> {
+    for stream in streams.iter_mut() {
+        let mut byte = [0u8; 1];
+        stream.read_exact(&mut byte)?;
+        if byte[0] != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{label}: {phase} byte mismatch: got 0x{:02x} expected 0x{expected:02x}",
+                    byte[0],
+                ),
+            ));
+        }
+    }
+    println!("{label}: {phase}=received streams={}", streams.len());
+    Ok(())
+}
+
 fn maybe_send_ready_handshake(streams: &[TcpStream], label: &str) -> io::Result<()> {
     if !ready_handshake_enabled() {
         return Ok(());
     }
-    for stream in streams {
-        let mut stream = stream;
-        stream.write_all(&[TCP_READY_BYTE])?;
-    }
-    println!("{label}: ready_handshake=sent streams={}", streams.len());
-    Ok(())
+    send_tcp_control_byte(streams, TCP_READY_BYTE, label, "ready_handshake")
 }
 
 fn maybe_recv_ready_handshake(streams: &mut [TcpStream], label: &str) -> io::Result<()> {
     if !ready_handshake_enabled() {
         return Ok(());
     }
-    for stream in streams.iter_mut() {
-        let mut byte = [0u8; 1];
-        stream.read_exact(&mut byte)?;
-        if byte[0] != TCP_READY_BYTE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "{label}: receiver-ready handshake byte mismatch: got 0x{:02x} expected 0x{TCP_READY_BYTE:02x}",
-                    byte[0]
-                ),
-            ));
-        }
-    }
-    println!(
-        "{label}: ready_handshake=received streams={}",
-        streams.len()
-    );
-    Ok(())
+    recv_tcp_control_byte(streams, TCP_READY_BYTE, label, "ready_handshake")
 }
 
 fn ready_handshake_filter_rejects_enabled() -> bool {
@@ -3641,6 +3662,19 @@ fn maybe_filter_ready_handshake(
         ready_streams.len()
     );
     Ok(ready_streams)
+}
+
+fn maybe_run_client_start_handshake(
+    mut streams: Vec<TcpStream>,
+    label: &str,
+) -> io::Result<Vec<TcpStream>> {
+    if !start_handshake_enabled() {
+        return maybe_filter_ready_handshake(streams, label);
+    }
+    recv_tcp_control_byte(&mut streams, TCP_READY_BYTE, label, "start_handshake_ready")?;
+    send_tcp_control_byte(&streams, TCP_ACK_BYTE, label, "start_handshake_ack")?;
+    recv_tcp_control_byte(&mut streams, TCP_START_BYTE, label, "start_handshake_go")?;
+    Ok(streams)
 }
 
 fn set_udp_bench_buffers(socket: &UdpSocket) {
@@ -4976,10 +5010,40 @@ fn maybe_clone_ready_handshake_streams(
     if !ready_handshake_enabled() {
         return Ok(Vec::new());
     }
+    clone_tcp_bench_control_streams(streams)
+}
+
+fn clone_tcp_bench_control_streams(
+    streams: &[TcpBenchAcceptedStream],
+) -> io::Result<Vec<TcpStream>> {
     streams
         .iter()
         .map(|stream| stream.stream.try_clone())
         .collect()
+}
+
+fn recv_tcp_control_byte_from_accepted(
+    streams: &mut [TcpBenchAcceptedStream],
+    expected: u8,
+    label: &str,
+    phase: &str,
+) -> io::Result<()> {
+    for accepted in streams.iter_mut() {
+        let mut stream = &accepted.stream;
+        let mut byte = [0u8; 1];
+        stream.read_exact(&mut byte)?;
+        if byte[0] != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{label}: {phase} byte mismatch from peer={} lane={} conn={}: got 0x{:02x} expected 0x{expected:02x}",
+                    accepted.peer_addr, accepted.lane, accepted.conn_index, byte[0],
+                ),
+            ));
+        }
+    }
+    println!("{label}: {phase}=received streams={}", streams.len());
+    Ok(())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -10964,8 +11028,27 @@ fn tcp_bench_uring_mux_server(
          expected_bytes={expected_bytes}"
     );
     let listeners = tcp_bench_mux_bind_listeners(bind, base_port, ports)?;
-    let streams = tcp_bench_mux_accept_tagged_listeners(listeners, ports, connections_per_port)?;
-    let ready_streams = maybe_clone_ready_handshake_streams(&streams)?;
+    let mut streams =
+        tcp_bench_mux_accept_tagged_listeners(listeners, ports, connections_per_port)?;
+    let start_handshake = start_handshake_enabled();
+    let control_streams = if start_handshake {
+        let control_streams = clone_tcp_bench_control_streams(&streams)?;
+        send_tcp_control_byte(
+            &control_streams,
+            TCP_READY_BYTE,
+            "tcp-bench-uring-mux-server",
+            "start_handshake_ready",
+        )?;
+        recv_tcp_control_byte_from_accepted(
+            &mut streams,
+            TCP_ACK_BYTE,
+            "tcp-bench-uring-mux-server",
+            "start_handshake_ack",
+        )?;
+        control_streams
+    } else {
+        maybe_clone_ready_handshake_streams(&streams)?
+    };
     let workers = tcp_bench_auto_workers(workers, streams.len());
     let shard_policy =
         TcpMuxShardPolicy::from_env_or("URING_PLAY_MUX_SHARD", TcpMuxShardPolicy::Observed)?;
@@ -10976,9 +11059,9 @@ fn tcp_bench_uring_mux_server(
         "tcp-bench-uring-mux-server",
     );
     let active_workers = shards.iter().filter(|shard| !shard.is_empty()).count();
-    let handshake_enabled = ready_handshake_enabled();
-    let start_barrier = handshake_enabled.then(|| Arc::new(Barrier::new(active_workers + 1)));
-    let started_before_spawn = (!handshake_enabled).then(Instant::now);
+    let sync_enabled = start_handshake || ready_handshake_enabled();
+    let start_barrier = sync_enabled.then(|| Arc::new(Barrier::new(active_workers + 1)));
+    let started_before_spawn = (!sync_enabled).then(Instant::now);
     let mut handles = Vec::with_capacity(workers);
     for (worker_idx, shard) in shards.into_iter().enumerate() {
         if shard.is_empty() {
@@ -10997,16 +11080,25 @@ fn tcp_bench_uring_mux_server(
         started
     } else {
         println!(
-            "tcp-bench-uring-mux-server: ready_handshake=waiting-for-workers active_workers={active_workers}"
+            "tcp-bench-uring-mux-server: start_sync=waiting-for-workers active_workers={active_workers}"
         );
         let started = Instant::now();
         if let Some(barrier) = start_barrier.as_ref() {
             barrier.wait();
         }
         println!(
-            "tcp-bench-uring-mux-server: ready_handshake=workers-released active_workers={active_workers}"
+            "tcp-bench-uring-mux-server: start_sync=workers-released active_workers={active_workers}"
         );
-        maybe_send_ready_handshake(&ready_streams, "tcp-bench-uring-mux-server")?;
+        if start_handshake {
+            send_tcp_control_byte(
+                &control_streams,
+                TCP_START_BYTE,
+                "tcp-bench-uring-mux-server",
+                "start_handshake_go",
+            )?;
+        } else {
+            maybe_send_ready_handshake(&control_streams, "tcp-bench-uring-mux-server")?;
+        }
         started
     };
 
@@ -12461,7 +12553,7 @@ fn tcp_bench_uring_mux_send(
             streams.push(stream);
         }
     }
-    let streams = maybe_filter_ready_handshake(streams, "tcp-bench-uring-mux-send")?;
+    let streams = maybe_run_client_start_handshake(streams, "tcp-bench-uring-mux-send")?;
     let connect_pause_ms = env_usize_or("URING_PLAY_CONNECT_PAUSE_MS", 0);
     if connect_pause_ms > 0 {
         println!("tcp-bench-uring-mux-send: post_connect_pause_ms={connect_pause_ms}");
