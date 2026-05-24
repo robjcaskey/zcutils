@@ -12585,7 +12585,7 @@ fn tcp_bench_uring_mux_send(
         }));
     }
 
-    let mut stats = UringSendStats::default();
+    let mut worker_results = Vec::with_capacity(handles.len());
     for handle in handles {
         let worker_stats = handle.join().map_err(|_| {
             io::Error::new(
@@ -12593,6 +12593,12 @@ fn tcp_bench_uring_mux_send(
                 "tcp bench uring mux send worker panicked",
             )
         })??;
+        worker_results.push(worker_stats);
+    }
+    let elapsed = started.elapsed();
+
+    let mut stats = UringSendStats::default();
+    for worker_stats in worker_results {
         let wall_secs = worker_stats.wall.as_secs_f64().max(f64::MIN_POSITIVE);
         let cpu_secs = worker_stats.cpu.as_secs_f64();
         let cpu_pct = (cpu_secs / wall_secs) * 100.0;
@@ -12619,7 +12625,7 @@ fn tcp_bench_uring_mux_send(
         stats.zc_notifications += worker_stats.zc_notifications;
         stats.zc_copied_notifications += worker_stats.zc_copied_notifications;
     }
-    print_tcp_bench_result("tcp-bench-uring-mux-send", stats.bytes, started.elapsed());
+    print_tcp_bench_result("tcp-bench-uring-mux-send", stats.bytes, elapsed);
     if send_mode.uses_zc() {
         println!(
             "tcp-bench-uring-mux-send-zc: notifications={} copied_notifications={}",
