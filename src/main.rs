@@ -5447,6 +5447,17 @@ fn tcp_mux_counts_label(counts: &[usize]) -> String {
         .join(",")
 }
 
+fn tcp_mux_select_counts_label(counts: &[usize], workers: usize, dual_score: bool) -> String {
+    if dual_score && counts.len() == workers.saturating_mul(2) {
+        return format!(
+            "rx=[{}],tx=[{}]",
+            tcp_mux_counts_label(&counts[..workers]),
+            tcp_mux_counts_label(&counts[workers..])
+        );
+    }
+    tcp_mux_counts_label(counts)
+}
+
 fn tcp_mux_balance_score(counts: &[usize], expected_workers: usize) -> (usize, usize, usize) {
     let active = counts.iter().filter(|count| **count > 0).count();
     let missing = expected_workers.saturating_sub(active);
@@ -5838,33 +5849,45 @@ fn tcp_bench_select_live_conn_indices_per_lane(
         env::var("URING_PLAY_TCP_MUX_SELECT_SCORE").unwrap_or_else(|_| "receiver".to_string());
     if !matches!(
         select_score.as_str(),
-        "receiver" | "rx" | "sender-worker" | "sender" | "tx"
+        "receiver" | "rx" | "sender-worker" | "sender" | "tx" | "dual" | "both" | "rx-tx"
     ) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "unknown URING_PLAY_TCP_MUX_SELECT_SCORE={select_score:?}; use receiver or sender-worker"
+                "unknown URING_PLAY_TCP_MUX_SELECT_SCORE={select_score:?}; use receiver, sender-worker, or dual"
             ),
         ));
     }
-    let expected_workers = workers.min(selected_total_connections).max(1);
+    let dual_score = matches!(select_score.as_str(), "dual" | "both" | "rx-tx");
+    let score_slots = if dual_score {
+        workers.saturating_mul(2)
+    } else {
+        workers
+    };
+    let expected_workers_per_dimension = workers.min(selected_total_connections).max(1);
+    let expected_workers = if dual_score {
+        expected_workers_per_dimension.saturating_mul(2)
+    } else {
+        expected_workers_per_dimension
+    };
     let lane_conn_counts = (0..ports)
         .map(|lane| {
             (0..connections_per_port)
                 .map(|conn_index| {
-                    let mut counts = vec![0usize; workers];
+                    let mut counts = vec![0usize; score_slots];
                     let grid_index = lane * connections_per_port + conn_index;
                     let accepted = grid[grid_index].as_ref().expect("grid was validated");
-                    let worker = match select_score.as_str() {
-                        "sender-worker" | "sender" | "tx" => grid_index % workers,
-                        _ => policy.choose_worker_with_pin(
-                            accepted,
-                            grid_index,
-                            workers,
-                            pin_requested,
-                        ),
-                    };
-                    counts[worker] += 1;
+                    let rx_worker =
+                        policy.choose_worker_with_pin(accepted, grid_index, workers, pin_requested);
+                    let tx_worker = grid_index % workers;
+                    match select_score.as_str() {
+                        "sender-worker" | "sender" | "tx" => counts[tx_worker] += 1,
+                        "dual" | "both" | "rx-tx" => {
+                            counts[rx_worker] += 1;
+                            counts[workers + tx_worker] += 1;
+                        }
+                        _ => counts[rx_worker] += 1,
+                    }
                     counts
                 })
                 .collect::<Vec<_>>()
@@ -6015,7 +6038,7 @@ fn tcp_bench_select_live_conn_indices_per_lane(
         policy.label(),
         select_score,
         tcp_mux_lane_selection_label(&selected_conn_indices_by_lane),
-        tcp_mux_counts_label(&aggregate_counts),
+        tcp_mux_select_counts_label(&aggregate_counts, workers, dual_score),
         combination_count.min(combination_limit),
         rejected_streams
     );
