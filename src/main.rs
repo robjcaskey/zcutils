@@ -5510,6 +5510,89 @@ fn tcp_bench_mux_selected_connections_per_port(connections_per_port: usize) -> i
     Ok(selected)
 }
 
+#[derive(Clone, Copy)]
+struct TcpMuxSenderWorkerScore {
+    source_port_base: Option<u16>,
+    source_port_stride: usize,
+}
+
+impl TcpMuxSenderWorkerScore {
+    fn from_env() -> io::Result<Self> {
+        let source_port_base = optional_u16_env("URING_PLAY_TCP_MUX_SELECT_SOURCE_PORT_BASE")?
+            .or(optional_u16_env("URING_PLAY_SOURCE_PORT_BASE")?);
+        let source_port_stride = env_usize_or(
+            "URING_PLAY_TCP_MUX_SELECT_SOURCE_PORT_STRIDE",
+            env_usize_or("URING_PLAY_SOURCE_PORT_STRIDE", 1),
+        )
+        .max(1);
+        Ok(Self {
+            source_port_base,
+            source_port_stride,
+        })
+    }
+
+    fn source_global_index(
+        self,
+        accepted: &TcpBenchAcceptedStream,
+        total_connections: usize,
+    ) -> Option<usize> {
+        self.source_global_index_for_port(accepted.peer_addr.port(), total_connections)
+    }
+
+    fn source_global_index_for_port(self, port: u16, total_connections: usize) -> Option<usize> {
+        let base = self.source_port_base?;
+        if port < base {
+            return None;
+        }
+        let delta = usize::from(port - base);
+        if delta % self.source_port_stride != 0 {
+            return None;
+        }
+        let global_index = delta / self.source_port_stride;
+        (global_index < total_connections).then_some(global_index)
+    }
+
+    fn worker_for(
+        self,
+        accepted: &TcpBenchAcceptedStream,
+        fallback_grid_index: usize,
+        workers: usize,
+        total_connections: usize,
+    ) -> usize {
+        self.source_global_index(accepted, total_connections)
+            .unwrap_or(fallback_grid_index)
+            % workers
+    }
+
+    fn label(self) -> String {
+        match self.source_port_base {
+            Some(base) => format!("source-port-base={base}:stride={}", self.source_port_stride),
+            None => "fallback-accept-grid".to_string(),
+        }
+    }
+}
+
+fn optional_u16_env(name: &str) -> io::Result<Option<u16>> {
+    let Ok(value) = env::var(name) else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let parsed = value.parse::<u16>().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name}={value:?} is invalid: {err}"),
+        )
+    })?;
+    if parsed == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(parsed))
+    }
+}
+
 fn tcp_mux_combination_count_capped(n: usize, k: usize, cap: usize) -> usize {
     if k > n {
         return 0;
@@ -5859,6 +5942,25 @@ fn tcp_bench_select_live_conn_indices_per_lane(
         ));
     }
     let dual_score = matches!(select_score.as_str(), "dual" | "both" | "rx-tx");
+    let uses_sender_score = matches!(
+        select_score.as_str(),
+        "sender-worker" | "sender" | "tx" | "dual" | "both" | "rx-tx"
+    );
+    let sender_worker_score = uses_sender_score
+        .then(TcpMuxSenderWorkerScore::from_env)
+        .transpose()?;
+    let sender_score_source_hits = sender_worker_score
+        .map(|score| {
+            grid.iter()
+                .flatten()
+                .filter(|accepted| {
+                    score
+                        .source_global_index(accepted, total_connections)
+                        .is_some()
+                })
+                .count()
+        })
+        .unwrap_or(0);
     let score_slots = if dual_score {
         workers.saturating_mul(2)
     } else {
@@ -5879,7 +5981,11 @@ fn tcp_bench_select_live_conn_indices_per_lane(
                     let accepted = grid[grid_index].as_ref().expect("grid was validated");
                     let rx_worker =
                         policy.choose_worker_with_pin(accepted, grid_index, workers, pin_requested);
-                    let tx_worker = grid_index % workers;
+                    let tx_worker = sender_worker_score
+                        .map(|score| {
+                            score.worker_for(accepted, grid_index, workers, total_connections)
+                        })
+                        .unwrap_or(grid_index % workers);
                     match select_score.as_str() {
                         "sender-worker" | "sender" | "tx" => counts[tx_worker] += 1,
                         "dual" | "both" | "rx-tx" => {
@@ -6032,11 +6138,15 @@ fn tcp_bench_select_live_conn_indices_per_lane(
     }
 
     println!(
-        "{label}-live-select: policy={} select_score={} ports={ports} candidate_connections_per_port={connections_per_port} \
+        "{label}-live-select: policy={} select_score={} sender_score={} sender_source_hits={} ports={ports} candidate_connections_per_port={connections_per_port} \
          selected_connections_per_port={selected_connections_per_port} selected_conn_indices_by_lane={} \
          workers={workers} streams_by_worker={} selection_mode={selection_mode} combinations={} rejected_streams={}",
         policy.label(),
         select_score,
+        sender_worker_score
+            .map(TcpMuxSenderWorkerScore::label)
+            .unwrap_or_else(|| "unused".to_string()),
+        sender_score_source_hits,
         tcp_mux_lane_selection_label(&selected_conn_indices_by_lane),
         tcp_mux_select_counts_label(&aggregate_counts, workers, dual_score),
         combination_count.min(combination_limit),
@@ -14495,6 +14605,19 @@ mod topology_tests {
             tcp_mux_combination_product_capped(28, 8, 1_000_000),
             1_000_001
         );
+    }
+
+    #[test]
+    fn tcp_mux_sender_score_maps_source_ports_to_global_indices() {
+        let score = TcpMuxSenderWorkerScore {
+            source_port_base: Some(58000),
+            source_port_stride: 2,
+        };
+        assert_eq!(score.source_global_index_for_port(58000, 8), Some(0));
+        assert_eq!(score.source_global_index_for_port(58006, 8), Some(3));
+        assert_eq!(score.source_global_index_for_port(58005, 8), None);
+        assert_eq!(score.source_global_index_for_port(57999, 8), None);
+        assert_eq!(score.source_global_index_for_port(58016, 8), None);
     }
 
     #[test]
