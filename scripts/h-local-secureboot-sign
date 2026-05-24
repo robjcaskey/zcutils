@@ -1,0 +1,110 @@
+#!/bin/sh
+set -eu
+
+version="${1:-}"
+image="${2:-/boot/vmlinuz-${version}}"
+
+key="${LOCAL_KERNEL_SIGN_KEY:-/root/mok/MOK.priv}"
+cert="${LOCAL_KERNEL_SIGN_CERT:-/root/mok/MOK.pem}"
+expected_signer="${LOCAL_KERNEL_SIGNER:-NVIDIA Driver Signing Key}"
+backup_dir="${LOCAL_KERNEL_UNSIGNED_DIR:-/var/lib/local-kernel-signing/unsigned}"
+
+case "${version}" in
+	*-io-slots|*-local|*-p2pdma|*-netdevsim|*-uring) ;;
+	*) exit 0 ;;
+esac
+
+if [ -n "${DEB_MAINT_PARAMS:-}" ]; then
+	eval "set -- ${DEB_MAINT_PARAMS}"
+	mode="${1#\'}"
+	mode="${mode%\'}"
+	[ "${mode}" = configure ] || exit 0
+fi
+
+if [ ! -r "${key}" ] || [ ! -r "${cert}" ]; then
+	echo "W: local-secureboot-sign: missing ${key} or ${cert}; skipping" >&2
+	exit 0
+fi
+
+sign_kernel_image()
+{
+	[ -f "${image}" ] || return 0
+	command -v sbverify >/dev/null 2>&1 || return 0
+	command -v sbsign >/dev/null 2>&1 || return 0
+
+	if sbverify --list "${image}" 2>/dev/null | grep -q "/CN=${expected_signer}"; then
+		return 0
+	fi
+
+	backup="${backup_dir}/vmlinuz-${version}.unsigned"
+	if [ ! -e "${backup}" ]; then
+		mkdir -p "${backup_dir}"
+		cp -a "${image}" "${backup}"
+	fi
+
+	tmp="$(mktemp "${image}.signed.XXXXXX")"
+	rm -f "${tmp}"
+	sbsign --key "${key}" --cert "${cert}" --output "${tmp}" "${image}" >&2
+	chown --reference="${image}" "${tmp}"
+	chmod --reference="${image}" "${tmp}"
+	mv "${tmp}" "${image}"
+	echo "I: local-secureboot-sign: signed ${image}" >&2
+}
+
+module_signer()
+{
+	/usr/sbin/modinfo -F signer "$1" 2>/dev/null || true
+}
+
+install_signed_module()
+{
+	src="$1"
+	dst="$2"
+
+	chown --reference="${dst}" "${src}"
+	chmod --reference="${dst}" "${src}"
+	mv "${src}" "${dst}"
+	echo "I: local-secureboot-sign: signed ${dst}" >&2
+}
+
+sign_module()
+{
+	mod="$1"
+	sign_file="/usr/src/linux-headers-${version}/scripts/sign-file"
+
+	[ -x "${sign_file}" ] || return 0
+	[ "$(module_signer "${mod}")" = "${expected_signer}" ] && return 0
+
+	tmpdir="$(mktemp -d)"
+	trap 'rm -rf "${tmpdir}"' EXIT HUP INT TERM
+
+	case "${mod}" in
+		*.ko)
+			cp -a "${mod}" "${tmpdir}/module.ko"
+			"${sign_file}" sha256 "${key}" "${cert}" "${tmpdir}/module.ko"
+			install_signed_module "${tmpdir}/module.ko" "${mod}"
+			;;
+		*.ko.xz)
+			xz -dc "${mod}" > "${tmpdir}/module.ko"
+			"${sign_file}" sha256 "${key}" "${cert}" "${tmpdir}/module.ko"
+			xz -z -f "${tmpdir}/module.ko"
+			install_signed_module "${tmpdir}/module.ko.xz" "${mod}"
+			;;
+	esac
+
+	rm -rf "${tmpdir}"
+	trap - EXIT HUP INT TERM
+}
+
+sign_kernel_image
+
+if [ -d "/lib/modules/${version}/updates/dkms" ]; then
+	find "/lib/modules/${version}/updates/dkms" -type f \( -name '*.ko' -o -name '*.ko.xz' \) -print |
+	while IFS= read -r mod; do
+		sign_module "${mod}"
+	done
+
+	depmod "${version}"
+fi
+
+exit 0
