@@ -12604,7 +12604,12 @@ fn tcp_bench_uring_mux_send(
         })??;
         worker_results.push(worker_stats);
     }
-    let elapsed = started.elapsed();
+    let launcher_elapsed = started.elapsed();
+    let elapsed = worker_results
+        .iter()
+        .map(|stats| stats.wall)
+        .max()
+        .unwrap_or(launcher_elapsed);
 
     let mut stats = UringSendStats::default();
     for worker_stats in worker_results {
@@ -12634,6 +12639,12 @@ fn tcp_bench_uring_mux_send(
         stats.zc_notifications += worker_stats.zc_notifications;
         stats.zc_copied_notifications += worker_stats.zc_copied_notifications;
     }
+    println!(
+        "tcp-bench-uring-mux-send-launcher: active_workers={} launcher_seconds={:.6} hot_seconds={:.6}",
+        active_workers,
+        launcher_elapsed.as_secs_f64(),
+        elapsed.as_secs_f64()
+    );
     print_tcp_bench_result("tcp-bench-uring-mux-send", stats.bytes, elapsed);
     if send_mode.uses_zc() {
         println!(
