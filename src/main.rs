@@ -3609,6 +3609,10 @@ fn ready_handshake_filter_rejects_enabled() -> bool {
     env_truthy("URING_PLAY_READY_HANDSHAKE_FILTER_REJECTS")
 }
 
+fn start_handshake_filter_rejects_enabled() -> bool {
+    env_truthy("URING_PLAY_START_HANDSHAKE_FILTER_REJECTS")
+}
+
 fn maybe_filter_ready_handshake(
     streams: Vec<TcpStream>,
     label: &str,
@@ -3670,6 +3674,55 @@ fn maybe_run_client_start_handshake(
 ) -> io::Result<Vec<TcpStream>> {
     if !start_handshake_enabled() {
         return maybe_filter_ready_handshake(streams, label);
+    }
+    if start_handshake_filter_rejects_enabled() {
+        let total_streams = streams.len();
+        let mut ready_streams = Vec::with_capacity(total_streams);
+        let mut rejected_streams = 0usize;
+        for mut stream in streams {
+            let mut byte = [0u8; 1];
+            match stream.read_exact(&mut byte) {
+                Ok(()) if byte[0] == TCP_READY_BYTE => ready_streams.push(stream),
+                Ok(()) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "{label}: start_handshake_ready byte mismatch: got 0x{:02x} expected 0x{TCP_READY_BYTE:02x}",
+                            byte[0]
+                        ),
+                    ));
+                }
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::UnexpectedEof
+                            | io::ErrorKind::ConnectionReset
+                            | io::ErrorKind::BrokenPipe
+                    ) =>
+                {
+                    rejected_streams += 1;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        if ready_streams.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                format!("{label}: receiver rejected all start-handshake streams"),
+            ));
+        }
+        println!(
+            "{label}: start_handshake_ready=received streams={} rejected_streams={rejected_streams} total_streams={total_streams}",
+            ready_streams.len()
+        );
+        send_tcp_control_byte(&ready_streams, TCP_ACK_BYTE, label, "start_handshake_ack")?;
+        recv_tcp_control_byte(
+            &mut ready_streams,
+            TCP_START_BYTE,
+            label,
+            "start_handshake_go",
+        )?;
+        return Ok(ready_streams);
     }
     recv_tcp_control_byte(&mut streams, TCP_READY_BYTE, label, "start_handshake_ready")?;
     send_tcp_control_byte(&streams, TCP_ACK_BYTE, label, "start_handshake_ack")?;
@@ -5417,6 +5470,25 @@ fn tcp_wal_zcrx_selected_connections_per_port(connections_per_port: usize) -> io
             io::ErrorKind::InvalidInput,
             format!(
                 "URING_PLAY_TCP_WAL_ZCRX_SELECT_PER_PORT={selected} exceeds connections_per_port={connections_per_port}"
+            ),
+        ));
+    }
+    Ok(selected)
+}
+
+fn tcp_bench_mux_selected_connections_per_port(connections_per_port: usize) -> io::Result<usize> {
+    let selected = env_usize_or("URING_PLAY_TCP_MUX_SELECT_PER_PORT", connections_per_port);
+    if selected == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "URING_PLAY_TCP_MUX_SELECT_PER_PORT must be greater than zero",
+        ));
+    }
+    if selected > connections_per_port {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "URING_PLAY_TCP_MUX_SELECT_PER_PORT={selected} exceeds connections_per_port={connections_per_port}"
             ),
         ));
     }
@@ -11083,14 +11155,32 @@ fn tcp_bench_uring_mux_server(
     ring_entries: u32,
 ) -> io::Result<()> {
     let total_connections = tcp_bench_total_connections(ports, connections_per_port)?;
+    let selected_connections_per_port =
+        tcp_bench_mux_selected_connections_per_port(connections_per_port)?;
+    let selected_total_connections =
+        tcp_bench_total_connections(ports, selected_connections_per_port)?;
     println!(
         "tcp-bench-uring-mux-server: listening on {bind}:{base_port}.. ports={ports} \
          connections_per_port={connections_per_port} total_connections={total_connections} \
-         expected_bytes={expected_bytes}"
+         selected_connections_per_port={selected_connections_per_port} \
+         selected_total_connections={selected_total_connections} expected_bytes={expected_bytes}"
     );
     let listeners = tcp_bench_mux_bind_listeners(bind, base_port, ports)?;
     let mut streams =
         tcp_bench_mux_accept_tagged_listeners(listeners, ports, connections_per_port)?;
+    let workers = tcp_bench_auto_workers(workers, selected_total_connections);
+    let shard_policy =
+        TcpMuxShardPolicy::from_env_or("URING_PLAY_MUX_SHARD", TcpMuxShardPolicy::Observed)?;
+    streams = tcp_bench_select_live_conn_indices_per_lane(
+        streams,
+        ports,
+        connections_per_port,
+        selected_connections_per_port,
+        workers,
+        shard_policy,
+        "tcp-bench-uring-mux-server",
+        false,
+    )?;
     let start_handshake = start_handshake_enabled();
     let control_streams = if start_handshake {
         let control_streams = clone_tcp_bench_control_streams(&streams)?;
@@ -11110,9 +11200,6 @@ fn tcp_bench_uring_mux_server(
     } else {
         maybe_clone_ready_handshake_streams(&streams)?
     };
-    let workers = tcp_bench_auto_workers(workers, streams.len());
-    let shard_policy =
-        TcpMuxShardPolicy::from_env_or("URING_PLAY_MUX_SHARD", TcpMuxShardPolicy::Observed)?;
     let shards = tcp_bench_partition_accepted_streams(
         streams,
         workers,
