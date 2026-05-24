@@ -92,6 +92,7 @@ const SECTOR_SIZE: usize = 512;
 const TCP_READY_BYTE: u8 = 0xa5;
 const TCP_ACK_BYTE: u8 = 0x5a;
 const TCP_START_BYTE: u8 = 0xc3;
+const TCP_REJECT_BYTE: u8 = 0x36;
 const IORING_MAX_REG_BUFFERS: usize = 1 << 14;
 const BLKGETSIZE64: libc::c_ulong = 0x80081272;
 const BY_PARTUUID_DIR: &str = "/dev/disk/by-partuuid";
@@ -3633,6 +3634,9 @@ fn maybe_filter_ready_handshake(
         let mut byte = [0u8; 1];
         match stream.read_exact(&mut byte) {
             Ok(()) if byte[0] == TCP_READY_BYTE => ready_streams.push(stream),
+            Ok(()) if byte[0] == TCP_REJECT_BYTE => {
+                rejected_streams += 1;
+            }
             Ok(()) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -3683,6 +3687,9 @@ fn maybe_run_client_start_handshake(
             let mut byte = [0u8; 1];
             match stream.read_exact(&mut byte) {
                 Ok(()) if byte[0] == TCP_READY_BYTE => ready_streams.push(stream),
+                Ok(()) if byte[0] == TCP_REJECT_BYTE => {
+                    rejected_streams += 1;
+                }
                 Ok(()) => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -5827,6 +5834,19 @@ fn tcp_bench_select_live_conn_indices_per_lane(
         ));
     }
 
+    let select_score =
+        env::var("URING_PLAY_TCP_MUX_SELECT_SCORE").unwrap_or_else(|_| "receiver".to_string());
+    if !matches!(
+        select_score.as_str(),
+        "receiver" | "rx" | "sender-worker" | "sender" | "tx"
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "unknown URING_PLAY_TCP_MUX_SELECT_SCORE={select_score:?}; use receiver or sender-worker"
+            ),
+        ));
+    }
     let expected_workers = workers.min(selected_total_connections).max(1);
     let lane_conn_counts = (0..ports)
         .map(|lane| {
@@ -5835,8 +5855,15 @@ fn tcp_bench_select_live_conn_indices_per_lane(
                     let mut counts = vec![0usize; workers];
                     let grid_index = lane * connections_per_port + conn_index;
                     let accepted = grid[grid_index].as_ref().expect("grid was validated");
-                    let worker =
-                        policy.choose_worker_with_pin(accepted, grid_index, workers, pin_requested);
+                    let worker = match select_score.as_str() {
+                        "sender-worker" | "sender" | "tx" => grid_index % workers,
+                        _ => policy.choose_worker_with_pin(
+                            accepted,
+                            grid_index,
+                            workers,
+                            pin_requested,
+                        ),
+                    };
                     counts[worker] += 1;
                     counts
                 })
@@ -5963,15 +5990,34 @@ fn tcp_bench_select_live_conn_indices_per_lane(
         }
     }
 
+    let mut rejected_streams = 0usize;
+    let mut reject_signal_errors = 0usize;
+    for accepted in grid.into_iter().flatten() {
+        rejected_streams += 1;
+        let mut stream = accepted.stream;
+        if stream.write_all(&[TCP_REJECT_BYTE]).is_err() {
+            reject_signal_errors += 1;
+        }
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+    if rejected_streams > 0 {
+        println!(
+            "{label}-live-select-reject: signaled={} signal_errors={}",
+            rejected_streams.saturating_sub(reject_signal_errors),
+            reject_signal_errors
+        );
+    }
+
     println!(
-        "{label}-live-select: policy={} ports={ports} candidate_connections_per_port={connections_per_port} \
+        "{label}-live-select: policy={} select_score={} ports={ports} candidate_connections_per_port={connections_per_port} \
          selected_connections_per_port={selected_connections_per_port} selected_conn_indices_by_lane={} \
          workers={workers} streams_by_worker={} selection_mode={selection_mode} combinations={} rejected_streams={}",
         policy.label(),
+        select_score,
         tcp_mux_lane_selection_label(&selected_conn_indices_by_lane),
         tcp_mux_counts_label(&aggregate_counts),
         combination_count.min(combination_limit),
-        total_connections.saturating_sub(selected_streams.len())
+        rejected_streams
     );
     Ok(selected_streams)
 }
