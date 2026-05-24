@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use std::ptr;
 use std::slice;
 use std::sync::atomic::{AtomicU64, Ordering, fence};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -4970,6 +4970,18 @@ impl TcpBenchAcceptedStream {
     }
 }
 
+fn maybe_clone_ready_handshake_streams(
+    streams: &[TcpBenchAcceptedStream],
+) -> io::Result<Vec<TcpStream>> {
+    if !ready_handshake_enabled() {
+        return Ok(Vec::new());
+    }
+    streams
+        .iter()
+        .map(|stream| stream.stream.try_clone())
+        .collect()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TcpMuxShardPolicy {
     RoundRobin,
@@ -5180,6 +5192,7 @@ fn tcp_bench_mux_accept_tagged_listeners(
                 let mut streams = Vec::with_capacity(connections_per_port);
                 for conn_index in 0..connections_per_port {
                     let (stream, peer_addr) = listener.accept()?;
+                    set_tcp_nodelay_from_env(&stream)?;
                     set_tcp_bench_buffers(&stream);
                     let locality = observe_socket_locality(&stream);
                     println!(
@@ -10952,6 +10965,7 @@ fn tcp_bench_uring_mux_server(
     );
     let listeners = tcp_bench_mux_bind_listeners(bind, base_port, ports)?;
     let streams = tcp_bench_mux_accept_tagged_listeners(listeners, ports, connections_per_port)?;
+    let ready_streams = maybe_clone_ready_handshake_streams(&streams)?;
     let workers = tcp_bench_auto_workers(workers, streams.len());
     let shard_policy =
         TcpMuxShardPolicy::from_env_or("URING_PLAY_MUX_SHARD", TcpMuxShardPolicy::Observed)?;
@@ -10961,17 +10975,40 @@ fn tcp_bench_uring_mux_server(
         shard_policy,
         "tcp-bench-uring-mux-server",
     );
-    let started = Instant::now();
+    let active_workers = shards.iter().filter(|shard| !shard.is_empty()).count();
+    let handshake_enabled = ready_handshake_enabled();
+    let start_barrier = handshake_enabled.then(|| Arc::new(Barrier::new(active_workers + 1)));
+    let started_before_spawn = (!handshake_enabled).then(Instant::now);
     let mut handles = Vec::with_capacity(workers);
     for (worker_idx, shard) in shards.into_iter().enumerate() {
         if shard.is_empty() {
             continue;
         }
+        let worker_start_barrier = start_barrier.as_ref().map(Arc::clone);
         handles.push(thread::spawn(move || {
             let _affinity = maybe_pin_current_thread("uring-recv-worker", worker_idx);
+            if let Some(barrier) = worker_start_barrier.as_ref() {
+                barrier.wait();
+            }
             uring_recv_worker(shard, expected_bytes, recv_bytes, ring_entries)
         }));
     }
+    let started = if let Some(started) = started_before_spawn {
+        started
+    } else {
+        println!(
+            "tcp-bench-uring-mux-server: ready_handshake=waiting-for-workers active_workers={active_workers}"
+        );
+        let started = Instant::now();
+        if let Some(barrier) = start_barrier.as_ref() {
+            barrier.wait();
+        }
+        println!(
+            "tcp-bench-uring-mux-server: ready_handshake=workers-released active_workers={active_workers}"
+        );
+        maybe_send_ready_handshake(&ready_streams, "tcp-bench-uring-mux-server")?;
+        started
+    };
 
     let mut total = 0usize;
     for handle in handles {
