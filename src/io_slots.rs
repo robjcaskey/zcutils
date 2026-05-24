@@ -63,12 +63,12 @@ impl LiburingSlotHelperProbe {
 }
 
 pub(crate) fn submission_backend_label() -> &'static str {
-    "uring-play/io-slot-v0(raw-uapi)"
+    "zcutils/io-slot-v0(raw-uapi)"
 }
 
 pub(crate) fn local_compat_summary() -> String {
     format!(
-        "available=yes api=uring-play/io-slot-v0 backend=raw-uapi op={} register={}/{} alignment={}",
+        "available=yes api=zcutils/io-slot-v0 backend=raw-uapi op={} register={}/{} alignment={}",
         IORING_OP_SLOT_RW, IORING_REGISTER_IO_SLOT, IORING_UNREGISTER_IO_SLOT, SLOT_RW_ALIGNMENT
     )
 }
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn local_compat_summary_identifies_owned_backend() {
         let summary = local_compat_summary();
-        assert!(summary.contains("uring-play/io-slot-v0"));
+        assert!(summary.contains("zcutils/io-slot-v0"));
         assert!(summary.contains("backend=raw-uapi"));
     }
 }

@@ -5,7 +5,7 @@ set -Eeuo pipefail
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-URING_PLAY="${URING_PLAY:-${ROOT}/target/debug/uring-play}"
+URING_PLAY="${URING_PLAY:-${ROOT}/target/debug/zcutils}"
 DEFAULT_NETDEVSIM_KO="/tmp/netdevsim-rdma-resigned.ko"
 if [ ! -e "${DEFAULT_NETDEVSIM_KO}" ]; then
 	DEFAULT_NETDEVSIM_KO="/home/rob/src/linux-7.0.8/drivers/net/netdevsim/netdevsim.ko"

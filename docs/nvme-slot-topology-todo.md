@@ -50,6 +50,6 @@ uses the newest slot APIs cleanly and can be tested against real hardware.
   support.
 - Acceptance: `probe` reports both kernel io-slot availability and liburing
   helper availability, and the WAL bench logs which path was used.
-- Status: implemented as `uring-play/io-slot-v0(raw-uapi)`. Test first with
+- Status: implemented as `zcutils/io-slot-v0(raw-uapi)`. Test first with
   `qemu-zcrx/slot-compat-qemu-smoke.sh`; do not move to bare metal until the
   QEMU null_blk smoke passes.

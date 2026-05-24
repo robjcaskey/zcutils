@@ -154,7 +154,7 @@ Add `--yes` to create or repair:
 Support resource names are intentionally short, such as `up-adhoc-ctl`, but
 their tags are explicit:
 
-- `Project=uring-play`;
+- `Project=zcutils`;
 - `Purpose=adhoc-performance-compute-support`;
 - `AdhocSupport=true`;
 - `AdhocSupportKind=...`;
@@ -221,7 +221,7 @@ ssh -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 \
 
 rsync -az \
   -e 'ssh -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 -J ubuntu@JUMPBOX_PUBLIC_IP' \
-  ./ ubuntu@WORKER_PRIVATE_IP:~/uring-play/
+  ./ ubuntu@WORKER_PRIVATE_IP:~/zcutils/
 ```
 
 The jumpbox must carry the same `adhocKeepaliveModeAction=terminate`,
