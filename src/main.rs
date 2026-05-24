@@ -12562,14 +12562,20 @@ fn tcp_bench_uring_mux_send(
 
     let workers = tcp_bench_auto_workers(workers, streams.len());
     let shards = tcp_bench_partition_streams(streams, workers);
-    let started = Instant::now();
+    let active_workers = shards.iter().filter(|shard| !shard.is_empty()).count();
+    let ready_barrier = Arc::new(Barrier::new(active_workers + 1));
+    let start_barrier = Arc::new(Barrier::new(active_workers + 1));
     let mut handles = Vec::with_capacity(workers);
     for (worker_idx, shard) in shards.into_iter().enumerate() {
         if shard.is_empty() {
             continue;
         }
+        let worker_ready_barrier = Arc::clone(&ready_barrier);
+        let worker_start_barrier = Arc::clone(&start_barrier);
         handles.push(thread::spawn(move || {
             let affinity = maybe_pin_current_thread("uring-send-worker", worker_idx);
+            worker_ready_barrier.wait();
+            worker_start_barrier.wait();
             uring_send_worker(
                 worker_idx,
                 affinity,
@@ -12584,6 +12590,9 @@ fn tcp_bench_uring_mux_send(
             )
         }));
     }
+    ready_barrier.wait();
+    let started = Instant::now();
+    start_barrier.wait();
 
     let mut worker_results = Vec::with_capacity(handles.len());
     for handle in handles {
