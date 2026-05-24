@@ -3705,16 +3705,13 @@ fn maybe_run_client_start_handshake(
                 Err(err) => return Err(err),
             }
         }
-        if ready_streams.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                format!("{label}: receiver rejected all start-handshake streams"),
-            ));
-        }
         println!(
             "{label}: start_handshake_ready=received streams={} rejected_streams={rejected_streams} total_streams={total_streams}",
             ready_streams.len()
         );
+        if ready_streams.is_empty() {
+            return Ok(ready_streams);
+        }
         send_tcp_control_byte(&ready_streams, TCP_ACK_BYTE, label, "start_handshake_ack")?;
         recv_tcp_control_byte(
             &mut ready_streams,
