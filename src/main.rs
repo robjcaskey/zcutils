@@ -5907,12 +5907,73 @@ fn tcp_bench_select_live_conn_indices_per_lane(
     Ok(selected_streams)
 }
 
-fn tcp_bench_partition_streams(streams: Vec<TcpStream>, workers: usize) -> Vec<Vec<TcpStream>> {
+#[derive(Clone, Copy)]
+struct TcpBenchConnectSpec {
+    lane: usize,
+    port: u16,
+    conn_index: usize,
+    source_port: Option<u16>,
+}
+
+fn tcp_bench_mux_connect_specs(
+    base_port: u16,
+    ports: usize,
+    connections_per_port: usize,
+    source_ports: TcpSourcePortPlan,
+) -> io::Result<Vec<TcpBenchConnectSpec>> {
+    let total_connections = tcp_bench_total_connections(ports, connections_per_port)?;
+    let mut specs = Vec::with_capacity(total_connections);
+    for lane in 0..ports {
+        let port = tcp_bench_port(base_port, lane)?;
+        for conn_index in 0..connections_per_port {
+            let global_index = lane
+                .checked_mul(connections_per_port)
+                .and_then(|base| base.checked_add(conn_index))
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "connection index overflow")
+                })?;
+            specs.push(TcpBenchConnectSpec {
+                lane,
+                port,
+                conn_index,
+                source_port: source_ports.source_port(global_index)?,
+            });
+        }
+    }
+    Ok(specs)
+}
+
+fn tcp_bench_partition_connect_specs(
+    specs: Vec<TcpBenchConnectSpec>,
+    workers: usize,
+) -> Vec<Vec<TcpBenchConnectSpec>> {
     let mut shards = (0..workers).map(|_| Vec::new()).collect::<Vec<_>>();
-    for (idx, stream) in streams.into_iter().enumerate() {
-        shards[idx % workers].push(stream);
+    for (idx, spec) in specs.into_iter().enumerate() {
+        shards[idx % workers].push(spec);
     }
     shards
+}
+
+fn tcp_bench_connect_worker_streams(
+    addr: &str,
+    specs: &[TcpBenchConnectSpec],
+) -> io::Result<Vec<TcpStream>> {
+    let mut streams = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let stream = tcp_bench_connect(addr, spec.port, spec.source_port).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "connect {addr}:{} lane={} conn={}: {err}",
+                    spec.port, spec.lane, spec.conn_index
+                ),
+            )
+        })?;
+        set_tcp_nodelay_from_env(&stream)?;
+        set_tcp_bench_buffers(&stream);
+        streams.push(stream);
+    }
+    Ok(streams)
 }
 
 fn uring_recv_worker(
@@ -12531,40 +12592,15 @@ fn tcp_bench_uring_mux_send(
         source_ports.label(),
         fixed_file_send
     );
-    let mut streams = Vec::with_capacity(total_connections);
-    for lane in 0..ports {
-        let port = tcp_bench_port(base_port, lane)?;
-        for conn_index in 0..connections_per_port {
-            let global_index = lane
-                .checked_mul(connections_per_port)
-                .and_then(|base| base.checked_add(conn_index))
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "connection index overflow")
-                })?;
-            let source_port = source_ports.source_port(global_index)?;
-            let stream = tcp_bench_connect(addr, port, source_port).map_err(|err| {
-                io::Error::new(
-                    err.kind(),
-                    format!("connect {addr}:{port} lane={lane} conn={conn_index}: {err}"),
-                )
-            })?;
-            set_tcp_nodelay_from_env(&stream)?;
-            set_tcp_bench_buffers(&stream);
-            streams.push(stream);
-        }
-    }
-    let streams = maybe_run_client_start_handshake(streams, "tcp-bench-uring-mux-send")?;
     let connect_pause_ms = env_usize_or("URING_PLAY_CONNECT_PAUSE_MS", 0);
-    if connect_pause_ms > 0 {
-        println!("tcp-bench-uring-mux-send: post_connect_pause_ms={connect_pause_ms}");
-        thread::sleep(Duration::from_millis(connect_pause_ms as u64));
-    }
-
-    let workers = tcp_bench_auto_workers(workers, streams.len());
-    let shards = tcp_bench_partition_streams(streams, workers);
+    let workers = tcp_bench_auto_workers(workers, total_connections);
+    let connect_specs =
+        tcp_bench_mux_connect_specs(base_port, ports, connections_per_port, source_ports)?;
+    let shards = tcp_bench_partition_connect_specs(connect_specs, workers);
     let active_workers = shards.iter().filter(|shard| !shard.is_empty()).count();
     let ready_barrier = Arc::new(Barrier::new(active_workers + 1));
     let start_barrier = Arc::new(Barrier::new(active_workers + 1));
+    let addr = Arc::new(addr.to_string());
     let mut handles = Vec::with_capacity(workers);
     for (worker_idx, shard) in shards.into_iter().enumerate() {
         if shard.is_empty() {
@@ -12572,14 +12608,24 @@ fn tcp_bench_uring_mux_send(
         }
         let worker_ready_barrier = Arc::clone(&ready_barrier);
         let worker_start_barrier = Arc::clone(&start_barrier);
+        let worker_addr = Arc::clone(&addr);
         handles.push(thread::spawn(move || {
             let affinity = maybe_pin_current_thread("uring-send-worker", worker_idx);
+            let streams = tcp_bench_connect_worker_streams(&worker_addr, &shard)?;
+            let streams =
+                maybe_run_client_start_handshake(streams, "tcp-bench-uring-mux-send")?;
+            if connect_pause_ms > 0 {
+                println!(
+                    "tcp-bench-uring-mux-send-worker: worker={worker_idx} post_connect_pause_ms={connect_pause_ms}"
+                );
+                thread::sleep(Duration::from_millis(connect_pause_ms as u64));
+            }
             worker_ready_barrier.wait();
             worker_start_barrier.wait();
             uring_send_worker(
                 worker_idx,
                 affinity,
-                shard,
+                streams,
                 bytes_per_connection,
                 chunk_bytes,
                 pipeline,
