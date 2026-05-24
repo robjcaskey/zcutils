@@ -33,12 +33,13 @@ The reusable helper lives at:
 /home/rob/spot-helper/ec2_perf_spot.py
 ```
 
-It is a symlink to the repo script at
-`/home/rob/uring-play/scripts/ec2_perf_spot.py`, so there is one implementation
-to maintain.
+Use it to efficiently find low-cost Spot instances for performance compute:
+it ranks candidate region/AZ/type combinations by cost, bandwidth, local NVMe,
+architecture, and optional placement score. The repo path
+`scripts/ec2_perf_spot.py` is only a compatibility wrapper.
 
 Spot searches are intentionally cached. The helper stores AWS discovery data in
-`/home/rob/uring-play/.cache/ec2_perf_spot_cache.json` with a default
+`/home/rob/spot-helper/.cache/ec2_perf_spot_cache.json` with a default
 15-minute TTL. The first broad search across many regions and instance types
 may be slow because it has to query AWS for Spot history and instance metadata;
 repeated searches should be much faster while the cache is warm.
@@ -117,7 +118,7 @@ The currently suitable existing pieces in `us-east-1` are:
 The launch command should attach both SGs:
 
 ```bash
-scripts/ec2_perf_spot.py launch \
+/home/rob/spot-helper/ec2_perf_spot.py launch \
   --region us-east-1 \
   --availability-zone us-east-1a \
   --subnet-id subnet-9cf16dc7 \
@@ -188,7 +189,7 @@ After launch, the script writes an inventory JSON containing public and private
 IPs. Print the SSH commands with:
 
 ```bash
-scripts/ec2_perf_spot.py ssh-commands \
+/home/rob/spot-helper/ec2_perf_spot.py ssh-commands \
   --inventory qemu-zcrx/ec2-adhoc-inventory.json
 ```
 
@@ -248,7 +249,7 @@ it with the run.
 At the end of every run:
 
 ```bash
-scripts/ec2_perf_spot.py terminate \
+/home/rob/spot-helper/ec2_perf_spot.py terminate \
   --region REGION \
   --run-id RUN_ID \
   --yes
