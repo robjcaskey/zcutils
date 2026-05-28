@@ -251,7 +251,7 @@ zcprobe
 ### zcdemux
 
 Receive lane-multiplexed TCP traffic. It is a source; it should not grow hidden
-forwarding modes. Defaults to required receive zero-copy.
+forwarding modes. Defaults to automatic receive zero-copy detection.
 
 ```bash
 zcdemux \
@@ -261,13 +261,13 @@ zcdemux \
   --connections-per-lane 1 \
   --expected-bytes 512m \
   --workers 40 \
-  --zero-copy-receive required
+  --zero-copy-receive auto
 ```
 
 Important flags:
 
-- `--zero-copy-receive required`: default; fail if ZCRX cannot be used.
-- `--zero-copy-receive auto`: try ZCRX, but fall back to io_uring recv.
+- `--zero-copy-receive auto`: default; try ZCRX, but fall back to io_uring recv.
+- `--zero-copy-receive required`: fail if ZCRX cannot be used.
 - `--zero-copy-receive off`: force copied io_uring recv.
 - `--ifname IFACE`: select NIC for ZCRX.
 - `--rxq N`, `--rxq-count N`: select ZCRX queue range.
@@ -288,7 +288,7 @@ zcmux \
   --chunk-bytes 1m \
   --pipeline 8 \
   --workers 40 \
-  --zero-copy-send required
+  --zero-copy-send auto
 ```
 
 Important flags:
@@ -296,8 +296,8 @@ Important flags:
 - `--send-mode send-zc`: default.
 - `--send-mode send-zc-fixed`: use send-zc with registered buffers.
 - `--send-mode send`: explicit copied fallback.
-- `--zero-copy-send required`: default.
-- `--zero-copy-send auto`: try send-zc, but fall back to copied send.
+- `--zero-copy-send auto`: default; try send-zc, but fall back to copied send.
+- `--zero-copy-send required`: fail if send-zc cannot be used.
 - `--zero-copy-send off`: force copied send.
 - `--source-port-base N`: pin generated flow source ports.
 - `--source-port-stride N`: stride source ports for 5-tuple shaping.

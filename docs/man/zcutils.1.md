@@ -82,11 +82,11 @@ as a fallback while using short names in pipelines.
 - `--send-mode send-zc`: send-side zero-copy. Default for `zcmux` and `zcnc connect`.
 - `--send-mode send-zc-fixed`: send-zc with registered buffers.
 - `--send-mode send`: explicit copied send fallback.
-- `--zero-copy-send required`: default; fail if send-zc setup is not allowed.
-- `--zero-copy-send auto`: try send-zc and fall back to copied send when setup is not allowed.
+- `--zero-copy-send auto`: default; try send-zc and fall back to copied send when setup is not allowed.
+- `--zero-copy-send required`: fail if send-zc setup is not allowed.
 - `--zero-copy-send off`: force copied send.
-- `--zero-copy-receive required`: default; fail if ZCRX cannot be enabled.
-- `--zero-copy-receive auto`: try ZCRX and fall back to copied recv when unavailable or unauthorized.
+- `--zero-copy-receive auto`: default; try ZCRX and fall back to copied recv when unavailable or unauthorized.
+- `--zero-copy-receive required`: fail if ZCRX cannot be enabled.
 - `--zero-copy-receive off`: force copied recv.
 
 ## TCP Mux Transfer Encryption

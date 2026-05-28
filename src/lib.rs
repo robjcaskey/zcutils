@@ -1586,9 +1586,14 @@ fn if_nametoindex(ifname: &str) -> io::Result<u32> {
     }
 }
 
-fn query_opcodes() -> io::Result<IoUringQueryOpcode> {
+fn query_opcodes_raw() -> io::Result<(IoUringQueryOpcode, i32)> {
     let mut opcodes = IoUringQueryOpcode::default();
     let opcode_result = io_uring_query(IO_URING_QUERY_OPCODES, &mut opcodes)?;
+    Ok((opcodes, opcode_result))
+}
+
+fn query_opcodes() -> io::Result<IoUringQueryOpcode> {
+    let (opcodes, opcode_result) = query_opcodes_raw()?;
 
     println!("io_uring opcode query result: {opcode_result}");
     println!("request opcodes: {}", opcodes.nr_request_opcodes);
@@ -1700,6 +1705,17 @@ fn query_opcodes() -> io::Result<IoUringQueryOpcode> {
     );
 
     Ok(opcodes)
+}
+
+fn kernel_supports_request_opcode(opcode: u32) -> io::Result<bool> {
+    Ok(query_opcodes_raw()?.0.nr_request_opcodes > opcode)
+}
+
+fn kernel_supports_io_slots() -> io::Result<bool> {
+    let (opcodes, _) = query_opcodes_raw()?;
+    Ok(opcodes.nr_request_opcodes > io_slots::IORING_OP_SLOT_RW
+        && opcodes.nr_register_opcodes > io_slots::IORING_REGISTER_IO_SLOT
+        && opcodes.nr_register_opcodes > io_slots::IORING_UNREGISTER_IO_SLOT)
 }
 
 fn print_io_uring_api_opportunities(opcodes: &IoUringQueryOpcode) {
@@ -7005,10 +7021,11 @@ enum TcpWalWriteMode {
 impl TcpWalWriteMode {
     fn from_env() -> io::Result<Self> {
         match env::var("URING_PLAY_TCP_WAL_WRITE_MODE")
-            .unwrap_or_else(|_| "fixed-file".to_string())
+            .unwrap_or_else(|_| "auto".to_string())
             .as_str()
         {
-            "" | "fixed-file" | "fixedfile" | "fixedbufs-registerfiles" | "fast" => {
+            "" | "auto" | "autodetect" | "sniff" => Self::auto_detect(),
+            "fixed-file" | "fixedfile" | "fixedbufs-registerfiles" | "fast" => {
                 Ok(Self::WriteFixedFile)
             }
             "null" | "sink" | "discard" | "none" => Ok(Self::Null),
@@ -7018,9 +7035,30 @@ impl TcpWalWriteMode {
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "unknown URING_PLAY_TCP_WAL_WRITE_MODE={other:?}; use fixed-file, fixed, write, slot, or null"
+                    "unknown URING_PLAY_TCP_WAL_WRITE_MODE={other:?}; use auto, fixed-file, fixed, write, slot, or null"
                 ),
             )),
+        }
+    }
+
+    fn auto_detect() -> io::Result<Self> {
+        match kernel_supports_io_slots() {
+            Ok(true) => {
+                eprintln!("tcp-wal-write-auto: io-slot kernel support detected; using slot");
+                Ok(Self::Slot)
+            }
+            Ok(false) => {
+                eprintln!(
+                    "tcp-wal-write-auto: io-slot kernel support unavailable; using fixed-file"
+                );
+                Ok(Self::WriteFixedFile)
+            }
+            Err(err) => {
+                eprintln!(
+                    "tcp-wal-write-auto: io_uring opcode query failed ({err}); using fixed-file"
+                );
+                Ok(Self::WriteFixedFile)
+            }
         }
     }
 
@@ -10162,6 +10200,7 @@ fn udp_wal_worker(
     pipeline: usize,
     ring_entries: u32,
     buffer_mode: SlotWalBufferMode,
+    write_mode: TcpWalWriteMode,
     pin: bool,
 ) -> io::Result<TcpWalWorkerResult> {
     let affinity = pin_current_thread_if_requested("udp-wal-worker", worker, pin);
@@ -10228,15 +10267,23 @@ fn udp_wal_worker(
     let mut ring = RawRing::new(ring_entries, ring_entries.saturating_mul(2))?;
     ring.register_napi_from_env(&format!("udp-wal-worker-{worker}"))?;
     let mut fds = [fd];
-    ring.register_files(&mut fds)?;
+    let registered_files = write_mode.needs_registered_files();
+    if registered_files {
+        ring.register_files(&mut fds)?;
+    }
 
     let buffers = buffer_mode.allocate(pipeline, chunk_bytes)?;
     let mut iovecs = buffers.iovecs(chunk_bytes);
-    ring.register_buffers(&mut iovecs)?;
+    let registered_buffers = write_mode.needs_registered_buffers();
+    if registered_buffers {
+        ring.register_buffers(&mut iovecs)?;
+    }
 
     let mut slot_ids = Vec::with_capacity(pipeline);
-    for buf_index in 0..pipeline {
-        slot_ids.push(ring.register_io_slot(buf_index as u32, 0)?);
+    if write_mode.needs_io_slots() {
+        for buf_index in 0..pipeline {
+            slot_ids.push(ring.register_io_slot(buf_index as u32, 0)?);
+        }
     }
 
     let mut socket_states = sockets
@@ -10335,24 +10382,36 @@ fn udp_wal_worker(
                     outstanding += 1;
                     continue;
                 }
-                let file_offset = next_wal_offset;
-                next_wal_offset =
-                    next_wal_offset
-                        .checked_add(chunk_bytes as u64)
-                        .ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::InvalidInput, "WAL offset overflow")
-                        })?;
-                slots[slot].stage = TcpWalSlotStage::Write;
-                slots[slot].file_offset = file_offset;
-                ring.queue_slot_rw(
-                    slot_ids[slot],
-                    0,
-                    file_offset,
-                    chunk_bytes_u32,
-                    io_slots::SlotRw::Write,
-                    tcp_wal_write_user_data(slot),
-                )?;
-                outstanding += 1;
+                if write_mode.is_null() {
+                    total_written = total_written.checked_add(chunk_bytes).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "UDP WAL write byte overflow")
+                    })?;
+                    chunks += 1;
+                    slots[slot] = TcpWalSlot::default();
+                    free_slots.push(slot);
+                } else {
+                    let file_offset = next_wal_offset;
+                    next_wal_offset =
+                        next_wal_offset
+                            .checked_add(chunk_bytes as u64)
+                            .ok_or_else(|| {
+                                io::Error::new(io::ErrorKind::InvalidInput, "WAL offset overflow")
+                            })?;
+                    slots[slot].stage = TcpWalSlotStage::Write;
+                    slots[slot].file_offset = file_offset;
+                    tcp_wal_queue_write_for_slot(
+                        &mut ring,
+                        fd,
+                        &slot_ids,
+                        &buffers,
+                        slot,
+                        file_offset,
+                        chunk_bytes_u32,
+                        write_mode,
+                        tcp_wal_write_user_data(slot),
+                    )?;
+                    outstanding += 1;
+                }
             }
             TcpWalCqeKind::Write => {
                 if slots[slot].stage != TcpWalSlotStage::Write {
@@ -10389,8 +10448,12 @@ fn udp_wal_worker(
     for slot_id in slot_ids {
         ring.unregister_io_slot(slot_id)?;
     }
-    ring.unregister_buffers()?;
-    ring.unregister_files()?;
+    if registered_buffers {
+        ring.unregister_buffers()?;
+    }
+    if registered_files {
+        ring.unregister_files()?;
+    }
 
     Ok(TcpWalWorkerResult {
         worker,
@@ -12518,6 +12581,7 @@ fn udp_wal_mux_server(
     pin_workers: bool,
 ) -> io::Result<()> {
     let total_flows = tcp_bench_total_connections(ports, flows_per_port)?;
+    let write_mode = TcpWalWriteMode::from_env()?;
     if bytes_per_flow == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -12611,11 +12675,13 @@ fn udp_wal_mux_server(
          bytes_per_flow={bytes_per_flow} bytes_per_port={bytes_per_socket} \
          total_bytes={total_bytes} wal_region_base={} wal_region_bytes={} \
          chunk_bytes={chunk_bytes} datagram_bytes={datagram_bytes} pipeline={pipeline} \
-         ring_entries={ring_entries} workers={workers} buffer_mode={} pin_workers={pin_workers}",
+         ring_entries={ring_entries} workers={workers} buffer_mode={} write_mode={} \
+         pin_workers={pin_workers}",
         target.label(),
         region_base_offset,
         region_bytes,
-        buffer_mode.as_str()
+        buffer_mode.as_str(),
+        write_mode.label()
     );
 
     let mut shards = (0..workers).map(|_| Vec::new()).collect::<Vec<_>>();
@@ -12660,6 +12726,7 @@ fn udp_wal_mux_server(
                 pipeline,
                 ring_entries,
                 buffer_mode,
+                write_mode,
                 pin_workers,
             )
         }));
@@ -18572,7 +18639,7 @@ impl Default for ZcMuxCli {
             workers: 0,
             ring_entries: 4096,
             send_mode: UringSendMode::SendZc,
-            zero_copy_policy: ZcZeroCopyPolicy::Required,
+            zero_copy_policy: ZcZeroCopyPolicy::Auto,
             source_port_base: None,
             source_port_stride: None,
             pin_cpus: None,
@@ -18734,6 +18801,41 @@ fn tcp_bench_uring_mux_send_with_policy(
     zero_copy_policy: ZcZeroCopyPolicy,
 ) -> io::Result<()> {
     if zero_copy_policy == ZcZeroCopyPolicy::Auto && send_mode.uses_zc() {
+        match kernel_supports_request_opcode(IORING_OP_SEND_ZC) {
+            Ok(true) => {}
+            Ok(false) => {
+                eprintln!("zcmux-send-zc-auto: send-zc opcode unavailable; falling back to send");
+                return tcp_bench_uring_mux_send(
+                    addr,
+                    base_port,
+                    ports,
+                    connections_per_port,
+                    bytes_per_connection,
+                    chunk_bytes,
+                    pipeline,
+                    workers,
+                    ring_entries,
+                    UringSendMode::Send,
+                );
+            }
+            Err(err) => {
+                eprintln!(
+                    "zcmux-send-zc-auto: io_uring opcode query failed ({err}); falling back to send"
+                );
+                return tcp_bench_uring_mux_send(
+                    addr,
+                    base_port,
+                    ports,
+                    connections_per_port,
+                    bytes_per_connection,
+                    chunk_bytes,
+                    pipeline,
+                    workers,
+                    ring_entries,
+                    UringSendMode::Send,
+                );
+            }
+        }
         if let Err(err) = validate_uring_send_mode_location(send_mode) {
             eprintln!("zcmux-send-zc-auto: send-zc unavailable ({err}); falling back to send");
             return tcp_bench_uring_mux_send(
@@ -18837,7 +18939,7 @@ impl Default for ZcDemuxCli {
                 ifname: None,
                 rxq: 0,
                 rxq_count: None,
-                must_zero_copy: true,
+                must_zero_copy: false,
             },
             zcrx_consume: None,
             pin_cpus: None,
@@ -23613,7 +23715,7 @@ fn zcnc(args: impl Iterator<Item = String>) -> io::Result<()> {
                 ifname: None,
                 rxq: 0,
                 rxq_count: None,
-                must_zero_copy: true,
+                must_zero_copy: false,
             };
             while let Some(arg) = args.next() {
                 match arg.as_str() {
@@ -23702,7 +23804,7 @@ fn zcnc(args: impl Iterator<Item = String>) -> io::Result<()> {
             let mut workers = 0usize;
             let mut ring_entries = 4096u32;
             let mut send_mode = UringSendMode::SendZc;
-            let mut zero_copy_policy = ZcZeroCopyPolicy::Required;
+            let mut zero_copy_policy = ZcZeroCopyPolicy::Auto;
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--peer-addr" => peer_addr = next_flag_value(&mut args, "--peer-addr")?,
@@ -23801,8 +23903,8 @@ fn print_zcutils_help() {
          zc-tcpmux-xfer          SSH-coordinated AES-256-GCM TCP transfer\n\
          zcencrypt               encrypt zc descriptor/frame streams with AES-256-GCM\n\
          zcdecrypt               decrypt zc AES-256-GCM descriptor/frame streams\n\
-         zcmux                   send lane-multiplexed TCP streams, send-zc required by default\n\
-         zcdemux                 receive/demux lane-multiplexed TCP streams, ZCRX required by default\n\
+         zcmux                   send lane-multiplexed TCP streams, send-zc auto by default\n\
+         zcdemux                 receive/demux lane-multiplexed TCP streams, ZCRX auto by default\n\
          zcflow                  run a descriptor-aware command chain; byte pipes today\n\
          zcrun                   compatibility alias for zcflow\n\
          zcmap                   transform descriptor metadata/views; byte passthrough today\n\

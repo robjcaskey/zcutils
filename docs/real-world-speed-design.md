@@ -53,10 +53,10 @@ Current TCP WAL defaults:
 - `tcp-wal-mux-server` uses fixed-file receives by default
   (`URING_PLAY_TCP_WAL_FIXED_RECV=1`) so accepted socket fds are registered in
   each worker ring and `IORING_OP_RECV` skips per-SQE fd table lookup.
-- The WAL write default remains `WRITE_FIXED` plus registered file
-  (`URING_PLAY_TCP_WAL_WRITE_MODE=fixed-file`) for small 4K chunks. The current
-  slot-RW prototype is useful for persistent DMA experiments, but it is slower
-  for this 4K TCP WAL shape.
+- WAL writes default to `URING_PLAY_TCP_WAL_WRITE_MODE=auto`: patched kernels
+  with io-slot support use slot-RW, and stock kernels fall back to fixed buffers
+  plus a registered file. Set `URING_PLAY_TCP_WAL_WRITE_MODE=fixed-file` to force
+  the portable path, or `slot` to require the persistent-DMA experiment path.
 - `tcp-bench-uring-mux-send` has fixed-file send support
   (`URING_PLAY_TCP_SEND_FIXED_FILE=1`), but it defaults off because the local
   loopback traffic generator did not improve with registered socket fds.

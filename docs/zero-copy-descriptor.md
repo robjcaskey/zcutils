@@ -256,12 +256,12 @@ be dropped by metadata without touching payload bytes.
 
 ## Zero-Copy Defaults
 
-The network-facing commands default toward zero-copy:
+The network-facing commands default toward zero-copy with portable fallback:
 
-- `zcmux` defaults to `--zero-copy-send required`, which uses send-zc.
-- `zcdemux` defaults to `--zero-copy-receive required`, which tries ZCRX and fails if unavailable.
-- `zcnc connect` defaults to required send-zc.
-- `zcnc listen` defaults to required ZCRX.
+- `zcmux` defaults to `--zero-copy-send auto`, which uses send-zc when available.
+- `zcdemux` defaults to `--zero-copy-receive auto`, which tries ZCRX and falls back if unavailable.
+- `zcnc connect` defaults to automatic send-zc detection.
+- `zcnc listen` defaults to automatic ZCRX detection.
 - `zcflow` is the intended descriptor supervisor; the current implementation
   uses byte-compatible pipes until fd-passing descriptor transport is added.
 - `zcmap` and `zcmaptee` are the descriptor transform/fanout names; their current
