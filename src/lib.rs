@@ -16,7 +16,7 @@ use std::slice;
 use std::sync::atomic::{AtomicU64, Ordering, fence};
 use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod io_slots;
 
@@ -30,7 +30,9 @@ const IO_URING_QUERY_ZCRX: u32 = 1;
 const IORING_OP_SEND: u32 = 26;
 const IORING_OP_RECV: u32 = 27;
 const IORING_OP_MSG_RING: u32 = 40;
+const IORING_OP_READ_FIXED: u32 = 4;
 const IORING_OP_WRITE_FIXED: u32 = 5;
+const IORING_OP_READ: u32 = 22;
 const IORING_OP_WRITE: u32 = 23;
 const IORING_OP_SEND_ZC: u32 = 47;
 const IORING_OP_RECV_ZC: u32 = 58;
@@ -681,6 +683,13 @@ impl FixedSendBuffers {
             .collect()
     }
 
+    fn whole_iovec(&self) -> libc::iovec {
+        libc::iovec {
+            iov_base: self.ptr.cast(),
+            iov_len: self.map_len,
+        }
+    }
+
     fn fill_each(&self, len: usize, mut fill: impl FnMut(&mut [u8])) {
         for index in 0..self.count {
             let buf = unsafe { slice::from_raw_parts_mut(self.ptr(index), len) };
@@ -1066,6 +1075,62 @@ impl RawRing {
             sqe.off = offset;
             sqe.addr = buf as u64;
             sqe.len = len;
+        })
+    }
+
+    fn queue_read(
+        &mut self,
+        fd: i32,
+        buf: *mut u8,
+        len: u32,
+        offset: u64,
+        user_data: u64,
+    ) -> io::Result<()> {
+        self.push_sqe(user_data, |sqe| {
+            sqe.opcode = IORING_OP_READ as u8;
+            sqe.fd = fd;
+            sqe.off = offset;
+            sqe.addr = buf as u64;
+            sqe.len = len;
+        })
+    }
+
+    fn queue_read_fixed_file(
+        &mut self,
+        file_index: u32,
+        buf: *mut u8,
+        len: u32,
+        offset: u64,
+        buf_index: u16,
+        user_data: u64,
+    ) -> io::Result<()> {
+        self.push_sqe(user_data, |sqe| {
+            sqe.opcode = IORING_OP_READ_FIXED as u8;
+            sqe.flags |= IOSQE_FIXED_FILE;
+            sqe.fd = file_index as i32;
+            sqe.off = offset;
+            sqe.addr = buf as u64;
+            sqe.len = len;
+            sqe.buf_index = buf_index;
+        })
+    }
+
+    fn queue_read_fixed(
+        &mut self,
+        fd: i32,
+        buf: *mut u8,
+        len: u32,
+        offset: u64,
+        buf_index: u16,
+        user_data: u64,
+    ) -> io::Result<()> {
+        self.push_sqe(user_data, |sqe| {
+            sqe.opcode = IORING_OP_READ_FIXED as u8;
+            sqe.fd = fd;
+            sqe.off = offset;
+            sqe.addr = buf as u64;
+            sqe.len = len;
+            sqe.buf_index = buf_index;
         })
     }
 
@@ -1716,6 +1781,22 @@ fn kernel_supports_io_slots() -> io::Result<bool> {
     Ok(opcodes.nr_request_opcodes > io_slots::IORING_OP_SLOT_RW
         && opcodes.nr_register_opcodes > io_slots::IORING_REGISTER_IO_SLOT
         && opcodes.nr_register_opcodes > io_slots::IORING_UNREGISTER_IO_SLOT)
+}
+
+fn ensure_io_slots_available(context: &str) -> io::Result<()> {
+    match kernel_supports_io_slots() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "{context} requested io-slots, but the running kernel does not advertise IORING_OP_SLOT_RW or IORING_REGISTER_IO_SLOT"
+            ),
+        )),
+        Err(err) => Err(io::Error::new(
+            err.kind(),
+            format!("{context} could not query io-slot kernel support: {err}"),
+        )),
+    }
 }
 
 fn print_io_uring_api_opportunities(opcodes: &IoUringQueryOpcode) {
@@ -4560,6 +4641,23 @@ impl TcpSourcePortPlan {
     }
 }
 
+fn tcp_bench_source_ip_from_env() -> io::Result<Option<IpAddr>> {
+    for name in ["URING_PLAY_SOURCE_IP", "URING_PLAY_SOURCE_ADDR"] {
+        match env::var(name) {
+            Ok(value) if !value.trim().is_empty() => {
+                return value.trim().parse::<IpAddr>().map(Some).map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{name}={value:?} is invalid: {err}"),
+                    )
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
 fn sockaddr_in_for(addr: std::net::SocketAddrV4) -> libc::sockaddr_in {
     libc::sockaddr_in {
         sin_family: libc::AF_INET as libc::sa_family_t,
@@ -4760,14 +4858,41 @@ fn connect_tcp_bound(remote: SocketAddr, source_port: u16) -> io::Result<TcpStre
 }
 
 fn tcp_bench_connect(addr: &str, port: u16, source_port: Option<u16>) -> io::Result<TcpStream> {
-    let Some(source_port) = source_port else {
+    let source_ip = tcp_bench_source_ip_from_env()?;
+    if source_ip.is_none() && source_port.is_none() {
         return TcpStream::connect((addr, port));
-    };
+    }
     let remote = (addr, port)
         .to_socket_addrs()?
-        .next()
+        .find(|remote| {
+            matches!(
+                (source_ip, *remote),
+                (Some(IpAddr::V4(_)), SocketAddr::V4(_))
+                    | (Some(IpAddr::V6(_)), SocketAddr::V6(_))
+                    | (None, _)
+            )
+        })
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no remote socket address"))?;
-    connect_tcp_bound(remote, source_port)
+    if let Some(source_ip) = source_ip {
+        let local_port = source_port.unwrap_or(0);
+        let local = match (remote, source_ip) {
+            (SocketAddr::V4(_), IpAddr::V4(ip)) => {
+                SocketAddr::V4(SocketAddrV4::new(ip, local_port))
+            }
+            (SocketAddr::V6(_), IpAddr::V6(ip)) => {
+                SocketAddr::V6(std::net::SocketAddrV6::new(ip, local_port, 0, 0))
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "local source IP family does not match remote address family",
+                ));
+            }
+        };
+        connect_tcp_bound_local_addr(remote, local)
+    } else {
+        connect_tcp_bound(remote, source_port.expect("source_port checked above"))
+    }
 }
 
 fn connect_tcp_bound_local_addr(remote: SocketAddr, local: SocketAddr) -> io::Result<TcpStream> {
@@ -6784,6 +6909,9 @@ enum SendPayloadPattern {
         payload_len: usize,
         payload_byte: u8,
     },
+    Offset {
+        seed: u64,
+    },
 }
 
 impl SendPayloadPattern {
@@ -6816,9 +6944,14 @@ impl SendPayloadPattern {
                     payload_byte: env_u8_or("URING_PLAY_LENSTREAM_PAYLOAD_BYTE", 0x5a)?,
                 })
             }
+            "offset" | "offset64" | "deterministic" => Ok(Self::Offset {
+                seed: env_usize_or("URING_PLAY_SEND_PATTERN_SEED", 0x5c17_5eed) as u64,
+            }),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("unknown URING_PLAY_SEND_PATTERN={other:?}; use fill or lenstream"),
+                format!(
+                    "unknown URING_PLAY_SEND_PATTERN={other:?}; use fill, lenstream, or offset"
+                ),
             )),
         }
     }
@@ -6830,37 +6963,39 @@ impl SendPayloadPattern {
                 payload_len,
                 payload_byte,
             } => format!("lenstream:payload={payload_len}:byte=0x{payload_byte:02x}"),
+            Self::Offset { seed } => format!("offset:seed=0x{seed:016x}"),
         }
     }
 
     fn validate(self, bytes_per_connection: usize, chunk_len: usize) -> io::Result<()> {
-        let Self::LenStream { payload_len, .. } = self else {
-            return Ok(());
-        };
-        let record_len = LENSTREAM_HEADER_LEN
-            .checked_add(payload_len)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "record length overflow"))?;
-        if record_len == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "length stream record length must be nonzero",
-            ));
-        }
-        if chunk_len % record_len != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "length stream chunk length {chunk_len} must be a multiple of record length {record_len}"
-                ),
-            ));
-        }
-        if bytes_per_connection % record_len != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "length stream bytes_per_connection {bytes_per_connection} must be a multiple of record length {record_len}"
-                ),
-            ));
+        if let Self::LenStream { payload_len, .. } = self {
+            let record_len = LENSTREAM_HEADER_LEN
+                .checked_add(payload_len)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "record length overflow")
+                })?;
+            if record_len == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "length stream record length must be nonzero",
+                ));
+            }
+            if chunk_len % record_len != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "length stream chunk length {chunk_len} must be a multiple of record length {record_len}"
+                    ),
+                ));
+            }
+            if bytes_per_connection % record_len != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "length stream bytes_per_connection {bytes_per_connection} must be a multiple of record length {record_len}"
+                    ),
+                ));
+            }
         }
         Ok(())
     }
@@ -6879,7 +7014,39 @@ impl SendPayloadPattern {
                     record[LENSTREAM_HEADER_LEN..].fill(payload_byte);
                 }
             }
+            Self::Offset { seed } => fill_offset_payload(buf, seed, 0, 0),
         }
+    }
+
+    fn is_offset_dependent(self) -> bool {
+        matches!(self, Self::Offset { .. })
+    }
+
+    fn fill_for_zcnblk(self, buf: &mut [u8], shard: usize, offset: u64) {
+        match self {
+            Self::Offset { seed } => fill_offset_payload(buf, seed, shard, offset),
+            _ => self.fill(buf),
+        }
+    }
+}
+
+fn splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn fill_offset_payload(buf: &mut [u8], seed: u64, shard: usize, offset: u64) {
+    let shard_tag = (shard as u64).wrapping_mul(0xd6e8_feb8_6659_fd93);
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        let absolute = offset.wrapping_add(filled as u64);
+        let word = splitmix64(seed ^ shard_tag ^ (absolute >> 3));
+        let bytes = word.to_le_bytes();
+        let copy_len = (buf.len() - filled).min(bytes.len());
+        buf[filled..filled + copy_len].copy_from_slice(&bytes[..copy_len]);
+        filled += copy_len;
     }
 }
 
@@ -7301,6 +7468,11 @@ struct TcpWalZcrxDirectRange {
     segments: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TcpWalExtentConfig {
+    logical_record_bytes: usize,
+}
+
 struct TcpWalZcrxWorkerResult {
     worker: usize,
     rxq: u32,
@@ -7319,6 +7491,7 @@ struct TcpWalZcrxWorkerResult {
     frame_pipeline: usize,
     coalesce_batch_chunks: usize,
     coalesce_write_bytes: usize,
+    logical_record_bytes: usize,
     received_bytes: usize,
     written_bytes: usize,
     wal_bytes: usize,
@@ -7418,6 +7591,87 @@ fn tcp_wal_zcrx_record_conn_requeue(
     })?;
     counters.pending_frame_requeues = counters.pending_frame_requeues.saturating_add(1);
     Ok(())
+}
+
+fn tcp_wal_extent_record_bytes_from_env(default_record_bytes: usize) -> io::Result<usize> {
+    for name in [
+        "URING_PLAY_TCP_WAL_EXTENT_RECORD_BYTES",
+        "URING_PLAY_TCP_WAL_LOGICAL_RECORD_BYTES",
+    ] {
+        if let Some(record_bytes) = env_size_opt(name)? {
+            return Ok(record_bytes);
+        }
+    }
+    Ok(default_record_bytes)
+}
+
+impl TcpWalExtentConfig {
+    fn new(
+        logical_record_bytes: usize,
+        bytes_per_connection: usize,
+        chunk_bytes: usize,
+        coalesce_write_bytes: usize,
+    ) -> io::Result<Self> {
+        if logical_record_bytes == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TCP WAL logical record bytes must be non-zero",
+            ));
+        }
+        if chunk_bytes == 0 || chunk_bytes % logical_record_bytes != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "TCP WAL chunk_bytes={chunk_bytes} must be a multiple of logical_record_bytes={logical_record_bytes}"
+                ),
+            ));
+        }
+        if bytes_per_connection == 0 || bytes_per_connection % logical_record_bytes != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "TCP WAL bytes_per_connection={bytes_per_connection} must be a multiple of logical_record_bytes={logical_record_bytes}"
+                ),
+            ));
+        }
+        if coalesce_write_bytes == 0 || coalesce_write_bytes % logical_record_bytes != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "TCP WAL coalesce_write_bytes={coalesce_write_bytes} must be a multiple of logical_record_bytes={logical_record_bytes}"
+                ),
+            ));
+        }
+        Ok(Self {
+            logical_record_bytes,
+        })
+    }
+
+    fn from_env(
+        bytes_per_connection: usize,
+        chunk_bytes: usize,
+        coalesce_write_bytes: usize,
+    ) -> io::Result<Self> {
+        Self::new(
+            tcp_wal_extent_record_bytes_from_env(chunk_bytes)?,
+            bytes_per_connection,
+            chunk_bytes,
+            coalesce_write_bytes,
+        )
+    }
+
+    fn records_for_len(self, len: usize, label: &str) -> io::Result<usize> {
+        if len == 0 || len % self.logical_record_bytes != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "TCP WAL {label} len={len} is not a multiple of logical_record_bytes={}",
+                    self.logical_record_bytes
+                ),
+            ));
+        }
+        Ok(len / self.logical_record_bytes)
+    }
 }
 
 fn tcp_wal_zcrx_validate_slot_stride(
@@ -7865,6 +8119,7 @@ fn tcp_wal_zcrx_queue_coalesced_chunk(
     coalesce_fixed: bool,
     write_bytes: usize,
     chunk_bytes: usize,
+    extent_config: TcpWalExtentConfig,
     counters: &mut TcpWalZcrxWorkerCounters,
 ) -> io::Result<TcpWalZcrxQueuedWrites> {
     counters.bounce_queue_attempts = counters.bounce_queue_attempts.saturating_add(1);
@@ -7895,7 +8150,7 @@ fn tcp_wal_zcrx_queue_coalesced_chunk(
         ));
     }
     let write_len_u32 = tcp_bench_u32_len(write_bytes, "ZCRX WAL coalesced write length")?;
-    let logical_chunks = write_bytes / chunk_bytes;
+    let logical_chunks = extent_config.records_for_len(write_bytes, "coalesced extent")?;
     let frame_slot = free_frame_slots
         .pop()
         .expect("free_frame_slots was checked above");
@@ -8008,6 +8263,7 @@ fn tcp_wal_zcrx_queue_coalesced_frame(
     coalesce_write_bytes: usize,
     coalesce_nt_copy: bool,
     coalesce_nt_min_bytes: usize,
+    extent_config: TcpWalExtentConfig,
     conn: usize,
     cqe: IoUringCqe32,
     counters: &mut TcpWalZcrxWorkerCounters,
@@ -8123,6 +8379,7 @@ fn tcp_wal_zcrx_queue_coalesced_frame(
         coalesce_fixed,
         coalesce_write_bytes,
         chunk_bytes,
+        extent_config,
         counters,
     )?;
     queued.consumed = true;
@@ -8156,6 +8413,7 @@ fn tcp_wal_zcrx_queue_write(
     coalesce_write_bytes: usize,
     coalesce_nt_copy: bool,
     coalesce_nt_min_bytes: usize,
+    extent_config: TcpWalExtentConfig,
     conn: usize,
     cqe: IoUringCqe32,
     counters: &mut TcpWalZcrxWorkerCounters,
@@ -8202,6 +8460,7 @@ fn tcp_wal_zcrx_queue_write(
             coalesce_write_bytes,
             coalesce_nt_copy,
             coalesce_nt_min_bytes,
+            extent_config,
             conn,
             cqe,
             counters,
@@ -8245,6 +8504,7 @@ fn tcp_wal_zcrx_queue_write(
                 coalesce_write_bytes,
                 coalesce_nt_copy,
                 coalesce_nt_min_bytes,
+                extent_config,
                 conn,
                 cqe,
                 counters,
@@ -8277,6 +8537,7 @@ fn tcp_wal_zcrx_queue_write(
                 coalesce_write_bytes,
                 coalesce_nt_copy,
                 coalesce_nt_min_bytes,
+                extent_config,
                 conn,
                 cqe,
                 counters,
@@ -8310,6 +8571,7 @@ fn tcp_wal_zcrx_queue_write(
                 coalesce_write_bytes,
                 coalesce_nt_copy,
                 coalesce_nt_min_bytes,
+                extent_config,
                 conn,
                 cqe,
                 counters,
@@ -8344,6 +8606,7 @@ fn tcp_wal_zcrx_queue_write(
                     coalesce_write_bytes,
                     coalesce_nt_copy,
                     coalesce_nt_min_bytes,
+                    extent_config,
                     conn,
                     cqe,
                     counters,
@@ -8372,6 +8635,7 @@ fn tcp_wal_zcrx_queue_write(
     let logical_end = offset
         .checked_add(len)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "ZCRX WAL frame end overflow"))?;
+    let logical_chunks = extent_config.records_for_len(len, "direct frame")?;
     let mut remaining = direct_range.physical_len;
     let mut frame_offset = 0usize;
     for segment in 0..segments {
@@ -8425,7 +8689,7 @@ fn tcp_wal_zcrx_queue_write(
             conn,
             len: segment_len_u32,
             logical_len: logical_len as u32,
-            logical_chunks: usize::from(segment == 0),
+            logical_chunks: if segment == 0 { logical_chunks } else { 0 },
             file_offset: segment_file_offset,
             zcrx_slot: slot_busy_guard.then_some(buf_index),
         });
@@ -8462,6 +8726,7 @@ fn tcp_wal_zcrx_queue_coalesced_flush(
     bounce_fixed_base: usize,
     coalesce_fixed: bool,
     chunk_bytes: usize,
+    extent_config: TcpWalExtentConfig,
     counters: &mut TcpWalZcrxWorkerCounters,
 ) -> io::Result<TcpWalZcrxQueuedWrites> {
     let (write_slot, write_bytes) = {
@@ -8517,6 +8782,7 @@ fn tcp_wal_zcrx_queue_coalesced_flush(
         coalesce_fixed,
         write_bytes,
         chunk_bytes,
+        extent_config,
         counters,
     )?;
     if queued.consumed {
@@ -8813,6 +9079,8 @@ fn tcp_wal_zcrx_worker(
         ));
     }
     let _ = tcp_bench_u32_len(coalesce_write_bytes, "ZCRX WAL coalesced write length")?;
+    let extent_config =
+        TcpWalExtentConfig::from_env(bytes_per_connection, chunk_bytes, coalesce_write_bytes)?;
     let bounce_stride = align_up(coalesce_write_bytes, required_alignment);
     let bounce_buffers = FixedSendBuffers::new_with_preferred_numa(
         write_pipeline,
@@ -8876,6 +9144,7 @@ fn tcp_wal_zcrx_worker(
             frame_pipeline,
             coalesce_batch_chunks,
             coalesce_write_bytes,
+            logical_record_bytes: extent_config.logical_record_bytes,
             received_bytes: 0,
             written_bytes: 0,
             wal_bytes: 0,
@@ -9165,6 +9434,7 @@ fn tcp_wal_zcrx_worker(
                 bounce_fixed_base,
                 coalesce_fixed,
                 chunk_bytes,
+                extent_config,
                 &mut counters,
             )?;
             timing.record_coalesce_flush(timing_start);
@@ -9229,6 +9499,7 @@ fn tcp_wal_zcrx_worker(
                 coalesce_write_bytes,
                 coalesce_nt_copy,
                 coalesce_nt_min_bytes,
+                extent_config,
                 conn,
                 cqe,
                 &mut counters,
@@ -9532,6 +9803,7 @@ fn tcp_wal_zcrx_worker(
             coalesce_write_bytes,
             coalesce_nt_copy,
             coalesce_nt_min_bytes,
+            extent_config,
             conn_idx,
             cqe,
             &mut counters,
@@ -9613,6 +9885,7 @@ fn tcp_wal_zcrx_worker(
         frame_pipeline,
         coalesce_batch_chunks,
         coalesce_write_bytes,
+        logical_record_bytes: extent_config.logical_record_bytes,
         received_bytes,
         written_bytes,
         wal_bytes,
@@ -10081,6 +10354,2606 @@ fn tcp_wal_worker(
         target_cpu: affinity.target_cpu,
         affinity_applied: affinity.applied,
     })
+}
+
+const ZCNBLK_FRAME_MAGIC: &[u8; 8] = b"ZCNBLK01";
+const ZCNBLK_FRAME_VERSION: u16 = 1;
+const ZCNBLK_FRAME_HEADER_LEN: usize = 32;
+const ZCNBLK_OP_WRITE: u16 = 1;
+const ZCNBLK_OP_READ: u16 = 2;
+const ZCNBLK_OP_READ_RESP: u16 = 3;
+const ZCNBLK_OP_WRITE_ACK: u16 = 4;
+const ZCNBLK_OP_BATCH: u16 = 5;
+const ZCNBLK_OP_BATCH_RESP: u16 = 6;
+const ZCNBLK_AES256_MAGIC: &[u8; 8] = b"ZCNBAE01";
+const ZCNBLK_AES256_NONCE_BYTES: usize = 12;
+const ZCNBLK_AES256_HANDSHAKE_LEN: usize =
+    ZCNBLK_AES256_MAGIC.len() + ZCNBLK_AES256_NONCE_BYTES * 2;
+const ZCNBLK_AES256_DEFAULT_FRAME_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZcnblkEncryptionMode {
+    None,
+    Aes256,
+}
+
+impl ZcnblkEncryptionMode {
+    fn parse(value: &str, flag: &str) -> io::Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "" | "none" | "off" | "false" => Ok(Self::None),
+            "aes-256" | "aes256" | "aes-256-gcm" | "aes256-gcm" => Ok(Self::Aes256),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{flag} must be aes-256 or none, got {other:?}"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Aes256 => "aes-256-gcm",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZcnblkCryptoWire {
+    Stream,
+    Payload,
+}
+
+impl ZcnblkCryptoWire {
+    fn parse(value: &str, flag: &str) -> io::Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "" | "stream" | "mux" | "tcpmux" | "framed" | "aes-stream" | "aes-256-stream" => {
+                Ok(Self::Stream)
+            }
+            "payload" | "frame" | "kernel" | "block" | "aad-payload" | "aes-payload"
+            | "aes-256-payload" => Ok(Self::Payload),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{flag} must be stream or payload, got {other:?}"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Stream => "stream",
+            Self::Payload => "payload",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ZcnblkCryptoConfig {
+    mode: ZcnblkEncryptionMode,
+    wire: ZcnblkCryptoWire,
+    token: Option<Arc<String>>,
+    max_frame_bytes: usize,
+}
+
+impl ZcnblkCryptoConfig {
+    fn from_env() -> io::Result<Self> {
+        let mode_text = match env::var("URING_PLAY_ZCNBLK_ENCRYPTION") {
+            Ok(value) => Some(value),
+            Err(env::VarError::NotPresent) => match env::var("URING_PLAY_ZCNBLK_CRYPTO") {
+                Ok(value) => Some(value),
+                Err(env::VarError::NotPresent) => None,
+                Err(err) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid URING_PLAY_ZCNBLK_CRYPTO: {err}"),
+                    ));
+                }
+            },
+            Err(err) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid URING_PLAY_ZCNBLK_ENCRYPTION: {err}"),
+                ));
+            }
+        };
+        let (mode, implied_wire) = match mode_text.as_deref() {
+            Some(value)
+                if matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "payload"
+                        | "frame"
+                        | "kernel"
+                        | "block"
+                        | "aad-payload"
+                        | "aes-payload"
+                        | "aes-256-payload"
+                        | "aes256-payload"
+                        | "payload-aes-256"
+                        | "payload-aes256"
+                ) =>
+            {
+                (
+                    ZcnblkEncryptionMode::Aes256,
+                    Some(ZcnblkCryptoWire::Payload),
+                )
+            }
+            Some(value)
+                if matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "stream" | "mux" | "tcpmux" | "aes-stream" | "aes-256-stream"
+                ) =>
+            {
+                (ZcnblkEncryptionMode::Aes256, Some(ZcnblkCryptoWire::Stream))
+            }
+            Some(value) => (
+                ZcnblkEncryptionMode::parse(value, "URING_PLAY_ZCNBLK_ENCRYPTION")?,
+                None,
+            ),
+            None => (ZcnblkEncryptionMode::None, None),
+        };
+        let wire = match mode {
+            ZcnblkEncryptionMode::None => ZcnblkCryptoWire::Stream,
+            ZcnblkEncryptionMode::Aes256 => match env::var("URING_PLAY_ZCNBLK_AES_WIRE") {
+                Ok(value) => ZcnblkCryptoWire::parse(&value, "URING_PLAY_ZCNBLK_AES_WIRE")?,
+                Err(env::VarError::NotPresent) => implied_wire.unwrap_or(ZcnblkCryptoWire::Stream),
+                Err(err) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid URING_PLAY_ZCNBLK_AES_WIRE: {err}"),
+                    ));
+                }
+            },
+        };
+        let max_frame_bytes = env_size_opt("URING_PLAY_ZCNBLK_AES_FRAME_BYTES")?
+            .unwrap_or(ZCNBLK_AES256_DEFAULT_FRAME_BYTES)
+            .clamp(1, (u32::MAX as usize).saturating_sub(ZC_AES256_TAG_BYTES));
+        let token = match mode {
+            ZcnblkEncryptionMode::None => None,
+            ZcnblkEncryptionMode::Aes256 => {
+                let token = env::var("URING_PLAY_ZCNBLK_TOKEN").map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("AES-256 zcnblk transport requires URING_PLAY_ZCNBLK_TOKEN: {err}"),
+                    )
+                })?;
+                zc_tcpmux_validate_token(&token)?;
+                Some(Arc::new(token))
+            }
+        };
+        Ok(Self {
+            mode,
+            wire,
+            token,
+            max_frame_bytes,
+        })
+    }
+
+    fn label(&self) -> String {
+        match self.mode {
+            ZcnblkEncryptionMode::None => self.mode.label().to_string(),
+            ZcnblkEncryptionMode::Aes256 => {
+                format!("{}:{}", self.mode.label(), self.wire.label())
+            }
+        }
+    }
+}
+
+struct ZcnblkCryptoState {
+    tx_cipher: ZcAes256Cipher,
+    rx_cipher: ZcAes256Cipher,
+    tx_nonce_base: [u8; ZCNBLK_AES256_NONCE_BYTES],
+    rx_nonce_base: [u8; ZCNBLK_AES256_NONCE_BYTES],
+    tx_sequence: u64,
+    rx_sequence: u64,
+    rx_plaintext: Vec<u8>,
+    rx_offset: usize,
+    max_frame_bytes: usize,
+}
+
+struct ZcnblkPayloadCryptoState {
+    cipher: ZcAes256Cipher,
+    conn_id: u32,
+    tx_sequence: u64,
+    rx_sequence: u64,
+}
+
+struct ZcnblkTransport {
+    stream: TcpStream,
+    crypto: Option<ZcnblkCryptoState>,
+    payload_crypto: Option<ZcnblkPayloadCryptoState>,
+}
+
+impl ZcnblkTransport {
+    fn plaintext(stream: TcpStream) -> Self {
+        Self {
+            stream,
+            crypto: None,
+            payload_crypto: None,
+        }
+    }
+
+    fn connect_client(
+        mut stream: TcpStream,
+        lane: usize,
+        conn_id: u32,
+        config: &ZcnblkCryptoConfig,
+    ) -> io::Result<Self> {
+        if config.mode == ZcnblkEncryptionMode::None {
+            return Ok(Self::plaintext(stream));
+        }
+        let token = config.token.as_deref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "AES-256 zcnblk client missing token",
+            )
+        })?;
+        let lane_id = u32::try_from(lane)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "zcnblk lane exceeds u32"))?;
+        if config.wire == ZcnblkCryptoWire::Payload {
+            return Ok(Self {
+                stream,
+                crypto: None,
+                payload_crypto: Some(ZcnblkPayloadCryptoState {
+                    cipher: zcnblk_payload_aes256_cipher(token)?,
+                    conn_id,
+                    tx_sequence: 0,
+                    rx_sequence: 0,
+                }),
+            });
+        }
+        let mut tx_nonce_base = [0u8; ZCNBLK_AES256_NONCE_BYTES];
+        let mut rx_nonce_base = [0u8; ZCNBLK_AES256_NONCE_BYTES];
+        zc_random_bytes(&mut tx_nonce_base)?;
+        zc_random_bytes(&mut rx_nonce_base)?;
+        let mut handshake = [0u8; ZCNBLK_AES256_HANDSHAKE_LEN];
+        handshake[..ZCNBLK_AES256_MAGIC.len()].copy_from_slice(ZCNBLK_AES256_MAGIC);
+        handshake[ZCNBLK_AES256_MAGIC.len()..ZCNBLK_AES256_MAGIC.len() + ZCNBLK_AES256_NONCE_BYTES]
+            .copy_from_slice(&tx_nonce_base);
+        handshake[ZCNBLK_AES256_MAGIC.len() + ZCNBLK_AES256_NONCE_BYTES..]
+            .copy_from_slice(&rx_nonce_base);
+        stream.write_all(&handshake)?;
+        Ok(Self {
+            stream,
+            crypto: Some(ZcnblkCryptoState {
+                tx_cipher: zcnblk_aes256_lane_cipher(token, lane_id, b"client-to-target")?,
+                rx_cipher: zcnblk_aes256_lane_cipher(token, lane_id, b"target-to-client")?,
+                tx_nonce_base,
+                rx_nonce_base,
+                tx_sequence: 0,
+                rx_sequence: 0,
+                rx_plaintext: Vec::new(),
+                rx_offset: 0,
+                max_frame_bytes: config.max_frame_bytes,
+            }),
+            payload_crypto: None,
+        })
+    }
+
+    fn accept_target(
+        mut accepted: TcpBenchAcceptedStream,
+        conn_id: u32,
+        config: &ZcnblkCryptoConfig,
+    ) -> io::Result<Self> {
+        if config.mode == ZcnblkEncryptionMode::None {
+            return Ok(Self::plaintext(accepted.stream));
+        }
+        let token = config.token.as_deref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "AES-256 zcnblk target missing token",
+            )
+        })?;
+        let lane_id = u32::try_from(accepted.lane)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "zcnblk lane exceeds u32"))?;
+        if config.wire == ZcnblkCryptoWire::Payload {
+            return Ok(Self {
+                stream: accepted.stream,
+                crypto: None,
+                payload_crypto: Some(ZcnblkPayloadCryptoState {
+                    cipher: zcnblk_payload_aes256_cipher(token)?,
+                    conn_id,
+                    tx_sequence: 0,
+                    rx_sequence: 0,
+                }),
+            });
+        }
+        let mut handshake = [0u8; ZCNBLK_AES256_HANDSHAKE_LEN];
+        accepted.stream.read_exact(&mut handshake)?;
+        if &handshake[..ZCNBLK_AES256_MAGIC.len()] != ZCNBLK_AES256_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing zcnblk AES-256 transport header",
+            ));
+        }
+        let mut rx_nonce_base = [0u8; ZCNBLK_AES256_NONCE_BYTES];
+        let mut tx_nonce_base = [0u8; ZCNBLK_AES256_NONCE_BYTES];
+        rx_nonce_base.copy_from_slice(
+            &handshake
+                [ZCNBLK_AES256_MAGIC.len()..ZCNBLK_AES256_MAGIC.len() + ZCNBLK_AES256_NONCE_BYTES],
+        );
+        tx_nonce_base
+            .copy_from_slice(&handshake[ZCNBLK_AES256_MAGIC.len() + ZCNBLK_AES256_NONCE_BYTES..]);
+        Ok(Self {
+            stream: accepted.stream,
+            crypto: Some(ZcnblkCryptoState {
+                tx_cipher: zcnblk_aes256_lane_cipher(token, lane_id, b"target-to-client")?,
+                rx_cipher: zcnblk_aes256_lane_cipher(token, lane_id, b"client-to-target")?,
+                tx_nonce_base,
+                rx_nonce_base,
+                tx_sequence: 0,
+                rx_sequence: 0,
+                rx_plaintext: Vec::new(),
+                rx_offset: 0,
+                max_frame_bytes: config.max_frame_bytes,
+            }),
+            payload_crypto: None,
+        })
+    }
+
+    fn is_encrypted(&self) -> bool {
+        self.crypto.is_some() || self.payload_crypto.is_some()
+    }
+
+    fn uses_payload_crypto(&self) -> bool {
+        self.payload_crypto.is_some()
+    }
+
+    fn as_raw_fd(&self) -> i32 {
+        self.stream.as_raw_fd()
+    }
+
+    fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        self.stream.shutdown(how)
+    }
+
+    fn write_all(&mut self, mut buf: &[u8]) -> io::Result<()> {
+        let Some(crypto) = self.crypto.as_mut() else {
+            return self.stream.write_all(buf);
+        };
+        while !buf.is_empty() {
+            let chunk_len = buf.len().min(crypto.max_frame_bytes);
+            let plaintext_len = u32::try_from(chunk_len).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "zcnblk AES frame too large")
+            })?;
+            let nonce = zc_aes256_nonce(&crypto.tx_nonce_base, crypto.tx_sequence);
+            let aad = zc_aes256_aad(crypto.tx_sequence, plaintext_len);
+            let ciphertext = zc_aes256_encrypt_frame(
+                &crypto.tx_cipher,
+                nonce,
+                &aad,
+                buf[..chunk_len].to_vec(),
+                || format!("zcnblk AES-256-GCM encrypt frame {}", crypto.tx_sequence),
+            )?;
+            self.stream.write_all(&plaintext_len.to_be_bytes())?;
+            self.stream.write_all(&ciphertext)?;
+            crypto.tx_sequence = crypto.tx_sequence.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk AES tx sequence overflow",
+                )
+            })?;
+            buf = &buf[chunk_len..];
+        }
+        Ok(())
+    }
+
+    fn read_next_encrypted_frame(
+        crypto: &mut ZcnblkCryptoState,
+        stream: &mut TcpStream,
+    ) -> io::Result<()> {
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf)?;
+        let plaintext_len = u32::from_be_bytes(len_buf) as usize;
+        if plaintext_len == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "zcnblk AES transport received EOF frame",
+            ));
+        }
+        if plaintext_len > crypto.max_frame_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcnblk AES frame plaintext length {plaintext_len} exceeds max {}",
+                    crypto.max_frame_bytes
+                ),
+            ));
+        }
+        let encrypted_len = plaintext_len
+            .checked_add(ZC_AES256_TAG_BYTES)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk AES frame length overflow",
+                )
+            })?;
+        let mut ciphertext = vec![0u8; encrypted_len];
+        stream.read_exact(&mut ciphertext)?;
+        let nonce = zc_aes256_nonce(&crypto.rx_nonce_base, crypto.rx_sequence);
+        let aad = zc_aes256_aad(crypto.rx_sequence, plaintext_len as u32);
+        crypto.rx_plaintext =
+            zc_aes256_decrypt_frame(&crypto.rx_cipher, nonce, &aad, ciphertext, || {
+                format!("zcnblk AES-256-GCM decrypt frame {}", crypto.rx_sequence)
+            })?;
+        crypto.rx_offset = 0;
+        crypto.rx_sequence = crypto.rx_sequence.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk AES rx sequence overflow",
+            )
+        })?;
+        Ok(())
+    }
+
+    fn read_exact(&mut self, mut out: &mut [u8]) -> io::Result<()> {
+        let Some(crypto) = self.crypto.as_mut() else {
+            return self.stream.read_exact(out);
+        };
+        while !out.is_empty() {
+            if crypto.rx_offset == crypto.rx_plaintext.len() {
+                Self::read_next_encrypted_frame(crypto, &mut self.stream)?;
+            }
+            let available = crypto.rx_plaintext.len() - crypto.rx_offset;
+            let n = available.min(out.len());
+            out[..n].copy_from_slice(&crypto.rx_plaintext[crypto.rx_offset..crypto.rx_offset + n]);
+            crypto.rx_offset += n;
+            out = &mut out[n..];
+            if crypto.rx_offset == crypto.rx_plaintext.len() {
+                crypto.rx_plaintext.clear();
+                crypto.rx_offset = 0;
+            }
+        }
+        Ok(())
+    }
+
+    fn payload_iv(conn_id: u32, target_to_client: bool, sequence: u64) -> [u8; 12] {
+        let mut iv = [0u8; 12];
+        let prefix = if target_to_client {
+            0x8000_0000u32 | conn_id
+        } else {
+            conn_id
+        };
+        iv[..4].copy_from_slice(&prefix.to_be_bytes());
+        iv[4..].copy_from_slice(&sequence.to_be_bytes());
+        iv
+    }
+
+    fn write_frame_payload(
+        &mut self,
+        header: &[u8; ZCNBLK_FRAME_HEADER_LEN],
+        payload: &[u8],
+        target_to_client: bool,
+    ) -> io::Result<usize> {
+        if self.crypto.is_some() && self.payload_crypto.is_none() {
+            let total = ZCNBLK_FRAME_HEADER_LEN
+                .checked_add(payload.len())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk wire overflow")
+                })?;
+            let mut frame = Vec::with_capacity(total);
+            frame.extend_from_slice(header);
+            frame.extend_from_slice(payload);
+            self.write_all(&frame)?;
+            return Ok(total);
+        }
+        self.write_all(header)?;
+        let Some(crypto) = self.payload_crypto.as_mut() else {
+            self.write_all(payload)?;
+            return Ok(ZCNBLK_FRAME_HEADER_LEN + payload.len());
+        };
+        let nonce = Self::payload_iv(crypto.conn_id, target_to_client, crypto.tx_sequence);
+        let ciphertext =
+            zc_aes256_encrypt_frame(&crypto.cipher, nonce, header, payload.to_vec(), || {
+                format!(
+                    "zcnblk payload AES-256-GCM encrypt frame {}",
+                    crypto.tx_sequence
+                )
+            })?;
+        self.stream.write_all(&ciphertext)?;
+        crypto.tx_sequence = crypto.tx_sequence.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk payload AES tx sequence overflow",
+            )
+        })?;
+        ZCNBLK_FRAME_HEADER_LEN
+            .checked_add(ciphertext.len())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcnblk wire overflow"))
+    }
+
+    fn read_frame_payload(
+        &mut self,
+        header: &[u8; ZCNBLK_FRAME_HEADER_LEN],
+        payload: &mut [u8],
+        target_to_client: bool,
+    ) -> io::Result<usize> {
+        let Some(crypto) = self.payload_crypto.as_mut() else {
+            self.read_exact(payload)?;
+            return Ok(payload.len());
+        };
+        let encrypted_len = payload
+            .len()
+            .checked_add(ZC_AES256_TAG_BYTES)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcnblk wire overflow"))?;
+        let mut ciphertext = vec![0u8; encrypted_len];
+        self.stream.read_exact(&mut ciphertext)?;
+        let nonce = Self::payload_iv(crypto.conn_id, target_to_client, crypto.rx_sequence);
+        let plaintext = zc_aes256_decrypt_frame(&crypto.cipher, nonce, header, ciphertext, || {
+            format!(
+                "zcnblk payload AES-256-GCM decrypt frame {}",
+                crypto.rx_sequence
+            )
+        })?;
+        if plaintext.len() != payload.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcnblk payload AES plaintext length mismatch {} != {}",
+                    plaintext.len(),
+                    payload.len()
+                ),
+            ));
+        }
+        payload.copy_from_slice(&plaintext);
+        crypto.rx_sequence = crypto.rx_sequence.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk payload AES rx sequence overflow",
+            )
+        })?;
+        Ok(encrypted_len)
+    }
+}
+
+fn zcnblk_transport_conn_id(
+    lane: usize,
+    conn_index: usize,
+    connections_per_lane: usize,
+) -> io::Result<u32> {
+    lane.checked_mul(connections_per_lane)
+        .and_then(|base| base.checked_add(conn_index))
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zcnblk conn id overflow"))
+}
+
+fn zcnblk_aes256_lane_cipher(
+    token: &str,
+    lane_id: u32,
+    direction: &[u8],
+) -> io::Result<ZcAes256Cipher> {
+    zc_tcpmux_validate_token(token)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"zc aes-256-gcm lane frame v1\0");
+    hasher.update(b"zcnblk\0");
+    hasher.update(direction);
+    hasher.update(b"\0");
+    hasher.update(token.as_bytes());
+    hasher.update(lane_id.to_be_bytes());
+    let key = hasher.finalize();
+    zc_aes256_cipher_from_key(&key)
+}
+
+fn zcnblk_payload_aes256_cipher(token: &str) -> io::Result<ZcAes256Cipher> {
+    zc_tcpmux_validate_token(token)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"zcnblk aes-256-gcm v1\0");
+    hasher.update(token.as_bytes());
+    let key = hasher.finalize();
+    zc_aes256_cipher_from_key(&key)
+}
+
+#[derive(Clone, Copy, Default)]
+struct ZcnblkFrameHeader {
+    op: u16,
+    flags: u16,
+    shard: u32,
+    len: u32,
+    offset: u64,
+}
+
+impl ZcnblkFrameHeader {
+    fn new(op: u16, shard: usize, len: usize, offset: u64) -> io::Result<Self> {
+        Self::with_flags(op, 0, shard, len, offset)
+    }
+
+    fn with_flags(op: u16, flags: u16, shard: usize, len: usize, offset: u64) -> io::Result<Self> {
+        if !matches!(
+            op,
+            ZCNBLK_OP_WRITE
+                | ZCNBLK_OP_READ
+                | ZCNBLK_OP_READ_RESP
+                | ZCNBLK_OP_WRITE_ACK
+                | ZCNBLK_OP_BATCH
+                | ZCNBLK_OP_BATCH_RESP
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported zcnblk op {op}"),
+            ));
+        }
+        Ok(Self {
+            op,
+            flags,
+            shard: u32::try_from(shard).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "zcnblk shard index exceeds u32",
+                )
+            })?,
+            len: u32::try_from(len).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "zcnblk frame length exceeds u32",
+                )
+            })?,
+            offset,
+        })
+    }
+
+    fn encode(self) -> [u8; ZCNBLK_FRAME_HEADER_LEN] {
+        let mut buf = [0u8; ZCNBLK_FRAME_HEADER_LEN];
+        buf[0..8].copy_from_slice(ZCNBLK_FRAME_MAGIC);
+        buf[8..10].copy_from_slice(&ZCNBLK_FRAME_VERSION.to_le_bytes());
+        buf[10..12].copy_from_slice(&(ZCNBLK_FRAME_HEADER_LEN as u16).to_le_bytes());
+        buf[12..14].copy_from_slice(&self.op.to_le_bytes());
+        buf[14..16].copy_from_slice(&self.flags.to_le_bytes());
+        buf[16..20].copy_from_slice(&self.shard.to_le_bytes());
+        buf[20..24].copy_from_slice(&self.len.to_le_bytes());
+        buf[24..32].copy_from_slice(&self.offset.to_le_bytes());
+        buf
+    }
+
+    fn decode(buf: &[u8; ZCNBLK_FRAME_HEADER_LEN]) -> io::Result<Self> {
+        if &buf[0..8] != ZCNBLK_FRAME_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk frame magic mismatch",
+            ));
+        }
+        let version = u16::from_le_bytes(buf[8..10].try_into().expect("u16"));
+        let header_len = u16::from_le_bytes(buf[10..12].try_into().expect("u16")) as usize;
+        let op = u16::from_le_bytes(buf[12..14].try_into().expect("u16"));
+        if version != ZCNBLK_FRAME_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported zcnblk frame version {version}"),
+            ));
+        }
+        if header_len != ZCNBLK_FRAME_HEADER_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported zcnblk frame header length {header_len}"),
+            ));
+        }
+        if !matches!(
+            op,
+            ZCNBLK_OP_WRITE
+                | ZCNBLK_OP_READ
+                | ZCNBLK_OP_READ_RESP
+                | ZCNBLK_OP_WRITE_ACK
+                | ZCNBLK_OP_BATCH
+                | ZCNBLK_OP_BATCH_RESP
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported zcnblk frame op {op}"),
+            ));
+        }
+        Ok(Self {
+            op,
+            flags: u16::from_le_bytes(buf[14..16].try_into().expect("u16")),
+            shard: u32::from_le_bytes(buf[16..20].try_into().expect("u32")),
+            len: u32::from_le_bytes(buf[20..24].try_into().expect("u32")),
+            offset: u64::from_le_bytes(buf[24..32].try_into().expect("u64")),
+        })
+    }
+}
+
+#[derive(Clone)]
+enum ZcnblkTargetBackend {
+    Block(SlotWalTarget),
+    DevNull,
+}
+
+impl ZcnblkTargetBackend {
+    fn label(&self) -> &str {
+        match self {
+            Self::Block(target) => target.label(),
+            Self::DevNull => "zcdevnull",
+        }
+    }
+
+    fn open_path(&self) -> Option<&Path> {
+        match self {
+            Self::Block(target) => Some(target.open_path()),
+            Self::DevNull => None,
+        }
+    }
+
+    fn is_devnull(&self) -> bool {
+        matches!(self, Self::DevNull)
+    }
+}
+
+#[derive(Clone)]
+struct ZcnblkTargetPlan {
+    backend: ZcnblkTargetBackend,
+    device_bytes: u64,
+    required_alignment: usize,
+}
+
+#[derive(Default)]
+struct ZcnblkWorkerStats {
+    worker: usize,
+    streams: usize,
+    received_bytes: usize,
+    written_bytes: usize,
+    read_bytes: usize,
+    response_bytes: usize,
+    frames: usize,
+    read_frames: usize,
+    write_frames: usize,
+    elapsed: Duration,
+    target_cpu: i32,
+    affinity_applied: bool,
+}
+
+#[derive(Default, Clone, Copy)]
+struct ZcnblkWriteSlot {
+    op: u16,
+    flags: u16,
+    stream_idx: usize,
+    shard: usize,
+    len: u32,
+    offset: u64,
+}
+
+#[derive(Clone)]
+struct ZcnblkConnectSpec {
+    spec: TcpBenchConnectSpec,
+    shard: usize,
+    base_offset: u64,
+}
+
+#[derive(Default)]
+struct ZcnblkSendStats {
+    worker: usize,
+    streams: usize,
+    write_bytes: usize,
+    read_bytes: usize,
+    verified_read_bytes: usize,
+    read_checksum: u64,
+    expected_checksum: u64,
+    wire_bytes: usize,
+    frames: usize,
+    read_frames: usize,
+    write_frames: usize,
+    elapsed: Duration,
+    target_cpu: i32,
+    affinity_applied: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZcnblkOperationMode {
+    Write,
+    Read,
+    Mixed,
+}
+
+impl ZcnblkOperationMode {
+    fn from_env() -> io::Result<Self> {
+        match env::var("URING_PLAY_ZCNBLK_OP")
+            .unwrap_or_else(|_| "write".to_string())
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "" | "write" | "writes" => Ok(Self::Write),
+            "read" | "reads" => Ok(Self::Read),
+            "mixed" | "rw" | "read-write" | "write-read" => Ok(Self::Mixed),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown URING_PLAY_ZCNBLK_OP={other:?}; use write, read, or mixed"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Write => "write",
+            Self::Read => "read",
+            Self::Mixed => "mixed",
+        }
+    }
+
+    fn op_for_frame(self, frame_index: usize) -> u16 {
+        match self {
+            Self::Write => ZCNBLK_OP_WRITE,
+            Self::Read => ZCNBLK_OP_READ,
+            Self::Mixed => {
+                if frame_index % 2 == 0 {
+                    ZCNBLK_OP_WRITE
+                } else {
+                    ZCNBLK_OP_READ
+                }
+            }
+        }
+    }
+}
+
+fn zcnblk_parse_io_mode(value: &str, env_name: &str) -> io::Result<TcpWalWriteMode> {
+    match value {
+        "" | "write" | "plain" | "normal" => Ok(TcpWalWriteMode::Write),
+        "fixed" | "write-fixed" | "fixedbuf" | "fixedbufs" => Ok(TcpWalWriteMode::WriteFixed),
+        "fixed-file" | "fixedfile" | "fixedbufs-registerfiles" | "fast" => {
+            Ok(TcpWalWriteMode::WriteFixedFile)
+        }
+        "null" | "sink" | "discard" | "none" => Ok(TcpWalWriteMode::Null),
+        "slot" | "slots" | "io-slot" | "io-slots" => Ok(TcpWalWriteMode::Slot),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unknown {env_name}={other:?}; use write, fixed, fixed-file, slot, or null"),
+        )),
+    }
+}
+
+fn zcnblk_read_mode_from_env(write_mode: TcpWalWriteMode) -> io::Result<TcpWalWriteMode> {
+    match env::var("URING_PLAY_ZCNBLK_READ_MODE") {
+        Ok(value) => {
+            let value = value.to_ascii_lowercase();
+            if matches!(value.as_str(), "same" | "write-mode" | "write_mode") {
+                Ok(write_mode)
+            } else {
+                zcnblk_parse_io_mode(&value, "URING_PLAY_ZCNBLK_READ_MODE")
+            }
+        }
+        Err(env::VarError::NotPresent) => Ok(TcpWalWriteMode::Write),
+        Err(err) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid URING_PLAY_ZCNBLK_READ_MODE: {err}"),
+        )),
+    }
+}
+
+fn zcnblk_expand_target_token(token: &str) -> io::Result<Vec<String>> {
+    let token = token.trim();
+    let Some((left, right)) = token.split_once("..") else {
+        return Ok(vec![token.to_string()]);
+    };
+    let split = left
+        .rfind(|ch: char| !ch.is_ascii_digit())
+        .map(|idx| idx + 1)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("zcnblk target range {token:?} lacks a numeric start"),
+            )
+        })?;
+    let (prefix, start_text) = left.split_at(split);
+    if prefix.is_empty() || start_text.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid zcnblk target range {token:?}"),
+        ));
+    }
+    let start = start_text.parse::<usize>().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid zcnblk target range start {start_text:?}: {err}"),
+        )
+    })?;
+    let end = right.trim().parse::<usize>().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid zcnblk target range end {right:?}: {err}"),
+        )
+    })?;
+    if end < start {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("zcnblk target range end {end} is before start {start}"),
+        ));
+    }
+    Ok((start..=end)
+        .map(|idx| format!("{prefix}{idx}"))
+        .collect::<Vec<_>>())
+}
+
+fn zcnblk_is_devnull_target(token: &str) -> bool {
+    let token = token.trim();
+    let token = token.strip_prefix("/dev/").unwrap_or(token);
+    token == "zcdevnull"
+        || token.strip_prefix("zcdevnull").is_some_and(|suffix| {
+            !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+fn parse_zcnblk_target_plans(
+    target_spec: &str,
+    chunk_bytes: usize,
+    buffer_mode: SlotWalBufferMode,
+) -> io::Result<Vec<ZcnblkTargetPlan>> {
+    let mut targets = Vec::new();
+    let devnull_bytes =
+        env_size_opt("URING_PLAY_ZCNBLK_DEVNULL_BYTES")?.unwrap_or(1024usize * 1024 * 1024 * 1024);
+    let devnull_alignment = env_size_opt("URING_PLAY_ZCNBLK_DEVNULL_ALIGNMENT")?.unwrap_or(1);
+    if devnull_alignment == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "URING_PLAY_ZCNBLK_DEVNULL_ALIGNMENT must be non-zero",
+        ));
+    }
+    for token in target_spec.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        for expanded in zcnblk_expand_target_token(token)? {
+            if zcnblk_is_devnull_target(&expanded) {
+                targets.push(ZcnblkTargetPlan {
+                    backend: ZcnblkTargetBackend::DevNull,
+                    device_bytes: devnull_bytes as u64,
+                    required_alignment: devnull_alignment,
+                });
+                continue;
+            }
+            let target = parse_slot_wal_target(&expanded)?;
+            if !target.is_synthetic_block() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "zcnblk-target currently accepts only synthetic block targets such as /dev/zcbrdN or /dev/zcstripeN, plus zcdevnullN pseudo targets",
+                ));
+            }
+            let metadata = fs::metadata(target.open_path())?;
+            if !metadata.file_type().is_block_device() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{} is not a block device", target.label()),
+                ));
+            }
+            validate_slot_wal_write_target_safety(&target, &metadata)?;
+            let required_alignment =
+                validate_slot_wal_geometry_alignment(&metadata, chunk_bytes, chunk_bytes)?;
+            let segment_bytes = buffer_mode.segment_bytes()?;
+            validate_slot_wal_queue_limits(&metadata, chunk_bytes, segment_bytes, buffer_mode)?;
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_CLOEXEC)
+                .open(target.open_path())?;
+            let device_bytes = block_device_size(file.as_raw_fd())?;
+            targets.push(ZcnblkTargetPlan {
+                backend: ZcnblkTargetBackend::Block(target),
+                device_bytes,
+                required_alignment,
+            });
+        }
+    }
+    if targets.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-target requires at least one target device",
+        ));
+    }
+    Ok(targets)
+}
+
+fn zcnblk_partition_accepted_streams(
+    streams: Vec<TcpBenchAcceptedStream>,
+    workers: usize,
+    policy: TcpMuxShardPolicy,
+    label: &str,
+    pin_requested: bool,
+) -> Vec<Vec<TcpBenchAcceptedStream>> {
+    let mut shards = (0..workers).map(|_| Vec::new()).collect::<Vec<_>>();
+    let mut counts = vec![0usize; workers];
+    for (idx, accepted) in streams.into_iter().enumerate() {
+        let worker = policy.choose_worker_with_pin(&accepted, idx, workers, pin_requested);
+        println!(
+            "{label}-mux-assignment: worker={worker} policy={} peer={} listener_lane={} \
+             listener_port={} conn={} {}",
+            policy.label(),
+            accepted.peer_addr,
+            accepted.lane,
+            accepted.port,
+            accepted.conn_index,
+            socket_locality_label(accepted.locality)
+        );
+        counts[worker] += 1;
+        shards[worker].push(accepted);
+    }
+    println!(
+        "{label}-mux-assignment-summary: policy={} workers={workers} streams_by_worker={}",
+        policy.label(),
+        tcp_mux_counts_label(&counts)
+    );
+    shards
+}
+
+fn zcnblk_queue_block_io(
+    ring: &mut RawRing,
+    fds_by_shard: &[Option<i32>],
+    fixed_file_by_shard: &[Option<u32>],
+    buffers: &FixedSendBuffers,
+    slot: usize,
+    frame: ZcnblkFrameHeader,
+    write_mode: TcpWalWriteMode,
+) -> io::Result<()> {
+    let shard = frame.shard as usize;
+    if shard >= fds_by_shard.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk frame shard {shard} out of range {}",
+                fds_by_shard.len()
+            ),
+        ));
+    }
+    let fd = fds_by_shard[shard].ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcnblk shard {shard} has no block fd"),
+        )
+    })?;
+    let fixed_file = fixed_file_by_shard[shard].ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcnblk shard {shard} has no registered file index"),
+        )
+    });
+    match write_mode {
+        TcpWalWriteMode::Null => Ok(()),
+        TcpWalWriteMode::Slot => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-target does not support io-slot write mode yet; use fixed-file, fixed, write, or null",
+        )),
+        TcpWalWriteMode::Write => match frame.op {
+            ZCNBLK_OP_WRITE => ring.queue_write(
+                fd,
+                buffers.ptr(slot).cast_const(),
+                frame.len,
+                frame.offset,
+                slot as u64,
+            ),
+            ZCNBLK_OP_READ => {
+                ring.queue_read(fd, buffers.ptr(slot), frame.len, frame.offset, slot as u64)
+            }
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("zcnblk block queue got unsupported op {other}"),
+            )),
+        },
+        TcpWalWriteMode::WriteFixed => match frame.op {
+            ZCNBLK_OP_WRITE => ring.queue_write_fixed(
+                fd,
+                buffers.ptr(slot).cast_const(),
+                frame.len,
+                frame.offset,
+                slot as u16,
+                slot as u64,
+            ),
+            ZCNBLK_OP_READ => ring.queue_read_fixed(
+                fd,
+                buffers.ptr(slot),
+                frame.len,
+                frame.offset,
+                slot as u16,
+                slot as u64,
+            ),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("zcnblk block queue got unsupported op {other}"),
+            )),
+        },
+        TcpWalWriteMode::WriteFixedFile => {
+            let fixed_file = fixed_file?;
+            match frame.op {
+                ZCNBLK_OP_WRITE => ring.queue_write_fixed_file(
+                    fixed_file,
+                    buffers.ptr(slot).cast_const(),
+                    frame.len,
+                    frame.offset,
+                    slot as u16,
+                    slot as u64,
+                ),
+                ZCNBLK_OP_READ => ring.queue_read_fixed_file(
+                    fixed_file,
+                    buffers.ptr(slot),
+                    frame.len,
+                    frame.offset,
+                    slot as u16,
+                    slot as u64,
+                ),
+                other => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("zcnblk block queue got unsupported op {other}"),
+                )),
+            }
+        }
+    }
+}
+
+fn zcnblk_send_read_response(
+    streams: &mut [ZcnblkTransport],
+    stream_idx: usize,
+    flags: u16,
+    shard: usize,
+    len: usize,
+    offset: u64,
+    buffers: &FixedSendBuffers,
+    slot: usize,
+) -> io::Result<usize> {
+    let header =
+        ZcnblkFrameHeader::with_flags(ZCNBLK_OP_READ_RESP, flags, shard, len, offset)?.encode();
+    let payload = unsafe { slice::from_raw_parts(buffers.ptr(slot).cast_const(), len) };
+    streams[stream_idx].write_frame_payload(&header, payload, true)
+}
+
+fn zcnblk_send_write_ack(
+    streams: &mut [ZcnblkTransport],
+    stream_idx: usize,
+    flags: u16,
+    shard: usize,
+    len: usize,
+    offset: u64,
+) -> io::Result<usize> {
+    let header =
+        ZcnblkFrameHeader::with_flags(ZCNBLK_OP_WRITE_ACK, flags, shard, len, offset)?.encode();
+    streams[stream_idx].write_frame_payload(&header, &[], true)
+}
+
+fn write_all_iovecs(fd: i32, iovecs: &mut [libc::iovec], mut remaining: usize) -> io::Result<()> {
+    let mut idx = 0usize;
+    while remaining > 0 {
+        while idx < iovecs.len() && iovecs[idx].iov_len == 0 {
+            idx += 1;
+        }
+        if idx >= iovecs.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "writev exhausted iovecs before writing all bytes",
+            ));
+        }
+        let iov_count = (iovecs.len() - idx).min(1024);
+        let ret = unsafe { libc::writev(fd, iovecs[idx..].as_ptr(), iov_count as libc::c_int) };
+        if ret < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        if ret == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "writev wrote zero bytes",
+            ));
+        }
+        let mut consumed = ret as usize;
+        remaining = remaining.saturating_sub(consumed);
+        while consumed > 0 {
+            if consumed >= iovecs[idx].iov_len {
+                consumed -= iovecs[idx].iov_len;
+                iovecs[idx].iov_len = 0;
+                idx += 1;
+            } else {
+                iovecs[idx].iov_base =
+                    unsafe { (iovecs[idx].iov_base as *mut u8).add(consumed) }.cast();
+                iovecs[idx].iov_len -= consumed;
+                consumed = 0;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn zcnblk_write_all_iovecs(
+    stream: &mut ZcnblkTransport,
+    iovecs: &mut [libc::iovec],
+    total: usize,
+) -> io::Result<()> {
+    if !stream.is_encrypted() {
+        return write_all_iovecs(stream.as_raw_fd(), iovecs, total);
+    }
+    let mut written = 0usize;
+    for iov in iovecs {
+        if iov.iov_len == 0 {
+            continue;
+        }
+        let bytes = unsafe { slice::from_raw_parts(iov.iov_base.cast::<u8>(), iov.iov_len) };
+        stream.write_all(bytes)?;
+        written = written.checked_add(iov.iov_len).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk encrypted iovec overflow",
+            )
+        })?;
+    }
+    if written != total {
+        return Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            format!("zcnblk encrypted iovec wrote {written}/{total} bytes"),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct ZcnblkReadyReadResponse {
+    flags: u16,
+    stream_idx: usize,
+    shard: usize,
+    len: usize,
+    offset: u64,
+    slot: usize,
+}
+
+fn zcnblk_send_read_response_batch(
+    streams: &mut [ZcnblkTransport],
+    stream_idx: usize,
+    buffers: &FixedSendBuffers,
+    reads: &[ZcnblkReadyReadResponse],
+) -> io::Result<usize> {
+    if reads.is_empty() {
+        return Ok(0);
+    }
+    if streams[stream_idx].uses_payload_crypto() {
+        let mut total = 0usize;
+        for read in reads {
+            total = total
+                .checked_add(zcnblk_send_read_response(
+                    streams,
+                    stream_idx,
+                    read.flags,
+                    read.shard,
+                    read.len,
+                    read.offset,
+                    buffers,
+                    read.slot,
+                )?)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk total response overflow")
+                })?;
+        }
+        return Ok(total);
+    }
+    if reads.len() == 1 {
+        let read = reads[0];
+        return zcnblk_send_read_response(
+            streams,
+            stream_idx,
+            read.flags,
+            read.shard,
+            read.len,
+            read.offset,
+            buffers,
+            read.slot,
+        );
+    }
+
+    let payload_bytes = reads
+        .iter()
+        .try_fold(0usize, |acc, read| acc.checked_add(read.len))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zcnblk response overflow"))?;
+    let outer = ZcnblkFrameHeader::with_flags(
+        ZCNBLK_OP_BATCH_RESP,
+        0,
+        0,
+        reads.len(),
+        payload_bytes as u64,
+    )?
+    .encode();
+    let mut headers = Vec::with_capacity(reads.len());
+    for read in reads {
+        headers.push(
+            ZcnblkFrameHeader::with_flags(
+                ZCNBLK_OP_READ_RESP,
+                read.flags,
+                read.shard,
+                read.len,
+                read.offset,
+            )?
+            .encode(),
+        );
+    }
+
+    let mut iovecs = Vec::with_capacity(2 + reads.len());
+    iovecs.push(libc::iovec {
+        iov_base: outer.as_ptr().cast::<libc::c_void>().cast_mut(),
+        iov_len: outer.len(),
+    });
+    iovecs.push(libc::iovec {
+        iov_base: headers.as_ptr().cast::<libc::c_void>().cast_mut(),
+        iov_len: headers.len() * ZCNBLK_FRAME_HEADER_LEN,
+    });
+    for read in reads {
+        iovecs.push(libc::iovec {
+            iov_base: buffers.ptr(read.slot).cast::<libc::c_void>(),
+            iov_len: read.len,
+        });
+    }
+    let total = ZCNBLK_FRAME_HEADER_LEN
+        .checked_add(headers.len() * ZCNBLK_FRAME_HEADER_LEN)
+        .and_then(|value| value.checked_add(payload_bytes))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zcnblk response overflow"))?;
+    zcnblk_write_all_iovecs(&mut streams[stream_idx], &mut iovecs, total)?;
+    Ok(total)
+}
+
+fn zcnblk_target_flush_ready_reads(
+    streams: &mut [ZcnblkTransport],
+    buffers: &FixedSendBuffers,
+    slots: &mut [ZcnblkWriteSlot],
+    free_slots: &mut Vec<usize>,
+    ready_reads: &mut Vec<ZcnblkReadyReadResponse>,
+    total_read: &mut usize,
+    total_response: &mut usize,
+    total_completed: &mut usize,
+) -> io::Result<()> {
+    if ready_reads.is_empty() {
+        return Ok(());
+    }
+    let mut pending = Vec::new();
+    std::mem::swap(ready_reads, &mut pending);
+    let mut start = 0usize;
+    while start < pending.len() {
+        let stream_idx = pending[start].stream_idx;
+        let mut end = start + 1;
+        while end < pending.len() && pending[end].stream_idx == stream_idx {
+            end += 1;
+        }
+        let group = &pending[start..end];
+        *total_response = (*total_response)
+            .checked_add(zcnblk_send_read_response_batch(
+                streams, stream_idx, buffers, group,
+            )?)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk total response overflow")
+            })?;
+        for read in group {
+            *total_read = (*total_read).checked_add(read.len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk total read overflow")
+            })?;
+            *total_completed = (*total_completed).checked_add(read.len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk total complete overflow")
+            })?;
+            slots[read.slot] = ZcnblkWriteSlot::default();
+            free_slots.push(read.slot);
+        }
+        start = end;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_target_process_request_frame(
+    targets: &[ZcnblkTargetPlan],
+    streams: &mut [ZcnblkTransport],
+    stream_idx: usize,
+    frame: ZcnblkFrameHeader,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    write_acks: bool,
+    write_mode: TcpWalWriteMode,
+    read_mode: TcpWalWriteMode,
+    ring: &mut RawRing,
+    fds_by_shard: &[Option<i32>],
+    fixed_file_by_shard: &[Option<u32>],
+    buffers: &FixedSendBuffers,
+    slots: &mut [ZcnblkWriteSlot],
+    slot: usize,
+    free_slots: &mut Vec<usize>,
+    logical_started: &mut [usize],
+    issue_complete_streams: &mut usize,
+    total_received: &mut usize,
+    total_written: &mut usize,
+    total_read: &mut usize,
+    total_response: &mut usize,
+    total_completed: &mut usize,
+    frames: &mut usize,
+    read_frames: &mut usize,
+    write_frames: &mut usize,
+) -> io::Result<bool> {
+    if !matches!(frame.op, ZCNBLK_OP_WRITE | ZCNBLK_OP_READ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcnblk target request op {} is invalid", frame.op),
+        ));
+    }
+    let len = frame.len as usize;
+    if len == 0 || len > chunk_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcnblk frame length {len} invalid for chunk_bytes={chunk_bytes}"),
+        ));
+    }
+    let shard = frame.shard as usize;
+    let Some(target) = targets.get(shard) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcnblk frame shard {shard} out of range {}", targets.len()),
+        ));
+    };
+    if len % target.required_alignment != 0 || frame.offset % target.required_alignment as u64 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk frame shard={shard} offset={} len={len} not aligned to {}",
+                frame.offset, target.required_alignment
+            ),
+        ));
+    }
+    let frame_end = frame.offset.checked_add(len as u64).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "zcnblk frame offset overflow")
+    })?;
+    if frame_end > target.device_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk frame shard={shard} range [{}..{}) exceeds device bytes {}",
+                frame.offset, frame_end, target.device_bytes
+            ),
+        ));
+    }
+    let next_started = logical_started[stream_idx]
+        .checked_add(len)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcnblk logical byte overflow")
+        })?;
+    if next_started > bytes_per_connection {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk stream {stream_idx} requested {next_started}/{bytes_per_connection} logical bytes"
+            ),
+        ));
+    }
+
+    if frame.op == ZCNBLK_OP_WRITE {
+        let payload = unsafe { slice::from_raw_parts_mut(buffers.ptr(slot), len) };
+        let header = frame.encode();
+        streams[stream_idx].read_frame_payload(&header, payload, false)?;
+        *total_received = (*total_received).checked_add(len).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcnblk total receive overflow")
+        })?;
+        *write_frames += 1;
+    } else {
+        if streams[stream_idx].uses_payload_crypto() {
+            let mut empty = [];
+            let header = frame.encode();
+            streams[stream_idx].read_frame_payload(&header, &mut empty, false)?;
+        }
+        *read_frames += 1;
+    }
+    logical_started[stream_idx] = next_started;
+    if next_started == bytes_per_connection {
+        *issue_complete_streams += 1;
+    }
+    *frames += 1;
+
+    let io_mode = if frame.op == ZCNBLK_OP_READ {
+        read_mode
+    } else {
+        write_mode
+    };
+    if io_mode.is_null() || target.backend.is_devnull() {
+        if frame.op == ZCNBLK_OP_WRITE {
+            *total_written = (*total_written).checked_add(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk total write overflow")
+            })?;
+            if write_acks {
+                *total_response = (*total_response)
+                    .checked_add(zcnblk_send_write_ack(
+                        streams,
+                        stream_idx,
+                        frame.flags,
+                        shard,
+                        len,
+                        frame.offset,
+                    )?)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "zcnblk total response overflow")
+                    })?;
+            }
+        } else {
+            let payload = unsafe { slice::from_raw_parts_mut(buffers.ptr(slot), len) };
+            payload.fill(0);
+            *total_response = (*total_response)
+                .checked_add(zcnblk_send_read_response(
+                    streams,
+                    stream_idx,
+                    frame.flags,
+                    shard,
+                    len,
+                    frame.offset,
+                    buffers,
+                    slot,
+                )?)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk total response overflow")
+                })?;
+            *total_read = (*total_read).checked_add(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk total read overflow")
+            })?;
+        }
+        *total_completed = (*total_completed).checked_add(len).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcnblk total complete overflow")
+        })?;
+        free_slots.push(slot);
+        return Ok(false);
+    }
+
+    slots[slot] = ZcnblkWriteSlot {
+        op: frame.op,
+        flags: frame.flags,
+        stream_idx,
+        shard,
+        len: frame.len,
+        offset: frame.offset,
+    };
+    zcnblk_queue_block_io(
+        ring,
+        fds_by_shard,
+        fixed_file_by_shard,
+        buffers,
+        slot,
+        frame,
+        io_mode,
+    )?;
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_target_complete_cqe(
+    streams: &mut [ZcnblkTransport],
+    slots: &mut [ZcnblkWriteSlot],
+    free_slots: &mut Vec<usize>,
+    ready_reads: &mut Vec<ZcnblkReadyReadResponse>,
+    cqe: IoUringCqe32,
+    write_acks: bool,
+    outstanding: &mut usize,
+    total_written: &mut usize,
+    total_response: &mut usize,
+    total_completed: &mut usize,
+) -> io::Result<()> {
+    *outstanding = (*outstanding).saturating_sub(1);
+    let slot = cqe.user_data as usize;
+    if slot >= slots.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcnblk CQE invalid slot {slot}"),
+        ));
+    }
+    if cqe.res < 0 {
+        return Err(io::Error::from_raw_os_error(-cqe.res));
+    }
+    if cqe.res != slots[slot].len as i32 {
+        return Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            format!(
+                "short zcnblk completion op={} shard={} offset={} res={} expected={}",
+                slots[slot].op, slots[slot].shard, slots[slot].offset, cqe.res, slots[slot].len
+            ),
+        ));
+    }
+    let completed_len = slots[slot].len as usize;
+    if slots[slot].op == ZCNBLK_OP_WRITE {
+        *total_written = (*total_written).checked_add(completed_len).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcnblk total write overflow")
+        })?;
+        if write_acks {
+            *total_response = (*total_response)
+                .checked_add(zcnblk_send_write_ack(
+                    streams,
+                    slots[slot].stream_idx,
+                    slots[slot].flags,
+                    slots[slot].shard,
+                    completed_len,
+                    slots[slot].offset,
+                )?)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk total response overflow")
+                })?;
+        }
+    } else if slots[slot].op == ZCNBLK_OP_READ {
+        ready_reads.push(ZcnblkReadyReadResponse {
+            flags: slots[slot].flags,
+            stream_idx: slots[slot].stream_idx,
+            shard: slots[slot].shard,
+            len: completed_len,
+            offset: slots[slot].offset,
+            slot,
+        });
+        return Ok(());
+    }
+    *total_completed = (*total_completed)
+        .checked_add(completed_len)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcnblk total complete overflow")
+        })?;
+    slots[slot] = ZcnblkWriteSlot::default();
+    free_slots.push(slot);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_target_worker(
+    targets: Arc<Vec<ZcnblkTargetPlan>>,
+    worker: usize,
+    streams: Vec<TcpBenchAcceptedStream>,
+    connections_per_port: usize,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    buffer_mode: SlotWalBufferMode,
+    write_mode: TcpWalWriteMode,
+    read_mode: TcpWalWriteMode,
+    crypto_config: ZcnblkCryptoConfig,
+    pin: bool,
+) -> io::Result<ZcnblkWorkerStats> {
+    let affinity = pin_current_thread_if_requested("zcnblk-target-worker", worker, pin);
+    let stream_count = streams.len();
+    if stream_count == 0 {
+        return Ok(ZcnblkWorkerStats {
+            worker,
+            streams: 0,
+            target_cpu: affinity.target_cpu,
+            affinity_applied: affinity.applied,
+            ..ZcnblkWorkerStats::default()
+        });
+    }
+
+    let pipeline = pipeline.max(1);
+    let ring_entries = ring_entries.max((pipeline as u32).saturating_mul(2).max(64));
+    if pipeline > u16::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-target pipeline must fit in u16 for fixed buffer indexes",
+        ));
+    }
+    if write_mode == TcpWalWriteMode::Slot || read_mode == TcpWalWriteMode::Slot {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-target does not support io-slot mode yet; use fixed-file, fixed, write, or null",
+        ));
+    }
+    let write_acks = env_enabled_or("URING_PLAY_ZCNBLK_WRITE_ACKS", false);
+
+    let mut files = Vec::new();
+    let mut fds_by_shard = vec![None; targets.len()];
+    let mut fixed_file_by_shard = vec![None; targets.len()];
+    for (shard, target) in targets.iter().enumerate() {
+        let Some(path) = target.backend.open_path() else {
+            continue;
+        };
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_DIRECT | libc::O_CLOEXEC)
+            .open(path)?;
+        fds_by_shard[shard] = Some(file.as_raw_fd());
+        fixed_file_by_shard[shard] = Some(u32::try_from(files.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcnblk fixed file index does not fit in u32",
+            )
+        })?);
+        files.push(file);
+    }
+    let mut ring = RawRing::new(ring_entries, ring_entries.saturating_mul(2))?;
+    ring.register_napi_from_env(&format!("zcnblk-target-worker-{worker}"))?;
+    let registered_files = (write_mode.needs_registered_files()
+        || read_mode.needs_registered_files())
+        && !files.is_empty();
+    if registered_files {
+        let mut registered_fds = files
+            .iter()
+            .map(|file| file.as_raw_fd())
+            .collect::<Vec<_>>();
+        ring.register_files(&mut registered_fds)?;
+    }
+    let buffers = buffer_mode.allocate(pipeline, chunk_bytes)?;
+    let mut iovecs = buffers.iovecs(chunk_bytes);
+    if write_mode.needs_registered_buffers() || read_mode.needs_registered_buffers() {
+        ring.register_buffers(&mut iovecs)?;
+    }
+
+    let mut streams = streams
+        .into_iter()
+        .map(|accepted| {
+            println!(
+                "zcnblk-target-worker-stream: worker={worker} peer={} lane={} port={} conn={} {}",
+                accepted.peer_addr,
+                accepted.lane,
+                accepted.port,
+                accepted.conn_index,
+                socket_locality_label(accepted.locality)
+            );
+            let conn_id =
+                zcnblk_transport_conn_id(accepted.lane, accepted.conn_index, connections_per_port)?;
+            ZcnblkTransport::accept_target(accepted, conn_id, &crypto_config)
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut logical_started = vec![0usize; streams.len()];
+    let mut slots = vec![ZcnblkWriteSlot::default(); pipeline];
+    let mut free_slots = (0..pipeline).rev().collect::<Vec<_>>();
+    let mut next_stream = 0usize;
+    let mut issue_complete_streams = 0usize;
+    let submit_batch = env_usize_or("URING_PLAY_ZCNBLK_SUBMIT_BATCH", pipeline.min(64)).max(1);
+    let total_target = stream_count
+        .checked_mul(bytes_per_connection)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zcnblk total overflow"))?;
+    let mut total_completed = 0usize;
+    let mut total_received = 0usize;
+    let mut total_written = 0usize;
+    let mut total_read = 0usize;
+    let mut total_response = 0usize;
+    let mut frames = 0usize;
+    let mut read_frames = 0usize;
+    let mut write_frames = 0usize;
+    let mut outstanding = 0usize;
+    let mut drain_outstanding = false;
+    let mut ready_reads = Vec::with_capacity(pipeline);
+    let started = Instant::now();
+
+    while total_completed < total_target {
+        if drain_outstanding && outstanding == 0 {
+            drain_outstanding = false;
+        }
+        let mut queued_since_submit = 0usize;
+        while !drain_outstanding && outstanding < pipeline && issue_complete_streams < streams.len()
+        {
+            if free_slots.is_empty() {
+                break;
+            }
+            let mut stream_idx = None;
+            for _ in 0..streams.len() {
+                let candidate = next_stream;
+                next_stream = (next_stream + 1) % streams.len();
+                if logical_started[candidate] < bytes_per_connection {
+                    stream_idx = Some(candidate);
+                    break;
+                }
+            }
+            let Some(stream_idx) = stream_idx else {
+                break;
+            };
+
+            let mut header_buf = [0u8; ZCNBLK_FRAME_HEADER_LEN];
+            streams[stream_idx].read_exact(&mut header_buf)?;
+            let frame = ZcnblkFrameHeader::decode(&header_buf)?;
+
+            if frame.op == ZCNBLK_OP_BATCH {
+                if streams[stream_idx].uses_payload_crypto() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "zcnblk payload AES mode does not support request batches",
+                    ));
+                }
+                let count = frame.len as usize;
+                if count == 0 || count > pipeline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("zcnblk batch count {count} invalid for pipeline={pipeline}"),
+                    ));
+                }
+                if count > free_slots.len() || count > pipeline.saturating_sub(outstanding) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "zcnblk batch count {count} exceeds free slots={} outstanding={outstanding} pipeline={pipeline}",
+                            free_slots.len()
+                        ),
+                    ));
+                }
+                let mut batch_bufs = vec![[0u8; ZCNBLK_FRAME_HEADER_LEN]; count];
+                let mut batch_frames = Vec::with_capacity(count);
+                let mut batch_queued = 0usize;
+                for batch_buf in &mut batch_bufs {
+                    streams[stream_idx].read_exact(batch_buf)?;
+                    batch_frames.push(ZcnblkFrameHeader::decode(batch_buf)?);
+                }
+                for batch_frame in batch_frames {
+                    let slot = free_slots.pop().expect("batch free slot");
+                    if zcnblk_target_process_request_frame(
+                        targets.as_ref(),
+                        &mut streams,
+                        stream_idx,
+                        batch_frame,
+                        bytes_per_connection,
+                        chunk_bytes,
+                        write_acks,
+                        write_mode,
+                        read_mode,
+                        &mut ring,
+                        &fds_by_shard,
+                        &fixed_file_by_shard,
+                        &buffers,
+                        &mut slots,
+                        slot,
+                        &mut free_slots,
+                        &mut logical_started,
+                        &mut issue_complete_streams,
+                        &mut total_received,
+                        &mut total_written,
+                        &mut total_read,
+                        &mut total_response,
+                        &mut total_completed,
+                        &mut frames,
+                        &mut read_frames,
+                        &mut write_frames,
+                    )? {
+                        outstanding += 1;
+                        queued_since_submit += 1;
+                        batch_queued += 1;
+                    }
+                }
+                if batch_queued > 1 {
+                    drain_outstanding = true;
+                }
+            } else {
+                let slot = free_slots.pop().expect("normal free slot");
+                if zcnblk_target_process_request_frame(
+                    targets.as_ref(),
+                    &mut streams,
+                    stream_idx,
+                    frame,
+                    bytes_per_connection,
+                    chunk_bytes,
+                    write_acks,
+                    write_mode,
+                    read_mode,
+                    &mut ring,
+                    &fds_by_shard,
+                    &fixed_file_by_shard,
+                    &buffers,
+                    &mut slots,
+                    slot,
+                    &mut free_slots,
+                    &mut logical_started,
+                    &mut issue_complete_streams,
+                    &mut total_received,
+                    &mut total_written,
+                    &mut total_read,
+                    &mut total_response,
+                    &mut total_completed,
+                    &mut frames,
+                    &mut read_frames,
+                    &mut write_frames,
+                )? {
+                    outstanding += 1;
+                    queued_since_submit += 1;
+                }
+            }
+            if queued_since_submit >= submit_batch {
+                break;
+            }
+        }
+
+        if outstanding == 0 {
+            if total_completed == total_target {
+                break;
+            }
+            if !ready_reads.is_empty() {
+                zcnblk_target_flush_ready_reads(
+                    &mut streams,
+                    &buffers,
+                    &mut slots,
+                    &mut free_slots,
+                    &mut ready_reads,
+                    &mut total_read,
+                    &mut total_response,
+                    &mut total_completed,
+                )?;
+                continue;
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "zcnblk-target made no progress and has no outstanding IO",
+            ));
+        }
+
+        ring.submit_pending()?;
+        let cqe = ring.wait_cqe()?;
+        zcnblk_target_complete_cqe(
+            &mut streams,
+            &mut slots,
+            &mut free_slots,
+            &mut ready_reads,
+            cqe,
+            write_acks,
+            &mut outstanding,
+            &mut total_written,
+            &mut total_response,
+            &mut total_completed,
+        )?;
+        while outstanding > 0 {
+            let Some(cqe) = ring.try_pop_cqe() else {
+                break;
+            };
+            zcnblk_target_complete_cqe(
+                &mut streams,
+                &mut slots,
+                &mut free_slots,
+                &mut ready_reads,
+                cqe,
+                write_acks,
+                &mut outstanding,
+                &mut total_written,
+                &mut total_response,
+                &mut total_completed,
+            )?;
+        }
+        if !drain_outstanding || outstanding == 0 {
+            zcnblk_target_flush_ready_reads(
+                &mut streams,
+                &buffers,
+                &mut slots,
+                &mut free_slots,
+                &mut ready_reads,
+                &mut total_read,
+                &mut total_response,
+                &mut total_completed,
+            )?;
+        }
+        if outstanding == 0 {
+            drain_outstanding = false;
+        }
+    }
+
+    if write_mode.needs_registered_buffers() || read_mode.needs_registered_buffers() {
+        ring.unregister_buffers()?;
+    }
+    if registered_files {
+        ring.unregister_files()?;
+    }
+    for stream in &streams {
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+
+    Ok(ZcnblkWorkerStats {
+        worker,
+        streams: stream_count,
+        received_bytes: total_received,
+        written_bytes: total_written,
+        read_bytes: total_read,
+        response_bytes: total_response,
+        frames,
+        read_frames,
+        write_frames,
+        elapsed: started.elapsed(),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_target(
+    target_spec: &str,
+    bind: &str,
+    base_port: u16,
+    ports: usize,
+    connections_per_port: usize,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    pipeline: usize,
+    workers: usize,
+    ring_entries: u32,
+    buffer_mode: SlotWalBufferMode,
+    pin_workers: bool,
+) -> io::Result<()> {
+    if bytes_per_connection == 0 || chunk_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-target bytes-per-connection and chunk-bytes must be non-zero",
+        ));
+    }
+    if bytes_per_connection % chunk_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-target bytes-per-connection must be a multiple of chunk-bytes",
+        ));
+    }
+    validate_slot_wal_pipeline(pipeline, ring_entries)?;
+    let targets = Arc::new(parse_zcnblk_target_plans(
+        target_spec,
+        chunk_bytes,
+        buffer_mode,
+    )?);
+    let crypto_config = ZcnblkCryptoConfig::from_env()?;
+    let total_connections = tcp_bench_total_connections(ports, connections_per_port)?;
+    let write_mode = TcpWalWriteMode::from_env()?;
+    let read_mode = zcnblk_read_mode_from_env(write_mode)?;
+    let write_acks = env_enabled_or("URING_PLAY_ZCNBLK_WRITE_ACKS", false);
+    if write_mode == TcpWalWriteMode::Slot || read_mode == TcpWalWriteMode::Slot {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-target does not support io-slot mode yet; set URING_PLAY_TCP_WAL_WRITE_MODE and URING_PLAY_ZCNBLK_READ_MODE to fixed-file, fixed, write, or null",
+        ));
+    }
+    let shard_policy =
+        TcpMuxShardPolicy::from_env_or("URING_PLAY_ZCNBLK_SHARD", TcpMuxShardPolicy::PortLane)?;
+    let workers = if workers == 0 {
+        targets.len().max(1).min(total_connections.max(1))
+    } else {
+        workers
+    };
+    let submit_batch = env_usize_or("URING_PLAY_ZCNBLK_SUBMIT_BATCH", pipeline.min(64)).max(1);
+    let target_labels = targets
+        .iter()
+        .enumerate()
+        .map(|(idx, target)| {
+            format!(
+                "{}:{}:{}B:align{}",
+                idx,
+                target.backend.label(),
+                target.device_bytes,
+                target.required_alignment
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    println!(
+        "zcnblk-target: targets={} bind={bind} base_port={base_port} ports={ports} \
+         connections_per_port={connections_per_port} total_connections={total_connections} \
+         bytes_per_connection={bytes_per_connection} chunk_bytes={chunk_bytes} \
+         pipeline={pipeline} workers={workers} ring_entries={ring_entries} \
+         submit_batch={submit_batch} buffer_mode={} write_mode={} read_mode={} \
+         write_acks={write_acks} shard_policy={} encryption={} aes_frame_bytes={} \
+         pin_workers={pin_workers}",
+        target_labels,
+        buffer_mode.as_str(),
+        write_mode.label(),
+        read_mode.label(),
+        shard_policy.label(),
+        crypto_config.label(),
+        crypto_config.max_frame_bytes,
+    );
+
+    let listeners = tcp_bench_mux_bind_listeners(bind, base_port, ports)?;
+    let accepted = tcp_bench_mux_accept_tagged_listeners(listeners, ports, connections_per_port)?;
+    let shards = zcnblk_partition_accepted_streams(
+        accepted,
+        workers,
+        shard_policy,
+        "zcnblk-target",
+        pin_workers,
+    );
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(workers);
+    for (worker_idx, shard) in shards.into_iter().enumerate() {
+        if shard.is_empty() {
+            continue;
+        }
+        let targets = Arc::clone(&targets);
+        let crypto_config = crypto_config.clone();
+        handles.push(thread::spawn(move || {
+            zcnblk_target_worker(
+                targets,
+                worker_idx,
+                shard,
+                connections_per_port,
+                bytes_per_connection,
+                chunk_bytes,
+                pipeline,
+                ring_entries,
+                buffer_mode,
+                write_mode,
+                read_mode,
+                crypto_config,
+                pin_workers,
+            )
+        }));
+    }
+
+    let mut total_received = 0usize;
+    let mut total_written = 0usize;
+    let mut total_read = 0usize;
+    let mut total_response = 0usize;
+    let mut total_frames = 0usize;
+    let mut total_read_frames = 0usize;
+    let mut total_write_frames = 0usize;
+    for handle in handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other("zcnblk target worker panicked"))??;
+        let secs = stats.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        println!(
+            "zcnblk-target-worker: worker={} streams={} received_bytes={} written_bytes={} \
+             read_bytes={} response_bytes={} frames={} read_frames={} write_frames={} \
+             frames_per_sec={:.0} seconds={secs:.6} logical_MiBps={:.2} \
+             target_cpu={} affinity_applied={}",
+            stats.worker,
+            stats.streams,
+            stats.received_bytes,
+            stats.written_bytes,
+            stats.read_bytes,
+            stats.response_bytes,
+            stats.frames,
+            stats.read_frames,
+            stats.write_frames,
+            stats.frames as f64 / secs,
+            (stats.written_bytes + stats.read_bytes) as f64 / (1024.0 * 1024.0) / secs,
+            stats.target_cpu,
+            stats.affinity_applied
+        );
+        total_received += stats.received_bytes;
+        total_written += stats.written_bytes;
+        total_read += stats.read_bytes;
+        total_response += stats.response_bytes;
+        total_frames += stats.frames;
+        total_read_frames += stats.read_frames;
+        total_write_frames += stats.write_frames;
+    }
+    println!(
+        "zcnblk-target-summary: received_bytes={total_received} written_bytes={total_written} \
+         read_bytes={total_read} response_bytes={total_response} frames={total_frames} \
+         read_frames={total_read_frames} write_frames={total_write_frames} frames_per_sec={:.0}",
+        total_frames as f64 / started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE)
+    );
+    print_tcp_bench_result(
+        "zcnblk-target",
+        total_written + total_read,
+        started.elapsed(),
+    );
+    Ok(())
+}
+
+fn zcnblk_connect_specs(
+    base_port: u16,
+    ports: usize,
+    connections_per_port: usize,
+    source_ports: TcpSourcePortPlan,
+    shard_count: usize,
+    bytes_per_connection: usize,
+) -> io::Result<Vec<ZcnblkConnectSpec>> {
+    let mut specs = Vec::with_capacity(tcp_bench_total_connections(ports, connections_per_port)?);
+    let mut shard_ordinals = vec![0usize; shard_count];
+    let base_offset = env_size_opt("URING_PLAY_ZCNBLK_BASE_OFFSET_BYTES")?.unwrap_or(0) as u64;
+    let map = env::var("URING_PLAY_ZCNBLK_SEND_SHARD")
+        .unwrap_or_else(|_| "port-lane".to_string())
+        .to_ascii_lowercase();
+    let source_specs =
+        tcp_bench_mux_connect_specs(base_port, ports, connections_per_port, source_ports)?;
+    for (global_index, spec) in source_specs.into_iter().enumerate() {
+        let shard = match map.as_str() {
+            "" | "port-lane" | "lane" | "port" => spec.lane % shard_count,
+            "round-robin" | "rr" => global_index % shard_count,
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "unknown URING_PLAY_ZCNBLK_SEND_SHARD={other:?}; use port-lane or round-robin"
+                    ),
+                ));
+            }
+        };
+        let ordinal = shard_ordinals[shard];
+        shard_ordinals[shard] = shard_ordinals[shard].checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "zcnblk shard ordinal overflow")
+        })?;
+        let offset = base_offset
+            .checked_add(
+                (ordinal as u64)
+                    .checked_mul(bytes_per_connection as u64)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "zcnblk offset overflow")
+                    })?,
+            )
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zcnblk offset overflow"))?;
+        specs.push(ZcnblkConnectSpec {
+            spec,
+            shard,
+            base_offset: offset,
+        });
+    }
+    Ok(specs)
+}
+
+fn zcnblk_partition_connect_specs(
+    specs: Vec<ZcnblkConnectSpec>,
+    workers: usize,
+) -> Vec<Vec<ZcnblkConnectSpec>> {
+    let mut shards = (0..workers).map(|_| Vec::new()).collect::<Vec<_>>();
+    for (idx, spec) in specs.into_iter().enumerate() {
+        shards[idx % workers].push(spec);
+    }
+    shards
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_send_worker(
+    worker: usize,
+    addr: Arc<String>,
+    specs: Vec<ZcnblkConnectSpec>,
+    connections_per_port: usize,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    payload_pattern: SendPayloadPattern,
+    op_mode: ZcnblkOperationMode,
+    crypto_config: ZcnblkCryptoConfig,
+    ready_barrier: Arc<Barrier>,
+    start_barrier: Arc<Barrier>,
+) -> io::Result<ZcnblkSendStats> {
+    let affinity = maybe_pin_current_thread("zcnblk-send-worker", worker);
+    let stream_count = specs.len();
+    let mut streams = Vec::with_capacity(specs.len());
+    for spec in &specs {
+        let stream = tcp_bench_connect(addr.as_str(), spec.spec.port, spec.spec.source_port)
+            .map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!(
+                        "zcnblk connect {}:{} lane={} conn={}: {err}",
+                        addr.as_str(),
+                        spec.spec.port,
+                        spec.spec.lane,
+                        spec.spec.conn_index
+                    ),
+                )
+            })?;
+        set_tcp_nodelay_from_env(&stream)?;
+        set_tcp_bench_buffers(&stream);
+        println!(
+            "zcnblk-send-stream: worker={worker} lane={} port={} conn={} shard={} base_offset={}",
+            spec.spec.lane, spec.spec.port, spec.spec.conn_index, spec.shard, spec.base_offset
+        );
+        let conn_id =
+            zcnblk_transport_conn_id(spec.spec.lane, spec.spec.conn_index, connections_per_port)?;
+        streams.push(ZcnblkTransport::connect_client(
+            stream,
+            spec.spec.lane,
+            conn_id,
+            &crypto_config,
+        )?);
+    }
+
+    let mut payload = vec![0u8; chunk_bytes];
+    payload_pattern.fill(&mut payload);
+    let mut read_buf = vec![0u8; chunk_bytes];
+    let verify_reads = env_enabled_or("URING_PLAY_ZCNBLK_VERIFY_READS", false);
+    let mut expected_buf = if verify_reads {
+        vec![0u8; chunk_bytes]
+    } else {
+        Vec::new()
+    };
+    let read_window = env_usize_or("URING_PLAY_ZCNBLK_READ_WINDOW", 64).max(1);
+    let mut issued = vec![0usize; streams.len()];
+    let mut completed = vec![0usize; streams.len()];
+    let mut in_flight_reads = vec![0usize; streams.len()];
+    let mut done = vec![false; streams.len()];
+    let mut complete = 0usize;
+    let mut write_bytes = 0usize;
+    let mut read_bytes = 0usize;
+    let mut verified_read_bytes = 0usize;
+    let mut read_checksum = 0u64;
+    let mut expected_checksum = 0u64;
+    let mut wire_bytes = 0usize;
+    let mut frames = 0usize;
+    let mut read_frames = 0usize;
+    let mut write_frames = 0usize;
+
+    ready_barrier.wait();
+    start_barrier.wait();
+    let started = Instant::now();
+    while complete < streams.len() {
+        let mut progressed = false;
+        for idx in 0..streams.len() {
+            while issued[idx] < bytes_per_connection {
+                let frame_index = issued[idx] / chunk_bytes;
+                let op = op_mode.op_for_frame(frame_index);
+                if op == ZCNBLK_OP_READ && in_flight_reads[idx] >= read_window {
+                    break;
+                }
+                let len = (bytes_per_connection - issued[idx]).min(chunk_bytes);
+                let offset = specs[idx]
+                    .base_offset
+                    .checked_add(issued[idx] as u64)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "zcnblk offset overflow")
+                    })?;
+                let frame = ZcnblkFrameHeader::new(op, specs[idx].shard, len, offset)?;
+                let header = frame.encode();
+                issued[idx] += len;
+                frames += 1;
+                progressed = true;
+                if op == ZCNBLK_OP_WRITE {
+                    if payload_pattern.is_offset_dependent() {
+                        payload_pattern.fill_for_zcnblk(
+                            &mut payload[..len],
+                            specs[idx].shard,
+                            offset,
+                        );
+                    }
+                    wire_bytes +=
+                        streams[idx].write_frame_payload(&header, &payload[..len], false)?;
+                    write_bytes += len;
+                    write_frames += 1;
+                    completed[idx] = completed[idx].checked_add(len).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "zcnblk completion overflow")
+                    })?;
+                } else {
+                    wire_bytes += streams[idx].write_frame_payload(&header, &[], false)?;
+                    in_flight_reads[idx] += 1;
+                    read_frames += 1;
+                }
+            }
+        }
+
+        for idx in 0..streams.len() {
+            if in_flight_reads[idx] == 0 {
+                continue;
+            }
+            let mut response_header = [0u8; ZCNBLK_FRAME_HEADER_LEN];
+            streams[idx].read_exact(&mut response_header)?;
+            let response = ZcnblkFrameHeader::decode(&response_header)?;
+            let len = response.len as usize;
+            let response_end = response
+                .offset
+                .checked_add(response.len as u64)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcnblk response offset overflow",
+                    )
+                })?;
+            let expected_start = specs[idx].base_offset;
+            let expected_end = specs[idx]
+                .base_offset
+                .checked_add(bytes_per_connection as u64)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk expected range overflow")
+                })?;
+            if response.op != ZCNBLK_OP_READ_RESP
+                || response.shard as usize != specs[idx].shard
+                || len == 0
+                || len > chunk_bytes
+                || response.offset < expected_start
+                || response_end > expected_end
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk read response mismatch op={} shard={} len={} offset={}",
+                        response.op, response.shard, response.len, response.offset
+                    ),
+                ));
+            }
+            let response_header = response.encode();
+            wire_bytes +=
+                streams[idx].read_frame_payload(&response_header, &mut read_buf[..len], true)?
+                    + ZCNBLK_FRAME_HEADER_LEN;
+            if verify_reads {
+                payload_pattern.fill_for_zcnblk(
+                    &mut expected_buf[..len],
+                    specs[idx].shard,
+                    response.offset,
+                );
+                let got_checksum = checksum_bytes_scalar(&read_buf[..len]);
+                let want_checksum = checksum_bytes_scalar(&expected_buf[..len]);
+                read_checksum = read_checksum.wrapping_add(got_checksum);
+                expected_checksum = expected_checksum.wrapping_add(want_checksum);
+                if read_buf[..len] != expected_buf[..len] {
+                    let mismatch = read_buf[..len]
+                        .iter()
+                        .zip(&expected_buf[..len])
+                        .position(|(got, want)| got != want)
+                        .unwrap_or(0);
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "zcnblk read verify mismatch stream={idx} shard={} offset={} len={len} mismatch_at={} got=0x{:02x} expected=0x{:02x} got_checksum=0x{got_checksum:016x} expected_checksum=0x{want_checksum:016x}",
+                            response.shard,
+                            response.offset,
+                            mismatch,
+                            read_buf[mismatch],
+                            expected_buf[mismatch],
+                        ),
+                    ));
+                }
+                verified_read_bytes = verified_read_bytes.checked_add(len).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk verified bytes overflow")
+                })?;
+            }
+            in_flight_reads[idx] -= 1;
+            completed[idx] = completed[idx].checked_add(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk completion overflow")
+            })?;
+            read_bytes += len;
+            progressed = true;
+        }
+
+        for idx in 0..streams.len() {
+            if !done[idx]
+                && issued[idx] == bytes_per_connection
+                && completed[idx] == bytes_per_connection
+                && in_flight_reads[idx] == 0
+            {
+                done[idx] = true;
+                complete += 1;
+                streams[idx].shutdown(Shutdown::Write).ok();
+            }
+        }
+
+        if !progressed {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "zcnblk-send made no progress",
+            ));
+        }
+    }
+
+    Ok(ZcnblkSendStats {
+        worker,
+        streams: stream_count,
+        write_bytes,
+        read_bytes,
+        verified_read_bytes,
+        read_checksum,
+        expected_checksum,
+        wire_bytes,
+        frames,
+        read_frames,
+        write_frames,
+        elapsed: started.elapsed(),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_send(
+    addr: &str,
+    shard_count: usize,
+    base_port: u16,
+    ports: usize,
+    connections_per_port: usize,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    workers: usize,
+) -> io::Result<()> {
+    if shard_count == 0 || bytes_per_connection == 0 || chunk_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-send shard-count, bytes-per-connection, and chunk-bytes must be non-zero",
+        ));
+    }
+    if bytes_per_connection % chunk_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-send bytes-per-connection must be a multiple of chunk-bytes",
+        ));
+    }
+    ensure_sector_aligned(chunk_bytes, "chunk-bytes")?;
+    let payload_pattern = SendPayloadPattern::from_env(chunk_bytes)?;
+    payload_pattern.validate(bytes_per_connection, chunk_bytes)?;
+    let op_mode = ZcnblkOperationMode::from_env()?;
+    let verify_reads = env_enabled_or("URING_PLAY_ZCNBLK_VERIFY_READS", false);
+    let read_window = env_usize_or("URING_PLAY_ZCNBLK_READ_WINDOW", 64).max(1);
+    let source_ports = TcpSourcePortPlan::from_env()?;
+    let source_ip = tcp_bench_source_ip_from_env()?;
+    let crypto_config = ZcnblkCryptoConfig::from_env()?;
+    let total_connections = tcp_bench_total_connections(ports, connections_per_port)?;
+    let workers = tcp_bench_auto_workers(workers, total_connections);
+    let specs = zcnblk_connect_specs(
+        base_port,
+        ports,
+        connections_per_port,
+        source_ports,
+        shard_count,
+        bytes_per_connection,
+    )?;
+    let shards = zcnblk_partition_connect_specs(specs, workers);
+    let active_workers = shards.iter().filter(|shard| !shard.is_empty()).count();
+    let ready_barrier = Arc::new(Barrier::new(active_workers + 1));
+    let start_barrier = Arc::new(Barrier::new(active_workers + 1));
+    let addr = Arc::new(addr.to_string());
+
+    println!(
+        "zcnblk-send: addr={} shard_count={shard_count} base_port={base_port} ports={ports} \
+         connections_per_port={connections_per_port} total_connections={total_connections} \
+         bytes_per_connection={bytes_per_connection} chunk_bytes={chunk_bytes} \
+         workers={workers} op_mode={} read_window={read_window} verify_reads={} \
+         payload_pattern={} source_ip={} source_ports={} encryption={} aes_frame_bytes={}",
+        addr,
+        op_mode.label(),
+        yes(verify_reads),
+        payload_pattern.label(),
+        source_ip
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| "kernel-route".to_string()),
+        source_ports.label(),
+        crypto_config.label(),
+        crypto_config.max_frame_bytes,
+    );
+
+    let mut handles = Vec::with_capacity(workers);
+    for (worker_idx, shard) in shards.into_iter().enumerate() {
+        if shard.is_empty() {
+            continue;
+        }
+        let addr = Arc::clone(&addr);
+        let ready_barrier = Arc::clone(&ready_barrier);
+        let start_barrier = Arc::clone(&start_barrier);
+        let crypto_config = crypto_config.clone();
+        handles.push(thread::spawn(move || {
+            zcnblk_send_worker(
+                worker_idx,
+                addr,
+                shard,
+                connections_per_port,
+                bytes_per_connection,
+                chunk_bytes,
+                payload_pattern,
+                op_mode,
+                crypto_config,
+                ready_barrier,
+                start_barrier,
+            )
+        }));
+    }
+    ready_barrier.wait();
+    let started = Instant::now();
+    start_barrier.wait();
+
+    let mut total_write = 0usize;
+    let mut total_read = 0usize;
+    let mut total_verified_read = 0usize;
+    let mut total_read_checksum = 0u64;
+    let mut total_expected_checksum = 0u64;
+    let mut total_wire = 0usize;
+    let mut total_frames = 0usize;
+    let mut total_read_frames = 0usize;
+    let mut total_write_frames = 0usize;
+    let mut elapsed = started.elapsed();
+    for handle in handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other("zcnblk send worker panicked"))??;
+        let secs = stats.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        println!(
+            "zcnblk-send-worker: worker={} streams={} write_bytes={} read_bytes={} \
+             verified_read_bytes={} read_checksum=0x{:016x} expected_checksum=0x{:016x} \
+             wire_bytes={} frames={} read_frames={} write_frames={} frames_per_sec={:.0} \
+             seconds={secs:.6} logical_MiBps={:.2} \
+             target_cpu={} affinity_applied={}",
+            stats.worker,
+            stats.streams,
+            stats.write_bytes,
+            stats.read_bytes,
+            stats.verified_read_bytes,
+            stats.read_checksum,
+            stats.expected_checksum,
+            stats.wire_bytes,
+            stats.frames,
+            stats.read_frames,
+            stats.write_frames,
+            stats.frames as f64 / secs,
+            (stats.write_bytes + stats.read_bytes) as f64 / (1024.0 * 1024.0) / secs,
+            stats.target_cpu,
+            stats.affinity_applied
+        );
+        total_write += stats.write_bytes;
+        total_read += stats.read_bytes;
+        total_verified_read += stats.verified_read_bytes;
+        total_read_checksum = total_read_checksum.wrapping_add(stats.read_checksum);
+        total_expected_checksum = total_expected_checksum.wrapping_add(stats.expected_checksum);
+        total_wire += stats.wire_bytes;
+        total_frames += stats.frames;
+        total_read_frames += stats.read_frames;
+        total_write_frames += stats.write_frames;
+        elapsed = elapsed.max(stats.elapsed);
+    }
+    println!(
+        "zcnblk-send-summary: write_bytes={total_write} read_bytes={total_read} \
+         verified_read_bytes={total_verified_read} read_checksum=0x{total_read_checksum:016x} \
+         expected_checksum=0x{total_expected_checksum:016x} wire_bytes={total_wire} \
+         frames={total_frames} read_frames={total_read_frames} write_frames={total_write_frames} \
+         frames_per_sec={:.0}",
+        total_frames as f64 / elapsed.as_secs_f64().max(f64::MIN_POSITIVE)
+    );
+    print_tcp_bench_result("zcnblk-send", total_write + total_read, elapsed);
+    Ok(())
 }
 
 struct UdpWalSocketState {
@@ -11984,10 +14857,11 @@ fn tcp_wal_zcrx_mux_server(
              zcrx_area_base=0x{:x} zcrx_area_bytes={} zcrx_area_alignment={} \
              zcrx_rx_buf_len={} memory_policy={} write_pipeline={} frame_pipeline={} \
              coalesce_batch_chunks={} coalesce_write_bytes={} \
+             logical_record_bytes={} \
              received_bytes={} written_bytes={} \
              wal_bytes={} direct_frames={} direct_bytes={} \
              bounce_frames={} bounce_bytes={} coalesce_frames={} coalesce_bytes={} \
-             frames={} chunks={} \
+             frames={} chunks={} logical_records={} \
              direct_enabled={} recv_multishot={} max_active_recvs={} recv_data_cqes={} recv_final_cqes={} \
              recv_empty_finals={} transient_recv_errors={} transient_recv_deferred={} \
              transient_recv_backoffs={} recv_flush_calls={} recv_flush_queued={} \
@@ -12000,7 +14874,8 @@ fn tcp_wal_zcrx_mux_server(
              direct_stall_coalesce={} direct_stall_coalesce_attempts={} \
              bounce_attempts={} bounce_stall_write_slots={} \
              bounce_stall_frame_slots={} bounce_stall_sq_space={} \
-             coalesce_appends={} coalesce_completed_chunks={} coalesce_fixed_writes={} \
+             coalesce_appends={} coalesce_completed_chunks={} coalesce_completed_records={} \
+             coalesce_fixed_writes={} \
              coalesce_flushes={} coalesce_nt_copy={} coalesce_nt_copy_calls={} \
              coalesce_nt_copy_bytes={} \
              seconds={secs:.6} thread_cpu_seconds={cpu_secs:.6} cpu_wall_pct={cpu_pct:.1} \
@@ -12024,6 +14899,7 @@ fn tcp_wal_zcrx_mux_server(
             stats.frame_pipeline,
             stats.coalesce_batch_chunks,
             stats.coalesce_write_bytes,
+            stats.logical_record_bytes,
             stats.received_bytes,
             stats.written_bytes,
             stats.wal_bytes,
@@ -12034,6 +14910,7 @@ fn tcp_wal_zcrx_mux_server(
             stats.coalesce_frames,
             stats.coalesce_bytes,
             stats.frames,
+            stats.chunks,
             stats.chunks,
             yes(stats.counters.direct_enabled),
             yes(stats.counters.recv_multishot),
@@ -12068,6 +14945,7 @@ fn tcp_wal_zcrx_mux_server(
             stats.counters.bounce_stall_frame_slots,
             stats.counters.bounce_stall_sq_space,
             stats.counters.coalesce_appends,
+            stats.counters.coalesce_completed_chunks,
             stats.counters.coalesce_completed_chunks,
             stats.counters.coalesce_fixed_writes,
             stats.counters.coalesce_flushes,
@@ -12163,7 +15041,7 @@ fn tcp_wal_zcrx_mux_server(
          direct_frames={total_direct_frames} direct_bytes={total_direct_bytes} \
          bounce_frames={total_bounce_frames} bounce_bytes={total_bounce_bytes} \
          coalesce_frames={total_coalesce_frames} coalesce_bytes={total_coalesce_bytes} \
-         frames={total_frames} chunks={total_chunks}"
+         frames={total_frames} chunks={total_chunks} logical_records={total_chunks}"
     );
     print_tcp_bench_result("tcp-wal-mux-server-zcrx", total_written, started.elapsed());
     Ok(())
@@ -13079,6 +15957,7 @@ fn tcp_bench_uring_mux_send(
     let payload_pattern = SendPayloadPattern::from_env(chunk_bytes)?;
     payload_pattern.validate(bytes_per_connection, chunk_bytes)?;
     let source_ports = TcpSourcePortPlan::from_env()?;
+    let source_ip = tcp_bench_source_ip_from_env()?;
     let fixed_file_send = uring_send_fixed_file_enabled();
 
     let total_connections = tcp_bench_total_connections(ports, connections_per_port)?;
@@ -13086,10 +15965,14 @@ fn tcp_bench_uring_mux_send(
         "tcp-bench-uring-mux-send: mode={} addr={addr} base_port={base_port} ports={ports} \
          connections_per_port={connections_per_port} total_connections={total_connections} \
          bytes_per_connection={bytes_per_connection} chunk_bytes={chunk_bytes} \
-         pipeline={pipeline} tcp_nodelay={} payload_pattern={} source_ports={} fixed_file={}",
+         pipeline={pipeline} tcp_nodelay={} payload_pattern={} source_ip={} \
+         source_ports={} fixed_file={}",
         send_mode.name(),
         yes(tcp_nodelay_enabled()),
         payload_pattern.label(),
+        source_ip
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| "kernel-route".to_string()),
         source_ports.label(),
         fixed_file_send
     );
@@ -13519,6 +16402,1644 @@ fn raft_leader(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RaftWalPath {
+    DirectTcp,
+    TcpMux,
+    EbpfCilium,
+    Local,
+    Rdma,
+}
+
+impl RaftWalPath {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "" | "direct" | "tcp" | "direct-tcp" | "non-ebpf" => Ok(Self::DirectTcp),
+            "tcp-mux" | "mux" | "tcmux" => Ok(Self::TcpMux),
+            "ebpf" | "cilium" | "ebpf-cilium" | "service" | "clusterip" => Ok(Self::EbpfCilium),
+            "local" | "loopback" => Ok(Self::Local),
+            "rdma" | "verbs" | "roce" | "ib" => Ok(Self::Rdma),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown raft WAL path {other:?}; use direct-tcp, tcp-mux, ebpf-cilium, local, or rdma"
+                ),
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectTcp => "direct-tcp",
+            Self::TcpMux => "tcp-mux",
+            Self::EbpfCilium => "ebpf-cilium",
+            Self::Local => "local",
+            Self::Rdma => "rdma",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RaftWalSendMode {
+    Send,
+    SendZc,
+    SendZcFixed,
+}
+
+impl RaftWalSendMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "" | "send" | "uring-send" => Ok(Self::Send),
+            "send-zc" | "zc" | "zerocopy" => Ok(Self::SendZc),
+            "send-zc-fixed" | "zc-fixed" | "zerocopy-fixed" | "fixed-zc" => Ok(Self::SendZcFixed),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown raft WAL send mode {other:?}; use send, send-zc, or send-zc-fixed"
+                ),
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Send => "send",
+            Self::SendZc => "send-zc",
+            Self::SendZcFixed => "send-zc-fixed",
+        }
+    }
+
+    fn uses_zc(self) -> bool {
+        matches!(self, Self::SendZc | Self::SendZcFixed)
+    }
+
+    fn uses_fixed_buffer(self) -> bool {
+        matches!(self, Self::SendZcFixed)
+    }
+}
+
+fn raft_wal_auto_backend() -> ZckvPageBackend {
+    match kernel_supports_io_slots() {
+        Ok(true) => {
+            eprintln!("raft-wal-backend-auto: io-slot kernel support detected; using slot");
+            ZckvPageBackend::Slot
+        }
+        Ok(false) => {
+            eprintln!(
+                "raft-wal-backend-auto: io-slot kernel support unavailable; using fixed-file"
+            );
+            ZckvPageBackend::FixedFile
+        }
+        Err(err) => {
+            eprintln!(
+                "raft-wal-backend-auto: io_uring opcode query failed ({err}); using fixed-file"
+            );
+            ZckvPageBackend::FixedFile
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RaftWalFollowerCqeKind {
+    Recv = 1,
+    WalWrite = 2,
+    AckSend = 3,
+}
+
+impl RaftWalFollowerCqeKind {
+    fn from_bits(bits: u64) -> Option<Self> {
+        match bits {
+            1 => Some(Self::Recv),
+            2 => Some(Self::WalWrite),
+            3 => Some(Self::AckSend),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RaftWalLeaderCqeKind {
+    Send = 1,
+    AckRecv = 2,
+}
+
+impl RaftWalLeaderCqeKind {
+    fn from_bits(bits: u64) -> Option<Self> {
+        match bits {
+            1 => Some(Self::Send),
+            2 => Some(Self::AckRecv),
+            _ => None,
+        }
+    }
+}
+
+const RAFT_WAL_CQE_KIND_SHIFT: u64 = 56;
+const RAFT_WAL_CQE_SLOT_MASK: u64 = (1u64 << RAFT_WAL_CQE_KIND_SHIFT) - 1;
+
+fn raft_wal_follower_user_data(kind: RaftWalFollowerCqeKind, slot: usize) -> io::Result<u64> {
+    let slot = u64::try_from(slot).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft WAL follower slot index does not fit in u64",
+        )
+    })?;
+    if slot > RAFT_WAL_CQE_SLOT_MASK {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft WAL follower slot index exceeds CQE encoding",
+        ));
+    }
+    Ok(((kind as u64) << RAFT_WAL_CQE_KIND_SHIFT) | slot)
+}
+
+fn raft_wal_leader_user_data(kind: RaftWalLeaderCqeKind, slot: usize) -> io::Result<u64> {
+    let slot = u64::try_from(slot).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft WAL leader slot index does not fit in u64",
+        )
+    })?;
+    if slot > RAFT_WAL_CQE_SLOT_MASK {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft WAL leader slot index exceeds CQE encoding",
+        ));
+    }
+    Ok(((kind as u64) << RAFT_WAL_CQE_KIND_SHIFT) | slot)
+}
+
+fn raft_wal_follower_cqe_parts(
+    user_data: u64,
+    slot_count: usize,
+) -> io::Result<(RaftWalFollowerCqeKind, usize)> {
+    let slot = (user_data & RAFT_WAL_CQE_SLOT_MASK) as usize;
+    let kind = RaftWalFollowerCqeKind::from_bits(user_data >> RAFT_WAL_CQE_KIND_SHIFT).ok_or_else(
+        || {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown raft WAL follower CQE user_data={user_data}"),
+            )
+        },
+    )?;
+    if slot >= slot_count {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("raft WAL follower CQE returned invalid slot={slot}"),
+        ));
+    }
+    Ok((kind, slot))
+}
+
+fn raft_wal_leader_cqe_parts(
+    user_data: u64,
+    slot_count: usize,
+) -> io::Result<(RaftWalLeaderCqeKind, usize)> {
+    let slot = (user_data & RAFT_WAL_CQE_SLOT_MASK) as usize;
+    let kind =
+        RaftWalLeaderCqeKind::from_bits(user_data >> RAFT_WAL_CQE_KIND_SHIFT).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown raft WAL leader CQE user_data={user_data}"),
+            )
+        })?;
+    if slot >= slot_count {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("raft WAL leader CQE returned invalid slot={slot}"),
+        ));
+    }
+    Ok((kind, slot))
+}
+
+fn raft_wal_frame_bytes(payload_bytes: usize) -> io::Result<usize> {
+    let frame_bytes = RAFT_APPEND_HEADER_LEN
+        .checked_add(payload_bytes)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "raft WAL frame overflow"))?;
+    if frame_bytes > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft WAL frame must fit in u32 for io_uring SQEs",
+        ));
+    }
+    Ok(frame_bytes)
+}
+
+fn raft_wal_entry_bytes(frame_bytes: usize) -> io::Result<usize> {
+    let wal_entry_bytes = align_up(frame_bytes, SECTOR_SIZE);
+    if wal_entry_bytes > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft WAL entry must fit in u32 for io_uring SQEs",
+        ));
+    }
+    ensure_sector_aligned(wal_entry_bytes, "raft-wal-entry-bytes")?;
+    Ok(wal_entry_bytes)
+}
+
+fn raft_wal_total_bytes(entries: usize, wal_entry_bytes: usize) -> io::Result<usize> {
+    entries.checked_mul(wal_entry_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft WAL total byte count overflow",
+        )
+    })
+}
+
+fn validate_raft_append_frame(buf: &[u8], expected_payload_bytes: usize) -> io::Result<u64> {
+    if buf.len() < RAFT_APPEND_HEADER_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "raft append frame is shorter than the header",
+        ));
+    }
+    if &buf[..8] != RAFT_APPEND_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid raft append magic",
+        ));
+    }
+    let payload_len = parse_be_u32(&buf[24..28]) as usize;
+    if payload_len != expected_payload_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unexpected raft append payload length {payload_len}/{expected_payload_bytes}"),
+        ));
+    }
+    Ok(parse_be_u64(&buf[16..24]))
+}
+
+fn validate_raft_ack_frame(buf: &[u8], peer: &str) -> io::Result<u64> {
+    if buf.len() < RAFT_ACK_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("short raft ACK from {peer}"),
+        ));
+    }
+    if &buf[..8] != RAFT_ACK_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid raft ACK magic from {peer}"),
+        ));
+    }
+    Ok(parse_be_u64(&buf[8..16]))
+}
+
+fn fill_raft_wal_append_frame(buf: &mut [u8], index: u64, payload_bytes: usize) -> io::Result<()> {
+    let frame_bytes = raft_wal_frame_bytes(payload_bytes)?;
+    if buf.len() < frame_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft WAL append buffer is too small",
+        ));
+    }
+    let header = raft_append_header(index, payload_bytes)?;
+    buf[..RAFT_APPEND_HEADER_LEN].copy_from_slice(&header);
+    if payload_bytes >= 8 {
+        buf[RAFT_APPEND_HEADER_LEN..RAFT_APPEND_HEADER_LEN + 8]
+            .copy_from_slice(&index.to_ne_bytes());
+    }
+    Ok(())
+}
+
+fn raft_wal_queue_follower_recv(
+    ring: &mut RawRing,
+    buffers: &FixedSendBuffers,
+    slots: &[RaftWalFollowerSlot],
+    slot: usize,
+    frame_bytes: usize,
+) -> io::Result<()> {
+    let filled = slots[slot].filled;
+    if filled >= frame_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft WAL recv slot is already full",
+        ));
+    }
+    let len = u32::try_from(frame_bytes - filled).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft WAL recv length does not fit in u32",
+        )
+    })?;
+    let buf = unsafe { buffers.ptr(slot).add(filled) };
+    ring.queue_recv_fixed_file(
+        1,
+        buf,
+        len,
+        0,
+        raft_wal_follower_user_data(RaftWalFollowerCqeKind::Recv, slot)?,
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RaftWalFollowerSlotStage {
+    Free,
+    Recv,
+    WalWrite,
+    AckSend,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RaftWalFollowerSlot {
+    stage: RaftWalFollowerSlotStage,
+    filled: usize,
+    ack_sent: usize,
+    index: u64,
+    file_offset: u64,
+}
+
+impl Default for RaftWalFollowerSlot {
+    fn default() -> Self {
+        Self {
+            stage: RaftWalFollowerSlotStage::Free,
+            filled: 0,
+            ack_sent: 0,
+            index: 0,
+            file_offset: 0,
+        }
+    }
+}
+
+fn raft_wal_free_follower_slot(
+    slots: &mut [RaftWalFollowerSlot],
+    free_slots: &mut Vec<usize>,
+    slot: usize,
+) {
+    slots[slot] = RaftWalFollowerSlot::default();
+    free_slots.push(slot);
+}
+
+fn raft_wal_should_send_ack(
+    commit_index: u64,
+    last_ack_sent_index: u64,
+    expected_entries: usize,
+    ack_every: usize,
+) -> bool {
+    if commit_index <= last_ack_sent_index {
+        return false;
+    }
+    commit_index as usize == expected_entries
+        || commit_index.saturating_sub(last_ack_sent_index) >= ack_every as u64
+}
+
+fn raft_wal_queue_follower_ack(
+    ring: &mut RawRing,
+    buffers: &FixedSendBuffers,
+    slots: &mut [RaftWalFollowerSlot],
+    slot: usize,
+    ack_index: u64,
+) -> io::Result<()> {
+    let ack = raft_ack_frame(ack_index);
+    unsafe {
+        ptr::copy_nonoverlapping(ack.as_ptr(), buffers.ptr(slot), RAFT_ACK_LEN);
+    }
+    slots[slot].stage = RaftWalFollowerSlotStage::AckSend;
+    slots[slot].ack_sent = 0;
+    slots[slot].index = ack_index;
+    ring.queue_send_fixed_file(
+        1,
+        buffers.ptr(slot).cast_const(),
+        RAFT_ACK_LEN as u32,
+        libc::MSG_NOSIGNAL as u32,
+        raft_wal_follower_user_data(RaftWalFollowerCqeKind::AckSend, slot)?,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn raft_wal_follower(
+    target_arg: &str,
+    bind: &str,
+    port: u16,
+    expected_entries: usize,
+    payload_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    backend: ZckvPageBackend,
+    buffer_mode: SlotWalBufferMode,
+    path: RaftWalPath,
+) -> io::Result<()> {
+    if expected_entries == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft-wal-follower entries must be greater than zero",
+        ));
+    }
+    if pipeline == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft-wal-follower pipeline must be greater than zero",
+        ));
+    }
+
+    let frame_bytes = raft_wal_frame_bytes(payload_bytes)?;
+    let wal_entry_bytes = raft_wal_entry_bytes(frame_bytes)?;
+    let wal_entry_bytes_u32 = wal_entry_bytes as u32;
+    let total_wal_bytes = raft_wal_total_bytes(expected_entries, wal_entry_bytes)?;
+    let buffer_count = pipeline;
+    validate_slot_wal_pipeline(buffer_count, ring_entries)?;
+    if matches!(backend, ZckvPageBackend::Slot) {
+        ensure_io_slots_available("raft-wal-follower")?;
+    }
+    let (target, device_bytes, required_alignment, segment_bytes) = validate_slot_wal_common(
+        target_arg,
+        total_wal_bytes,
+        wal_entry_bytes,
+        SlotWalMode::Write,
+        buffer_mode,
+    )?;
+    let base_offset = env_size_opt("URING_PLAY_RAFT_WAL_BASE_OFFSET")?.unwrap_or(0);
+    if base_offset != 0 {
+        ensure_sector_aligned(base_offset, "URING_PLAY_RAFT_WAL_BASE_OFFSET")?;
+    }
+    let wal_end_offset = (base_offset as u64)
+        .checked_add(total_wal_bytes as u64)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "raft WAL end offset overflow")
+        })?;
+    if wal_end_offset > device_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "raft WAL region end offset {wal_end_offset} exceeds block device size {device_bytes}"
+            ),
+        ));
+    }
+
+    let listener = TcpListener::bind((bind, port))?;
+    println!(
+        "raft-wal-follower: listening on {bind}:{port} target={} backend={} path={} \
+         entries={expected_entries} payload_bytes={payload_bytes} frame_bytes={frame_bytes} \
+         wal_entry_bytes={wal_entry_bytes} total_wal_bytes={total_wal_bytes} \
+         base_offset={base_offset} wal_end_offset={wal_end_offset} \
+         pipeline={pipeline} ring_entries={ring_entries} buffers={} required_alignment={} \
+         segment_bytes={} device_bytes={device_bytes}",
+        target.label(),
+        backend.as_str(),
+        path.as_str(),
+        buffer_mode.as_str(),
+        required_alignment,
+        segment_bytes
+    );
+
+    let (stream, peer_addr) = listener.accept()?;
+    stream.set_nodelay(true)?;
+    println!("raft-wal-follower: accepted {peer_addr}");
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_DIRECT | libc::O_CLOEXEC)
+        .open(target.open_path())?;
+    let fd = file.as_raw_fd();
+    let ring_entries = ring_entries.max((pipeline.saturating_mul(3)).max(64) as u32);
+    let mut ring = RawRing::new(ring_entries, ring_entries.saturating_mul(2))?;
+    ring.register_napi_from_env("raft-wal-follower")?;
+
+    let mut fds = [fd, stream.as_raw_fd()];
+    ring.register_files(&mut fds)?;
+
+    let buffers = buffer_mode.allocate(buffer_count, wal_entry_bytes)?;
+    let slot_buffer_layout = SlotBufferLayout::from_env()?;
+    slot_buffer_layout.register_buffers(&ring, &buffers, wal_entry_bytes)?;
+    let slot_ids = if matches!(backend, ZckvPageBackend::Slot) {
+        slot_buffer_layout.register_io_slots(&ring, buffer_count)?
+    } else {
+        Vec::new()
+    };
+
+    let mut slots = vec![RaftWalFollowerSlot::default(); buffer_count];
+    let mut free_slots: Vec<usize> = (0..buffer_count).rev().collect();
+    let mut submitted_entries = 0usize;
+    let mut wal_completed_entries = 0usize;
+    let mut ack_sends_in_flight = 0usize;
+    let mut recv_in_flight = false;
+    let mut recv_ops = 0usize;
+    let mut wal_ops = 0usize;
+    let mut ack_ops = 0usize;
+    let mut wire_bytes = 0usize;
+    let mut written_bytes = 0usize;
+    let mut next_wal_offset = base_offset as u64;
+    let mut commit_index = 0u64;
+    let durable_len = expected_entries.checked_add(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft WAL durable index table size overflow",
+        )
+    })?;
+    let mut durable_indexes = vec![false; durable_len];
+    let start_cpu = thread_cpu_time().unwrap_or_default();
+    let started = Instant::now();
+    let rx_wave_entries =
+        env_usize_or("URING_PLAY_RAFT_RX_WAVE_ENTRIES", pipeline.min(64)).clamp(1, pipeline);
+    let ack_every = env_usize_or("URING_PLAY_RAFT_ACK_EVERY", rx_wave_entries).clamp(1, pipeline);
+    let completion_batch = env_usize_or("URING_PLAY_RAFT_COMPLETION_BATCH", 64).max(1);
+
+    if rx_wave_entries > 1 {
+        let rx_wave_bytes = frame_bytes.checked_mul(rx_wave_entries).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "raft WAL RX wave byte overflow",
+            )
+        })?;
+        let total_wire_target = expected_entries.checked_mul(frame_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "raft WAL wire target byte count overflow",
+            )
+        })?;
+        let mut rx_buf = vec![0u8; rx_wave_bytes];
+        let mut rx_filled = 0usize;
+        let mut last_ack_sent_index = 0u64;
+
+        while commit_index < expected_entries as u64 || ack_sends_in_flight != 0 {
+            let mut parsed = 0usize;
+            while submitted_entries < expected_entries
+                && rx_filled.saturating_sub(parsed) >= frame_bytes
+            {
+                let Some(slot) = free_slots.pop() else {
+                    break;
+                };
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        rx_buf.as_ptr().add(parsed),
+                        buffers.ptr(slot),
+                        frame_bytes,
+                    );
+                }
+                if wal_entry_bytes > frame_bytes {
+                    unsafe {
+                        ptr::write_bytes(
+                            buffers.ptr(slot).add(frame_bytes),
+                            0,
+                            wal_entry_bytes - frame_bytes,
+                        );
+                    }
+                }
+                let frame =
+                    unsafe { slice::from_raw_parts(buffers.ptr(slot).cast_const(), frame_bytes) };
+                let index = validate_raft_append_frame(frame, payload_bytes)?;
+                let file_offset = next_wal_offset;
+                next_wal_offset = next_wal_offset
+                    .checked_add(wal_entry_bytes as u64)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "raft WAL offset overflow")
+                    })?;
+                slots[slot] = RaftWalFollowerSlot {
+                    stage: RaftWalFollowerSlotStage::WalWrite,
+                    filled: frame_bytes,
+                    ack_sent: 0,
+                    index,
+                    file_offset,
+                };
+                queue_page_backend_io(
+                    &mut ring,
+                    backend,
+                    slot_buffer_layout,
+                    &buffers,
+                    &slot_ids,
+                    slot,
+                    file_offset,
+                    wal_entry_bytes_u32,
+                    io_slots::SlotRw::Write,
+                    raft_wal_follower_user_data(RaftWalFollowerCqeKind::WalWrite, slot)?,
+                )?;
+                wal_ops += 1;
+                submitted_entries += 1;
+                parsed += frame_bytes;
+            }
+
+            if parsed != 0 {
+                rx_buf.copy_within(parsed..rx_filled, 0);
+                rx_filled -= parsed;
+            }
+
+            if !recv_in_flight && wire_bytes < total_wire_target && rx_filled < rx_wave_bytes {
+                let remaining_wire = total_wire_target - wire_bytes;
+                let len = (rx_wave_bytes - rx_filled).min(remaining_wire);
+                let len_u32 = u32::try_from(len).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "raft WAL RX wave length does not fit in u32",
+                    )
+                })?;
+                let ptr = unsafe { rx_buf.as_mut_ptr().add(rx_filled) };
+                ring.queue_recv_fixed_file(
+                    1,
+                    ptr,
+                    len_u32,
+                    0,
+                    raft_wal_follower_user_data(RaftWalFollowerCqeKind::Recv, 0)?,
+                )?;
+                recv_in_flight = true;
+                recv_ops += 1;
+            }
+
+            let cqe = ring.wait_cqe()?;
+            macro_rules! process_wave_cqe {
+                ($cqe:expr) => {{
+                    let cqe = $cqe;
+                    let (kind, slot) = raft_wal_follower_cqe_parts(cqe.user_data, buffer_count)?;
+                    if cqe.res < 0 {
+                        let os_err = io::Error::from_raw_os_error(-cqe.res);
+                        return Err(io::Error::new(
+                            os_err.kind(),
+                            format!(
+                                "raft WAL wave CQE failed kind={kind:?} slot={slot} res={} err={os_err}",
+                                cqe.res
+                            ),
+                        ));
+                    }
+                    match kind {
+                        RaftWalFollowerCqeKind::Recv => {
+                            recv_in_flight = false;
+                            if cqe.res == 0 {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    "raft WAL follower peer closed during RX wave",
+                                ));
+                            }
+                            let got = cqe.res as usize;
+                            rx_filled = rx_filled.checked_add(got).ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "raft WAL RX wave byte overflow",
+                                )
+                            })?;
+                            wire_bytes = wire_bytes.checked_add(got).ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "raft WAL wire byte overflow",
+                                )
+                            })?;
+                            if rx_filled > rx_wave_bytes {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "raft WAL RX wave buffer overfilled",
+                                ));
+                            }
+                        }
+                        RaftWalFollowerCqeKind::WalWrite => {
+                            if slots[slot].stage != RaftWalFollowerSlotStage::WalWrite {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "raft WAL wave write CQE for slot={slot} in wrong stage"
+                                    ),
+                                ));
+                            }
+                            if cqe.res != wal_entry_bytes_u32 as i32 {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::WriteZero,
+                                    format!(
+                                        "short raft WAL wave write completion: res={} expected={wal_entry_bytes}",
+                                        cqe.res
+                                    ),
+                                ));
+                            }
+                            let durable_index = slots[slot].index;
+                            if durable_index == 0 || durable_index as usize > expected_entries {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "raft WAL wave write completed invalid index {durable_index}; expected 1..={expected_entries}"
+                                    ),
+                                ));
+                            }
+                            let durable_slot = durable_index as usize;
+                            if durable_indexes[durable_slot] {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "duplicate raft WAL wave write completion for index {durable_index}"
+                                    ),
+                                ));
+                            }
+                            durable_indexes[durable_slot] = true;
+                            wal_completed_entries += 1;
+                            written_bytes =
+                                written_bytes.checked_add(wal_entry_bytes).ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "raft WAL written byte overflow",
+                                    )
+                                })?;
+
+                            while (commit_index as usize) < expected_entries
+                                && durable_indexes[commit_index as usize + 1]
+                            {
+                                commit_index += 1;
+                            }
+
+                            if ack_sends_in_flight == 0
+                                && raft_wal_should_send_ack(
+                                    commit_index,
+                                    last_ack_sent_index,
+                                    expected_entries,
+                                    ack_every,
+                                )
+                            {
+                                raft_wal_queue_follower_ack(
+                                    &mut ring,
+                                    &buffers,
+                                    &mut slots,
+                                    slot,
+                                    commit_index,
+                                )?;
+                                ack_sends_in_flight += 1;
+                                ack_ops += 1;
+                            } else {
+                                raft_wal_free_follower_slot(&mut slots, &mut free_slots, slot);
+                            }
+                        }
+                        RaftWalFollowerCqeKind::AckSend => {
+                            if slots[slot].stage != RaftWalFollowerSlotStage::AckSend {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "raft WAL wave ACK CQE for slot={slot} in wrong stage"
+                                    ),
+                                ));
+                            }
+                            if cqe.res == 0 {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::WriteZero,
+                                    "raft WAL wave ACK send returned zero bytes",
+                                ));
+                            }
+                            let sent = cqe.res as usize;
+                            slots[slot].ack_sent =
+                                slots[slot].ack_sent.checked_add(sent).ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "raft WAL ACK byte overflow",
+                                    )
+                                })?;
+                            if slots[slot].ack_sent < RAFT_ACK_LEN {
+                                let ptr = unsafe { buffers.ptr(slot).add(slots[slot].ack_sent) };
+                                let len = (RAFT_ACK_LEN - slots[slot].ack_sent) as u32;
+                                ring.queue_send_fixed_file(
+                                    1,
+                                    ptr.cast_const(),
+                                    len,
+                                    libc::MSG_NOSIGNAL as u32,
+                                    raft_wal_follower_user_data(
+                                        RaftWalFollowerCqeKind::AckSend,
+                                        slot,
+                                    )?,
+                                )?;
+                                ack_ops += 1;
+                            } else if slots[slot].ack_sent == RAFT_ACK_LEN {
+                                last_ack_sent_index = slots[slot].index;
+                                ack_sends_in_flight = ack_sends_in_flight.saturating_sub(1);
+                                if raft_wal_should_send_ack(
+                                    commit_index,
+                                    last_ack_sent_index,
+                                    expected_entries,
+                                    ack_every,
+                                ) {
+                                    raft_wal_queue_follower_ack(
+                                        &mut ring,
+                                        &buffers,
+                                        &mut slots,
+                                        slot,
+                                        commit_index,
+                                    )?;
+                                    ack_sends_in_flight += 1;
+                                    ack_ops += 1;
+                                } else {
+                                    raft_wal_free_follower_slot(
+                                        &mut slots,
+                                        &mut free_slots,
+                                        slot,
+                                    );
+                                }
+                            } else {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "raft WAL wave ACK send overfilled the ACK frame",
+                                ));
+                            }
+                        }
+                    }
+                }};
+            }
+            process_wave_cqe!(cqe);
+            for _ in 1..completion_batch {
+                let Some(cqe) = ring.try_pop_cqe() else {
+                    break;
+                };
+                process_wave_cqe!(cqe);
+            }
+        }
+
+        for slot_id in slot_ids {
+            ring.unregister_io_slot(slot_id)?;
+        }
+        ring.unregister_buffers()?;
+        ring.unregister_files()?;
+
+        let elapsed = started.elapsed();
+        let seconds = elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        let cpu = thread_cpu_time()
+            .unwrap_or(start_cpu)
+            .saturating_sub(start_cpu);
+        println!(
+            "raft-wal-follower: ok path={} backend={} scheduler=wave entries={wal_completed_entries} \
+             commit_index={commit_index} wire_bytes={wire_bytes} written_bytes={written_bytes} \
+             frame_bytes={frame_bytes} wal_entry_bytes={wal_entry_bytes} pipeline={pipeline} \
+             rx_wave_entries={rx_wave_entries} ack_every={ack_every} completion_batch={completion_batch} \
+             recv_ops={recv_ops} wal_ops={wal_ops} ack_ops={ack_ops} seconds={seconds:.6} \
+             cpu_seconds={:.6} cpu_percent={:.2} entries_per_sec={:.0} wire_MiBps={:.2} \
+             wal_MiBps={:.2} buffers={} slot_buffer_layout={} buffer_base=0x{:x} \
+             buffer_alignment={} buffer_stride={} buffer_map_len={} memory_policy={}",
+            path.as_str(),
+            backend.as_str(),
+            cpu.as_secs_f64(),
+            cpu.as_secs_f64() / seconds * 100.0,
+            wal_completed_entries as f64 / seconds,
+            wire_bytes as f64 / (1024.0 * 1024.0) / seconds,
+            written_bytes as f64 / (1024.0 * 1024.0) / seconds,
+            buffer_mode.as_str(),
+            slot_buffer_layout.as_str(),
+            buffers.base_addr(),
+            address_alignment(buffers.base_addr()),
+            buffers.stride(),
+            buffers.map_len(),
+            buffers.memory_policy()
+        );
+        return Ok(());
+    }
+
+    while commit_index < expected_entries as u64 || ack_sends_in_flight != 0 {
+        if !recv_in_flight && submitted_entries < expected_entries {
+            if let Some(slot) = free_slots.pop() {
+                slots[slot] = RaftWalFollowerSlot {
+                    stage: RaftWalFollowerSlotStage::Recv,
+                    filled: 0,
+                    ack_sent: 0,
+                    index: 0,
+                    file_offset: 0,
+                };
+                raft_wal_queue_follower_recv(&mut ring, &buffers, &slots, slot, frame_bytes)?;
+                submitted_entries += 1;
+                recv_in_flight = true;
+                recv_ops += 1;
+            }
+        }
+
+        let cqe = ring.wait_cqe()?;
+        let (kind, slot) = raft_wal_follower_cqe_parts(cqe.user_data, buffer_count)?;
+        if cqe.res < 0 {
+            let os_err = io::Error::from_raw_os_error(-cqe.res);
+            return Err(io::Error::new(
+                os_err.kind(),
+                format!(
+                    "raft WAL follower CQE failed kind={kind:?} slot={slot} res={} err={os_err}",
+                    cqe.res
+                ),
+            ));
+        }
+        match kind {
+            RaftWalFollowerCqeKind::Recv => {
+                recv_in_flight = false;
+                if slots[slot].stage != RaftWalFollowerSlotStage::Recv {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("raft WAL recv CQE for slot={slot} in wrong stage"),
+                    ));
+                }
+                if cqe.res == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "raft WAL follower peer closed before the frame completed",
+                    ));
+                }
+                let got = cqe.res as usize;
+                slots[slot].filled = slots[slot].filled.checked_add(got).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "raft WAL recv byte overflow")
+                })?;
+                wire_bytes = wire_bytes.checked_add(got).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "raft WAL wire byte overflow")
+                })?;
+                if slots[slot].filled < frame_bytes {
+                    raft_wal_queue_follower_recv(&mut ring, &buffers, &slots, slot, frame_bytes)?;
+                    recv_in_flight = true;
+                    recv_ops += 1;
+                    continue;
+                }
+                if slots[slot].filled != frame_bytes {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "raft WAL recv slot={slot} overfilled: {} > {frame_bytes}",
+                            slots[slot].filled
+                        ),
+                    ));
+                }
+
+                let frame =
+                    unsafe { slice::from_raw_parts(buffers.ptr(slot).cast_const(), frame_bytes) };
+                let index = validate_raft_append_frame(frame, payload_bytes)?;
+                if wal_entry_bytes > frame_bytes {
+                    unsafe {
+                        ptr::write_bytes(
+                            buffers.ptr(slot).add(frame_bytes),
+                            0,
+                            wal_entry_bytes - frame_bytes,
+                        );
+                    }
+                }
+                let file_offset = next_wal_offset;
+                next_wal_offset = next_wal_offset
+                    .checked_add(wal_entry_bytes as u64)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "raft WAL offset overflow")
+                    })?;
+                slots[slot].stage = RaftWalFollowerSlotStage::WalWrite;
+                slots[slot].index = index;
+                slots[slot].file_offset = file_offset;
+                queue_page_backend_io(
+                    &mut ring,
+                    backend,
+                    slot_buffer_layout,
+                    &buffers,
+                    &slot_ids,
+                    slot,
+                    file_offset,
+                    wal_entry_bytes_u32,
+                    io_slots::SlotRw::Write,
+                    raft_wal_follower_user_data(RaftWalFollowerCqeKind::WalWrite, slot)?,
+                )?;
+                wal_ops += 1;
+            }
+            RaftWalFollowerCqeKind::WalWrite => {
+                if slots[slot].stage != RaftWalFollowerSlotStage::WalWrite {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("raft WAL write CQE for slot={slot} in wrong stage"),
+                    ));
+                }
+                if cqe.res != wal_entry_bytes_u32 as i32 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        format!(
+                            "short raft WAL write completion: res={} expected={wal_entry_bytes}",
+                            cqe.res
+                        ),
+                    ));
+                }
+                let durable_index = slots[slot].index;
+                if durable_index == 0 || durable_index as usize > expected_entries {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "raft WAL write completed invalid index {durable_index}; expected 1..={expected_entries}"
+                        ),
+                    ));
+                }
+                let durable_slot = durable_index as usize;
+                if durable_indexes[durable_slot] {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("duplicate raft WAL write completion for index {durable_index}"),
+                    ));
+                }
+                durable_indexes[durable_slot] = true;
+                wal_completed_entries += 1;
+                written_bytes = written_bytes.checked_add(wal_entry_bytes).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "raft WAL written byte overflow")
+                })?;
+
+                let previous_commit = commit_index;
+                while (commit_index as usize) < expected_entries
+                    && durable_indexes[commit_index as usize + 1]
+                {
+                    commit_index += 1;
+                }
+
+                if commit_index > previous_commit {
+                    let ack = raft_ack_frame(commit_index);
+                    unsafe {
+                        ptr::copy_nonoverlapping(ack.as_ptr(), buffers.ptr(slot), RAFT_ACK_LEN);
+                    }
+                    slots[slot].stage = RaftWalFollowerSlotStage::AckSend;
+                    slots[slot].ack_sent = 0;
+                    slots[slot].index = commit_index;
+                    ring.queue_send_fixed_file(
+                        1,
+                        buffers.ptr(slot).cast_const(),
+                        RAFT_ACK_LEN as u32,
+                        libc::MSG_NOSIGNAL as u32,
+                        raft_wal_follower_user_data(RaftWalFollowerCqeKind::AckSend, slot)?,
+                    )?;
+                    ack_sends_in_flight += 1;
+                    ack_ops += 1;
+                } else {
+                    raft_wal_free_follower_slot(&mut slots, &mut free_slots, slot);
+                }
+            }
+            RaftWalFollowerCqeKind::AckSend => {
+                if slots[slot].stage != RaftWalFollowerSlotStage::AckSend {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("raft WAL ACK CQE for slot={slot} in wrong stage"),
+                    ));
+                }
+                if cqe.res == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "raft WAL ACK send returned zero bytes",
+                    ));
+                }
+                let sent = cqe.res as usize;
+                slots[slot].ack_sent = slots[slot].ack_sent.checked_add(sent).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "raft WAL ACK byte overflow")
+                })?;
+                if slots[slot].ack_sent < RAFT_ACK_LEN {
+                    let ptr = unsafe { buffers.ptr(slot).add(slots[slot].ack_sent) };
+                    let len = (RAFT_ACK_LEN - slots[slot].ack_sent) as u32;
+                    ring.queue_send_fixed_file(
+                        1,
+                        ptr.cast_const(),
+                        len,
+                        libc::MSG_NOSIGNAL as u32,
+                        raft_wal_follower_user_data(RaftWalFollowerCqeKind::AckSend, slot)?,
+                    )?;
+                    ack_ops += 1;
+                    continue;
+                }
+                if slots[slot].ack_sent != RAFT_ACK_LEN {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "raft WAL ACK send overfilled the ACK frame",
+                    ));
+                }
+                ack_sends_in_flight = ack_sends_in_flight.saturating_sub(1);
+                raft_wal_free_follower_slot(&mut slots, &mut free_slots, slot);
+            }
+        }
+    }
+
+    for slot_id in slot_ids {
+        ring.unregister_io_slot(slot_id)?;
+    }
+    ring.unregister_buffers()?;
+    ring.unregister_files()?;
+
+    let elapsed = started.elapsed();
+    let seconds = elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+    let cpu = thread_cpu_time()
+        .unwrap_or(start_cpu)
+        .saturating_sub(start_cpu);
+    println!(
+        "raft-wal-follower: ok path={} backend={} entries={wal_completed_entries} \
+         commit_index={commit_index} wire_bytes={wire_bytes} written_bytes={written_bytes} \
+         frame_bytes={frame_bytes} wal_entry_bytes={wal_entry_bytes} pipeline={pipeline} \
+         recv_ops={recv_ops} wal_ops={wal_ops} ack_ops={ack_ops} seconds={seconds:.6} \
+         cpu_seconds={:.6} cpu_percent={:.2} entries_per_sec={:.0} wire_MiBps={:.2} \
+         wal_MiBps={:.2} buffers={} slot_buffer_layout={} buffer_base=0x{:x} \
+         buffer_alignment={} buffer_stride={} buffer_map_len={} memory_policy={}",
+        path.as_str(),
+        backend.as_str(),
+        cpu.as_secs_f64(),
+        cpu.as_secs_f64() / seconds * 100.0,
+        wal_completed_entries as f64 / seconds,
+        wire_bytes as f64 / (1024.0 * 1024.0) / seconds,
+        written_bytes as f64 / (1024.0 * 1024.0) / seconds,
+        buffer_mode.as_str(),
+        slot_buffer_layout.as_str(),
+        buffers.base_addr(),
+        address_alignment(buffers.base_addr()),
+        buffers.stride(),
+        buffers.map_len(),
+        buffers.memory_policy()
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RaftWalLeaderSlotStage {
+    Free,
+    Send,
+    AckRecv,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RaftWalLeaderSlot {
+    stage: RaftWalLeaderSlotStage,
+    index: u64,
+    len: usize,
+    send_done: usize,
+    acked: bool,
+    zc_notif_expected: bool,
+    zc_notif_done: bool,
+}
+
+impl Default for RaftWalLeaderSlot {
+    fn default() -> Self {
+        Self {
+            stage: RaftWalLeaderSlotStage::Free,
+            index: 0,
+            len: 0,
+            send_done: 0,
+            acked: false,
+            zc_notif_expected: false,
+            zc_notif_done: false,
+        }
+    }
+}
+
+struct RaftWalLeaderPeerResult {
+    peer: String,
+    entries: usize,
+    wire_bytes: usize,
+    ack_bytes: usize,
+    send_ops: usize,
+    ack_recv_ops: usize,
+    zc_notifications: usize,
+    zc_copied_notifications: usize,
+    elapsed: Duration,
+    cpu: Duration,
+}
+
+fn raft_wal_leader_slot_reusable(slot: RaftWalLeaderSlot) -> bool {
+    slot.stage == RaftWalLeaderSlotStage::AckRecv
+        && (!slot.zc_notif_expected || slot.zc_notif_done)
+        && slot.acked
+}
+
+fn raft_wal_free_leader_slot(
+    slots: &mut [RaftWalLeaderSlot],
+    free_slots: &mut Vec<usize>,
+    slot: usize,
+) {
+    slots[slot] = RaftWalLeaderSlot::default();
+    free_slots.push(slot);
+}
+
+fn raft_wal_queue_leader_ack_recv(
+    ring: &mut RawRing,
+    ack_buf: &mut [u8],
+    filled: usize,
+    user_slot: usize,
+) -> io::Result<()> {
+    if filled >= RAFT_ACK_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft WAL ACK parser is already full",
+        ));
+    }
+    let ptr = unsafe { ack_buf.as_mut_ptr().add(filled) };
+    ring.queue_recv_fixed_file(
+        0,
+        ptr,
+        (RAFT_ACK_LEN - filled) as u32,
+        0,
+        raft_wal_leader_user_data(RaftWalLeaderCqeKind::AckRecv, user_slot)?,
+    )
+}
+
+fn raft_wal_queue_leader_send(
+    ring: &mut RawRing,
+    buffers: &FixedSendBuffers,
+    slot_buffer_layout: SlotBufferLayout,
+    slot: usize,
+    send_offset: usize,
+    send_bytes: usize,
+    send_mode: RaftWalSendMode,
+) -> io::Result<()> {
+    let ptr = unsafe { buffers.ptr(slot).add(send_offset) }.cast_const();
+    let user_data = raft_wal_leader_user_data(RaftWalLeaderCqeKind::Send, slot)?;
+    match send_mode {
+        RaftWalSendMode::Send => ring.queue_send_fixed_file(
+            0,
+            ptr,
+            send_bytes as u32,
+            libc::MSG_NOSIGNAL as u32,
+            user_data,
+        ),
+        RaftWalSendMode::SendZc => ring.queue_send_zc_fixed_file(
+            0,
+            ptr,
+            send_bytes as u32,
+            libc::MSG_NOSIGNAL as u32,
+            None,
+            true,
+            user_data,
+        ),
+        RaftWalSendMode::SendZcFixed => ring.queue_send_zc_fixed_file(
+            0,
+            ptr,
+            send_bytes as u32,
+            libc::MSG_NOSIGNAL as u32,
+            Some(slot_buffer_layout.fixed_buf_index(slot)?),
+            true,
+            user_data,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn raft_wal_replicate_peer(
+    peer: String,
+    entries: usize,
+    payload_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    send_mode: RaftWalSendMode,
+    buffer_mode: SlotWalBufferMode,
+) -> io::Result<RaftWalLeaderPeerResult> {
+    let frame_bytes = raft_wal_frame_bytes(payload_bytes)?;
+    let send_wave_entries =
+        env_usize_or("URING_PLAY_RAFT_SEND_WAVE_ENTRIES", 1).clamp(1, pipeline.max(1));
+    let send_slot_count = pipeline.div_ceil(send_wave_entries).max(1);
+    let send_wave_bytes = frame_bytes.checked_mul(send_wave_entries).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft WAL leader send wave byte overflow",
+        )
+    })?;
+    let stream = TcpStream::connect(&peer)?;
+    stream.set_nodelay(true)?;
+    let ring_entries = ring_entries.max((send_slot_count.saturating_mul(2)).max(64) as u32);
+    let mut ring = RawRing::new(ring_entries, ring_entries.saturating_mul(2))?;
+    ring.register_napi_from_env(&format!("raft-wal-leader-{peer}"))?;
+    let mut fds = [stream.as_raw_fd()];
+    ring.register_files(&mut fds)?;
+
+    let buffers = buffer_mode.allocate(send_slot_count, send_wave_bytes)?;
+    buffers.fill_each(send_wave_bytes, |buf| {
+        buf.fill(0);
+        for frame in 0..send_wave_entries {
+            let start = frame * frame_bytes + RAFT_APPEND_HEADER_LEN;
+            let end = (frame + 1) * frame_bytes;
+            if start < end {
+                buf[start..end].fill(0xa5);
+            }
+        }
+    });
+    let slot_buffer_layout = SlotBufferLayout::from_env()?;
+    let registered_buffers = send_mode.uses_fixed_buffer();
+    if registered_buffers {
+        slot_buffer_layout.register_buffers(&ring, &buffers, send_wave_bytes)?;
+    }
+
+    let mut slots = vec![RaftWalLeaderSlot::default(); send_slot_count];
+    let mut free_slots: Vec<usize> = (0..send_slot_count).rev().collect();
+    let mut next_entry = 0usize;
+    let mut acked_entries = 0usize;
+    let mut wire_bytes = 0usize;
+    let mut ack_bytes = 0usize;
+    let mut send_ops = 0usize;
+    let mut ack_recv_ops = 0usize;
+    let ack_user_slot = send_slot_count;
+    let mut ack_buf = vec![0u8; RAFT_ACK_LEN];
+    let mut ack_filled = 0usize;
+    let mut ack_recv_in_flight = false;
+    let mut zc_notifications = 0usize;
+    let mut zc_copied_notifications = 0usize;
+    let start_cpu = thread_cpu_time().unwrap_or_default();
+    let started = Instant::now();
+
+    while acked_entries < entries {
+        while next_entry < entries {
+            let Some(slot) = free_slots.pop() else {
+                break;
+            };
+            let entries_in_wave = send_wave_entries.min(entries - next_entry);
+            let first_index = next_entry + 1;
+            let last_index = next_entry + entries_in_wave;
+            let send_bytes = entries_in_wave.checked_mul(frame_bytes).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "raft WAL leader send byte count overflow",
+                )
+            })?;
+            let wave_buf = unsafe { slice::from_raw_parts_mut(buffers.ptr(slot), send_wave_bytes) };
+            for entry_offset in 0..entries_in_wave {
+                let index = (first_index + entry_offset) as u64;
+                let start = entry_offset * frame_bytes;
+                let end = start + frame_bytes;
+                fill_raft_wal_append_frame(&mut wave_buf[start..end], index, payload_bytes)?;
+            }
+            slots[slot] = RaftWalLeaderSlot {
+                stage: RaftWalLeaderSlotStage::Send,
+                index: last_index as u64,
+                len: send_bytes,
+                send_done: 0,
+                acked: false,
+                zc_notif_expected: false,
+                zc_notif_done: false,
+            };
+            raft_wal_queue_leader_send(
+                &mut ring,
+                &buffers,
+                slot_buffer_layout,
+                slot,
+                0,
+                send_bytes,
+                send_mode,
+            )?;
+            next_entry += entries_in_wave;
+            send_ops += 1;
+        }
+
+        if !ack_recv_in_flight && acked_entries < next_entry {
+            raft_wal_queue_leader_ack_recv(&mut ring, &mut ack_buf, ack_filled, ack_user_slot)?;
+            ack_recv_ops += 1;
+            ack_recv_in_flight = true;
+        }
+
+        let cqe = ring.wait_cqe()?;
+        if (cqe.flags & IORING_CQE_F_NOTIF) != 0 {
+            zc_notifications += 1;
+            if (cqe.res & IORING_NOTIF_USAGE_ZC_COPIED) != 0 {
+                zc_copied_notifications += 1;
+            }
+            let (kind, slot) = raft_wal_leader_cqe_parts(cqe.user_data, send_slot_count + 1)?;
+            if kind != RaftWalLeaderCqeKind::Send {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "raft WAL send_zc notification did not reference a send slot",
+                ));
+            }
+            slots[slot].zc_notif_done = true;
+            if raft_wal_leader_slot_reusable(slots[slot]) {
+                raft_wal_free_leader_slot(&mut slots, &mut free_slots, slot);
+            }
+            continue;
+        }
+        if cqe.res < 0 {
+            return Err(io::Error::from_raw_os_error(-cqe.res));
+        }
+        let (kind, slot) = raft_wal_leader_cqe_parts(cqe.user_data, send_slot_count + 1)?;
+        match kind {
+            RaftWalLeaderCqeKind::Send => {
+                if slots[slot].stage != RaftWalLeaderSlotStage::Send {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("raft WAL send CQE for slot={slot} in wrong stage"),
+                    ));
+                }
+                if cqe.res == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "raft WAL send completion returned zero bytes",
+                    ));
+                }
+                let sent = cqe.res as usize;
+                slots[slot].send_done =
+                    slots[slot].send_done.checked_add(sent).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "raft WAL send byte overflow")
+                    })?;
+                if slots[slot].send_done > slots[slot].len {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "raft WAL send completion exceeded queued length",
+                    ));
+                }
+                wire_bytes = wire_bytes.checked_add(sent).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "raft WAL wire byte overflow")
+                })?;
+                if slots[slot].send_done < slots[slot].len {
+                    raft_wal_queue_leader_send(
+                        &mut ring,
+                        &buffers,
+                        slot_buffer_layout,
+                        slot,
+                        slots[slot].send_done,
+                        slots[slot].len - slots[slot].send_done,
+                        send_mode,
+                    )?;
+                    send_ops += 1;
+                    continue;
+                }
+                let notif_expected = send_mode.uses_zc() && (cqe.flags & IORING_CQE_F_MORE) != 0;
+                slots[slot].stage = RaftWalLeaderSlotStage::AckRecv;
+                slots[slot].zc_notif_expected = notif_expected;
+                if !notif_expected {
+                    slots[slot].zc_notif_done = true;
+                }
+                if raft_wal_leader_slot_reusable(slots[slot]) {
+                    raft_wal_free_leader_slot(&mut slots, &mut free_slots, slot);
+                }
+            }
+            RaftWalLeaderCqeKind::AckRecv => {
+                if slot != ack_user_slot {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("raft WAL ACK parser CQE used unexpected slot={slot}"),
+                    ));
+                }
+                ack_recv_in_flight = false;
+                if cqe.res == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        format!("raft WAL follower {peer} closed before ACK completed"),
+                    ));
+                }
+                let got = cqe.res as usize;
+                ack_filled = ack_filled.checked_add(got).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "raft WAL ACK byte overflow")
+                })?;
+                ack_bytes = ack_bytes.checked_add(got).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "raft WAL ACK byte count overflow",
+                    )
+                })?;
+                if ack_filled < RAFT_ACK_LEN {
+                    continue;
+                }
+                if ack_filled != RAFT_ACK_LEN {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "raft WAL ACK recv overfilled the ACK frame",
+                    ));
+                }
+                let ack_index = validate_raft_ack_frame(&ack_buf, &peer)?;
+                if ack_index as usize > entries {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "raft WAL ACK from {peer} advanced past requested entries: {ack_index}/{entries}"
+                        ),
+                    ));
+                }
+                if ack_index as usize > acked_entries {
+                    acked_entries = ack_index as usize;
+                    for slot_idx in 0..slots.len() {
+                        if slots[slot_idx].stage != RaftWalLeaderSlotStage::Free
+                            && slots[slot_idx].index <= ack_index
+                        {
+                            slots[slot_idx].acked = true;
+                        }
+                    }
+                    let reusable_slots = (0..slots.len())
+                        .filter(|slot_idx| raft_wal_leader_slot_reusable(slots[*slot_idx]))
+                        .collect::<Vec<_>>();
+                    for slot_idx in reusable_slots {
+                        raft_wal_free_leader_slot(&mut slots, &mut free_slots, slot_idx);
+                    }
+                }
+                ack_filled = 0;
+            }
+        }
+    }
+
+    if registered_buffers {
+        ring.unregister_buffers()?;
+    }
+    ring.unregister_files()?;
+    stream.shutdown(Shutdown::Both)?;
+
+    let elapsed = started.elapsed();
+    let cpu = thread_cpu_time()
+        .unwrap_or(start_cpu)
+        .saturating_sub(start_cpu);
+    Ok(RaftWalLeaderPeerResult {
+        peer,
+        entries: acked_entries,
+        wire_bytes,
+        ack_bytes,
+        send_ops,
+        ack_recv_ops,
+        zc_notifications,
+        zc_copied_notifications,
+        elapsed,
+        cpu,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn raft_wal_leader(
+    peers_csv: &str,
+    entries: usize,
+    payload_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    send_mode: RaftWalSendMode,
+    buffer_mode: SlotWalBufferMode,
+    path: RaftWalPath,
+) -> io::Result<()> {
+    if entries == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft-wal-leader entries must be greater than zero",
+        ));
+    }
+    if pipeline == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft-wal-leader pipeline must be greater than zero",
+        ));
+    }
+    let peers: Vec<String> = peers_csv
+        .split(',')
+        .map(str::trim)
+        .filter(|peer| !peer.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if peers.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft-wal-leader requires at least one peer",
+        ));
+    }
+    let frame_bytes = raft_wal_frame_bytes(payload_bytes)?;
+    println!(
+        "raft-wal-leader: peers={} entries={} payload_bytes={payload_bytes} \
+         frame_bytes={frame_bytes} pipeline_per_peer={pipeline} ring_entries={ring_entries} \
+         send_mode={} buffers={} path={}",
+        peers.len(),
+        entries,
+        send_mode.as_str(),
+        buffer_mode.as_str(),
+        path.as_str()
+    );
+
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(peers.len());
+    for peer in peers {
+        handles.push(thread::spawn(move || {
+            raft_wal_replicate_peer(
+                peer,
+                entries,
+                payload_bytes,
+                pipeline,
+                ring_entries,
+                send_mode,
+                buffer_mode,
+            )
+        }));
+    }
+
+    let mut total_entries = 0usize;
+    let mut total_wire_bytes = 0usize;
+    let mut total_ack_bytes = 0usize;
+    let mut total_cpu = Duration::ZERO;
+    let mut total_send_ops = 0usize;
+    let mut total_ack_recv_ops = 0usize;
+    let mut total_zc_notifications = 0usize;
+    let mut total_zc_copied_notifications = 0usize;
+    for handle in handles {
+        let result = handle
+            .join()
+            .map_err(|_| io::Error::other("raft WAL peer thread panicked"))??;
+        let seconds = result.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        println!(
+            "raft-wal-leader-peer: peer={} path={} send_mode={} entries={} \
+             wire_bytes={} ack_bytes={} send_ops={} ack_recv_ops={} zc_notifications={} \
+             zc_copied_notifications={} seconds={seconds:.6} cpu_seconds={:.6} \
+             cpu_percent={:.2} entries_per_sec={:.0} wire_MiBps={:.2}",
+            result.peer,
+            path.as_str(),
+            send_mode.as_str(),
+            result.entries,
+            result.wire_bytes,
+            result.ack_bytes,
+            result.send_ops,
+            result.ack_recv_ops,
+            result.zc_notifications,
+            result.zc_copied_notifications,
+            result.cpu.as_secs_f64(),
+            result.cpu.as_secs_f64() / seconds * 100.0,
+            result.entries as f64 / seconds,
+            result.wire_bytes as f64 / (1024.0 * 1024.0) / seconds
+        );
+        total_entries += result.entries;
+        total_wire_bytes += result.wire_bytes;
+        total_ack_bytes += result.ack_bytes;
+        total_cpu += result.cpu;
+        total_send_ops += result.send_ops;
+        total_ack_recv_ops += result.ack_recv_ops;
+        total_zc_notifications += result.zc_notifications;
+        total_zc_copied_notifications += result.zc_copied_notifications;
+    }
+
+    let seconds = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    println!(
+        "raft-wal-leader: ok path={} send_mode={} peers={} entries_per_peer={entries} \
+         total_entries={total_entries} total_wire_bytes={total_wire_bytes} \
+         total_ack_bytes={total_ack_bytes} send_ops={total_send_ops} \
+         ack_recv_ops={total_ack_recv_ops} zc_notifications={total_zc_notifications} \
+         zc_copied_notifications={total_zc_copied_notifications} seconds={seconds:.6} \
+         total_cpu_seconds={:.6} aggregate_cpu_percent={:.2} entries_per_sec={:.0} \
+         wire_MiBps={:.2}",
+        path.as_str(),
+        send_mode.as_str(),
+        peers_csv
+            .split(',')
+            .filter(|peer| !peer.trim().is_empty())
+            .count(),
+        total_cpu.as_secs_f64(),
+        total_cpu.as_secs_f64() / seconds * 100.0,
+        total_entries as f64 / seconds,
+        total_wire_bytes as f64 / (1024.0 * 1024.0) / seconds
+    );
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug)]
 enum SlotWalMode {
     Read,
@@ -13548,6 +18069,65 @@ impl SlotWalMode {
         match self {
             Self::Read => "read",
             Self::Write => "write",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlotRandMode {
+    Read,
+    Write,
+    Mixed,
+}
+
+impl SlotRandMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "read" | "r" | "get" => Ok(Self::Read),
+            "write" | "w" | "set" => Ok(Self::Write),
+            "rw" | "randrw" | "mixed" | "mix" => Ok(Self::Mixed),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown slot random mode {other:?}; use read, write, or rw"),
+            )),
+        }
+    }
+
+    fn needs_write(self) -> bool {
+        !matches!(self, Self::Read)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Mixed => "rw",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZckvPageBackend {
+    FixedFile,
+    Slot,
+}
+
+impl ZckvPageBackend {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "fixed" | "fixed-file" | "fixedfile" | "io-uring" | "uring" => Ok(Self::FixedFile),
+            "slot" | "slots" | "slot-rw" | "io-slot" | "io-slots" => Ok(Self::Slot),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown zckv backend {other:?}; use fixed-file or slot"),
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::FixedFile => "fixed-file",
+            Self::Slot => "slot",
         }
     }
 }
@@ -13601,6 +18181,106 @@ impl SlotWalBufferMode {
             Self::HugeTlb => {
                 FixedSendBuffers::new_hugetlb_with_preferred_numa(count, len, preferred_numa_node)
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlotBufferLayout {
+    PerSlot,
+    SharedBuffer,
+}
+
+impl SlotBufferLayout {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "per-slot" | "per_slot" | "slot" | "slots" => Ok(Self::PerSlot),
+            "shared" | "shared-buffer" | "shared_buffer" | "single-buffer" | "one-buffer" => {
+                Ok(Self::SharedBuffer)
+            }
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown slot buffer layout {other:?}; use per-slot or shared-buffer"),
+            )),
+        }
+    }
+
+    fn from_env() -> io::Result<Self> {
+        match env::var("URING_PLAY_SLOT_BUFFER_LAYOUT") {
+            Ok(value) if value.trim().is_empty() => Ok(Self::PerSlot),
+            Ok(value) => Self::parse(value.trim()),
+            Err(env::VarError::NotPresent) => Ok(Self::PerSlot),
+            Err(err) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid URING_PLAY_SLOT_BUFFER_LAYOUT: {err}"),
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PerSlot => "per-slot",
+            Self::SharedBuffer => "shared-buffer",
+        }
+    }
+
+    fn register_buffers(
+        self,
+        ring: &RawRing,
+        buffers: &FixedSendBuffers,
+        len: usize,
+    ) -> io::Result<()> {
+        let mut iovecs = match self {
+            Self::PerSlot => buffers.iovecs(len),
+            Self::SharedBuffer => vec![buffers.whole_iovec()],
+        };
+        ring.register_buffers(&mut iovecs)
+    }
+
+    fn register_io_slots(
+        self,
+        ring: &RawRing,
+        count: usize,
+    ) -> io::Result<Vec<io_slots::IoSlotId>> {
+        let mut slot_ids = Vec::with_capacity(count);
+        for slot in 0..count {
+            let buf_index = match self {
+                Self::PerSlot => u32::try_from(slot).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "slot buffer index does not fit in u32",
+                    )
+                })?,
+                Self::SharedBuffer => 0,
+            };
+            slot_ids.push(ring.register_io_slot(buf_index, 0)?);
+        }
+        Ok(slot_ids)
+    }
+
+    fn fixed_buf_index(self, slot: usize) -> io::Result<u16> {
+        let index = match self {
+            Self::PerSlot => slot,
+            Self::SharedBuffer => 0,
+        };
+        u16::try_from(index).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "fixed buffer index does not fit in u16",
+            )
+        })
+    }
+
+    fn buf_offset(self, buffers: &FixedSendBuffers, slot: usize) -> io::Result<u64> {
+        match self {
+            Self::PerSlot => Ok(0),
+            Self::SharedBuffer => buffers
+                .stride()
+                .checked_mul(slot)
+                .and_then(|offset| u64::try_from(offset).ok())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "slot buffer offset overflow")
+                }),
         }
     }
 }
@@ -13761,6 +18441,12 @@ fn parse_size_arg(value: &str, name: &str) -> io::Result<usize> {
         (digits, 1000u128 * 1000 * 1000)
     } else if let Some(digits) = lower.strip_suffix('g') {
         (digits, 1024u128 * 1024 * 1024)
+    } else if let Some(digits) = lower.strip_suffix("tib") {
+        (digits, 1024u128 * 1024 * 1024 * 1024)
+    } else if let Some(digits) = lower.strip_suffix("tb") {
+        (digits, 1000u128 * 1000 * 1000 * 1000)
+    } else if let Some(digits) = lower.strip_suffix('t') {
+        (digits, 1024u128 * 1024 * 1024 * 1024)
     } else {
         (lower.as_str(), 1u128)
     };
@@ -14791,6 +19477,126 @@ mod topology_tests {
     }
 
     #[test]
+    fn offset_payload_depends_on_shard_and_offset() {
+        let mut first = vec![0u8; 256];
+        let mut same = vec![0u8; 256];
+        let mut different_offset = vec![0u8; 256];
+        let mut different_shard = vec![0u8; 256];
+
+        fill_offset_payload(&mut first, 0x1234, 7, 4096);
+        fill_offset_payload(&mut same, 0x1234, 7, 4096);
+        fill_offset_payload(&mut different_offset, 0x1234, 7, 8192);
+        fill_offset_payload(&mut different_shard, 0x1234, 8, 4096);
+
+        assert_eq!(first, same);
+        assert_ne!(first, different_offset);
+        assert_ne!(first, different_shard);
+    }
+
+    #[test]
+    fn zcnblk_aes_transport_round_trips_split_frames() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let listen_addr = listener.local_addr().unwrap();
+        let payload = b"zcnblk-aes-stream-payload-crosses-several-small-frames";
+        let response_payload = b"target-response-crosses-frames";
+        let config = ZcnblkCryptoConfig {
+            mode: ZcnblkEncryptionMode::Aes256,
+            wire: ZcnblkCryptoWire::Stream,
+            token: Some(Arc::new("zcnblk-test-token".to_string())),
+            max_frame_bytes: 17,
+        };
+        let target_config = config.clone();
+        let target = thread::spawn(move || {
+            let (stream, peer_addr) = listener.accept().unwrap();
+            let accepted = TcpBenchAcceptedStream {
+                lane: 3,
+                port: listen_addr.port(),
+                conn_index: 0,
+                peer_addr,
+                locality: SocketLocality::default(),
+                stream,
+            };
+            let mut transport =
+                ZcnblkTransport::accept_target(accepted, 0, &target_config).unwrap();
+            let mut first = [0u8; 7];
+            transport.read_exact(&mut first).unwrap();
+            assert_eq!(&first, b"zcnblk-");
+            let mut rest = vec![0u8; payload.len() - first.len()];
+            transport.read_exact(&mut rest).unwrap();
+            assert_eq!([first.as_slice(), rest.as_slice()].concat(), payload);
+            transport.write_all(response_payload).unwrap();
+        });
+
+        let stream = TcpStream::connect(listen_addr).unwrap();
+        let mut client = ZcnblkTransport::connect_client(stream, 3, 0, &config).unwrap();
+        client.write_all(payload).unwrap();
+        let mut response = vec![0u8; response_payload.len()];
+        client.read_exact(&mut response).unwrap();
+        assert_eq!(response, response_payload);
+        target.join().unwrap();
+    }
+
+    #[test]
+    fn slot_wal_target_parser_accepts_numbered_synthetic_blocks() {
+        let nullb = parse_slot_wal_target("/dev/nullb0").unwrap();
+        assert_eq!(nullb.kind, SlotWalTargetKind::NullBlock);
+        assert_eq!(nullb.open_path(), Path::new("/dev/nullb0"));
+
+        let ram = parse_slot_wal_target("/dev/ram7").unwrap();
+        assert_eq!(ram.kind, SlotWalTargetKind::RamBlockDisk);
+        assert_eq!(ram.open_path(), Path::new("/dev/ram7"));
+
+        let zcbrd = parse_slot_wal_target("/dev/zcbrd12").unwrap();
+        assert_eq!(zcbrd.kind, SlotWalTargetKind::ZcBlockRamDisk);
+        assert_eq!(zcbrd.open_path(), Path::new("/dev/zcbrd12"));
+
+        let zcstripe = parse_slot_wal_target("/dev/zcstripe3").unwrap();
+        assert_eq!(zcstripe.kind, SlotWalTargetKind::ZcStripe);
+        assert_eq!(zcstripe.open_path(), Path::new("/dev/zcstripe3"));
+    }
+
+    #[test]
+    fn slot_wal_target_parser_rejects_unapproved_dev_blocks() {
+        for target in [
+            "/dev/sda",
+            "/dev/nvme0n1",
+            "/dev/nullb",
+            "/dev/nullb0p1",
+            "/dev/nullbad0",
+            "/dev/ram",
+            "/dev/ram0p1",
+            "/dev/ramdisk0",
+            "/dev/zcbrd",
+            "/dev/zcbrd0p1",
+            "/dev/zcstripe",
+            "/dev/zcstripe0p1",
+            "/tmp/ram0",
+            "/tmp/zcbrd0",
+            "/tmp/zcstripe0",
+        ] {
+            assert!(
+                parse_slot_wal_target(target).is_err(),
+                "{target} should not parse as a slot WAL target"
+            );
+        }
+    }
+
+    #[test]
+    fn slot_wal_target_parser_accepts_partuuid_forms() {
+        let by_partuuid = parse_slot_wal_target("/dev/disk/by-partuuid/ABCD-1234").unwrap();
+        assert_eq!(
+            by_partuuid.kind,
+            SlotWalTargetKind::PartUuid("abcd-1234".to_string())
+        );
+
+        let bare = parse_slot_wal_target("ABCD-1234").unwrap();
+        assert_eq!(
+            bare.kind,
+            SlotWalTargetKind::PartUuid("abcd-1234".to_string())
+        );
+    }
+
+    #[test]
     fn tcpmux_path_index_splits_lanes_contiguously() {
         let paths = (0..8)
             .map(|lane| zc_tcpmux_path_index(lane, 8, 2))
@@ -15097,6 +19903,108 @@ mod topology_tests {
     }
 
     #[test]
+    fn tcp_wal_extent_config_defaults_to_chunk_records() {
+        let config =
+            TcpWalExtentConfig::new(64 * 1024, 4 * 64 * 1024, 64 * 1024, 64 * 1024).unwrap();
+        assert_eq!(config.logical_record_bytes, 64 * 1024);
+        assert_eq!(config.records_for_len(64 * 1024, "test").unwrap(), 1);
+    }
+
+    #[test]
+    fn tcp_wal_extent_config_counts_4k_records_inside_large_extents() {
+        let config = TcpWalExtentConfig::new(4096, 4 * 64 * 1024, 64 * 1024, 256 * 1024).unwrap();
+        assert_eq!(config.records_for_len(64 * 1024, "direct").unwrap(), 16);
+        assert_eq!(config.records_for_len(256 * 1024, "coalesced").unwrap(), 64);
+    }
+
+    #[test]
+    fn tcp_wal_extent_config_rejects_non_integral_records() {
+        assert!(TcpWalExtentConfig::new(4096, 96 * 1024, 48 * 1024, 96 * 1024).is_ok());
+        assert!(TcpWalExtentConfig::new(4096, 96 * 1024 + 512, 48 * 1024, 96 * 1024).is_err());
+        assert!(TcpWalExtentConfig::new(5000, 96 * 1024, 48 * 1024, 96 * 1024).is_err());
+    }
+
+    #[test]
+    fn slot_buffer_layout_parser_accepts_shared_aliases() {
+        assert_eq!(
+            SlotBufferLayout::parse("per-slot").unwrap(),
+            SlotBufferLayout::PerSlot
+        );
+        assert_eq!(
+            SlotBufferLayout::parse("shared-buffer").unwrap(),
+            SlotBufferLayout::SharedBuffer
+        );
+        assert_eq!(
+            SlotBufferLayout::parse("one-buffer").unwrap(),
+            SlotBufferLayout::SharedBuffer
+        );
+        assert!(SlotBufferLayout::parse("spread").is_err());
+    }
+
+    #[test]
+    fn shared_slot_buffer_offsets_track_buffer_stride() {
+        let buffers = FixedSendBuffers::new(4, 4096).unwrap();
+        assert_eq!(
+            SlotBufferLayout::PerSlot.buf_offset(&buffers, 3).unwrap(),
+            0
+        );
+        assert_eq!(
+            SlotBufferLayout::SharedBuffer
+                .buf_offset(&buffers, 3)
+                .unwrap(),
+            (3 * buffers.stride()) as u64
+        );
+        assert_eq!(
+            SlotBufferLayout::SharedBuffer.fixed_buf_index(3).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn raft_wal_layout_aligns_common_entry_sizes() {
+        let frame = raft_wal_frame_bytes(4096 - RAFT_APPEND_HEADER_LEN).unwrap();
+        assert_eq!(frame, 4096);
+        assert_eq!(raft_wal_entry_bytes(frame).unwrap(), 4096);
+
+        let frame = raft_wal_frame_bytes(4096).unwrap();
+        assert_eq!(frame, 4096 + RAFT_APPEND_HEADER_LEN);
+        assert_eq!(raft_wal_entry_bytes(frame).unwrap(), 4608);
+    }
+
+    #[test]
+    fn raft_wal_parsers_accept_path_and_send_modes() {
+        assert_eq!(
+            RaftWalPath::parse("ebpf-cilium").unwrap(),
+            RaftWalPath::EbpfCilium
+        );
+        assert_eq!(
+            RaftWalPath::parse("non-ebpf").unwrap(),
+            RaftWalPath::DirectTcp
+        );
+        assert!(RaftWalPath::parse("sidecar-magic").is_err());
+        assert_eq!(
+            RaftWalSendMode::parse("send-zc-fixed").unwrap(),
+            RaftWalSendMode::SendZcFixed
+        );
+        assert!(RaftWalSendMode::parse("syswrite").is_err());
+    }
+
+    #[test]
+    fn raft_wal_cqe_user_data_round_trips() {
+        let user_data = raft_wal_follower_user_data(RaftWalFollowerCqeKind::WalWrite, 42).unwrap();
+        assert_eq!(
+            raft_wal_follower_cqe_parts(user_data, 128).unwrap(),
+            (RaftWalFollowerCqeKind::WalWrite, 42)
+        );
+        let user_data = raft_wal_leader_user_data(RaftWalLeaderCqeKind::AckRecv, 7).unwrap();
+        assert_eq!(
+            raft_wal_leader_cqe_parts(user_data, 8).unwrap(),
+            (RaftWalLeaderCqeKind::AckRecv, 7)
+        );
+        assert!(raft_wal_leader_cqe_parts(user_data, 7).is_err());
+    }
+
+    #[test]
     fn zcrx_direct_segments_allow_aligned_subslot_offsets() {
         let range = tcp_wal_zcrx_direct_segment_range(4096, 4096, 4096, 8192, 4)
             .unwrap()
@@ -15356,6 +20264,9 @@ fn validate_slot_wal_queue_limits(
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SlotWalTargetKind {
     NullBlock,
+    RamBlockDisk,
+    ZcBlockRamDisk,
+    ZcStripe,
     PartUuid(String),
 }
 
@@ -15372,6 +20283,30 @@ impl SlotWalTarget {
             open_path: PathBuf::from(path),
             label: path.to_owned(),
             kind: SlotWalTargetKind::NullBlock,
+        }
+    }
+
+    fn ram_block_disk(path: &str) -> Self {
+        Self {
+            open_path: PathBuf::from(path),
+            label: path.to_owned(),
+            kind: SlotWalTargetKind::RamBlockDisk,
+        }
+    }
+
+    fn zc_block_ramdisk(path: &str) -> Self {
+        Self {
+            open_path: PathBuf::from(path),
+            label: path.to_owned(),
+            kind: SlotWalTargetKind::ZcBlockRamDisk,
+        }
+    }
+
+    fn zc_stripe(path: &str) -> Self {
+        Self {
+            open_path: PathBuf::from(path),
+            label: path.to_owned(),
+            kind: SlotWalTargetKind::ZcStripe,
         }
     }
 
@@ -15392,16 +20327,40 @@ impl SlotWalTarget {
         &self.label
     }
 
-    fn is_null_block(&self) -> bool {
-        matches!(self.kind, SlotWalTargetKind::NullBlock)
+    fn is_synthetic_block(&self) -> bool {
+        matches!(
+            self.kind,
+            SlotWalTargetKind::NullBlock
+                | SlotWalTargetKind::RamBlockDisk
+                | SlotWalTargetKind::ZcBlockRamDisk
+                | SlotWalTargetKind::ZcStripe
+        )
     }
 
     fn partuuid(&self) -> Option<&str> {
         match &self.kind {
             SlotWalTargetKind::PartUuid(uuid) => Some(uuid),
-            SlotWalTargetKind::NullBlock => None,
+            SlotWalTargetKind::NullBlock
+            | SlotWalTargetKind::RamBlockDisk
+            | SlotWalTargetKind::ZcBlockRamDisk
+            | SlotWalTargetKind::ZcStripe => None,
         }
     }
+}
+
+fn dev_block_name_suffix<'a>(arg: &'a str, prefix: &str) -> Option<&'a str> {
+    let path = Path::new(arg);
+    if path.parent() != Some(Path::new("/dev")) {
+        return None;
+    }
+
+    path.file_name()?.to_str()?.strip_prefix(prefix)
+}
+
+fn is_numbered_dev_block(arg: &str, prefix: &str) -> bool {
+    dev_block_name_suffix(arg, prefix).is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    })
 }
 
 fn strip_prefix_ci<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
@@ -15429,8 +20388,17 @@ fn normalize_partuuid(value: &str) -> io::Result<String> {
 }
 
 fn parse_slot_wal_target(arg: &str) -> io::Result<SlotWalTarget> {
-    if arg.starts_with("/dev/nullb") {
+    if is_numbered_dev_block(arg, "nullb") {
         return Ok(SlotWalTarget::null_block(arg));
+    }
+    if is_numbered_dev_block(arg, "ram") {
+        return Ok(SlotWalTarget::ram_block_disk(arg));
+    }
+    if is_numbered_dev_block(arg, "zcbrd") {
+        return Ok(SlotWalTarget::zc_block_ramdisk(arg));
+    }
+    if is_numbered_dev_block(arg, "zcstripe") {
+        return Ok(SlotWalTarget::zc_stripe(arg));
     }
 
     if let Some(uuid) =
@@ -15454,8 +20422,8 @@ fn parse_slot_wal_target(arg: &str) -> io::Result<SlotWalTarget> {
 
     Err(io::Error::new(
         io::ErrorKind::InvalidInput,
-        "slot WAL bench targets must be /dev/nullbN for synthetic tests or \
-         PARTUUID=<uuid> for real raw block devices",
+        "slot WAL bench targets must be /dev/nullbN, /dev/ramN, /dev/zcbrdN, or /dev/zcstripeN for synthetic tests, \
+         or PARTUUID=<uuid> for explicitly allowlisted real raw block devices",
     ))
 }
 
@@ -15589,7 +20557,7 @@ fn ensure_no_known_filesystem_signature(target: &SlotWalTarget) -> io::Result<()
 }
 
 fn validate_raw_block_write_allowed(target: &SlotWalTarget) -> io::Result<()> {
-    if target.is_null_block() {
+    if target.is_synthetic_block() {
         return Ok(());
     }
 
@@ -15639,7 +20607,7 @@ fn validate_slot_wal_write_target_safety(
     metadata: &fs::Metadata,
 ) -> io::Result<()> {
     validate_raw_block_write_allowed(target)?;
-    if target.is_null_block() {
+    if target.is_synthetic_block() {
         return Ok(());
     }
 
@@ -15730,6 +20698,7 @@ struct SlotWalWorkerResult {
     buffer_alignment: usize,
     buffer_mode: SlotWalBufferMode,
     segment_bytes: usize,
+    slot_buffer_layout: SlotBufferLayout,
     memory_policy: &'static str,
 }
 
@@ -17630,13 +22599,9 @@ fn slot_wal_bench_worker(
             .flatten()
     });
     let memory_policy = buffers.memory_policy();
-    let mut iovecs = buffers.iovecs(chunk_bytes);
-    ring.register_buffers(&mut iovecs)?;
-
-    let mut slot_ids = Vec::with_capacity(pipeline);
-    for buf_index in 0..pipeline {
-        slot_ids.push(ring.register_io_slot(buf_index as u32, 0)?);
-    }
+    let slot_buffer_layout = SlotBufferLayout::from_env()?;
+    slot_buffer_layout.register_buffers(&ring, &buffers, chunk_bytes)?;
+    let slot_ids = slot_buffer_layout.register_io_slots(&ring, pipeline)?;
 
     let completion_batch = env_usize_or("URING_PLAY_SLOT_COMPLETION_BATCH", 1).clamp(1, pipeline);
     let total_ops = total_bytes / chunk_bytes;
@@ -17652,9 +22617,10 @@ fn slot_wal_bench_worker(
                 .checked_mul(chunk_bytes as u64)
                 .and_then(|offset| base_offset.checked_add(offset))
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "offset overflow"))?;
+            let buf_offset = slot_buffer_layout.buf_offset(&buffers, slot)?;
             ring.queue_slot_rw(
                 slot_ids[slot],
-                0,
+                buf_offset,
                 file_offset,
                 chunk_bytes_u32,
                 mode.direction(),
@@ -17729,6 +22695,7 @@ fn slot_wal_bench_worker(
         buffer_alignment,
         buffer_mode,
         segment_bytes,
+        slot_buffer_layout,
         memory_policy,
     })
 }
@@ -17763,7 +22730,7 @@ fn slot_wal_bench(
     println!(
         "slot-wal-bench: target={} mode={} total_bytes={total_bytes} \
          chunk_bytes={chunk_bytes} ops={} pipeline={pipeline} \
-         ring_entries={ring_entries} buffers={} segment_bytes={segment_bytes} \
+         ring_entries={ring_entries} buffers={} slot_buffer_layout={} segment_bytes={segment_bytes} \
          required_alignment={required_alignment} slot_backend={} \
          completion_batch={} \
          buffer_base=0x{:x} buffer_alignment={} buffer_stride={} \
@@ -17773,6 +22740,7 @@ fn slot_wal_bench(
         mode.as_str(),
         result.ops,
         buffer_mode.as_str(),
+        result.slot_buffer_layout.as_str(),
         io_slots::submission_backend_label(),
         result.completion_batch,
         result.buffer_base,
@@ -17782,6 +22750,1758 @@ fn slot_wal_bench(
         result.memory_policy,
         mib / seconds,
         result.ops as f64 / seconds
+    );
+    Ok(())
+}
+
+fn splitmix64_next(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut value = *state;
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn slot_rand_worker(
+    target: SlotWalTarget,
+    worker: usize,
+    base_offset: u64,
+    region_bytes: usize,
+    ops: usize,
+    chunk_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    mode: SlotRandMode,
+    read_percent: u8,
+    buffer_mode: SlotWalBufferMode,
+    pin: bool,
+    planned_cpu: Option<usize>,
+) -> io::Result<SlotRandWorkerResult> {
+    let region_blocks = region_bytes / chunk_bytes;
+    if region_blocks == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "region-bytes must cover at least one chunk",
+        ));
+    }
+
+    let affinity =
+        pin_current_thread_if_requested_to_cpu("slot-rand-worker", worker, pin, planned_cpu);
+    let chunk_bytes_u32 = u32::try_from(chunk_bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "chunk-bytes must fit in u32 for the SQE len field",
+        )
+    })?;
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(mode.needs_write())
+        .custom_flags(libc::O_DIRECT | libc::O_CLOEXEC)
+        .open(target.open_path())?;
+    let fd = file.as_raw_fd();
+
+    let mut ring = RawRing::new(ring_entries, ring_entries.saturating_mul(2))?;
+    let mut fds = [fd];
+    ring.register_files(&mut fds)?;
+
+    let preferred_numa_node = if affinity.target_cpu >= 0 {
+        cpu_numa_node(affinity.target_cpu as usize)
+    } else {
+        None
+    };
+    let buffers = buffer_mode.allocate_for_worker(pipeline, chunk_bytes, preferred_numa_node)?;
+    if mode.needs_write() {
+        fill_slot_wal_buffers(&buffers, chunk_bytes);
+    }
+    let buffer_base = buffers.base_addr();
+    let buffer_stride = buffers.stride();
+    let buffer_map_len = buffers.map_len();
+    let buffer_alignment = address_alignment(buffer_base);
+    let memory_policy = buffers.memory_policy();
+    let slot_buffer_layout = SlotBufferLayout::from_env()?;
+    slot_buffer_layout.register_buffers(&ring, &buffers, chunk_bytes)?;
+
+    let slot_ids = slot_buffer_layout.register_io_slots(&ring, pipeline)?;
+
+    let completion_batch = env_usize_or(
+        "URING_PLAY_SLOT_RAND_COMPLETION_BATCH",
+        env_usize_or("URING_PLAY_SLOT_COMPLETION_BATCH", 64),
+    )
+    .clamp(1, pipeline);
+    let mut rng = 0x6a09_e667_f3bc_c909u64
+        ^ (ops as u64)
+        ^ ((chunk_bytes as u64) << 32)
+        ^ ((worker as u64) << 48)
+        ^ base_offset.rotate_left(17);
+    let mut free_slots: Vec<usize> = (0..pipeline).rev().collect();
+    let mut submitted = 0usize;
+    let mut completed = 0usize;
+    let mut reads = 0usize;
+    let mut writes = 0usize;
+    let local_cpu = current_cpu();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let started = Instant::now();
+
+    while completed < ops {
+        while submitted < ops && !free_slots.is_empty() {
+            let slot = free_slots.pop().expect("free slot");
+            let block = splitmix64_next(&mut rng) as usize % region_blocks;
+            let file_offset = (block as u64)
+                .checked_mul(chunk_bytes as u64)
+                .and_then(|offset| base_offset.checked_add(offset))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "offset overflow"))?;
+            let direction = match mode {
+                SlotRandMode::Read => {
+                    reads += 1;
+                    io_slots::SlotRw::Read
+                }
+                SlotRandMode::Write => {
+                    writes += 1;
+                    io_slots::SlotRw::Write
+                }
+                SlotRandMode::Mixed => {
+                    if (splitmix64_next(&mut rng) % 100) < read_percent as u64 {
+                        reads += 1;
+                        io_slots::SlotRw::Read
+                    } else {
+                        writes += 1;
+                        io_slots::SlotRw::Write
+                    }
+                }
+            };
+            let buf_offset = slot_buffer_layout.buf_offset(&buffers, slot)?;
+            ring.queue_slot_rw(
+                slot_ids[slot],
+                buf_offset,
+                file_offset,
+                chunk_bytes_u32,
+                direction,
+                slot as u64,
+            )?;
+            submitted += 1;
+        }
+
+        ring.submit_pending()?;
+        for batch_idx in 0..completion_batch {
+            let cqe = if batch_idx == 0 {
+                match ring.try_pop_cqe() {
+                    Some(cqe) => cqe,
+                    None => ring.wait_cqe()?,
+                }
+            } else {
+                match ring.try_pop_cqe() {
+                    Some(cqe) => cqe,
+                    None => break,
+                }
+            };
+            let slot = cqe.user_data as usize;
+            if slot >= pipeline {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("slot random CQE returned invalid slot user_data={slot}"),
+                ));
+            }
+            if cqe.res < 0 {
+                return Err(io::Error::from_raw_os_error(-cqe.res));
+            }
+            if cqe.res != chunk_bytes_u32 as i32 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    format!(
+                        "short slot random completion: res={} expected={chunk_bytes}",
+                        cqe.res
+                    ),
+                ));
+            }
+            completed += 1;
+            free_slots.push(slot);
+            if completed == ops {
+                break;
+            }
+        }
+    }
+
+    let elapsed = started.elapsed();
+    let cpu = thread_cpu_time()
+        .unwrap_or(start_thread_cpu)
+        .saturating_sub(start_thread_cpu);
+    for slot_id in slot_ids {
+        ring.unregister_io_slot(slot_id)?;
+    }
+    ring.unregister_buffers()?;
+    ring.unregister_files()?;
+
+    Ok(SlotRandWorkerResult {
+        worker,
+        ops,
+        reads,
+        writes,
+        elapsed,
+        cpu,
+        base_offset,
+        region_bytes,
+        slot_count: pipeline,
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+        local_cpu,
+        worker_numa_node: preferred_numa_node.or_else(|| {
+            (local_cpu >= 0)
+                .then(|| cpu_numa_node(local_cpu as usize))
+                .flatten()
+        }),
+        completion_batch,
+        buffer_base,
+        buffer_stride,
+        buffer_map_len,
+        buffer_alignment,
+        buffer_mode,
+        segment_bytes: buffer_mode.segment_bytes()?,
+        slot_buffer_layout,
+        memory_policy,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct SlotRandWorkerResult {
+    worker: usize,
+    ops: usize,
+    reads: usize,
+    writes: usize,
+    elapsed: Duration,
+    cpu: Duration,
+    base_offset: u64,
+    region_bytes: usize,
+    slot_count: usize,
+    target_cpu: i32,
+    affinity_applied: bool,
+    local_cpu: i32,
+    worker_numa_node: Option<i32>,
+    completion_batch: usize,
+    buffer_base: usize,
+    buffer_stride: usize,
+    buffer_map_len: usize,
+    buffer_alignment: usize,
+    buffer_mode: SlotWalBufferMode,
+    segment_bytes: usize,
+    slot_buffer_layout: SlotBufferLayout,
+    memory_policy: &'static str,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn slot_rand_bench(
+    target_arg: &str,
+    ops: usize,
+    chunk_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    mode: SlotRandMode,
+    read_percent: u8,
+    region_bytes: usize,
+    buffer_mode: SlotWalBufferMode,
+    pin: bool,
+) -> io::Result<()> {
+    if ops == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ops must be non-zero",
+        ));
+    }
+    if matches!(mode, SlotRandMode::Mixed) && read_percent > 100 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "read-percent must be 0..=100",
+        ));
+    }
+    validate_slot_wal_pipeline(pipeline, ring_entries)?;
+    let safety_mode = if mode.needs_write() {
+        SlotWalMode::Write
+    } else {
+        SlotWalMode::Read
+    };
+    let (target, _device_bytes, required_alignment, segment_bytes) = validate_slot_wal_common(
+        target_arg,
+        region_bytes,
+        chunk_bytes,
+        safety_mode,
+        buffer_mode,
+    )?;
+
+    let result = slot_rand_worker(
+        target.clone(),
+        0,
+        0,
+        region_bytes,
+        ops,
+        chunk_bytes,
+        pipeline,
+        ring_entries,
+        mode,
+        read_percent,
+        buffer_mode,
+        pin,
+        None,
+    )?;
+    let seconds = result.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+    let bytes = ops.checked_mul(chunk_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "slot random byte count overflow",
+        )
+    })?;
+    let cpu_seconds = result.cpu.as_secs_f64();
+    let cpu_percent = cpu_seconds / seconds * 100.0;
+    let cpu_ns_per_op = cpu_seconds * 1_000_000_000.0 / ops as f64;
+    let completion_batch = result.completion_batch;
+    let buffer_base = result.buffer_base;
+    let buffer_alignment = result.buffer_alignment;
+    let buffer_stride = result.buffer_stride;
+    let buffer_map_len = result.buffer_map_len;
+    let memory_policy = result.memory_policy;
+    println!(
+        "slot-rand-bench: target={} mode={} ops={ops} reads={} writes={} \
+         read_percent={} region_bytes={region_bytes} chunk_bytes={chunk_bytes} \
+         pipeline={pipeline} ring_entries={ring_entries} completion_batch={completion_batch} \
+         buffers={} slot_buffer_layout={} segment_bytes={segment_bytes} \
+         required_alignment={required_alignment} slot_backend={} pin={pin} \
+         target_cpu={} affinity_applied={} local_cpu={} \
+         buffer_base=0x{buffer_base:x} buffer_alignment={buffer_alignment} \
+         buffer_stride={buffer_stride} buffer_map_len={buffer_map_len} \
+         memory_policy={memory_policy} seconds={seconds:.6} cpu_seconds={cpu_seconds:.6} \
+         cpu_percent={cpu_percent:.2} cpu_ns_per_op={cpu_ns_per_op:.1} \
+         MiBps={:.2} ops_per_sec={:.0}",
+        target.label(),
+        mode.as_str(),
+        result.reads,
+        result.writes,
+        read_percent,
+        buffer_mode.as_str(),
+        result.slot_buffer_layout.as_str(),
+        io_slots::submission_backend_label(),
+        result.target_cpu,
+        result.affinity_applied,
+        result.local_cpu,
+        bytes as f64 / (1024.0 * 1024.0) / seconds,
+        ops as f64 / seconds
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn slot_rand_sharded_bench(
+    target_arg: &str,
+    workers: usize,
+    ops_per_worker: usize,
+    chunk_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    mode: SlotRandMode,
+    read_percent: u8,
+    region_bytes_per_worker: usize,
+    buffer_mode: SlotWalBufferMode,
+    pin_workers: bool,
+) -> io::Result<()> {
+    if workers == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workers must be non-zero",
+        ));
+    }
+    if ops_per_worker == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ops-per-worker must be non-zero",
+        ));
+    }
+    if matches!(mode, SlotRandMode::Mixed) && read_percent > 100 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "read-percent must be 0..=100",
+        ));
+    }
+    validate_slot_wal_pipeline(pipeline, ring_entries)?;
+    ensure_sector_aligned(region_bytes_per_worker, "region-bytes-per-worker")?;
+    if region_bytes_per_worker % chunk_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "region-bytes-per-worker must be an exact multiple of chunk-bytes",
+        ));
+    }
+    let total_region_bytes = region_bytes_per_worker
+        .checked_mul(workers)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "aggregate region byte count overflow",
+            )
+        })?;
+    let safety_mode = if mode.needs_write() {
+        SlotWalMode::Write
+    } else {
+        SlotWalMode::Read
+    };
+    let (target, device_bytes, required_alignment, segment_bytes) = validate_slot_wal_common(
+        target_arg,
+        total_region_bytes,
+        chunk_bytes,
+        safety_mode,
+        buffer_mode,
+    )?;
+    let metadata = fs::metadata(target.open_path())?;
+    let topology = BlockDeviceTopology::from_metadata(&metadata)?;
+    let planned_cpus = if pin_workers {
+        topology.planned_cpus(workers, true)
+    } else {
+        Vec::new()
+    };
+    let regions = make_linear_wal_regions(workers, region_bytes_per_worker)?;
+    validate_wal_regions(&regions, device_bytes)?;
+    for region in &regions {
+        let planned_cpu = planned_cpus.get(region.worker).copied();
+        let queue_label = planned_cpu
+            .map(|cpu| topology.queue_for_cpu(region.worker, cpu).index.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        println!(
+            "slot-rand-sharded-region: worker={} base_offset={} len_bytes={} end_offset={} \
+             planned_cpu={} planned_nvme_queue={}",
+            region.worker,
+            region.base_offset,
+            region.len_bytes,
+            region.end_offset()?,
+            planned_cpu
+                .map(|cpu| cpu.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            queue_label
+        );
+    }
+
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(workers);
+    for region in regions {
+        let target = target.clone();
+        let planned_cpu = planned_cpus.get(region.worker).copied();
+        handles.push(thread::spawn(move || {
+            slot_rand_worker(
+                target,
+                region.worker,
+                region.base_offset,
+                region.len_bytes,
+                ops_per_worker,
+                chunk_bytes,
+                pipeline,
+                ring_entries,
+                mode,
+                read_percent,
+                buffer_mode,
+                pin_workers,
+                planned_cpu,
+            )
+        }));
+    }
+
+    let mut results = Vec::with_capacity(workers);
+    for handle in handles {
+        results.push(
+            handle
+                .join()
+                .map_err(|_| io::Error::other("slot random worker thread panicked"))??,
+        );
+    }
+    results.sort_by_key(|result| result.worker);
+
+    let wall_seconds = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    let total_ops: usize = results.iter().map(|result| result.ops).sum();
+    let total_reads: usize = results.iter().map(|result| result.reads).sum();
+    let total_writes: usize = results.iter().map(|result| result.writes).sum();
+    let total_bytes = total_ops.checked_mul(chunk_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "slot random aggregate byte count overflow",
+        )
+    })?;
+    let total_cpu_seconds: f64 = results.iter().map(|result| result.cpu.as_secs_f64()).sum();
+    let slowest_worker_seconds = results
+        .iter()
+        .map(|result| result.elapsed)
+        .max()
+        .unwrap_or_default()
+        .as_secs_f64()
+        .max(f64::MIN_POSITIVE);
+
+    for result in &results {
+        let seconds = result.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        let cpu_seconds = result.cpu.as_secs_f64();
+        println!(
+            "slot-rand-sharded-worker: worker={} ops={} reads={} writes={} \
+             seconds={seconds:.6} ops_per_sec={:.0} cpu_seconds={cpu_seconds:.6} \
+             cpu_percent={:.2} cpu_ns_per_op={:.1} base_offset={} region_bytes={} \
+             slots={} completion_batch={} target_cpu={} affinity_applied={} local_cpu={} \
+             worker_numa_node={} buffers={} slot_buffer_layout={} segment_bytes={} \
+             buffer_base=0x{:x} buffer_alignment={} buffer_stride={} buffer_map_len={} \
+             memory_policy={}",
+            result.worker,
+            result.ops,
+            result.reads,
+            result.writes,
+            result.ops as f64 / seconds,
+            cpu_seconds / seconds * 100.0,
+            cpu_seconds * 1_000_000_000.0 / result.ops as f64,
+            result.base_offset,
+            result.region_bytes,
+            result.slot_count,
+            result.completion_batch,
+            result.target_cpu,
+            result.affinity_applied,
+            result.local_cpu,
+            option_i32_label(result.worker_numa_node),
+            result.buffer_mode.as_str(),
+            result.slot_buffer_layout.as_str(),
+            result.segment_bytes,
+            result.buffer_base,
+            result.buffer_alignment,
+            result.buffer_stride,
+            result.buffer_map_len,
+            result.memory_policy
+        );
+    }
+
+    println!(
+        "slot-rand-sharded-bench: target={} mode={} workers={workers} \
+         ops_per_worker={ops_per_worker} total_ops={total_ops} reads={total_reads} \
+         writes={total_writes} read_percent={read_percent} chunk_bytes={chunk_bytes} \
+         region_bytes_per_worker={region_bytes_per_worker} total_region_bytes={total_region_bytes} \
+         pipeline_per_worker={pipeline} total_pipeline={} ring_entries={ring_entries} \
+         completion_batch={} buffers={} slot_buffer_layout={} segment_bytes={segment_bytes} \
+         required_alignment={required_alignment} slot_backend={} pin_workers={pin_workers} \
+         wall_seconds={wall_seconds:.6} slowest_worker_seconds={slowest_worker_seconds:.6} \
+         total_cpu_seconds={total_cpu_seconds:.6} aggregate_cpu_percent={:.2} \
+         cpu_ns_per_op={:.1} MiBps={:.2} ops_per_sec={:.0}",
+        target.label(),
+        mode.as_str(),
+        pipeline * workers,
+        results
+            .first()
+            .map(|result| result.completion_batch)
+            .unwrap_or(1),
+        buffer_mode.as_str(),
+        results
+            .first()
+            .map(|result| result.slot_buffer_layout.as_str())
+            .unwrap_or(SlotBufferLayout::PerSlot.as_str()),
+        io_slots::submission_backend_label(),
+        total_cpu_seconds / wall_seconds * 100.0,
+        total_cpu_seconds * 1_000_000_000.0 / total_ops as f64,
+        total_bytes as f64 / (1024.0 * 1024.0) / wall_seconds,
+        total_ops as f64 / wall_seconds
+    );
+    Ok(())
+}
+
+fn zckv_key_hash(worker: usize, key: usize) -> u64 {
+    let mut state = 0x243f_6a88_85a3_08d3u64
+        ^ ((worker as u64) << 40)
+        ^ (key as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    splitmix64_next(&mut state)
+}
+
+#[derive(Clone, Copy)]
+struct ZckvPageWorkerResult {
+    worker: usize,
+    ops: usize,
+    gets: usize,
+    sets: usize,
+    elapsed: Duration,
+    cpu: Duration,
+    base_offset: u64,
+    region_bytes: usize,
+    key_count: usize,
+    slot_count: usize,
+    target_cpu: i32,
+    affinity_applied: bool,
+    local_cpu: i32,
+    worker_numa_node: Option<i32>,
+    completion_batch: usize,
+    buffer_base: usize,
+    buffer_stride: usize,
+    buffer_map_len: usize,
+    buffer_alignment: usize,
+    buffer_mode: SlotWalBufferMode,
+    segment_bytes: usize,
+    slot_buffer_layout: SlotBufferLayout,
+    memory_policy: &'static str,
+    metadata_checksum: u64,
+    read_checksum: u64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zckv_page_worker(
+    target: SlotWalTarget,
+    backend: ZckvPageBackend,
+    worker: usize,
+    base_offset: u64,
+    region_bytes: usize,
+    ops: usize,
+    page_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    read_percent: u8,
+    buffer_mode: SlotWalBufferMode,
+    pin: bool,
+    planned_cpu: Option<usize>,
+) -> io::Result<ZckvPageWorkerResult> {
+    let key_count = region_bytes / page_bytes;
+    if key_count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "region-bytes must cover at least one page",
+        ));
+    }
+    let page_bytes_u32 = u32::try_from(page_bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "page-bytes must fit in u32 for the SQE len field",
+        )
+    })?;
+
+    let affinity =
+        pin_current_thread_if_requested_to_cpu("zckv-page-worker", worker, pin, planned_cpu);
+    let preferred_numa_node = if affinity.target_cpu >= 0 {
+        cpu_numa_node(affinity.target_cpu as usize)
+    } else {
+        None
+    };
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(read_percent < 100)
+        .custom_flags(libc::O_DIRECT | libc::O_CLOEXEC)
+        .open(target.open_path())?;
+    let fd = file.as_raw_fd();
+
+    let mut ring = RawRing::new(ring_entries, ring_entries.saturating_mul(2))?;
+    let mut fds = [fd];
+    ring.register_files(&mut fds)?;
+
+    let buffers = buffer_mode.allocate_for_worker(pipeline, page_bytes, preferred_numa_node)?;
+    fill_slot_wal_buffers(&buffers, page_bytes);
+    let buffer_base = buffers.base_addr();
+    let buffer_stride = buffers.stride();
+    let buffer_map_len = buffers.map_len();
+    let buffer_alignment = address_alignment(buffer_base);
+    let memory_policy = buffers.memory_policy();
+    let slot_buffer_layout = SlotBufferLayout::from_env()?;
+    slot_buffer_layout.register_buffers(&ring, &buffers, page_bytes)?;
+
+    let slot_ids = if matches!(backend, ZckvPageBackend::Slot) {
+        slot_buffer_layout.register_io_slots(&ring, pipeline)?
+    } else {
+        Vec::new()
+    };
+
+    let key_hashes: Vec<u64> = (0..key_count)
+        .map(|key| zckv_key_hash(worker, key))
+        .collect();
+    let mut in_flight_get = vec![false; pipeline];
+    let completion_batch = env_usize_or(
+        "URING_PLAY_ZCKV_COMPLETION_BATCH",
+        env_usize_or("URING_PLAY_SLOT_COMPLETION_BATCH", 64),
+    )
+    .clamp(1, pipeline);
+    let mut free_slots: Vec<usize> = (0..pipeline).rev().collect();
+    let mut rng = 0x1319_8a2e_0370_7344u64
+        ^ ((worker as u64) << 48)
+        ^ (ops as u64)
+        ^ ((page_bytes as u64) << 24)
+        ^ base_offset.rotate_left(11);
+    let mut submitted = 0usize;
+    let mut completed = 0usize;
+    let mut gets = 0usize;
+    let mut sets = 0usize;
+    let mut metadata_checksum = 0u64;
+    let mut read_checksum = 0u64;
+    let local_cpu = current_cpu();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let started = Instant::now();
+
+    while completed < ops {
+        while submitted < ops && !free_slots.is_empty() {
+            let slot = free_slots.pop().expect("free slot");
+            let key = splitmix64_next(&mut rng) as usize % key_count;
+            let key_hash = key_hashes[key];
+            metadata_checksum = metadata_checksum
+                .wrapping_add(key_hash)
+                .rotate_left((key & 31) as u32);
+            let file_offset = (key as u64)
+                .checked_mul(page_bytes as u64)
+                .and_then(|offset| base_offset.checked_add(offset))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "offset overflow"))?;
+            let is_get = (splitmix64_next(&mut rng) % 100) < read_percent as u64;
+            in_flight_get[slot] = is_get;
+            if is_get {
+                gets += 1;
+            } else {
+                sets += 1;
+            }
+
+            match backend {
+                ZckvPageBackend::FixedFile => {
+                    let ptr = buffers.ptr(slot);
+                    let buf_index = slot_buffer_layout.fixed_buf_index(slot)?;
+                    if is_get {
+                        ring.queue_read_fixed_file(
+                            0,
+                            ptr,
+                            page_bytes_u32,
+                            file_offset,
+                            buf_index,
+                            slot as u64,
+                        )?;
+                    } else {
+                        ring.queue_write_fixed_file(
+                            0,
+                            ptr.cast_const(),
+                            page_bytes_u32,
+                            file_offset,
+                            buf_index,
+                            slot as u64,
+                        )?;
+                    }
+                }
+                ZckvPageBackend::Slot => {
+                    let direction = if is_get {
+                        io_slots::SlotRw::Read
+                    } else {
+                        io_slots::SlotRw::Write
+                    };
+                    let buf_offset = slot_buffer_layout.buf_offset(&buffers, slot)?;
+                    ring.queue_slot_rw(
+                        slot_ids[slot],
+                        buf_offset,
+                        file_offset,
+                        page_bytes_u32,
+                        direction,
+                        slot as u64,
+                    )?;
+                }
+            }
+            submitted += 1;
+        }
+
+        ring.submit_pending()?;
+        for batch_idx in 0..completion_batch {
+            let cqe = if batch_idx == 0 {
+                match ring.try_pop_cqe() {
+                    Some(cqe) => cqe,
+                    None => ring.wait_cqe()?,
+                }
+            } else {
+                match ring.try_pop_cqe() {
+                    Some(cqe) => cqe,
+                    None => break,
+                }
+            };
+            let slot = cqe.user_data as usize;
+            if slot >= pipeline {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("zckv CQE returned invalid slot user_data={slot}"),
+                ));
+            }
+            if cqe.res < 0 {
+                return Err(io::Error::from_raw_os_error(-cqe.res));
+            }
+            if cqe.res != page_bytes_u32 as i32 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    format!(
+                        "short zckv page completion: res={} expected={page_bytes}",
+                        cqe.res
+                    ),
+                ));
+            }
+            if in_flight_get[slot] {
+                let byte = unsafe { ptr::read_volatile(buffers.ptr(slot).cast_const()) };
+                read_checksum = read_checksum.wrapping_add(byte as u64).rotate_left(1);
+            }
+            completed += 1;
+            free_slots.push(slot);
+            if completed == ops {
+                break;
+            }
+        }
+    }
+
+    let elapsed = started.elapsed();
+    let cpu = thread_cpu_time()
+        .unwrap_or(start_thread_cpu)
+        .saturating_sub(start_thread_cpu);
+    for slot_id in slot_ids {
+        ring.unregister_io_slot(slot_id)?;
+    }
+    ring.unregister_buffers()?;
+    ring.unregister_files()?;
+
+    Ok(ZckvPageWorkerResult {
+        worker,
+        ops,
+        gets,
+        sets,
+        elapsed,
+        cpu,
+        base_offset,
+        region_bytes,
+        key_count,
+        slot_count: pipeline,
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+        local_cpu,
+        worker_numa_node: preferred_numa_node.or_else(|| {
+            (local_cpu >= 0)
+                .then(|| cpu_numa_node(local_cpu as usize))
+                .flatten()
+        }),
+        completion_batch,
+        buffer_base,
+        buffer_stride,
+        buffer_map_len,
+        buffer_alignment,
+        buffer_mode,
+        segment_bytes: buffer_mode.segment_bytes()?,
+        slot_buffer_layout,
+        memory_policy,
+        metadata_checksum,
+        read_checksum,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zckv_page_bench(
+    target_arg: &str,
+    backend: ZckvPageBackend,
+    workers: usize,
+    ops_per_worker: usize,
+    page_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    read_percent: u8,
+    region_bytes_per_worker: usize,
+    buffer_mode: SlotWalBufferMode,
+    pin_workers: bool,
+) -> io::Result<()> {
+    if workers == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workers must be non-zero",
+        ));
+    }
+    if ops_per_worker == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ops-per-worker must be non-zero",
+        ));
+    }
+    if read_percent > 100 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "read-percent must be 0..=100",
+        ));
+    }
+    validate_slot_wal_pipeline(pipeline, ring_entries)?;
+    ensure_sector_aligned(region_bytes_per_worker, "region-bytes-per-worker")?;
+    ensure_sector_aligned(page_bytes, "page-bytes")?;
+    if region_bytes_per_worker % page_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "region-bytes-per-worker must be an exact multiple of page-bytes",
+        ));
+    }
+    let total_region_bytes = region_bytes_per_worker
+        .checked_mul(workers)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "aggregate region byte count overflow",
+            )
+        })?;
+    let safety_mode = if read_percent < 100 {
+        SlotWalMode::Write
+    } else {
+        SlotWalMode::Read
+    };
+    let (target, device_bytes, required_alignment, segment_bytes) = validate_slot_wal_common(
+        target_arg,
+        total_region_bytes,
+        page_bytes,
+        safety_mode,
+        buffer_mode,
+    )?;
+    let metadata = fs::metadata(target.open_path())?;
+    let topology = BlockDeviceTopology::from_metadata(&metadata)?;
+    let planned_cpus = if pin_workers {
+        topology.planned_cpus(workers, true)
+    } else {
+        Vec::new()
+    };
+    let regions = make_linear_wal_regions(workers, region_bytes_per_worker)?;
+    validate_wal_regions(&regions, device_bytes)?;
+    for region in &regions {
+        let planned_cpu = planned_cpus.get(region.worker).copied();
+        let queue_label = planned_cpu
+            .map(|cpu| topology.queue_for_cpu(region.worker, cpu).index.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        println!(
+            "zckv-page-region: worker={} base_offset={} len_bytes={} end_offset={} \
+             planned_cpu={} planned_nvme_queue={}",
+            region.worker,
+            region.base_offset,
+            region.len_bytes,
+            region.end_offset()?,
+            planned_cpu
+                .map(|cpu| cpu.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            queue_label
+        );
+    }
+
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(workers);
+    for region in regions {
+        let target = target.clone();
+        let planned_cpu = planned_cpus.get(region.worker).copied();
+        handles.push(thread::spawn(move || {
+            zckv_page_worker(
+                target,
+                backend,
+                region.worker,
+                region.base_offset,
+                region.len_bytes,
+                ops_per_worker,
+                page_bytes,
+                pipeline,
+                ring_entries,
+                read_percent,
+                buffer_mode,
+                pin_workers,
+                planned_cpu,
+            )
+        }));
+    }
+
+    let mut results = Vec::with_capacity(workers);
+    for handle in handles {
+        results.push(
+            handle
+                .join()
+                .map_err(|_| io::Error::other("zckv page worker thread panicked"))??,
+        );
+    }
+    results.sort_by_key(|result| result.worker);
+
+    let wall_seconds = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    let total_ops: usize = results.iter().map(|result| result.ops).sum();
+    let total_gets: usize = results.iter().map(|result| result.gets).sum();
+    let total_sets: usize = results.iter().map(|result| result.sets).sum();
+    let total_cpu_seconds: f64 = results.iter().map(|result| result.cpu.as_secs_f64()).sum();
+    let total_bytes = total_ops.checked_mul(page_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zckv aggregate byte count overflow",
+        )
+    })?;
+    let slowest_worker_seconds = results
+        .iter()
+        .map(|result| result.elapsed)
+        .max()
+        .unwrap_or_default()
+        .as_secs_f64()
+        .max(f64::MIN_POSITIVE);
+    let metadata_checksum = results
+        .iter()
+        .fold(0u64, |acc, result| acc ^ result.metadata_checksum);
+    let read_checksum = results
+        .iter()
+        .fold(0u64, |acc, result| acc ^ result.read_checksum);
+
+    for result in &results {
+        let seconds = result.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        let cpu_seconds = result.cpu.as_secs_f64();
+        println!(
+            "zckv-page-worker: worker={} backend={} ops={} gets={} sets={} \
+             seconds={seconds:.6} qps={:.0} cpu_seconds={cpu_seconds:.6} \
+             cpu_percent={:.2} cpu_ns_per_op={:.1} base_offset={} region_bytes={} \
+             key_count={} slots={} completion_batch={} target_cpu={} affinity_applied={} \
+             local_cpu={} worker_numa_node={} buffers={} segment_bytes={} \
+             slot_buffer_layout={} buffer_base=0x{:x} buffer_alignment={} buffer_stride={} \
+             buffer_map_len={} memory_policy={} metadata_checksum={} read_checksum={}",
+            result.worker,
+            backend.as_str(),
+            result.ops,
+            result.gets,
+            result.sets,
+            result.ops as f64 / seconds,
+            cpu_seconds / seconds * 100.0,
+            cpu_seconds * 1_000_000_000.0 / result.ops as f64,
+            result.base_offset,
+            result.region_bytes,
+            result.key_count,
+            result.slot_count,
+            result.completion_batch,
+            result.target_cpu,
+            result.affinity_applied,
+            result.local_cpu,
+            option_i32_label(result.worker_numa_node),
+            result.buffer_mode.as_str(),
+            result.segment_bytes,
+            result.slot_buffer_layout.as_str(),
+            result.buffer_base,
+            result.buffer_alignment,
+            result.buffer_stride,
+            result.buffer_map_len,
+            result.memory_policy,
+            result.metadata_checksum,
+            result.read_checksum
+        );
+    }
+
+    println!(
+        "zckv-page-bench: target={} backend={} workers={workers} \
+         ops_per_worker={ops_per_worker} total_ops={total_ops} gets={total_gets} sets={total_sets} \
+         read_percent={read_percent} page_bytes={page_bytes} \
+         region_bytes_per_worker={region_bytes_per_worker} total_region_bytes={total_region_bytes} \
+         pipeline_per_worker={pipeline} total_pipeline={} ring_entries={ring_entries} \
+         completion_batch={} buffers={} slot_buffer_layout={} segment_bytes={segment_bytes} \
+         required_alignment={required_alignment} slot_backend={} pin_workers={pin_workers} \
+         wall_seconds={wall_seconds:.6} slowest_worker_seconds={slowest_worker_seconds:.6} \
+         total_cpu_seconds={total_cpu_seconds:.6} aggregate_cpu_percent={:.2} \
+         cpu_ns_per_op={:.1} MiBps={:.2} qps={:.0} metadata_checksum={metadata_checksum} \
+         read_checksum={read_checksum}",
+        target.label(),
+        backend.as_str(),
+        pipeline * workers,
+        results
+            .first()
+            .map(|result| result.completion_batch)
+            .unwrap_or(1),
+        buffer_mode.as_str(),
+        results
+            .first()
+            .map(|result| result.slot_buffer_layout.as_str())
+            .unwrap_or(SlotBufferLayout::PerSlot.as_str()),
+        io_slots::submission_backend_label(),
+        total_cpu_seconds / wall_seconds * 100.0,
+        total_cpu_seconds * 1_000_000_000.0 / total_ops as f64,
+        total_bytes as f64 / (1024.0 * 1024.0) / wall_seconds,
+        total_ops as f64 / wall_seconds
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy, Default)]
+struct CompactionLaneState {
+    left_done: bool,
+    right_done: bool,
+    seq: usize,
+    left_page: usize,
+    right_page: usize,
+}
+
+#[derive(Clone, Copy)]
+enum CompactionCqeKind {
+    ReadLeft = 0,
+    ReadRight = 1,
+    WriteOutput = 2,
+}
+
+impl CompactionCqeKind {
+    fn from_bits(bits: u64) -> Option<Self> {
+        match bits {
+            0 => Some(Self::ReadLeft),
+            1 => Some(Self::ReadRight),
+            2 => Some(Self::WriteOutput),
+            _ => None,
+        }
+    }
+}
+
+fn compaction_user_data(kind: CompactionCqeKind, lane: usize) -> u64 {
+    ((kind as u64) << 32) | lane as u64
+}
+
+fn compaction_cqe_parts(user_data: u64, pipeline: usize) -> io::Result<(CompactionCqeKind, usize)> {
+    let lane = (user_data & 0xffff_ffff) as usize;
+    let kind = CompactionCqeKind::from_bits(user_data >> 32).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown compaction CQE kind in user_data={user_data}"),
+        )
+    })?;
+    if lane >= pipeline {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("compaction CQE returned invalid lane={lane}"),
+        ));
+    }
+    Ok((kind, lane))
+}
+
+fn read_u64_prefix(bytes: &[u8], offset: usize) -> u64 {
+    let mut raw = [0u8; 8];
+    if offset < bytes.len() {
+        let available = (bytes.len() - offset).min(raw.len());
+        raw[..available].copy_from_slice(&bytes[offset..offset + available]);
+    }
+    u64::from_ne_bytes(raw)
+}
+
+fn write_u64_prefix(bytes: &mut [u8], offset: usize, value: u64) {
+    if offset + 8 <= bytes.len() {
+        bytes[offset..offset + 8].copy_from_slice(&value.to_ne_bytes());
+    }
+}
+
+fn compact_page_pair(
+    buffers: &FixedSendBuffers,
+    left_buffer: usize,
+    right_buffer: usize,
+    output_buffer: usize,
+    page_bytes: usize,
+    copy_bytes: usize,
+    worker: usize,
+    state: CompactionLaneState,
+) -> u64 {
+    unsafe {
+        let left = slice::from_raw_parts(buffers.ptr(left_buffer).cast_const(), page_bytes);
+        let right = slice::from_raw_parts(buffers.ptr(right_buffer).cast_const(), page_bytes);
+        let output = slice::from_raw_parts_mut(buffers.ptr(output_buffer), page_bytes);
+        let left_key = read_u64_prefix(left, 0)
+            ^ zckv_key_hash(worker, state.left_page)
+            ^ (state.seq as u64).rotate_left(7);
+        let right_key = read_u64_prefix(right, 0)
+            ^ zckv_key_hash(worker, state.right_page)
+            ^ (state.seq as u64).rotate_left(17);
+        let selected = if left_key <= right_key { left } else { right };
+        let copy_len = copy_bytes.min(page_bytes);
+        if copy_len > 0 {
+            output[..copy_len].copy_from_slice(&selected[..copy_len]);
+        }
+        let digest = left_key
+            .wrapping_add(right_key.rotate_left(13))
+            .wrapping_add((state.seq as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        write_u64_prefix(output, 0, 0x7a63_636d_7063_7431);
+        write_u64_prefix(output, 8, state.seq as u64);
+        write_u64_prefix(output, 16, state.left_page as u64);
+        write_u64_prefix(output, 24, state.right_page as u64);
+        write_u64_prefix(output, 32, left_key);
+        write_u64_prefix(output, 40, right_key);
+        write_u64_prefix(output, 48, digest);
+        digest ^ read_u64_prefix(output, page_bytes.saturating_sub(8))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn queue_page_backend_io(
+    ring: &mut RawRing,
+    backend: ZckvPageBackend,
+    slot_buffer_layout: SlotBufferLayout,
+    buffers: &FixedSendBuffers,
+    slot_ids: &[io_slots::IoSlotId],
+    buffer_index: usize,
+    file_offset: u64,
+    len: u32,
+    direction: io_slots::SlotRw,
+    user_data: u64,
+) -> io::Result<()> {
+    match backend {
+        ZckvPageBackend::FixedFile => {
+            let ptr = buffers.ptr(buffer_index);
+            let buf_index = slot_buffer_layout.fixed_buf_index(buffer_index)?;
+            match direction {
+                io_slots::SlotRw::Read => {
+                    ring.queue_read_fixed_file(0, ptr, len, file_offset, buf_index, user_data)
+                }
+                io_slots::SlotRw::Write => ring.queue_write_fixed_file(
+                    0,
+                    ptr.cast_const(),
+                    len,
+                    file_offset,
+                    buf_index,
+                    user_data,
+                ),
+            }
+        }
+        ZckvPageBackend::Slot => {
+            let buf_offset = slot_buffer_layout.buf_offset(buffers, buffer_index)?;
+            ring.queue_slot_rw(
+                slot_ids[buffer_index],
+                buf_offset,
+                file_offset,
+                len,
+                direction,
+                user_data,
+            )
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ZckvCompactionWorkerResult {
+    worker: usize,
+    ops: usize,
+    read_ops: usize,
+    write_ops: usize,
+    elapsed: Duration,
+    cpu: Duration,
+    base_offset: u64,
+    region_bytes: usize,
+    run_bytes: usize,
+    run_pages: usize,
+    page_bytes: usize,
+    pipeline: usize,
+    buffer_count: usize,
+    completion_batch: usize,
+    target_cpu: i32,
+    affinity_applied: bool,
+    local_cpu: i32,
+    worker_numa_node: Option<i32>,
+    buffer_base: usize,
+    buffer_stride: usize,
+    buffer_map_len: usize,
+    buffer_alignment: usize,
+    buffer_mode: SlotWalBufferMode,
+    segment_bytes: usize,
+    slot_buffer_layout: SlotBufferLayout,
+    memory_policy: &'static str,
+    copy_bytes: usize,
+    merge_checksum: u64,
+    read_checksum: u64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zckv_compaction_worker(
+    target: SlotWalTarget,
+    backend: ZckvPageBackend,
+    worker: usize,
+    base_offset: u64,
+    region_bytes: usize,
+    ops: usize,
+    page_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    buffer_mode: SlotWalBufferMode,
+    pin: bool,
+    planned_cpu: Option<usize>,
+) -> io::Result<ZckvCompactionWorkerResult> {
+    let page_bytes_u32 = u32::try_from(page_bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "page-bytes must fit in u32 for the SQE len field",
+        )
+    })?;
+    let run_bytes = region_bytes / 3;
+    let run_pages = run_bytes / page_bytes;
+    if run_pages == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "region-bytes-per-worker must contain at least one page per compaction run",
+        ));
+    }
+    if ops > run_pages {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "ops-per-worker={ops} exceeds output run capacity {run_pages}; \
+                 increase region-bytes-per-worker or reduce ops"
+            ),
+        ));
+    }
+
+    let affinity =
+        pin_current_thread_if_requested_to_cpu("zckv-compaction-worker", worker, pin, planned_cpu);
+    let preferred_numa_node = if affinity.target_cpu >= 0 {
+        cpu_numa_node(affinity.target_cpu as usize)
+    } else {
+        None
+    };
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_DIRECT | libc::O_CLOEXEC)
+        .open(target.open_path())?;
+    let fd = file.as_raw_fd();
+
+    let mut ring = RawRing::new(ring_entries, ring_entries.saturating_mul(2))?;
+    let mut fds = [fd];
+    ring.register_files(&mut fds)?;
+
+    let buffer_count = checked_buffer_count(pipeline, 3, "zckv-compact-bench")?;
+    let buffers = buffer_mode.allocate_for_worker(buffer_count, page_bytes, preferred_numa_node)?;
+    fill_slot_wal_buffers(&buffers, page_bytes);
+    let buffer_base = buffers.base_addr();
+    let buffer_stride = buffers.stride();
+    let buffer_map_len = buffers.map_len();
+    let buffer_alignment = address_alignment(buffer_base);
+    let memory_policy = buffers.memory_policy();
+    let slot_buffer_layout = SlotBufferLayout::from_env()?;
+    slot_buffer_layout.register_buffers(&ring, &buffers, page_bytes)?;
+    let slot_ids = if matches!(backend, ZckvPageBackend::Slot) {
+        slot_buffer_layout.register_io_slots(&ring, buffer_count)?
+    } else {
+        Vec::new()
+    };
+
+    let left_base = base_offset;
+    let right_base = base_offset + run_bytes as u64;
+    let output_base = base_offset + (run_bytes as u64).saturating_mul(2);
+    let copy_bytes = env_usize_or("URING_PLAY_COMPACTION_COPY_BYTES", page_bytes).min(page_bytes);
+    let completion_batch = env_usize_or(
+        "URING_PLAY_COMPACTION_COMPLETION_BATCH",
+        env_usize_or("URING_PLAY_SLOT_COMPLETION_BATCH", 64),
+    )
+    .clamp(1, buffer_count);
+    let mut lane_states = vec![CompactionLaneState::default(); pipeline];
+    let mut free_lanes: Vec<usize> = (0..pipeline).rev().collect();
+    let mut rng = 0x7a63_636f_6d70_6163u64
+        ^ ((worker as u64) << 48)
+        ^ (ops as u64)
+        ^ ((page_bytes as u64) << 16)
+        ^ base_offset.rotate_left(9);
+    let mut submitted = 0usize;
+    let mut completed = 0usize;
+    let mut read_ops = 0usize;
+    let mut write_ops = 0usize;
+    let mut merge_checksum = 0u64;
+    let mut read_checksum = 0u64;
+    let local_cpu = current_cpu();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let started = Instant::now();
+
+    while completed < ops {
+        while submitted < ops && !free_lanes.is_empty() {
+            let lane = free_lanes.pop().expect("free lane");
+            let left_page = splitmix64_next(&mut rng) as usize % run_pages;
+            let right_page = splitmix64_next(&mut rng) as usize % run_pages;
+            lane_states[lane] = CompactionLaneState {
+                left_done: false,
+                right_done: false,
+                seq: submitted,
+                left_page,
+                right_page,
+            };
+            let left_buffer = lane * 3;
+            let right_buffer = left_buffer + 1;
+            let left_offset = left_base + (left_page as u64) * page_bytes as u64;
+            let right_offset = right_base + (right_page as u64) * page_bytes as u64;
+            queue_page_backend_io(
+                &mut ring,
+                backend,
+                slot_buffer_layout,
+                &buffers,
+                &slot_ids,
+                left_buffer,
+                left_offset,
+                page_bytes_u32,
+                io_slots::SlotRw::Read,
+                compaction_user_data(CompactionCqeKind::ReadLeft, lane),
+            )?;
+            queue_page_backend_io(
+                &mut ring,
+                backend,
+                slot_buffer_layout,
+                &buffers,
+                &slot_ids,
+                right_buffer,
+                right_offset,
+                page_bytes_u32,
+                io_slots::SlotRw::Read,
+                compaction_user_data(CompactionCqeKind::ReadRight, lane),
+            )?;
+            read_ops += 2;
+            submitted += 1;
+        }
+
+        ring.submit_pending()?;
+        for batch_idx in 0..completion_batch {
+            let cqe = if batch_idx == 0 {
+                match ring.try_pop_cqe() {
+                    Some(cqe) => cqe,
+                    None => ring.wait_cqe()?,
+                }
+            } else {
+                match ring.try_pop_cqe() {
+                    Some(cqe) => cqe,
+                    None => break,
+                }
+            };
+            if cqe.res < 0 {
+                return Err(io::Error::from_raw_os_error(-cqe.res));
+            }
+            if cqe.res != page_bytes_u32 as i32 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    format!(
+                        "short compaction completion: res={} expected={page_bytes}",
+                        cqe.res
+                    ),
+                ));
+            }
+            let (kind, lane) = compaction_cqe_parts(cqe.user_data, pipeline)?;
+            let base_buffer = lane * 3;
+            match kind {
+                CompactionCqeKind::ReadLeft => {
+                    lane_states[lane].left_done = true;
+                    let byte = unsafe { ptr::read_volatile(buffers.ptr(base_buffer).cast_const()) };
+                    read_checksum = read_checksum.wrapping_add(byte as u64).rotate_left(1);
+                }
+                CompactionCqeKind::ReadRight => {
+                    lane_states[lane].right_done = true;
+                    let byte =
+                        unsafe { ptr::read_volatile(buffers.ptr(base_buffer + 1).cast_const()) };
+                    read_checksum = read_checksum.wrapping_add(byte as u64).rotate_left(1);
+                }
+                CompactionCqeKind::WriteOutput => {
+                    completed += 1;
+                    free_lanes.push(lane);
+                    if completed == ops {
+                        break;
+                    }
+                    continue;
+                }
+            }
+
+            if lane_states[lane].left_done && lane_states[lane].right_done {
+                let state = lane_states[lane];
+                merge_checksum ^= compact_page_pair(
+                    &buffers,
+                    base_buffer,
+                    base_buffer + 1,
+                    base_buffer + 2,
+                    page_bytes,
+                    copy_bytes,
+                    worker,
+                    state,
+                );
+                let output_offset = output_base + (state.seq as u64) * page_bytes as u64;
+                queue_page_backend_io(
+                    &mut ring,
+                    backend,
+                    slot_buffer_layout,
+                    &buffers,
+                    &slot_ids,
+                    base_buffer + 2,
+                    output_offset,
+                    page_bytes_u32,
+                    io_slots::SlotRw::Write,
+                    compaction_user_data(CompactionCqeKind::WriteOutput, lane),
+                )?;
+                write_ops += 1;
+            }
+        }
+    }
+
+    let elapsed = started.elapsed();
+    let cpu = thread_cpu_time()
+        .unwrap_or(start_thread_cpu)
+        .saturating_sub(start_thread_cpu);
+    for slot_id in slot_ids {
+        ring.unregister_io_slot(slot_id)?;
+    }
+    ring.unregister_buffers()?;
+    ring.unregister_files()?;
+
+    Ok(ZckvCompactionWorkerResult {
+        worker,
+        ops,
+        read_ops,
+        write_ops,
+        elapsed,
+        cpu,
+        base_offset,
+        region_bytes,
+        run_bytes,
+        run_pages,
+        page_bytes,
+        pipeline,
+        buffer_count,
+        completion_batch,
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+        local_cpu,
+        worker_numa_node: preferred_numa_node.or_else(|| {
+            (local_cpu >= 0)
+                .then(|| cpu_numa_node(local_cpu as usize))
+                .flatten()
+        }),
+        buffer_base,
+        buffer_stride,
+        buffer_map_len,
+        buffer_alignment,
+        buffer_mode,
+        segment_bytes: buffer_mode.segment_bytes()?,
+        slot_buffer_layout,
+        memory_policy,
+        copy_bytes,
+        merge_checksum,
+        read_checksum,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zckv_compaction_bench(
+    target_arg: &str,
+    backend: ZckvPageBackend,
+    workers: usize,
+    ops_per_worker: usize,
+    page_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    region_bytes_per_worker: usize,
+    buffer_mode: SlotWalBufferMode,
+    pin_workers: bool,
+) -> io::Result<()> {
+    if workers == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workers must be non-zero",
+        ));
+    }
+    if ops_per_worker == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ops-per-worker must be non-zero",
+        ));
+    }
+    let buffer_count = checked_buffer_count(pipeline, 3, "zckv-compact-bench")?;
+    validate_slot_wal_pipeline(buffer_count, ring_entries)?;
+    ensure_sector_aligned(region_bytes_per_worker, "region-bytes-per-worker")?;
+    ensure_sector_aligned(page_bytes, "page-bytes")?;
+    let layout_unit = page_bytes.checked_mul(3).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "compaction layout byte count overflow",
+        )
+    })?;
+    if region_bytes_per_worker % layout_unit != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "region-bytes-per-worker must be an exact multiple of page-bytes * 3",
+        ));
+    }
+    let run_pages = region_bytes_per_worker / 3 / page_bytes;
+    if ops_per_worker > run_pages {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "ops-per-worker={ops_per_worker} exceeds output run capacity {run_pages}; \
+                 increase region-bytes-per-worker or reduce ops"
+            ),
+        ));
+    }
+    let total_region_bytes = region_bytes_per_worker
+        .checked_mul(workers)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "aggregate compaction byte count overflow",
+            )
+        })?;
+    let (target, device_bytes, required_alignment, segment_bytes) = validate_slot_wal_common(
+        target_arg,
+        total_region_bytes,
+        page_bytes,
+        SlotWalMode::Write,
+        buffer_mode,
+    )?;
+    let metadata = fs::metadata(target.open_path())?;
+    let topology = BlockDeviceTopology::from_metadata(&metadata)?;
+    let planned_cpus = if pin_workers {
+        topology.planned_cpus(workers, true)
+    } else {
+        Vec::new()
+    };
+    let regions = make_linear_wal_regions(workers, region_bytes_per_worker)?;
+    validate_wal_regions(&regions, device_bytes)?;
+    for region in &regions {
+        let run_bytes = region.len_bytes / 3;
+        let planned_cpu = planned_cpus.get(region.worker).copied();
+        let queue_label = planned_cpu
+            .map(|cpu| topology.queue_for_cpu(region.worker, cpu).index.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        println!(
+            "zckv-compact-region: worker={} base_offset={} source_a_base={} \
+             source_b_base={} output_base={} run_bytes={} output_end={} \
+             planned_cpu={} planned_nvme_queue={}",
+            region.worker,
+            region.base_offset,
+            region.base_offset,
+            region.base_offset + run_bytes as u64,
+            region.base_offset + (run_bytes as u64).saturating_mul(2),
+            run_bytes,
+            region.end_offset()?,
+            planned_cpu
+                .map(|cpu| cpu.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            queue_label
+        );
+    }
+
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(workers);
+    for region in regions {
+        let target = target.clone();
+        let planned_cpu = planned_cpus.get(region.worker).copied();
+        handles.push(thread::spawn(move || {
+            zckv_compaction_worker(
+                target,
+                backend,
+                region.worker,
+                region.base_offset,
+                region.len_bytes,
+                ops_per_worker,
+                page_bytes,
+                pipeline,
+                ring_entries,
+                buffer_mode,
+                pin_workers,
+                planned_cpu,
+            )
+        }));
+    }
+
+    let mut results = Vec::with_capacity(workers);
+    for handle in handles {
+        results.push(
+            handle
+                .join()
+                .map_err(|_| io::Error::other("zckv compaction worker thread panicked"))??,
+        );
+    }
+    results.sort_by_key(|result| result.worker);
+
+    let wall_seconds = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    let total_ops: usize = results.iter().map(|result| result.ops).sum();
+    let total_read_ops: usize = results.iter().map(|result| result.read_ops).sum();
+    let total_write_ops: usize = results.iter().map(|result| result.write_ops).sum();
+    let total_cpu_seconds: f64 = results.iter().map(|result| result.cpu.as_secs_f64()).sum();
+    let read_bytes = total_read_ops.checked_mul(page_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "compaction read byte count overflow",
+        )
+    })?;
+    let write_bytes = total_write_ops.checked_mul(page_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "compaction write byte count overflow",
+        )
+    })?;
+    let total_io_bytes = read_bytes.checked_add(write_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "compaction IO byte count overflow",
+        )
+    })?;
+    let slowest_worker_seconds = results
+        .iter()
+        .map(|result| result.elapsed)
+        .max()
+        .unwrap_or_default()
+        .as_secs_f64()
+        .max(f64::MIN_POSITIVE);
+    let merge_checksum = results
+        .iter()
+        .fold(0u64, |acc, result| acc ^ result.merge_checksum);
+    let read_checksum = results
+        .iter()
+        .fold(0u64, |acc, result| acc ^ result.read_checksum);
+
+    for result in &results {
+        let seconds = result.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        let cpu_seconds = result.cpu.as_secs_f64();
+        println!(
+            "zckv-compact-worker: worker={} backend={} ops={} read_ops={} write_ops={} \
+             seconds={seconds:.6} compact_ops_per_sec={:.0} io_ops_per_sec={:.0} \
+             cpu_seconds={cpu_seconds:.6} cpu_percent={:.2} cpu_ns_per_compaction={:.1} \
+             base_offset={} region_bytes={} run_bytes={} run_pages={} page_bytes={} \
+             pipeline={} buffers_per_worker={} completion_batch={} target_cpu={} \
+             affinity_applied={} local_cpu={} worker_numa_node={} buffers={} \
+             slot_buffer_layout={} segment_bytes={} copy_bytes={} buffer_base=0x{:x} \
+             buffer_alignment={} buffer_stride={} buffer_map_len={} memory_policy={} \
+             merge_checksum={} read_checksum={}",
+            result.worker,
+            backend.as_str(),
+            result.ops,
+            result.read_ops,
+            result.write_ops,
+            result.ops as f64 / seconds,
+            (result.read_ops + result.write_ops) as f64 / seconds,
+            cpu_seconds / seconds * 100.0,
+            cpu_seconds * 1_000_000_000.0 / result.ops as f64,
+            result.base_offset,
+            result.region_bytes,
+            result.run_bytes,
+            result.run_pages,
+            result.page_bytes,
+            result.pipeline,
+            result.buffer_count,
+            result.completion_batch,
+            result.target_cpu,
+            result.affinity_applied,
+            result.local_cpu,
+            option_i32_label(result.worker_numa_node),
+            result.buffer_mode.as_str(),
+            result.slot_buffer_layout.as_str(),
+            result.segment_bytes,
+            result.copy_bytes,
+            result.buffer_base,
+            result.buffer_alignment,
+            result.buffer_stride,
+            result.buffer_map_len,
+            result.memory_policy,
+            result.merge_checksum,
+            result.read_checksum
+        );
+    }
+
+    println!(
+        "zckv-compact-bench: target={} backend={} workers={workers} \
+         ops_per_worker={ops_per_worker} total_ops={total_ops} read_ops={total_read_ops} \
+         write_ops={total_write_ops} page_bytes={page_bytes} region_bytes_per_worker={} \
+         total_region_bytes={total_region_bytes} run_bytes_per_worker={} pipeline_per_worker={pipeline} \
+         buffers_per_worker={buffer_count} total_pipeline={} total_buffers={} \
+         ring_entries={ring_entries} completion_batch={} buffers={} slot_buffer_layout={} \
+         segment_bytes={segment_bytes} required_alignment={required_alignment} \
+         slot_backend={} pin_workers={pin_workers} copy_bytes={} \
+         wall_seconds={wall_seconds:.6} slowest_worker_seconds={slowest_worker_seconds:.6} \
+         total_cpu_seconds={total_cpu_seconds:.6} aggregate_cpu_percent={:.2} \
+         cpu_ns_per_compaction={:.1} compact_ops_per_sec={:.0} io_ops_per_sec={:.0} \
+         read_MiBps={:.2} write_MiBps={:.2} total_io_MiBps={:.2} \
+         merge_checksum={merge_checksum} read_checksum={read_checksum}",
+        target.label(),
+        backend.as_str(),
+        region_bytes_per_worker,
+        region_bytes_per_worker / 3,
+        pipeline * workers,
+        buffer_count * workers,
+        results
+            .first()
+            .map(|result| result.completion_batch)
+            .unwrap_or(1),
+        buffer_mode.as_str(),
+        results
+            .first()
+            .map(|result| result.slot_buffer_layout.as_str())
+            .unwrap_or(SlotBufferLayout::PerSlot.as_str()),
+        io_slots::submission_backend_label(),
+        results.first().map(|result| result.copy_bytes).unwrap_or(0),
+        total_cpu_seconds / wall_seconds * 100.0,
+        total_cpu_seconds * 1_000_000_000.0 / total_ops as f64,
+        total_ops as f64 / wall_seconds,
+        (total_read_ops + total_write_ops) as f64 / wall_seconds,
+        read_bytes as f64 / (1024.0 * 1024.0) / wall_seconds,
+        write_bytes as f64 / (1024.0 * 1024.0) / wall_seconds,
+        total_io_bytes as f64 / (1024.0 * 1024.0) / wall_seconds
     );
     Ok(())
 }
@@ -19628,6 +26348,1432 @@ fn zcmaptee(args: impl Iterator<Item = String>) -> io::Result<()> {
             )));
         }
     }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ZcSnapOrdered {
+    Global,
+    PerLane,
+}
+
+impl ZcSnapOrdered {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "global" => Ok(Self::Global),
+            "per-lane" | "lane" | "lanes" => Ok(Self::PerLane),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown zcsnap ordering {other:?}; use global or per-lane"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::PerLane => "per-lane",
+        }
+    }
+}
+
+struct ZcSnapCut {
+    snapshot_id: String,
+    created_unix_nanos: u128,
+    ordered: ZcSnapOrdered,
+    lane_id: Option<u64>,
+    lane_count: Option<u64>,
+    wal_epoch: u64,
+    base_logical_index: u64,
+    logical_record_bytes: u64,
+    cut_bytes: u64,
+    cut_chunks: u64,
+    total_bytes: u64,
+    total_chunks: u64,
+    elapsed: Duration,
+}
+
+fn zcsnap_unix_nanos() -> io::Result<u128> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .map_err(|err| io::Error::other(format!("system clock is before UNIX_EPOCH: {err}")))
+}
+
+fn zcsnap_default_id() -> io::Result<String> {
+    Ok(format!("snap-{:x}", zcsnap_unix_nanos()?))
+}
+
+fn json_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            ch if ch.is_control() => escaped.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn zcsnap_write_manifest<W: Write>(mut writer: W, cut: &ZcSnapCut) -> io::Result<()> {
+    let cut_logical_records = cut.cut_bytes / cut.logical_record_bytes;
+    let cut_record_remainder = cut.cut_bytes % cut.logical_record_bytes;
+    let cut_logical_index = cut
+        .base_logical_index
+        .checked_add(cut_logical_records)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcsnap logical index overflow")
+        })?;
+    writeln!(writer, "{{")?;
+    writeln!(writer, "  \"format\": \"zcsnap-manifest-v1\",")?;
+    writeln!(
+        writer,
+        "  \"snapshot_id\": \"{}\",",
+        json_escape(&cut.snapshot_id)
+    )?;
+    writeln!(
+        writer,
+        "  \"created_unix_nanos\": {},",
+        cut.created_unix_nanos
+    )?;
+    writeln!(writer, "  \"descriptor_mode\": \"bytes\",")?;
+    writeln!(writer, "  \"cut_kind\": \"stream-checkpoint\",")?;
+    writeln!(writer, "  \"ordered\": \"{}\",", cut.ordered.label())?;
+    match cut.lane_id {
+        Some(lane_id) => writeln!(writer, "  \"lane_id\": {lane_id},")?,
+        None => writeln!(writer, "  \"lane_id\": null,")?,
+    }
+    match cut.lane_count {
+        Some(lane_count) => writeln!(writer, "  \"lane_count\": {lane_count},")?,
+        None => writeln!(writer, "  \"lane_count\": null,")?,
+    }
+    writeln!(writer, "  \"wal_epoch\": {},", cut.wal_epoch)?;
+    writeln!(
+        writer,
+        "  \"base_logical_index\": {},",
+        cut.base_logical_index
+    )?;
+    writeln!(
+        writer,
+        "  \"logical_record_bytes\": {},",
+        cut.logical_record_bytes
+    )?;
+    writeln!(writer, "  \"cut_bytes\": {},", cut.cut_bytes)?;
+    writeln!(writer, "  \"cut_chunks\": {},", cut.cut_chunks)?;
+    writeln!(writer, "  \"cut_logical_records\": {cut_logical_records},")?;
+    writeln!(writer, "  \"cut_logical_index\": {cut_logical_index},")?;
+    writeln!(
+        writer,
+        "  \"cut_record_remainder\": {cut_record_remainder},"
+    )?;
+    writeln!(writer, "  \"total_bytes\": {},", cut.total_bytes)?;
+    writeln!(writer, "  \"total_chunks\": {},", cut.total_chunks)?;
+    writeln!(
+        writer,
+        "  \"elapsed_seconds\": {:.6}",
+        cut.elapsed.as_secs_f64()
+    )?;
+    writeln!(writer, "}}")?;
+    writer.flush()
+}
+
+fn zcsnap_write_manifest_path(path: &Path, cut: &ZcSnapCut) -> io::Result<()> {
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("open zcsnap manifest {}: {err}", path.display()),
+            )
+        })?;
+    zcsnap_write_manifest(BufWriter::new(file), cut)
+}
+
+fn parse_zcsnap_cut_at(value: &str) -> io::Result<Option<u64>> {
+    if matches!(value, "eof" | "EOF" | "end") {
+        return Ok(None);
+    }
+    let bytes = parse_size_arg(value, "--at-bytes")?;
+    u64::try_from(bytes).map(Some).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--at-bytes does not fit in u64",
+        )
+    })
+}
+
+fn zcsnap(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut snapshot_id = None::<String>;
+    let mut manifest = None::<PathBuf>;
+    let mut cut_at_bytes = None::<u64>;
+    let mut buffer_bytes = 1024 * 1024usize;
+    let mut pass_through = true;
+    let mut ordered = ZcSnapOrdered::PerLane;
+    let mut lane_id = None::<u64>;
+    let mut lane_count = None::<u64>;
+    let mut wal_epoch = 0u64;
+    let mut base_logical_index = 0u64;
+    let mut logical_record_bytes = 4096u64;
+    let mut require_record_aligned = false;
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--id" | "--snapshot-id" => snapshot_id = Some(next_flag_value(&mut args, &arg)?),
+            "--manifest" | "-m" => {
+                manifest = Some(PathBuf::from(next_flag_value(&mut args, &arg)?))
+            }
+            "--at-bytes" | "--cut-at-bytes" => {
+                cut_at_bytes = parse_zcsnap_cut_at(&next_flag_value(&mut args, &arg)?)?
+            }
+            "--buffer-bytes" | "--chunk-bytes" => {
+                buffer_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--pass-through" => {
+                pass_through = parse_bool_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--no-pass-through" => pass_through = false,
+            "--ordered" => ordered = ZcSnapOrdered::parse(&next_flag_value(&mut args, &arg)?)?,
+            "--lane-id" => {
+                lane_id = Some(parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?)
+            }
+            "--lane-count" => {
+                lane_count = Some(parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?)
+            }
+            "--wal-epoch" => wal_epoch = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?,
+            "--base-logical-index" => {
+                base_logical_index = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--logical-record-bytes" => {
+                logical_record_bytes = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--require-record-aligned" => require_record_aligned = true,
+            "--descriptor-mode" => {
+                let mode = next_flag_value(&mut args, "--descriptor-mode")?;
+                if mode != "auto" && mode != "bytes" {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--descriptor-mode currently accepts auto or bytes",
+                    ));
+                }
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcsnap option {other:?}"),
+                ));
+            }
+        }
+    }
+    if buffer_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcsnap buffer bytes must be non-zero",
+        ));
+    }
+    if logical_record_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcsnap logical record bytes must be non-zero",
+        ));
+    }
+    if let (Some(lane_id), Some(lane_count)) = (lane_id, lane_count) {
+        if lane_count == 0 || lane_id >= lane_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("zcsnap lane-id={lane_id} must be less than lane-count={lane_count}"),
+            ));
+        }
+    }
+
+    let snapshot_id = snapshot_id.map_or_else(zcsnap_default_id, Ok)?;
+    let created_unix_nanos = zcsnap_unix_nanos()?;
+    let started = Instant::now();
+    let mut input = io::stdin().lock();
+    let mut output = BufWriter::new(io::stdout().lock());
+    let mut buf = vec![0u8; buffer_bytes.max(4096)];
+    let mut total_bytes = 0u64;
+    let mut total_chunks = 0u64;
+    let mut cut = cut_at_bytes
+        .filter(|cut_at| *cut_at == 0)
+        .map(|_| (0u64, 0u64));
+
+    loop {
+        let n = input.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        if pass_through {
+            output.write_all(&buf[..n])?;
+        }
+        let previous_total = total_bytes;
+        total_bytes = total_bytes.checked_add(n as u64).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcsnap byte count overflow")
+        })?;
+        total_chunks = total_chunks.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcsnap chunk count overflow")
+        })?;
+        if cut.is_none()
+            && let Some(cut_at) = cut_at_bytes
+            && previous_total < cut_at
+            && total_bytes >= cut_at
+        {
+            cut = Some((cut_at, total_chunks));
+        }
+    }
+    if pass_through {
+        output.flush()?;
+    }
+    let (cut_bytes, cut_chunks) = match (cut_at_bytes, cut) {
+        (Some(_), Some(cut)) => cut,
+        (Some(cut_at), None) => {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "zcsnap requested cut at {cut_at} bytes, but stream ended at {total_bytes} bytes"
+                ),
+            ));
+        }
+        (None, None) => (total_bytes, total_chunks),
+        (None, Some(cut)) => cut,
+    };
+    if require_record_aligned && cut_bytes % logical_record_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcsnap cut_bytes={cut_bytes} is not aligned to logical_record_bytes={logical_record_bytes}"
+            ),
+        ));
+    }
+
+    let cut_manifest = ZcSnapCut {
+        snapshot_id,
+        created_unix_nanos,
+        ordered,
+        lane_id,
+        lane_count,
+        wal_epoch,
+        base_logical_index,
+        logical_record_bytes,
+        cut_bytes,
+        cut_chunks,
+        total_bytes,
+        total_chunks,
+        elapsed: started.elapsed(),
+    };
+    let manifest_label = manifest
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "stderr".to_string());
+    if let Some(path) = manifest {
+        zcsnap_write_manifest_path(&path, &cut_manifest)?;
+    } else {
+        zcsnap_write_manifest(io::stderr().lock(), &cut_manifest)?;
+    }
+    eprintln!(
+        "zcsnap-result: snapshot_id={} cut_bytes={} cut_chunks={} total_bytes={} total_chunks={} ordered={} wal_epoch={} manifest={}",
+        cut_manifest.snapshot_id,
+        cut_manifest.cut_bytes,
+        cut_manifest.cut_chunks,
+        cut_manifest.total_bytes,
+        cut_manifest.total_chunks,
+        cut_manifest.ordered.label(),
+        cut_manifest.wal_epoch,
+        manifest_label
+    );
+    Ok(())
+}
+
+struct ZcForwardBranch {
+    label: String,
+    tx: mpsc::SyncSender<Arc<Vec<u8>>>,
+    handle: thread::JoinHandle<io::Result<ZcForwardBranchStats>>,
+}
+
+#[derive(Default)]
+struct ZcForwardBranchStats {
+    bytes: u64,
+    chunks: u64,
+}
+
+fn zcforward_writer_loop<W: Write>(
+    mut writer: W,
+    rx: mpsc::Receiver<Arc<Vec<u8>>>,
+) -> io::Result<ZcForwardBranchStats> {
+    let mut stats = ZcForwardBranchStats::default();
+    for chunk in rx {
+        writer.write_all(&chunk)?;
+        stats.bytes = stats.bytes.checked_add(chunk.len() as u64).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcforward byte count overflow")
+        })?;
+        stats.chunks = stats.chunks.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcforward chunk count overflow")
+        })?;
+    }
+    writer.flush()?;
+    Ok(stats)
+}
+
+fn zcforward_spawn_command_branch(command: String, queue_depth: usize) -> ZcForwardBranch {
+    let label = format!("cmd:{command}");
+    let label_for_thread = label.clone();
+    let (tx, rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(queue_depth);
+    let handle = thread::spawn(move || {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("spawn zcforward branch {command:?}: {err}"),
+                )
+            })?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("zcforward branch {command:?} has no stdin"),
+            )
+        })?;
+        let stats = zcforward_writer_loop(stdin, rx)?;
+        let status = child.wait().map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("wait zcforward branch {command:?}: {err}"),
+            )
+        })?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "zcforward branch {command:?} exited with {status}"
+            )));
+        }
+        Ok(stats)
+    });
+    ZcForwardBranch {
+        label: label_for_thread,
+        tx,
+        handle,
+    }
+}
+
+fn zcforward_spawn_file_branch(path: PathBuf, append: bool, queue_depth: usize) -> ZcForwardBranch {
+    let label = format!("file:{}", path.display());
+    let label_for_thread = label.clone();
+    let (tx, rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(queue_depth);
+    let handle = thread::spawn(move || {
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(append)
+            .truncate(!append)
+            .open(&path)
+            .map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("open zcforward output {}: {err}", path.display()),
+                )
+            })?;
+        zcforward_writer_loop(BufWriter::new(file), rx)
+    });
+    ZcForwardBranch {
+        label: label_for_thread,
+        tx,
+        handle,
+    }
+}
+
+fn zcforward_spawn_stdout_branch(queue_depth: usize) -> ZcForwardBranch {
+    let label = "stdout".to_string();
+    let (tx, rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(queue_depth);
+    let handle = thread::spawn(move || zcforward_writer_loop(io::stdout().lock(), rx));
+    ZcForwardBranch { label, tx, handle }
+}
+
+fn zcforward(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut commands = Vec::<String>::new();
+    let mut outputs = Vec::<PathBuf>::new();
+    let mut append = false;
+    let mut write_stdout = false;
+    let mut buffer_bytes = 1024 * 1024usize;
+    let mut queue_depth = 4usize;
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--to" => commands.push(next_flag_value(&mut args, "--to")?),
+            "--output" | "-o" => outputs.push(PathBuf::from(next_flag_value(&mut args, &arg)?)),
+            "--append" => append = true,
+            "--stdout" => {
+                write_stdout = parse_bool_arg(&next_flag_value(&mut args, "--stdout")?, "--stdout")?
+            }
+            "--buffer-bytes" | "--chunk-bytes" => {
+                buffer_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--queue-depth" => {
+                queue_depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--preserve-lanes" | "--preserve-topology" | "--already-encrypted" => {}
+            "--descriptor-mode" => {
+                let mode = next_flag_value(&mut args, "--descriptor-mode")?;
+                if mode != "auto" && mode != "bytes" {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--descriptor-mode currently accepts auto or bytes",
+                    ));
+                }
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcforward option {other:?}"),
+                ));
+            }
+        }
+    }
+
+    let branch_count = commands.len() + outputs.len() + usize::from(write_stdout);
+    if branch_count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcforward requires --to, --output, or --stdout true",
+        ));
+    }
+
+    let mut branches = Vec::<ZcForwardBranch>::with_capacity(branch_count);
+    for command in commands {
+        branches.push(zcforward_spawn_command_branch(command, queue_depth));
+    }
+    for output in outputs {
+        branches.push(zcforward_spawn_file_branch(output, append, queue_depth));
+    }
+    if write_stdout {
+        branches.push(zcforward_spawn_stdout_branch(queue_depth));
+    }
+
+    let started = Instant::now();
+    let mut input = io::stdin().lock();
+    let mut total = 0u64;
+    let mut chunks = 0u64;
+    loop {
+        let mut data = vec![0u8; buffer_bytes.max(4096)];
+        let n = input.read(&mut data)?;
+        if n == 0 {
+            break;
+        }
+        data.truncate(n);
+        let chunk = Arc::new(data);
+        for branch in &branches {
+            branch.tx.send(Arc::clone(&chunk)).map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("zcforward branch {} exited: {err}", branch.label),
+                )
+            })?;
+        }
+        total = total.checked_add(n as u64).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcforward byte count overflow")
+        })?;
+        chunks = chunks.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcforward chunk count overflow")
+        })?;
+    }
+
+    let branch_labels = branches
+        .iter()
+        .map(|branch| branch.label.clone())
+        .collect::<Vec<_>>();
+    let mut branch_handles = Vec::with_capacity(branches.len());
+    for branch in branches {
+        drop(branch.tx);
+        branch_handles.push((branch.label, branch.handle));
+    }
+    let mut branch_total = 0u64;
+    for (label, handle) in branch_handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other(format!("zcforward branch {label} panicked")))??;
+        eprintln!(
+            "zcforward-branch-result: branch={} bytes={} chunks={}",
+            label, stats.bytes, stats.chunks
+        );
+        branch_total = branch_total.checked_add(stats.bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcforward branch total overflow",
+            )
+        })?;
+    }
+    let secs = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcforward-result: bytes={total} chunks={chunks} branches={} branch_bytes={branch_total} seconds={secs:.6} MiBps={:.2} branch_labels={}",
+        branch_labels.len(),
+        total as f64 / (1024.0 * 1024.0) / secs,
+        branch_labels.join(",")
+    );
+    Ok(())
+}
+
+const ZCRAID_FRAME_MAGIC: &[u8; 8] = b"ZCRAID01";
+const ZCRAID_FRAME_VERSION: u16 = 1;
+const ZCRAID_FRAME_HEADER_LEN: usize = 64;
+const ZCRAID_FLAG_EOF: u16 = 1 << 0;
+const ZCRAID_FLAG_CHECKSUM: u16 = 1 << 1;
+const ZCRAID_CHECKSUM_NONE: u16 = 0;
+const ZCRAID_CHECKSUM_SUM64: u16 = 1;
+
+#[derive(Clone, Copy, Debug)]
+struct ZcRaidFrameHeader {
+    flags: u16,
+    copy_id: u16,
+    shard_id: u32,
+    shard_count: u32,
+    chunk_index: u64,
+    offset: u64,
+    payload_len: u32,
+    checksum_kind: u16,
+    checksum: u64,
+    total_len: u64,
+}
+
+#[derive(Clone)]
+struct ZcRaidBranchItem {
+    header: ZcRaidFrameHeader,
+    data: Arc<Vec<u8>>,
+}
+
+#[derive(Default)]
+struct ZcRaidBranchStats {
+    logical_bytes: u64,
+    wire_bytes: u64,
+    frames: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZcRaidMode {
+    Stripe,
+    Mirror,
+    Raid10,
+}
+
+impl ZcRaidMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "stripe" | "raid0" | "performance" => Ok(Self::Stripe),
+            "mirror" | "raid1" | "replicate" => Ok(Self::Mirror),
+            "raid10" | "stripe-mirror" | "mirrored-stripe" => Ok(Self::Raid10),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("--mode must be stripe, mirror, or raid10, got {other:?}"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Stripe => "stripe",
+            Self::Mirror => "mirror",
+            Self::Raid10 => "raid10",
+        }
+    }
+}
+
+struct ZcRaidBranch {
+    label: String,
+    tx: mpsc::SyncSender<ZcRaidBranchItem>,
+    handle: thread::JoinHandle<io::Result<ZcRaidBranchStats>>,
+}
+
+fn zcraid_encode_header(header: ZcRaidFrameHeader) -> [u8; ZCRAID_FRAME_HEADER_LEN] {
+    let mut out = [0u8; ZCRAID_FRAME_HEADER_LEN];
+    out[..8].copy_from_slice(ZCRAID_FRAME_MAGIC);
+    out[8..10].copy_from_slice(&ZCRAID_FRAME_VERSION.to_be_bytes());
+    out[10..12].copy_from_slice(&(ZCRAID_FRAME_HEADER_LEN as u16).to_be_bytes());
+    out[12..14].copy_from_slice(&header.flags.to_be_bytes());
+    out[14..16].copy_from_slice(&header.copy_id.to_be_bytes());
+    out[16..20].copy_from_slice(&header.shard_id.to_be_bytes());
+    out[20..24].copy_from_slice(&header.shard_count.to_be_bytes());
+    out[24..32].copy_from_slice(&header.chunk_index.to_be_bytes());
+    out[32..40].copy_from_slice(&header.offset.to_be_bytes());
+    out[40..44].copy_from_slice(&header.payload_len.to_be_bytes());
+    out[44..46].copy_from_slice(&header.checksum_kind.to_be_bytes());
+    out[48..56].copy_from_slice(&header.checksum.to_be_bytes());
+    out[56..64].copy_from_slice(&header.total_len.to_be_bytes());
+    out
+}
+
+fn zcraid_decode_header(bytes: &[u8; ZCRAID_FRAME_HEADER_LEN]) -> io::Result<ZcRaidFrameHeader> {
+    if &bytes[..8] != ZCRAID_FRAME_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing zcraid frame magic",
+        ));
+    }
+    let read_u16 = |start: usize| u16::from_be_bytes([bytes[start], bytes[start + 1]]);
+    let read_u32 = |start: usize| {
+        u32::from_be_bytes([
+            bytes[start],
+            bytes[start + 1],
+            bytes[start + 2],
+            bytes[start + 3],
+        ])
+    };
+    let read_u64 = |start: usize| {
+        u64::from_be_bytes([
+            bytes[start],
+            bytes[start + 1],
+            bytes[start + 2],
+            bytes[start + 3],
+            bytes[start + 4],
+            bytes[start + 5],
+            bytes[start + 6],
+            bytes[start + 7],
+        ])
+    };
+    let version = read_u16(8);
+    let header_len = read_u16(10) as usize;
+    if version != ZCRAID_FRAME_VERSION || header_len != ZCRAID_FRAME_HEADER_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unsupported zcraid frame version={version} header_len={header_len}"),
+        ));
+    }
+    Ok(ZcRaidFrameHeader {
+        flags: read_u16(12),
+        copy_id: read_u16(14),
+        shard_id: read_u32(16),
+        shard_count: read_u32(20),
+        chunk_index: read_u64(24),
+        offset: read_u64(32),
+        payload_len: read_u32(40),
+        checksum_kind: read_u16(44),
+        checksum: read_u64(48),
+        total_len: read_u64(56),
+    })
+}
+
+fn zcraid_write_frame<W: Write>(
+    writer: &mut W,
+    header: ZcRaidFrameHeader,
+    data: &[u8],
+) -> io::Result<()> {
+    if data.len() != header.payload_len as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraid payload length does not match header",
+        ));
+    }
+    writer.write_all(&zcraid_encode_header(header))?;
+    writer.write_all(data)?;
+    Ok(())
+}
+
+fn zcraid_read_frame<R: Read>(reader: &mut R) -> io::Result<Option<(ZcRaidFrameHeader, Vec<u8>)>> {
+    let mut header_bytes = [0u8; ZCRAID_FRAME_HEADER_LEN];
+    match reader.read_exact(&mut header_bytes) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(err) => return Err(err),
+    }
+    let header = zcraid_decode_header(&header_bytes)?;
+    let payload_len = header.payload_len as usize;
+    if header.flags & ZCRAID_FLAG_EOF != 0 {
+        if payload_len != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraid EOF frame carried payload",
+            ));
+        }
+        return Ok(Some((header, Vec::new())));
+    }
+    let mut data = vec![0u8; payload_len];
+    reader.read_exact(&mut data)?;
+    Ok(Some((header, data)))
+}
+
+fn zcraid_writer_loop<W: Write>(
+    mut writer: W,
+    rx: mpsc::Receiver<ZcRaidBranchItem>,
+) -> io::Result<ZcRaidBranchStats> {
+    let mut stats = ZcRaidBranchStats::default();
+    for item in rx {
+        zcraid_write_frame(&mut writer, item.header, &item.data)?;
+        stats.logical_bytes = stats
+            .logical_bytes
+            .checked_add(item.header.payload_len as u64)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcraid logical byte overflow")
+            })?;
+        let wire = ZCRAID_FRAME_HEADER_LEN as u64 + item.header.payload_len as u64;
+        stats.wire_bytes = stats.wire_bytes.checked_add(wire).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraid wire byte overflow")
+        })?;
+        stats.frames = stats.frames.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraid frame count overflow")
+        })?;
+    }
+    writer.flush()?;
+    Ok(stats)
+}
+
+fn zcraid_spawn_command_branch(command: String, queue_depth: usize) -> ZcRaidBranch {
+    let label = format!("cmd:{command}");
+    let label_for_thread = label.clone();
+    let (tx, rx) = mpsc::sync_channel::<ZcRaidBranchItem>(queue_depth);
+    let handle = thread::spawn(move || {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("spawn zcraid branch {command:?}: {err}"),
+                )
+            })?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("zcraid branch {command:?} has no stdin"),
+            )
+        })?;
+        let stats = zcraid_writer_loop(stdin, rx)?;
+        let status = child.wait().map_err(|err| {
+            io::Error::new(err.kind(), format!("wait zcraid branch {command:?}: {err}"))
+        })?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "zcraid branch {command:?} exited with {status}"
+            )));
+        }
+        Ok(stats)
+    });
+    ZcRaidBranch {
+        label: label_for_thread,
+        tx,
+        handle,
+    }
+}
+
+fn zcraid_spawn_file_branch(path: PathBuf, append: bool, queue_depth: usize) -> ZcRaidBranch {
+    let label = format!("file:{}", path.display());
+    let label_for_thread = label.clone();
+    let (tx, rx) = mpsc::sync_channel::<ZcRaidBranchItem>(queue_depth);
+    let handle = thread::spawn(move || {
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(append)
+            .truncate(!append)
+            .open(&path)
+            .map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("open zcraid output {}: {err}", path.display()),
+                )
+            })?;
+        zcraid_writer_loop(BufWriter::new(file), rx)
+    });
+    ZcRaidBranch {
+        label: label_for_thread,
+        tx,
+        handle,
+    }
+}
+
+fn zcraid_spawn_stdout_branch(queue_depth: usize) -> ZcRaidBranch {
+    let label = "stdout".to_string();
+    let (tx, rx) = mpsc::sync_channel::<ZcRaidBranchItem>(queue_depth);
+    let handle = thread::spawn(move || zcraid_writer_loop(io::stdout().lock(), rx));
+    ZcRaidBranch { label, tx, handle }
+}
+
+fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut commands = Vec::<String>::new();
+    let mut outputs = Vec::<PathBuf>::new();
+    let mut append = false;
+    let mut write_stdout = false;
+    let mut chunk_bytes = 1024 * 1024usize;
+    let mut queue_depth = 4usize;
+    let mut mode = ZcRaidMode::Stripe;
+    let mut replicas = None::<usize>;
+    let mut checksum = false;
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--to" => commands.push(next_flag_value(&mut args, "--to")?),
+            "--output" | "-o" => outputs.push(PathBuf::from(next_flag_value(&mut args, &arg)?)),
+            "--append" => append = true,
+            "--stdout" => {
+                write_stdout = parse_bool_arg(&next_flag_value(&mut args, "--stdout")?, "--stdout")?
+            }
+            "--chunk-bytes" | "--buffer-bytes" => {
+                chunk_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--queue-depth" => {
+                queue_depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--mode" => mode = ZcRaidMode::parse(&next_flag_value(&mut args, "--mode")?)?,
+            "--replicas" => {
+                replicas = Some(parse_usize_value(
+                    &next_flag_value(&mut args, "--replicas")?,
+                    "--replicas",
+                )?)
+            }
+            "--checksum" => checksum = true,
+            "--no-checksum" => checksum = false,
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcraid-split option {other:?}"),
+                ));
+            }
+        }
+    }
+
+    let branch_count = commands.len() + outputs.len() + usize::from(write_stdout);
+    if branch_count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraid-split requires --to, --output, or --stdout true",
+        ));
+    }
+    let replica_count = match mode {
+        ZcRaidMode::Stripe => replicas.unwrap_or(1),
+        ZcRaidMode::Mirror => branch_count,
+        ZcRaidMode::Raid10 => replicas.unwrap_or(2),
+    }
+    .clamp(1, branch_count);
+
+    let mut branches = Vec::<ZcRaidBranch>::with_capacity(branch_count);
+    for command in commands {
+        branches.push(zcraid_spawn_command_branch(command, queue_depth));
+    }
+    for output in outputs {
+        branches.push(zcraid_spawn_file_branch(output, append, queue_depth));
+    }
+    if write_stdout {
+        branches.push(zcraid_spawn_stdout_branch(queue_depth));
+    }
+
+    let started = Instant::now();
+    let mut input = io::stdin().lock();
+    let mut total = 0u64;
+    let mut chunk_index = 0u64;
+    loop {
+        let data = zc_read_coalesced_chunk(&mut input, chunk_bytes)?;
+        if data.is_empty() {
+            break;
+        }
+        let data_len = data.len();
+        let primary = (chunk_index as usize) % branch_count;
+        let checksum_value = checksum.then(|| checksum_bytes_scalar(&data)).unwrap_or(0);
+        let checksum_kind = if checksum {
+            ZCRAID_CHECKSUM_SUM64
+        } else {
+            ZCRAID_CHECKSUM_NONE
+        };
+        let flags = if checksum { ZCRAID_FLAG_CHECKSUM } else { 0 };
+        let data = Arc::new(data);
+        for copy_id in 0..replica_count {
+            let branch_idx = (primary + copy_id) % branch_count;
+            let header = ZcRaidFrameHeader {
+                flags,
+                copy_id: copy_id as u16,
+                shard_id: primary as u32,
+                shard_count: branch_count as u32,
+                chunk_index,
+                offset: total,
+                payload_len: data_len as u32,
+                checksum_kind,
+                checksum: checksum_value,
+                total_len: 0,
+            };
+            branches[branch_idx]
+                .tx
+                .send(ZcRaidBranchItem {
+                    header,
+                    data: Arc::clone(&data),
+                })
+                .map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        format!(
+                            "zcraid-split branch {} exited: {err}",
+                            branches[branch_idx].label
+                        ),
+                    )
+                })?;
+        }
+        total = total.checked_add(data_len as u64).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraid-split byte count overflow",
+            )
+        })?;
+        chunk_index = chunk_index.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraid-split chunk count overflow",
+            )
+        })?;
+    }
+
+    let eof_data = Arc::new(Vec::new());
+    for (branch_idx, branch) in branches.iter().enumerate() {
+        let header = ZcRaidFrameHeader {
+            flags: ZCRAID_FLAG_EOF,
+            copy_id: 0,
+            shard_id: branch_idx as u32,
+            shard_count: branch_count as u32,
+            chunk_index,
+            offset: total,
+            payload_len: 0,
+            checksum_kind: ZCRAID_CHECKSUM_NONE,
+            checksum: 0,
+            total_len: total,
+        };
+        branch
+            .tx
+            .send(ZcRaidBranchItem {
+                header,
+                data: Arc::clone(&eof_data),
+            })
+            .map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!(
+                        "zcraid-split branch {} exited before EOF: {err}",
+                        branch.label
+                    ),
+                )
+            })?;
+    }
+
+    let labels = branches
+        .iter()
+        .map(|branch| branch.label.clone())
+        .collect::<Vec<_>>();
+    let mut branch_handles = Vec::with_capacity(branches.len());
+    for branch in branches {
+        drop(branch.tx);
+        branch_handles.push((branch.label, branch.handle));
+    }
+    let mut branch_logical = 0u64;
+    let mut branch_wire = 0u64;
+    for (label, handle) in branch_handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other(format!("zcraid branch {label} panicked")))??;
+        eprintln!(
+            "zcraid-split-branch-result: branch={} logical_bytes={} wire_bytes={} frames={}",
+            label, stats.logical_bytes, stats.wire_bytes, stats.frames
+        );
+        branch_logical = branch_logical
+            .checked_add(stats.logical_bytes)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcraid branch logical overflow")
+            })?;
+        branch_wire = branch_wire.checked_add(stats.wire_bytes).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraid branch wire overflow")
+        })?;
+    }
+    let secs = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraid-split-result: mode={} branches={} replicas={} bytes={total} chunks={chunk_index} branch_logical_bytes={branch_logical} branch_wire_bytes={branch_wire} checksum={} seconds={secs:.6} MiBps={:.2} branch_labels={}",
+        mode.label(),
+        labels.len(),
+        replica_count,
+        checksum,
+        total as f64 / (1024.0 * 1024.0) / secs,
+        labels.join(",")
+    );
+    Ok(())
+}
+
+enum ZcRaidMergeEvent {
+    Data {
+        label: String,
+        header: ZcRaidFrameHeader,
+        data: Vec<u8>,
+    },
+    Eof {
+        label: String,
+        total_len: u64,
+    },
+}
+
+#[derive(Default)]
+struct ZcRaidSourceStats {
+    frames: u64,
+    data_frames: u64,
+    bytes: u64,
+    eof: bool,
+}
+
+fn zcraid_source_reader_loop<R: Read>(
+    label: String,
+    mut reader: R,
+    verify_checksum: bool,
+    tx: mpsc::SyncSender<ZcRaidMergeEvent>,
+) -> io::Result<ZcRaidSourceStats> {
+    let mut stats = ZcRaidSourceStats::default();
+    loop {
+        let Some((header, data)) = zcraid_read_frame(&mut reader)? else {
+            break;
+        };
+        stats.frames = stats.frames.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraid source frame overflow")
+        })?;
+        if header.flags & ZCRAID_FLAG_EOF != 0 {
+            stats.eof = true;
+            tx.send(ZcRaidMergeEvent::Eof {
+                label: label.clone(),
+                total_len: header.total_len,
+            })
+            .map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("zcraid merge writer exited before EOF: {err}"),
+                )
+            })?;
+            break;
+        }
+        if data.len() != header.payload_len as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcraid source {label} payload length mismatch header={} actual={}",
+                    header.payload_len,
+                    data.len()
+                ),
+            ));
+        }
+        if verify_checksum && header.checksum_kind == ZCRAID_CHECKSUM_SUM64 {
+            let actual = checksum_bytes_scalar(&data);
+            if actual != header.checksum {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcraid source {label} checksum mismatch offset={} expected=0x{:016x} actual=0x{actual:016x}",
+                        header.offset, header.checksum
+                    ),
+                ));
+            }
+        }
+        stats.data_frames = stats.data_frames.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraid source data frame overflow",
+            )
+        })?;
+        stats.bytes = stats.bytes.checked_add(data.len() as u64).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraid source byte overflow")
+        })?;
+        tx.send(ZcRaidMergeEvent::Data {
+            label: label.clone(),
+            header,
+            data,
+        })
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("zcraid merge writer exited: {err}"),
+            )
+        })?;
+    }
+    Ok(stats)
+}
+
+fn zcraid_spawn_input_source(
+    path: PathBuf,
+    verify_checksum: bool,
+    tx: mpsc::SyncSender<ZcRaidMergeEvent>,
+) -> thread::JoinHandle<io::Result<(String, ZcRaidSourceStats)>> {
+    let label = format!("file:{}", path.display());
+    thread::spawn(move || {
+        let file = fs::File::open(&path).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("open zcraid input {}: {err}", path.display()),
+            )
+        })?;
+        let stats =
+            zcraid_source_reader_loop(label.clone(), BufReader::new(file), verify_checksum, tx)?;
+        Ok((label, stats))
+    })
+}
+
+fn zcraid_spawn_command_source(
+    command: String,
+    verify_checksum: bool,
+    tx: mpsc::SyncSender<ZcRaidMergeEvent>,
+) -> thread::JoinHandle<io::Result<(String, ZcRaidSourceStats)>> {
+    let label = format!("cmd:{command}");
+    thread::spawn(move || {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("spawn zcraid source {command:?}: {err}"),
+                )
+            })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("zcraid source {command:?} has no stdout"),
+            )
+        })?;
+        let stats =
+            zcraid_source_reader_loop(label.clone(), BufReader::new(stdout), verify_checksum, tx)?;
+        let status = child.wait().map_err(|err| {
+            io::Error::new(err.kind(), format!("wait zcraid source {command:?}: {err}"))
+        })?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "zcraid source {command:?} exited with {status}"
+            )));
+        }
+        Ok((label, stats))
+    })
+}
+
+fn zcraid_write_merge_chunk<W: Write + ?Sized>(
+    writer: &mut W,
+    data: &[u8],
+    next_offset: &mut u64,
+) -> io::Result<()> {
+    writer.write_all(data)?;
+    *next_offset = next_offset.checked_add(data.len() as u64).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "zcraid merge offset overflow")
+    })?;
+    Ok(())
+}
+
+fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut commands = Vec::<String>::new();
+    let mut inputs = Vec::<PathBuf>::new();
+    let mut output = PathBuf::from("-");
+    let mut verify_checksum = true;
+    let mut queue_depth = 128usize;
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--from" => commands.push(next_flag_value(&mut args, "--from")?),
+            "--input" | "-i" => inputs.push(PathBuf::from(next_flag_value(&mut args, &arg)?)),
+            "--output" | "-o" => output = PathBuf::from(next_flag_value(&mut args, &arg)?),
+            "--verify-checksum" => {
+                verify_checksum = parse_bool_arg(
+                    &next_flag_value(&mut args, "--verify-checksum")?,
+                    "--verify-checksum",
+                )?
+            }
+            "--no-verify-checksum" => verify_checksum = false,
+            "--queue-depth" => {
+                queue_depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcraid-merge option {other:?}"),
+                ));
+            }
+        }
+    }
+    if commands.is_empty() && inputs.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraid-merge requires --from or --input",
+        ));
+    }
+
+    let started = Instant::now();
+    let (tx, rx) = mpsc::sync_channel::<ZcRaidMergeEvent>(queue_depth);
+    let mut handles = Vec::with_capacity(commands.len() + inputs.len());
+    for input in inputs {
+        handles.push(zcraid_spawn_input_source(
+            input,
+            verify_checksum,
+            tx.clone(),
+        ));
+    }
+    for command in commands {
+        handles.push(zcraid_spawn_command_source(
+            command,
+            verify_checksum,
+            tx.clone(),
+        ));
+    }
+    drop(tx);
+
+    let mut writer: Box<dyn Write> = if output.as_os_str() == "-" {
+        Box::new(BufWriter::new(io::stdout()))
+    } else {
+        if let Some(parent) = output.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("create zcraid output directory {}: {err}", parent.display()),
+                )
+            })?;
+        }
+        Box::new(BufWriter::new(
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&output)
+                .map_err(|err| {
+                    io::Error::new(
+                        err.kind(),
+                        format!("open zcraid output {}: {err}", output.display()),
+                    )
+                })?,
+        ))
+    };
+
+    let mut pending = BTreeMap::<u64, (Vec<u8>, u64)>::new();
+    let mut next_offset = 0u64;
+    let mut expected_total = None::<u64>;
+    let mut data_frames = 0u64;
+    let mut duplicate_frames = 0u64;
+    let mut eof_frames = 0u64;
+    for event in rx {
+        match event {
+            ZcRaidMergeEvent::Eof { label, total_len } => {
+                eof_frames = eof_frames.checked_add(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcraid EOF count overflow")
+                })?;
+                if let Some(expected) = expected_total {
+                    if expected != total_len {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "zcraid source {label} EOF total_len={total_len} conflicts with {expected}"
+                            ),
+                        ));
+                    }
+                } else {
+                    expected_total = Some(total_len);
+                }
+            }
+            ZcRaidMergeEvent::Data {
+                label,
+                header,
+                data,
+            } => {
+                data_frames = data_frames.checked_add(1).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcraid data frame count overflow",
+                    )
+                })?;
+                let len = data.len() as u64;
+                let end = header.offset.checked_add(len).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcraid frame offset overflow")
+                })?;
+                if header.offset < next_offset {
+                    if end <= next_offset {
+                        duplicate_frames = duplicate_frames.checked_add(1).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "zcraid duplicate count overflow",
+                            )
+                        })?;
+                        continue;
+                    }
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "zcraid source {label} overlapping frame offset={} len={} next_offset={next_offset}",
+                            header.offset, len
+                        ),
+                    ));
+                }
+                if header.offset == next_offset {
+                    zcraid_write_merge_chunk(writer.as_mut(), &data, &mut next_offset)?;
+                    while let Some((pending_data, _checksum)) = pending.remove(&next_offset) {
+                        zcraid_write_merge_chunk(writer.as_mut(), &pending_data, &mut next_offset)?;
+                    }
+                } else {
+                    let checksum = if header.checksum_kind == ZCRAID_CHECKSUM_SUM64 {
+                        header.checksum
+                    } else {
+                        0
+                    };
+                    if let Some((existing, existing_checksum)) = pending.get(&header.offset) {
+                        if existing.len() as u64 == len && *existing_checksum == checksum {
+                            duplicate_frames =
+                                duplicate_frames.checked_add(1).ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "zcraid duplicate count overflow",
+                                    )
+                                })?;
+                            continue;
+                        }
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("zcraid conflicting duplicate at offset {}", header.offset),
+                        ));
+                    }
+                    pending.insert(header.offset, (data, checksum));
+                }
+            }
+        }
+    }
+    writer.flush()?;
+    if !pending.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "zcraid merge missing chunk at offset {next_offset}; pending_chunks={}",
+                pending.len()
+            ),
+        ));
+    }
+    if let Some(expected) = expected_total
+        && next_offset != expected
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("zcraid merge wrote {next_offset} bytes but expected {expected}"),
+        ));
+    }
+
+    for handle in handles {
+        let (label, stats) = handle
+            .join()
+            .map_err(|_| io::Error::other("zcraid source panicked"))??;
+        eprintln!(
+            "zcraid-merge-source-result: source={label} bytes={} frames={} data_frames={} eof={}",
+            stats.bytes, stats.frames, stats.data_frames, stats.eof
+        );
+    }
+    let secs = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraid-merge-result: bytes={next_offset} data_frames={data_frames} duplicate_frames={duplicate_frames} eof_frames={eof_frames} verify_checksum={verify_checksum} seconds={secs:.6} MiBps={:.2} output={}",
+        next_offset as f64 / (1024.0 * 1024.0) / secs,
+        output.display()
+    );
     Ok(())
 }
 
@@ -23908,8 +32054,14 @@ fn print_zcutils_help() {
          zcflow                  run a descriptor-aware command chain; byte pipes today\n\
          zcrun                   compatibility alias for zcflow\n\
          zcmap                   transform descriptor metadata/views; byte passthrough today\n\
+         zcforward               fused fanout for encrypted forward/local-consume paths\n\
          zcmaptee                map/fan out descriptors; byte fanout today\n\
          zctee                   fan out descriptors; file/stdout byte fanout today\n\
+         zcsnap                  mark descriptor/WAL snapshot cuts; byte manifest today\n\
+         zcraid-split            frame and stripe/mirror stdin across branch streams\n\
+         zcraid-merge            reassemble zcraid branch streams in global order\n\
+         zcraid-fanoutd          daemon alias for zcraid-split\n\
+         zcraid-fanind           daemon alias for zcraid-merge\n\
          zcsink                  consume stdin by count/drop/checksum\n\
          zccat                   source descriptors; byte copy today\n\
          zcout                   materialize descriptors to stdout; byte copy today\n\
@@ -23917,6 +32069,8 @@ fn print_zcutils_help() {
 	         zcstat                  count stdin bytes/chunks and report throughput\n\
 	         zcmeter                 pass through bytes and print per-interval receive rate\n\
 	         zcwritebench            benchmark receive-side pwrite materialization\n\
+	         zcnblk-target           mux-aligned block/read target, including zcdevnullN\n\
+	         zcnblk-send             zcnblk 4K write/read/mixed client generator\n\
 	         \n\
          Cargo builds both the umbrella `zcutils` binary and direct command\n\
          binaries, so `zcutils zcmux ...` and `zcmux ...` are equivalent."
@@ -23940,8 +32094,12 @@ fn zc_argv0_command(argv0: &str) -> Option<&'static str> {
         "zcdemux" | "zdmux" | "zdcemux" => Some("zcdemux"),
         "zcflow" | "zcrun" => Some("zcflow"),
         "zcmap" => Some("zcmap"),
+        "zcforward" | "zcfwd" => Some("zcforward"),
         "zcmaptee" => Some("zcmaptee"),
         "zctee" => Some("zctee"),
+        "zcsnap" | "zcsnapshot" => Some("zcsnap"),
+        "zcraid-split" | "zcraid-send" | "zcraid-fanoutd" => Some("zcraid-split"),
+        "zcraid-merge" | "zcraid-recv" | "zcraid-fanind" => Some("zcraid-merge"),
         "zcsink" => Some("zcsink"),
         "zccat" => Some("zccat"),
         "zcout" => Some("zcout"),
@@ -23949,6 +32107,8 @@ fn zc_argv0_command(argv0: &str) -> Option<&'static str> {
         "zcstat" => Some("zcstat"),
         "zcmeter" => Some("zcmeter"),
         "zcwritebench" => Some("zcwritebench"),
+        "zcnblk-target" => Some("zcnblk-target"),
+        "zcnblk-send" => Some("zcnblk-send"),
         _ => None,
     }
 }
@@ -23975,8 +32135,12 @@ pub fn main_entry() -> io::Result<()> {
         Some("zcdemux") | Some("zdmux") | Some("zdcemux") => zcdemux(args),
         Some("zcflow") | Some("zcrun") => zcrun(args),
         Some("zcmap") => zcmap(args),
+        Some("zcforward") | Some("zcfwd") => zcforward(args),
         Some("zcmaptee") => zcmaptee(args),
         Some("zctee") => zctee(args),
+        Some("zcsnap") | Some("zcsnapshot") => zcsnap(args),
+        Some("zcraid-split") | Some("zcraid-send") | Some("zcraid-fanoutd") => zcraid_split(args),
+        Some("zcraid-merge") | Some("zcraid-recv") | Some("zcraid-fanind") => zcraid_merge(args),
         Some("zcsink") => zcsink(args),
         Some("zccat") => zccat(args),
         Some("zcout") => zcout(args),
@@ -23984,6 +32148,150 @@ pub fn main_entry() -> io::Result<()> {
         Some("zcstat") => zcstat(args),
         Some("zcmeter") => zcmeter(args),
         Some("zcwritebench") => zcwritebench(args),
+        Some("zcnblk-target") => {
+            let target_spec = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: zcnblk-target <zcdevnullN|/dev/zcbrdN|/dev/zcstripeN>[,..|..N] <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                )
+            })?;
+            let bind = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: zcnblk-target <zcdevnullN|/dev/zcbrdN|/dev/zcstripeN>[,..|..N] <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                )
+            })?;
+            let base_port = args
+                .next()
+                .map(|value| value.parse::<u16>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(19600);
+            let ports = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(8);
+            let connections_per_port = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1);
+            let bytes_per_connection = args
+                .next()
+                .map(|value| parse_size_arg(&value, "bytes-per-connection"))
+                .transpose()?
+                .unwrap_or(64 * 1024 * 1024);
+            let chunk_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                .transpose()?
+                .unwrap_or(4096);
+            let pipeline = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(64);
+            let workers = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(0);
+            let ring_entries = args
+                .next()
+                .map(|value| value.parse::<u32>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1024);
+            let estimated_workers = if workers == 0 { ports.max(1) } else { workers };
+            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                args.next(),
+                "zcnblk-target",
+                checked_buffer_count(estimated_workers, pipeline, "zcnblk-target")?,
+                chunk_bytes,
+            )?;
+            let pin_workers = args
+                .next()
+                .map(|value| parse_bool_arg(&value, "pin-workers"))
+                .transpose()?
+                .unwrap_or(true);
+            zcnblk_target(
+                &target_spec,
+                &bind,
+                base_port,
+                ports,
+                connections_per_port,
+                bytes_per_connection,
+                chunk_bytes,
+                pipeline,
+                workers,
+                ring_entries,
+                buffer_mode,
+                pin_workers,
+            )
+        }
+        Some("zcnblk-send") => {
+            let addr = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: zcnblk-send <addr> [shard-count] [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [workers]",
+                )
+            })?;
+            let shard_count = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1);
+            let base_port = args
+                .next()
+                .map(|value| value.parse::<u16>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(19600);
+            let ports = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(8);
+            let connections_per_port = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1);
+            let bytes_per_connection = args
+                .next()
+                .map(|value| parse_size_arg(&value, "bytes-per-connection"))
+                .transpose()?
+                .unwrap_or(64 * 1024 * 1024);
+            let chunk_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                .transpose()?
+                .unwrap_or(4096);
+            let workers = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(0);
+            zcnblk_send(
+                &addr,
+                shard_count,
+                base_port,
+                ports,
+                connections_per_port,
+                bytes_per_connection,
+                chunk_bytes,
+                workers,
+            )
+        }
         None | Some("probe") => probe(),
         Some("rdma-probe") => {
             let netdev = args.next();
@@ -24481,13 +32789,13 @@ pub fn main_entry() -> io::Result<()> {
             let target = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: tcp-wal-mux-server <PARTUUID=uuid|/dev/nullbN> <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                    "usage: tcp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
             let bind = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: tcp-wal-mux-server <PARTUUID=uuid|/dev/nullbN> <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                    "usage: tcp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
             let base_port = args
@@ -24566,13 +32874,13 @@ pub fn main_entry() -> io::Result<()> {
             let target = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: udp-wal-mux-server <PARTUUID=uuid|/dev/nullbN> <bind> [base-port] [ports] [flows-per-port] [bytes-per-flow] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                    "usage: udp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> <bind> [base-port] [ports] [flows-per-port] [bytes-per-flow] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
             let bind = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: udp-wal-mux-server <PARTUUID=uuid|/dev/nullbN> <bind> [base-port] [ports] [flows-per-port] [bytes-per-flow] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                    "usage: udp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> <bind> [base-port] [ports] [flows-per-port] [bytes-per-flow] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
             let base_port = args
@@ -24868,7 +33176,7 @@ pub fn main_entry() -> io::Result<()> {
             let target = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: uring-baton-bench <null|PARTUUID=uuid|/dev/nullbN> [workers] \
+                    "usage: uring-baton-bench <null|PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [workers] \
                      [bytes-per-worker] [chunk-bytes] [pipeline-per-worker] [ring-entries] \
                      [buffer-mode] [pin-mode:true|false|hctx] [baton-mode:roundtrip|credit:N]",
                 )
@@ -24933,7 +33241,7 @@ pub fn main_entry() -> io::Result<()> {
             let target = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: uring-write-bench <PARTUUID=uuid|/dev/nullbN> [workers] \
+                    "usage: uring-write-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [workers] \
                      [bytes-per-worker] [chunk-bytes] [pipeline-per-worker] [ring-entries] \
                      [buffer-mode] [write-mode:write|fixed|fixed-file] [pin-workers]",
                 )
@@ -24997,7 +33305,7 @@ pub fn main_entry() -> io::Result<()> {
             let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: slot-wal-bench <PARTUUID=uuid|/dev/nullbN> [total-bytes] \
+                    "usage: slot-wal-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [total-bytes] \
                      [chunk-bytes] [pipeline] [ring-entries] [mode] [buffer-mode]",
                 )
             })?;
@@ -25044,11 +33352,313 @@ pub fn main_entry() -> io::Result<()> {
                 buffer_mode,
             )
         }
+        Some("slot-rand-bench") => {
+            let path = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: slot-rand-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [ops] \
+                     [chunk-bytes] [pipeline] [ring-entries] [mode:read|write|rw] \
+                     [read-percent] [region-bytes] [buffer-mode] [pin]",
+                )
+            })?;
+            let ops = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1_000_000);
+            let chunk_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                .transpose()?
+                .unwrap_or(4096);
+            let pipeline = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(256);
+            let ring_entries = args
+                .next()
+                .map(|value| value.parse::<u32>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(512);
+            let mode = args
+                .next()
+                .map(|value| SlotRandMode::parse(&value))
+                .transpose()?
+                .unwrap_or(SlotRandMode::Read);
+            let read_percent = args
+                .next()
+                .map(|value| value.parse::<u8>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(80);
+            let region_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "region-bytes"))
+                .transpose()?
+                .unwrap_or(4 * 1024 * 1024 * 1024usize);
+            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                args.next(),
+                "slot-rand-bench",
+                pipeline,
+                chunk_bytes,
+            )?;
+            let pin = args
+                .next()
+                .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
+                .unwrap_or(true);
+            slot_rand_bench(
+                &path,
+                ops,
+                chunk_bytes,
+                pipeline,
+                ring_entries,
+                mode,
+                read_percent,
+                region_bytes,
+                buffer_mode,
+                pin,
+            )
+        }
+        Some("slot-rand-sharded-bench") => {
+            let path = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: slot-rand-sharded-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [workers] \
+                     [ops-per-worker] [chunk-bytes] [pipeline-per-worker] [ring-entries] \
+                     [mode:read|write|rw] [read-percent] [region-bytes-per-worker] \
+                     [buffer-mode] [pin-workers]",
+                )
+            })?;
+            let workers = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(4);
+            let ops_per_worker = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1_000_000);
+            let chunk_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                .transpose()?
+                .unwrap_or(4096);
+            let pipeline = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(64);
+            let ring_entries = args
+                .next()
+                .map(|value| value.parse::<u32>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(256);
+            let mode = args
+                .next()
+                .map(|value| SlotRandMode::parse(&value))
+                .transpose()?
+                .unwrap_or(SlotRandMode::Mixed);
+            let read_percent = args
+                .next()
+                .map(|value| value.parse::<u8>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(80);
+            let region_bytes_per_worker = args
+                .next()
+                .map(|value| parse_size_arg(&value, "region-bytes-per-worker"))
+                .transpose()?
+                .unwrap_or(4 * 1024 * 1024 * 1024usize);
+            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                args.next(),
+                "slot-rand-sharded-bench",
+                checked_buffer_count(workers, pipeline, "slot-rand-sharded-bench")?,
+                chunk_bytes,
+            )?;
+            let pin_workers = args
+                .next()
+                .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
+                .unwrap_or(true);
+            slot_rand_sharded_bench(
+                &path,
+                workers,
+                ops_per_worker,
+                chunk_bytes,
+                pipeline,
+                ring_entries,
+                mode,
+                read_percent,
+                region_bytes_per_worker,
+                buffer_mode,
+                pin_workers,
+            )
+        }
+        Some("zckv-page-bench") => {
+            let path = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: zckv-page-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [backend:fixed-file|slot] \
+                     [workers] [ops-per-worker] [page-bytes] [pipeline-per-worker] \
+                     [ring-entries] [read-percent] [region-bytes-per-worker] [buffer-mode] \
+                     [pin-workers]",
+                )
+            })?;
+            let backend = args
+                .next()
+                .map(|value| ZckvPageBackend::parse(&value))
+                .transpose()?
+                .unwrap_or(ZckvPageBackend::FixedFile);
+            let workers = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(4);
+            let ops_per_worker = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1_000_000);
+            let page_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "page-bytes"))
+                .transpose()?
+                .unwrap_or(4096);
+            let pipeline = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(64);
+            let ring_entries = args
+                .next()
+                .map(|value| value.parse::<u32>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(256);
+            let read_percent = args
+                .next()
+                .map(|value| value.parse::<u8>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(80);
+            let region_bytes_per_worker = args
+                .next()
+                .map(|value| parse_size_arg(&value, "region-bytes-per-worker"))
+                .transpose()?
+                .unwrap_or(4 * 1024 * 1024 * 1024usize);
+            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                args.next(),
+                "zckv-page-bench",
+                checked_buffer_count(workers, pipeline, "zckv-page-bench")?,
+                page_bytes,
+            )?;
+            let pin_workers = args
+                .next()
+                .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
+                .unwrap_or(true);
+            zckv_page_bench(
+                &path,
+                backend,
+                workers,
+                ops_per_worker,
+                page_bytes,
+                pipeline,
+                ring_entries,
+                read_percent,
+                region_bytes_per_worker,
+                buffer_mode,
+                pin_workers,
+            )
+        }
+        Some("zckv-compact-bench") => {
+            let path = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: zckv-compact-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> \
+                     [backend:fixed-file|slot] [workers] [ops-per-worker] [page-bytes] \
+                     [pipeline-lanes-per-worker] [ring-entries] [region-bytes-per-worker] \
+                     [buffer-mode] [pin-workers]",
+                )
+            })?;
+            let backend = args
+                .next()
+                .map(|value| ZckvPageBackend::parse(&value))
+                .transpose()?
+                .unwrap_or(ZckvPageBackend::FixedFile);
+            let workers = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(4);
+            let ops_per_worker = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(65_536);
+            let page_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "page-bytes"))
+                .transpose()?
+                .unwrap_or(64 * 1024);
+            let pipeline = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(32);
+            let ring_entries = args
+                .next()
+                .map(|value| value.parse::<u32>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(256);
+            let region_bytes_per_worker = args
+                .next()
+                .map(|value| parse_size_arg(&value, "region-bytes-per-worker"))
+                .transpose()?
+                .unwrap_or(12 * 1024 * 1024 * 1024usize);
+            let buffers_per_worker = checked_buffer_count(pipeline, 3, "zckv-compact-bench")?;
+            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                args.next(),
+                "zckv-compact-bench",
+                checked_buffer_count(workers, buffers_per_worker, "zckv-compact-bench")?,
+                page_bytes,
+            )?;
+            let pin_workers = args
+                .next()
+                .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
+                .unwrap_or(true);
+            zckv_compaction_bench(
+                &path,
+                backend,
+                workers,
+                ops_per_worker,
+                page_bytes,
+                pipeline,
+                ring_entries,
+                region_bytes_per_worker,
+                buffer_mode,
+                pin_workers,
+            )
+        }
         Some("slot-rw-same-slot-test") => {
             let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: slot-rw-same-slot-test <PARTUUID=uuid|/dev/nullbN> [ops] \
+                    "usage: slot-rw-same-slot-test <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [ops] \
                      [chunk-bytes] [inflight] [ring-entries] [buffer-mode]",
                 )
             })?;
@@ -25087,7 +33697,7 @@ pub fn main_entry() -> io::Result<()> {
             let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: slot-wal-sharded-bench <PARTUUID=uuid|/dev/nullbN> [workers] \
+                    "usage: slot-wal-sharded-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [workers] \
                      [bytes-per-worker] [chunk-bytes] [pipeline-per-worker] [ring-entries] \
                      [mode] [buffer-mode] [pin-workers]",
                 )
@@ -25151,7 +33761,7 @@ pub fn main_entry() -> io::Result<()> {
             let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: slot-topology-plan <PARTUUID=uuid|/dev/nullbN> [workers] \
+                    "usage: slot-topology-plan <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [workers] \
                      [bytes-per-worker] [chunk-bytes] [pipeline-per-worker] [buffer-mode]",
                 )
             })?;
@@ -25190,6 +33800,150 @@ pub fn main_entry() -> io::Result<()> {
                 chunk_bytes,
                 pipeline,
                 buffer_mode,
+            )
+        }
+        Some("raft-wal-follower") => {
+            let path = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: raft-wal-follower <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> <bind> [port] \
+                     [entries] [payload-bytes] [pipeline] [ring-entries] \
+                     [backend:fixed-file|slot|auto] [buffer-mode] \
+                     [path:direct-tcp|tcp-mux|ebpf-cilium|local|rdma]",
+                )
+            })?;
+            let bind = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "raft-wal-follower requires a bind address after the WAL target",
+                )
+            })?;
+            let port = args
+                .next()
+                .map(|value| value.parse::<u16>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(19401);
+            let entries = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1_000_000);
+            let payload_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "payload-bytes"))
+                .transpose()?
+                .unwrap_or(4096 - RAFT_APPEND_HEADER_LEN);
+            let pipeline = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(128);
+            let ring_entries = args
+                .next()
+                .map(|value| value.parse::<u32>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(512);
+            let backend = match args.next() {
+                Some(value) if matches!(value.as_str(), "" | "auto" | "autodetect" | "sniff") => {
+                    raft_wal_auto_backend()
+                }
+                Some(value) => ZckvPageBackend::parse(&value)?,
+                None => raft_wal_auto_backend(),
+            };
+            let frame_bytes = raft_wal_frame_bytes(payload_bytes)?;
+            let wal_entry_bytes = raft_wal_entry_bytes(frame_bytes)?;
+            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                args.next(),
+                "raft-wal-follower",
+                pipeline,
+                wal_entry_bytes,
+            )?;
+            let path_kind = args
+                .next()
+                .map(|value| RaftWalPath::parse(&value))
+                .transpose()?
+                .unwrap_or(RaftWalPath::DirectTcp);
+            raft_wal_follower(
+                &path,
+                &bind,
+                port,
+                entries,
+                payload_bytes,
+                pipeline,
+                ring_entries,
+                backend,
+                buffer_mode,
+                path_kind,
+            )
+        }
+        Some("raft-wal-leader") => {
+            let peers = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: raft-wal-leader <peer1:port,peer2:port,...> [entries] \
+                     [payload-bytes] [pipeline-per-peer] [ring-entries] \
+                     [send-mode:send|send-zc|send-zc-fixed] [buffer-mode] \
+                     [path:direct-tcp|tcp-mux|ebpf-cilium|local|rdma]",
+                )
+            })?;
+            let peer_count = peers
+                .split(',')
+                .filter(|peer| !peer.trim().is_empty())
+                .count()
+                .max(1);
+            let entries = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1_000_000);
+            let payload_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "payload-bytes"))
+                .transpose()?
+                .unwrap_or(4096 - RAFT_APPEND_HEADER_LEN);
+            let pipeline = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(128);
+            let ring_entries = args
+                .next()
+                .map(|value| value.parse::<u32>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(512);
+            let send_mode = args
+                .next()
+                .map(|value| RaftWalSendMode::parse(&value))
+                .transpose()?
+                .unwrap_or(RaftWalSendMode::Send);
+            let frame_bytes = raft_wal_frame_bytes(payload_bytes)?;
+            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                args.next(),
+                "raft-wal-leader",
+                checked_buffer_count(peer_count, pipeline, "raft-wal-leader")?,
+                frame_bytes,
+            )?;
+            let path_kind = args
+                .next()
+                .map(|value| RaftWalPath::parse(&value))
+                .transpose()?
+                .unwrap_or(RaftWalPath::DirectTcp);
+            raft_wal_leader(
+                &peers,
+                entries,
+                payload_bytes,
+                pipeline,
+                ring_entries,
+                send_mode,
+                buffer_mode,
+                path_kind,
             )
         }
         Some("raft-follower") => {
@@ -25263,11 +34017,14 @@ pub fn main_entry() -> io::Result<()> {
                  tcp-bench-server, tcp-bench-mux-send, tcp-bench-mux-server, \
                  tcp-bench-uring-mux-send, tcp-bench-uring-mux-server, \
                  tcp-wal-mux-server, udp-wal-mux-server, udp-bench-mux-send, \
+                 zcnblk-target, zcnblk-send, \
+                 zcsnap, \
                  uring-baton-bench, uring-write-bench, \
                  cache-copy-microbench, cache-smt-microbench, \
-                 slot-wal-bench, slot-rw-same-slot-test, slot-wal-sharded-bench, \
-                 slot-topology-plan, \
-                 raft-follower, or raft-leader"
+                 slot-wal-bench, slot-rand-bench, slot-rand-sharded-bench, \
+                 zckv-page-bench, zckv-compact-bench, slot-rw-same-slot-test, \
+                 slot-wal-sharded-bench, slot-topology-plan, \
+                 raft-wal-follower, raft-wal-leader, raft-follower, or raft-leader"
             ),
         )),
     }

@@ -161,7 +161,7 @@ zc-tcpmux-receive \
   --token "$TOKEN" \
   --already-encrypted \
   --output - |
-zcmaptee \
+zcforward \
   --to "zc-tcpmux-send --peer-address nodeC --port 43000 --token '$TOKEN' --already-encrypted" \
   --to "zcdecrypt --token '$TOKEN' --topology nodeB-forward --ordered global | zcdemux --ordered global"
 ```
@@ -213,6 +213,80 @@ zcflow \
   'zcmaptee --preserve-lanes \
      --to "zcmux --peer-addr 10.0.1.13 --base-port 9000 --lanes 240" \
      --to "zcsink --consume checksum"'
+```
+
+### zcsnap
+
+`zcsnap` marks a descriptor/WAL snapshot cut without owning block-device or RAID
+semantics. In descriptor-native mode it should become a checkpoint frame plus
+extent pins and a manifest. Today it is byte-compatible: it passes stdin to
+stdout by default, records the selected byte-stream cut, and writes a
+`zcsnap-manifest-v1` JSON manifest.
+
+```bash
+zcdemux --bind 0.0.0.0 --base-port 9000 --lanes 64 |
+zcsnap \
+  --id snap-a \
+  --at-bytes 16g \
+  --ordered per-lane \
+  --lane-count 64 \
+  --wal-epoch 7 \
+  --manifest /tmp/snap-a.json |
+zcsink --consume checksum
+```
+
+Useful flags:
+
+- `--id ID`: snapshot identifier; generated when omitted.
+- `--manifest PATH`: write the manifest to a file; stderr when omitted.
+- `--at-bytes N|eof`: record the cut at a byte offset or at EOF.
+- `--ordered global|per-lane`: declare the ordering contract for the cut.
+- `--lane-id N --lane-count N`: annotate a lane-local cut.
+- `--wal-epoch N --base-logical-index N --logical-record-bytes N`: WAL replay
+  coordinates for translating bytes into logical records.
+- `--require-record-aligned`: reject cuts that are not aligned to the logical
+  record size.
+
+This command is intentionally not a volume clone, block freeze, RAID member
+operation, `zcbrd` feature, `zcstripe` feature, or `zcnblk` mode. It only
+describes a logical stream/WAL cut that future descriptor-aware stages can pin,
+release, and replay.
+
+### zcforward
+
+`zcforward` is the fused B-node primitive for A -> B -> C replication. It reads
+one stream from stdin, shares each chunk with bounded branch queues, and writes
+to command or file branches in parallel. That keeps the forwarding branch from
+serializing behind the local consume branch.
+
+```bash
+zc-tcpmux-receive --output - --token "$TOKEN" --already-encrypted |
+zcforward \
+  --queue-depth 8 \
+  --to "zc-tcpmux-send --peer-address nodeC --port 43000 --token '$TOKEN' --already-encrypted" \
+  --to "zcdecrypt --token '$TOKEN' | zcsink --consume checksum"
+```
+
+### zcraid-split, zcraid-merge, and Daemon Aliases
+
+`zcraid-split` frames ordered input chunks with global offsets and stripes or
+mirrors those frames across branches. `zcraid-merge` reads branch streams back,
+deduplicates mirrored chunks, verifies optional checksums, and writes the
+ordered byte stream. `zcraid-fanoutd` is an alias for `zcraid-split`, and
+`zcraid-fanind` is an alias for `zcraid-merge`; use those names when the process
+is acting as a long-running fanout or fanin daemon around tcpmux receive/send
+commands.
+
+```bash
+zccat --generate --bytes 8g |
+zcraid-split --mode raid10 --replicas 2 --chunk-bytes 1m \
+  --to "zc-tcpmux-send --peer-address nodeB --port 44000 --encryption none --disable-authentication" \
+  --to "zc-tcpmux-send --peer-address nodeC --port 44000 --encryption none --disable-authentication"
+
+zcraid-merge \
+  --from "zc-tcpmux-receive --output - --port 44000 --encryption none --disable-authentication" \
+  --from "zc-tcpmux-receive --output - --port 44001 --encryption none --disable-authentication" \
+  --output /tmp/reassembled
 ```
 
 ### zcsink
@@ -364,9 +438,37 @@ tests:
 printf 'abc\n' | zccat | zcmap | zcout
 printf 'abc\n' | zcmaptee --to 'zcsink --consume count' --stdout false
 printf 'abc\n' | zctee --output /tmp/out --stdout false
+printf 'abc\n' | zcsnap --id smoke --manifest /tmp/smoke-snap.json | zcsink --consume count
 printf 'abc\n' | zcgrep --pattern b
 printf 'abc\n' | zcstat
 ```
+
+### zcnblk-target and zcnblk-send
+
+`zcnblk-target` receives mux-aligned block read/write frames for synthetic
+targets such as `zcdevnullN`, `/dev/zcbrdN`, and `/dev/zcstripeN`.
+`zcnblk-send` is the user-space generator for write, read, and mixed 4K block
+traffic.
+
+For the concrete point-to-point single-target unencrypted `/dev/zcnblk0` fio
+setup, including module config and recorded read/write benchmark numbers, see
+[`zcnblk-single-target-howto.md`](zcnblk-single-target-howto.md).
+
+AES-256-GCM is optional and off by default for zcnblk so existing plaintext
+benchmarks remain comparable. Enable it on both sides with:
+
+```bash
+export URING_PLAY_ZCNBLK_ENCRYPTION=aes-256
+export URING_PLAY_ZCNBLK_TOKEN="$(zc-tcpmux-receive --generate-token)"
+export URING_PLAY_ZCNBLK_AES_FRAME_BYTES=65536
+```
+
+The kernel client module uses the same stream framing when loaded with
+`aes256_gcm_token=...`; keep `aes256_gcm_frame_bytes` equal to the target's
+`URING_PLAY_ZCNBLK_AES_FRAME_BYTES` for direct encrypted-vs-plaintext runs.
+`zcnblk-target` logs `encryption=` and `aes_frame_bytes=` in its plan line, and
+the summaries to compare are `zcnblk-target-summary`, `zcnblk-send-summary`,
+and the final `zcnblk-target:` / `zcnblk-send:` throughput lines.
 
 ## Compatibility
 

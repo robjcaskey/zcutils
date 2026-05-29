@@ -73,6 +73,8 @@ Required stream frame families:
   and failure semantics.
 - `RELEASE`: return a `release_token` to the owning pool authority.
 - `CHECKPOINT`: durable or replayable progress marker.
+- `SNAPSHOT_CUT`: named point-in-time cut with per-lane WAL/descriptor
+  watermarks.
 - `EOF`: clean end of stream.
 - `ABORT`: error end; outstanding leases are revoked by the pool authority.
 
@@ -89,6 +91,25 @@ manifests, tests, checkpoints, and compatibility files. It can be replayed into
 a descriptor stream, but replay must either attach the original pools safely or
 materialize/copy bytes into a new owned pool. A stale list must not grant access
 to recycled buffer generations.
+
+## Snapshot Cuts
+
+A point-in-time snapshot should be a descriptor/WAL metadata cut, not a block
+device operation. The minimal descriptor-native shape is:
+
+- a `SNAPSHOT_CUT` checkpoint with `snapshot_id`, `wal_epoch`, ordering mode,
+  and per-lane durable sequence or logical-index watermarks.
+- extent pins that hold the referenced WAL extents or pool generations until
+  the snapshot is released.
+- a snapshot manifest, equivalent to a descriptor list, that records lanes,
+  shards, byte ranges, sequence ranges, generation tokens, and checksums.
+- a restore cursor that replays the manifest and then resumes WAL replay after
+  the recorded per-lane watermarks.
+
+The byte-compatible `zcsnap` command writes a `zcsnap-manifest-v1` cut manifest
+for smoke tests and pipeline planning. It deliberately does not freeze block
+devices, clone volumes, manage RAID membership, or add snapshot behavior to
+`zcbrd`, `zcstripe`, `zcnblk`, or `zcraid-*`.
 
 ## Soundness Contract
 
@@ -188,6 +209,45 @@ if its topology is different, if the CPU is unavailable, or if applying the hint
 would break ordering/backpressure. When preserved, they let a pipeline avoid
 cross-NUMA copies, L3 cache disruption, queue bouncing, and avoidable worker
 migrations.
+
+## Lane Alignment Contract
+
+`lane_id` is the primary descriptor field for keeping software lanes aligned
+across network, worker, WAL, and storage stages. A stage that receives a record
+with a known `lane_id` should preserve that value unless it intentionally
+remaps the record.
+
+For a WAL or block-target pipeline, the preferred mapping is:
+
+```text
+lane_id -> transport lane -> RX queue -> worker -> WAL shard -> byte range -> ack lane
+```
+
+The same `lane_id` should therefore select the same worker/shard class on each
+stage, and the descriptor should carry enough local placement hints for the
+next stage to avoid guessing:
+
+- `lane_id`: stable logical ordering and ownership lane.
+- `preferred_worker`: worker or shard that should process this lane locally.
+- `queue_id`: queue owner, such as RX queue, TX queue, or block queue.
+- `numa_node` and `preferred_cpu`: locality hints for buffer and worker
+  placement.
+- storage metadata in an extension field: WAL shard, block shard, base offset,
+  and extent length when the producer already knows them.
+
+If a stage changes lane count, rebalances a hot lane, or stripes one input lane
+over several output shards, it should emit an explicit remap descriptor or
+append an extension that records both the original lane and the new local
+placement. Silent remapping is forbidden for descriptor-native hot paths
+because it breaks per-lane ordering, completion accounting, and profiling.
+
+Coalescing should preserve lane identity. A WAL coalescer may join many small
+records from the same lane into a larger append extent, but the resulting
+descriptor should still report the source lane, output WAL shard, byte range,
+and sequence range covered by the extent. Cross-lane coalescing requires an
+explicit barrier or sequence map so consumers do not infer false per-lane order.
+See `docs/wal-extent-framing.md` for the proposed fixed 4K logical record
+extent format.
 
 ## TCP Mux Topology Header
 

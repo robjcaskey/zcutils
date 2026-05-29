@@ -1,8 +1,11 @@
 [package]
 name = "zcutils"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 autobins = false
+description = "Linux zero-copy descriptor stream and io_uring utility experiments"
+readme = "README.md"
+license = "MIT OR Apache-2.0 OR BSD-2-Clause"
 
 [dependencies]
 aws-lc-rs = "1.15"
@@ -62,12 +65,20 @@ name = "zctee"
 path = "src/bin/zctee.rs"
 
 [[bin]]
+name = "zcsnap"
+path = "src/bin/zcsnap.rs"
+
+[[bin]]
 name = "zcmaptee"
 path = "src/bin/zcmaptee.rs"
 
 [[bin]]
 name = "zcmap"
 path = "src/bin/zcmap.rs"
+
+[[bin]]
+name = "zcforward"
+path = "src/bin/zcforward.rs"
 
 [[bin]]
 name = "zcrun"
@@ -104,3 +115,19 @@ path = "src/bin/zcmeter.rs"
 [[bin]]
 name = "zcwritebench"
 path = "src/bin/zcwritebench.rs"
+
+[[bin]]
+name = "zcraid-split"
+path = "src/bin/zcraid-split.rs"
+
+[[bin]]
+name = "zcraid-merge"
+path = "src/bin/zcraid-merge.rs"
+
+[[bin]]
+name = "zcraid-fanoutd"
+path = "src/bin/zcraid-fanoutd.rs"
+
+[[bin]]
+name = "zcraid-fanind"
+path = "src/bin/zcraid-fanind.rs"

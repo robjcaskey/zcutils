@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IFACE="${IFACE:-${2:-}}"
+OBJ="${OBJ:-${ROOT}/ebpf/target/zc_raft_fastpath.o}"
+CTL="${CTL:-${ROOT}/ebpf/target/zc_raft_bpf_ctl}"
+PREF="${PREF:-10}"
+NETNS="${NETNS:-}"
+XDP_MODE="${XDP_MODE:-xdpgeneric}"
+
+usage()
+{
+	cat >&2 <<EOF
+usage:
+  scripts/zc-raft-ebpf build
+  IFACE=eth0 scripts/zc-raft-ebpf attach-tc
+  IFACE=eth0 scripts/zc-raft-ebpf detach-tc
+  IFACE=eth0 scripts/zc-raft-ebpf attach-xdp
+  IFACE=eth0 scripts/zc-raft-ebpf detach-xdp
+  IFACE=eth0 scripts/zc-raft-ebpf status
+  scripts/zc-raft-ebpf stats
+  scripts/zc-raft-ebpf policy [--ports CSV] [--shards N] [--mark --mark-base N]
+
+Set NETNS=name to run ip/tc commands inside a network namespace.
+Set XDP_MODE=xdpgeneric, xdpdrv, or xdpoffload for attach-xdp.
+EOF
+}
+
+run_net()
+{
+	if [ -n "${NETNS}" ]; then
+		ip netns exec "${NETNS}" "$@"
+	else
+		"$@"
+	fi
+}
+
+need_iface()
+{
+	if [ -z "${IFACE}" ]; then
+		echo "IFACE is required" >&2
+		exit 2
+	fi
+}
+
+build()
+{
+	make -C "${ROOT}/ebpf"
+}
+
+attach_tc()
+{
+	need_iface
+	build
+	run_net tc qdisc replace dev "${IFACE}" clsact
+	run_net tc filter replace dev "${IFACE}" ingress pref "${PREF}" \
+		bpf da obj "${OBJ}" sec classifier
+	run_net tc filter replace dev "${IFACE}" egress pref "${PREF}" \
+		bpf da obj "${OBJ}" sec classifier
+}
+
+detach_tc()
+{
+	need_iface
+	run_net tc filter del dev "${IFACE}" ingress pref "${PREF}" 2>/dev/null || true
+	run_net tc filter del dev "${IFACE}" egress pref "${PREF}" 2>/dev/null || true
+}
+
+attach_xdp()
+{
+	need_iface
+	build
+	run_net ip link set dev "${IFACE}" "${XDP_MODE}" obj "${OBJ}" sec xdp
+}
+
+detach_xdp()
+{
+	need_iface
+	run_net ip link set dev "${IFACE}" xdp off
+}
+
+status()
+{
+	need_iface
+	run_net tc -s filter show dev "${IFACE}" ingress || true
+	run_net tc -s filter show dev "${IFACE}" egress || true
+	run_net ip -details link show dev "${IFACE}" || true
+}
+
+cmd="${1:-}"
+case "${cmd}" in
+	build)
+		build
+		;;
+	attach-tc)
+		attach_tc
+		;;
+	detach-tc)
+		detach_tc
+		;;
+	attach-xdp)
+		attach_xdp
+		;;
+	detach-xdp)
+		detach_xdp
+		;;
+	status)
+		status
+		;;
+	stats)
+		build
+		"${CTL}" stats
+		;;
+	policy)
+		build
+		shift
+		"${CTL}" policy "$@"
+		;;
+	""|-h|--help|help)
+		usage
+		;;
+	*)
+		echo "unknown command: ${cmd}" >&2
+		usage
+		exit 2
+		;;
+esac

@@ -21,6 +21,7 @@ zcutils zcout [options]
 zcutils zcmap [options]
 zcutils zctee [options]
 zcutils zcmaptee [options]
+zcutils zcsnap [options]
 zcutils zcsink [options]
 zcutils zcstat [options]
 zcutils zcmeter [options]
@@ -69,6 +70,7 @@ as a fallback while using short names in pipelines.
 - `zcmap`: transform descriptor metadata/views.
 - `zctee`: fan out descriptors.
 - `zcmaptee`: fused map plus fanout.
+- `zcsnap`: mark a descriptor/WAL snapshot cut and emit a manifest.
 - `zcsink`: terminal count, drop, or checksum consumer.
 - `zcstat`: count bytes/chunks and report throughput.
 - `zcmeter`: pass bytes through while printing live receive rate to stderr.
