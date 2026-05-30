@@ -32,8 +32,10 @@
 
 #define ZCNBLK_NAME "zcnblk"
 #define ZCNBLK_FRAME_MAGIC "ZCNBLK01"
-#define ZCNBLK_FRAME_VERSION 1
-#define ZCNBLK_FRAME_HEADER_LEN 32
+#define ZCNBLK_FRAME_VERSION 2
+#define ZCNBLK_FRAME_HEADER_LEN 64
+#define ZCNBLK_TOPOLOGY_VALID BIT(0)
+#define ZCNBLK_TOPOLOGY_PORT_LANE BIT(1)
 #define ZCNBLK_OP_WRITE 1
 #define ZCNBLK_OP_READ 2
 #define ZCNBLK_OP_READ_RESP 3
@@ -49,10 +51,15 @@
 	(ZCNBLK_AES256_MAGIC_LEN + ZCNBLK_AES256_GCM_IV_LEN * 2)
 #define ZCNBLK_AES256_DEFAULT_FRAME_BYTES (64U * 1024U)
 #define ZCNBLK_INLINE_BOUNCE_BYTES 4096
+#define ZCNBLK_MAX_REMOTE_IPS 256
 
 static char *remote_ip = "127.0.0.1";
 module_param(remote_ip, charp, 0444);
 MODULE_PARM_DESC(remote_ip, "IPv4 address of zcnblk-target");
+
+static char *remote_ips;
+module_param(remote_ips, charp, 0444);
+MODULE_PARM_DESC(remote_ips, "Comma-separated target IPv4 addresses distributed over contiguous lane ranges; overrides remote_ip");
 
 static ushort remote_port_base = 19600;
 module_param(remote_port_base, ushort, 0444);
@@ -98,9 +105,9 @@ static uint pipeline_depth = 64;
 module_param(pipeline_depth, uint, 0444);
 MODULE_PARM_DESC(pipeline_depth, "Maximum in-flight requests per TCP connection");
 
-static uint fill_timeout_ms = 5000;
+static uint fill_timeout_ms;
 module_param(fill_timeout_ms, uint, 0444);
-MODULE_PARM_DESC(fill_timeout_ms, "Time to wait for more queued requests before receiving a partial pipeline");
+MODULE_PARM_DESC(fill_timeout_ms, "Time to wait for more queued requests before receiving a partial pipeline, 0 means reap completions immediately");
 
 static bool write_acks;
 module_param(write_acks, bool, 0444);
@@ -117,6 +124,10 @@ MODULE_PARM_DESC(batch_depth, "Maximum same-op requests to pack into one ZCNBLK 
 static bool hctx_affinity = true;
 module_param(hctx_affinity, bool, 0444);
 MODULE_PARM_DESC(hctx_affinity, "Map blk-mq hardware queues directly to target connections when possible");
+
+static bool shard_affinity;
+module_param(shard_affinity, bool, 0444);
+MODULE_PARM_DESC(shard_affinity, "Route single-frame requests to the lane matching their mapped shard");
 
 static char *aes256_gcm_token;
 module_param(aes256_gcm_token, charp, 0400);
@@ -150,6 +161,13 @@ struct zcnblk_frame_header {
 	__le32 shard;
 	__le32 len;
 	__le64 offset;
+	__le32 lane_id;
+	__le32 lane_count;
+	__le32 preferred_worker;
+	__le32 queue_id;
+	__le64 request_id;
+	__le32 tier_id;
+	__le32 topology_flags;
 } __packed;
 
 struct zcnblk_conn {
@@ -192,6 +210,8 @@ struct zcnblk_dev {
 };
 
 static struct zcnblk_dev *zcnblk_dev;
+static __be32 zcnblk_remote_addrs[ZCNBLK_MAX_REMOTE_IPS];
+static u32 zcnblk_remote_addr_count;
 
 static bool zcnblk_crypto_enabled(const struct zcnblk_dev *dev)
 {
@@ -718,7 +738,8 @@ static int zcnblk_recv_frame_payload(struct zcnblk_conn *conn,
 	return zcnblk_conn_recv_all(conn, payload, payload_len);
 }
 
-static void zcnblk_make_header(struct zcnblk_frame_header *hdr, u16 op,
+static void zcnblk_make_header(struct zcnblk_conn *conn,
+			       struct zcnblk_frame_header *hdr, u16 op,
 			       u16 flags, u32 shard, u32 len, u64 offset)
 {
 	memset(hdr, 0, sizeof(*hdr));
@@ -730,6 +751,17 @@ static void zcnblk_make_header(struct zcnblk_frame_header *hdr, u16 op,
 	hdr->shard = cpu_to_le32(shard);
 	hdr->len = cpu_to_le32(len);
 	hdr->offset = cpu_to_le64(offset);
+	if (conn) {
+		hdr->lane_id = cpu_to_le32(conn->lane);
+		hdr->lane_count = cpu_to_le32(lanes);
+		hdr->preferred_worker = cpu_to_le32(conn->lane);
+		hdr->queue_id = cpu_to_le32(conn->lane);
+		hdr->request_id = cpu_to_le64(flags);
+		hdr->tier_id = cpu_to_le32(shard);
+		hdr->topology_flags =
+			cpu_to_le32(ZCNBLK_TOPOLOGY_VALID |
+				    ZCNBLK_TOPOLOGY_PORT_LANE);
+	}
 }
 
 static int zcnblk_validate_resp(const struct zcnblk_frame_header *hdr, u16 op,
@@ -860,7 +892,8 @@ static int zcnblk_do_frame(struct zcnblk_conn *conn, struct request *rq,
 		ret = zcnblk_copy_rq_to_buf(rq, rq_off, bounce, len);
 		if (ret)
 			return ret;
-		zcnblk_make_header(&hdr, ZCNBLK_OP_WRITE, 0, shard, len, remote_off);
+		zcnblk_make_header(conn, &hdr, ZCNBLK_OP_WRITE, 0, shard, len,
+				   remote_off);
 		ret = zcnblk_send_frame_payload(conn, &hdr, bounce, len);
 		if (!ret && write_acks) {
 			ret = zcnblk_conn_recv_all(conn, &hdr, sizeof(hdr));
@@ -873,7 +906,8 @@ static int zcnblk_do_frame(struct zcnblk_conn *conn, struct request *rq,
 		return ret;
 	}
 
-	zcnblk_make_header(&hdr, ZCNBLK_OP_READ, 0, shard, len, remote_off);
+	zcnblk_make_header(conn, &hdr, ZCNBLK_OP_READ, 0, shard, len,
+			   remote_off);
 	ret = zcnblk_send_frame_payload(conn, &hdr, NULL, 0);
 	if (ret)
 		return ret;
@@ -1027,8 +1061,9 @@ static int zcnblk_send_prepared_pdu(struct zcnblk_conn *conn,
 	int ret;
 
 	if (pdu->op == REQ_OP_WRITE) {
-		zcnblk_make_header(&hdr, ZCNBLK_OP_WRITE, pdu->request_id,
-				   pdu->shard, pdu->len, pdu->remote_off);
+		zcnblk_make_header(conn, &hdr, ZCNBLK_OP_WRITE,
+				   pdu->request_id, pdu->shard, pdu->len,
+				   pdu->remote_off);
 		ret = zcnblk_send_frame_payload(conn, &hdr, pdu->bounce,
 						pdu->len);
 		if (!write_acks)
@@ -1036,8 +1071,8 @@ static int zcnblk_send_prepared_pdu(struct zcnblk_conn *conn,
 		return ret;
 	}
 
-	zcnblk_make_header(&hdr, ZCNBLK_OP_READ, pdu->request_id, pdu->shard,
-			   pdu->len, pdu->remote_off);
+	zcnblk_make_header(conn, &hdr, ZCNBLK_OP_READ, pdu->request_id,
+			   pdu->shard, pdu->len, pdu->remote_off);
 	return zcnblk_send_frame_payload(conn, &hdr, NULL, 0);
 }
 
@@ -1159,14 +1194,14 @@ static int zcnblk_send_batch(struct zcnblk_conn *conn, struct zcnblk_pdu *first)
 		goto out;
 	}
 
-	zcnblk_make_header(&outer, ZCNBLK_OP_BATCH, 0, 0, count, 0);
+	zcnblk_make_header(conn, &outer, ZCNBLK_OP_BATCH, 0, 0, count, 0);
 	for (i = 0; i < count; i++) {
 		u16 wire_op = pdus[i]->op == REQ_OP_WRITE ? ZCNBLK_OP_WRITE :
 							   ZCNBLK_OP_READ;
 
-		zcnblk_make_header(&hdrs[i], wire_op, pdus[i]->request_id,
-				   pdus[i]->shard, pdus[i]->len,
-				   pdus[i]->remote_off);
+		zcnblk_make_header(conn, &hdrs[i], wire_op,
+				   pdus[i]->request_id, pdus[i]->shard,
+				   pdus[i]->len, pdus[i]->remote_off);
 	}
 
 	iov_count = 0;
@@ -1389,6 +1424,11 @@ static int zcnblk_conn_thread(void *data)
 			if (batch_depth > 1) {
 				ret = zcnblk_send_batch(conn, pdu);
 				if (ret == -EOPNOTSUPP) {
+					if (shard_affinity) {
+						zcnblk_complete_pdu(pdu, BLK_STS_IOERR);
+						sent = true;
+						continue;
+					}
 					if (conn->inflight_count) {
 						zcnblk_push_pending_front(conn, pdu);
 						break;
@@ -1413,6 +1453,11 @@ static int zcnblk_conn_thread(void *data)
 
 			ret = zcnblk_send_pdu(conn, pdu);
 			if (ret == -EOPNOTSUPP) {
+				if (shard_affinity) {
+					zcnblk_complete_pdu(pdu, BLK_STS_IOERR);
+					sent = true;
+					continue;
+				}
 				if (conn->inflight_count) {
 					zcnblk_push_pending_front(conn, pdu);
 					break;
@@ -1512,7 +1557,20 @@ static blk_status_t zcnblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 	pdu->bounce = NULL;
 	pdu->bounce_inline = false;
 
-	if (hctx_affinity) {
+	if (shard_affinity) {
+		u32 shard;
+		u64 remote_off;
+		u32 len;
+
+		if (!zcnblk_request_is_single_frame(dev, rq, &shard,
+						    &remote_off, &len)) {
+			blk_mq_end_request(rq, BLK_STS_IOERR);
+			return BLK_STS_OK;
+		}
+		seq = atomic64_inc_return(&dev->next_conn);
+		conn_idx = (shard % lanes) * connections_per_lane;
+		conn_idx += (u32)((seq - 1) % connections_per_lane);
+	} else if (hctx_affinity) {
 		conn_idx = hctx->queue_num % dev->total_conns;
 	} else {
 		seq = atomic64_inc_return(&dev->next_conn);
@@ -1620,21 +1678,80 @@ static int zcnblk_connect_one(struct zcnblk_dev *dev, struct zcnblk_conn *conn,
 	return 0;
 }
 
+static int zcnblk_parse_remote_addrs(void)
+{
+	char *spec, *cursor, *token;
+	__be32 addr;
+	int ret = 0;
+
+	zcnblk_remote_addr_count = 0;
+	if (!remote_ips || !*remote_ips) {
+		addr = in_aton(remote_ip);
+		if (!addr)
+			return -EINVAL;
+		zcnblk_remote_addrs[0] = addr;
+		zcnblk_remote_addr_count = 1;
+		return 0;
+	}
+
+	spec = kstrdup(remote_ips, GFP_KERNEL);
+	if (!spec)
+		return -ENOMEM;
+	cursor = spec;
+	while ((token = strsep(&cursor, ","))) {
+		token = strim(token);
+		if (!*token)
+			continue;
+		if (zcnblk_remote_addr_count >= ZCNBLK_MAX_REMOTE_IPS) {
+			ret = -E2BIG;
+			goto out;
+		}
+		addr = in_aton(token);
+		if (!addr) {
+			ret = -EINVAL;
+			goto out;
+		}
+		zcnblk_remote_addrs[zcnblk_remote_addr_count++] = addr;
+	}
+	if (!zcnblk_remote_addr_count)
+		ret = -EINVAL;
+	else if (zcnblk_remote_addr_count > lanes)
+		ret = -EINVAL;
+
+out:
+	kfree(spec);
+	return ret;
+}
+
+static __be32 zcnblk_remote_addr_for_lane(u32 lane)
+{
+	u32 idx;
+
+	if (zcnblk_remote_addr_count <= 1)
+		return zcnblk_remote_addrs[0];
+	idx = div_u64((u64)lane * zcnblk_remote_addr_count, lanes);
+	if (idx >= zcnblk_remote_addr_count)
+		idx = zcnblk_remote_addr_count - 1;
+	return zcnblk_remote_addrs[idx];
+}
+
 static int zcnblk_connect_all(struct zcnblk_dev *dev)
 {
-	__be32 addr = in_aton(remote_ip);
 	u32 lane;
 	u32 stream;
 	u32 idx = 0;
 	int ret;
 
-	if (!addr)
-		return -EINVAL;
+	ret = zcnblk_parse_remote_addrs();
+	if (ret)
+		return ret;
 	dev->conns = kcalloc(dev->total_conns, sizeof(*dev->conns), GFP_KERNEL);
 	if (!dev->conns)
 		return -ENOMEM;
 
 	for (lane = 0; lane < lanes; lane++) {
+		__be32 addr = zcnblk_remote_addr_for_lane(lane);
+
 		for (stream = 0; stream < connections_per_lane; stream++) {
 			ret = zcnblk_connect_one(dev, &dev->conns[idx], lane,
 						 stream, idx, addr);
@@ -1737,11 +1854,13 @@ static int __init zcnblk_init(void)
 	if (ret)
 		goto out_put_disk;
 
-	pr_info("zcnblk: /dev/zcnblk0 remote=%s:%u lanes=%u connections_per_lane=%u total_conns=%u shards=%u bytes=%llu stripe=%u frame=%u queues=%u depth=%u batch_depth=%u write_acks=%d hctx_affinity=%d encryption=%s aes_frame=%u publish_delay_ms=%u\n",
-		remote_ip, remote_port_base, lanes, connections_per_lane,
+	pr_info("zcnblk: /dev/zcnblk0 remote=%s remote_ips=%s remote_count=%u port_base=%u lanes=%u connections_per_lane=%u total_conns=%u shards=%u bytes=%llu stripe=%u frame=%u queues=%u depth=%u pipeline_depth=%u batch_depth=%u fill_timeout_ms=%u write_acks=%d hctx_affinity=%d shard_affinity=%d encryption=%s aes_frame=%u publish_delay_ms=%u\n",
+		remote_ip, remote_ips ? remote_ips : "-", zcnblk_remote_addr_count,
+		remote_port_base, lanes, connections_per_lane,
 		total_conns, shard_count, capacity_bytes, stripe_unit,
-		max_frame_bytes, nr_queues, queue_depth, batch_depth,
-		write_acks, hctx_affinity,
+		max_frame_bytes, nr_queues, queue_depth, pipeline_depth,
+		batch_depth, fill_timeout_ms, write_acks, hctx_affinity,
+		shard_affinity,
 		zcnblk_crypto_enabled(zcnblk_dev) ? "aes-256-gcm" : "none",
 		aes256_gcm_frame_bytes, publish_delay_ms);
 	return 0;

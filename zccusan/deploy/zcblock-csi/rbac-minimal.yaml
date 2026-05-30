@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zcblock-csi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zcblock-csi
+  namespace: zcblock-csi
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: zcblock-csi-minimal
+rules:
+  # external-provisioner: dynamic PV lifecycle for PVCs in any namespace.
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "csinodes"]
+    verbs: ["get", "list", "watch"]
+  # csi-snapshotter sidecar: snapshot objects are cluster-watched, even though
+  # VolumeSnapshots themselves are namespaced.
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotclasses", "volumesnapshots"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents/status"]
+    verbs: ["patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: zcblock-csi-minimal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: zcblock-csi-minimal
+subjects:
+  - kind: ServiceAccount
+    name: zcblock-csi
+    namespace: zcblock-csi
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zcblock-csi-leases
+  namespace: zcblock-csi
+rules:
+  # Keep leader-election writes namespace-local. The manifests set
+  # --leader-election-namespace=$(POD_NAMESPACE) on CSI sidecars.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zcblock-csi-leases
+  namespace: zcblock-csi
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zcblock-csi-leases
+subjects:
+  - kind: ServiceAccount
+    name: zcblock-csi
+    namespace: zcblock-csi

@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zcfile-snap-restore
+  namespace: zcblock-demo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: zcfile
+  dataSource:
+    apiGroup: snapshot.storage.k8s.io
+    kind: VolumeSnapshot
+    name: zcfile-snap
+  resources:
+    requests:
+      storage: 64Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: zcfile-snap-reader
+  namespace: zcblock-demo
+spec:
+  restartPolicy: Never
+  containers:
+    - name: reader
+      image: debian:bookworm-slim
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          cat /data/probe
+          sleep 3600
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: zcfile-snap-restore

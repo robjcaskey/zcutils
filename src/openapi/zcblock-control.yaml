@@ -1,0 +1,1243 @@
+openapi: 3.1.0
+info:
+  title: zccusan local control API
+  version: 0.1.0
+  description: >
+    zccusan is the Zero Copy Cinematic Universe Storage Area Network. This is
+    the local node control API used by CSI, CLI, and future gateway clients.
+    Snapshot and freeze operations are request/response. Stream endpoints start
+    long-lived encrypted replication streams and return a replication job id.
+servers:
+  - url: http://127.0.0.1:9788
+paths:
+  /v1/healthz:
+    get:
+      operationId: getHealth
+      responses:
+        "200":
+          description: Control process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /v1/logstream:
+    get:
+      operationId: getLogStream
+      description: >
+        Replays the node-local durable zccusan state log. The current
+        implementation is file-backed for local testing; the protocol shape is
+        intended to survive a later Raft-backed logstream.
+      responses:
+        "200":
+          description: Durable zccusan state log entries in append order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogStreamResponse"
+  /metrics:
+    get:
+      operationId: getPrometheusMetrics
+      responses:
+        "200":
+          description: Prometheus text exposition for zccusan local agent metrics.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /v1/stats:
+    get:
+      operationId: getStats
+      responses:
+        "200":
+          description: >
+            Aggregate and hierarchical zccusan stats. The summary is
+            low-cardinality for general monitoring; hierarchy contains optional
+            drill-down trees for placement and logical volume views.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsResponse"
+  /v1/snapshots:
+    post:
+      operationId: createSnapshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSnapshotRequest"
+      responses:
+        "200":
+          description: Snapshot exists and is ready or being tracked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateSnapshotResponse"
+  /v1/snapshots/{snapshotId}:
+    delete:
+      operationId: deleteSnapshot
+      parameters:
+        - name: snapshotId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Snapshot state was removed or was already absent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteSnapshotResponse"
+  /v1/snapshot-devices:
+    get:
+      operationId: listSnapshotDevices
+      responses:
+        "200":
+          description: Native COW/WAL block devices representing point-in-time snapshots.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotDeviceStatusResponse"
+    post:
+      operationId: createSnapshotDevice
+      description: >
+        Creates a read-only native block device for a ready snapshot. The mode
+        must be cow or wal; the controller does not fall back to loop devices or
+        copy-backed restores.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSnapshotDeviceRequest"
+      responses:
+        "200":
+          description: Snapshot device exists or was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotDeviceResponse"
+  /v1/snapshot-devices/{deviceId}:
+    get:
+      operationId: getSnapshotDevice
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Matching snapshot device, if any.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotDeviceStatusResponse"
+    delete:
+      operationId: deleteSnapshotDevice
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Snapshot device state was removed or was already absent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteSnapshotDeviceResponse"
+  /v1/snapshot-devices/{deviceId}/compact:
+    post:
+      operationId: startSnapshotCompaction
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartSnapshotCompactionRequest"
+      responses:
+        "200":
+          description: Compaction job status after creating a stream-rewrite or in-place workflow.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotCompactionResponse"
+  /v1/compactions:
+    get:
+      operationId: listSnapshotCompactions
+      responses:
+        "200":
+          description: Snapshot COW/WAL compaction jobs and their current tracked status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotCompactionStatusResponse"
+  /v1/compactions/{jobId}:
+    get:
+      operationId: getSnapshotCompaction
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Matching snapshot compaction job, if any.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotCompactionStatusResponse"
+    put:
+      operationId: updateSnapshotCompaction
+      description: >
+        Registers a small progress or checkpoint update from the worker running
+        a stream-rewrite or in-place compaction. The bulk data path is still the
+        zccusan stream layer; this endpoint is only control-plane state.
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSnapshotCompactionRequest"
+      responses:
+        "200":
+          description: Updated snapshot compaction job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotCompactionResponse"
+  /v1/freeze:
+    get:
+      operationId: getFreezeStatus
+      responses:
+        "200":
+          description: Current freeze barrier status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FreezeStatusResponse"
+    post:
+      operationId: createFreezeBarrier
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FreezeRequest"
+      responses:
+        "200":
+          description: Barrier is active until released or expired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FreezeResponse"
+  /v1/freeze/{barrierId}:
+    delete:
+      operationId: releaseFreezeBarrier
+      parameters:
+        - name: barrierId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Barrier is released or was already inactive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FreezeResponse"
+  /v1/streams:
+    get:
+      operationId: listStreams
+      responses:
+        "200":
+          description: Replication stream jobs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplicationStatusResponse"
+  /v1/replication/modes:
+    get:
+      operationId: listReplicationModes
+      responses:
+        "200":
+          description: Replication consistency mode policies.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplicationModeStatusResponse"
+    put:
+      operationId: setReplicationMode
+      description: >
+        Live-switches a replication scope between async and sync control modes.
+        This records policy immediately and does not require contacting the old
+        replication target.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetReplicationModeRequest"
+      responses:
+        "200":
+          description: Replication mode policy after the switch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplicationModeResponse"
+  /v1/replication/delay:
+    get:
+      operationId: getReplicationDelay
+      responses:
+        "200":
+          description: Fine-grained replication delay and byte progress samples.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplicationDelayResponse"
+  /v1/replication/routes:
+    get:
+      operationId: listReplicationRoutes
+      responses:
+        "200":
+          description: Replication target route policies.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplicationRouteStatusResponse"
+    put:
+      operationId: setReplicationRoute
+      description: >
+        Live train-track switch for a replication scope. The new target cluster,
+        gateway endpoint, and spillover tier are durably recorded before active
+        in-memory jobs are retargeted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetReplicationRouteRequest"
+      responses:
+        "200":
+          description: Replication route policy after the switch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplicationRouteResponse"
+  /v1/streams/{replId}:
+    get:
+      operationId: getStream
+      parameters:
+        - name: replId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Matching replication stream job, if any.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplicationStatusResponse"
+  /v1/streams/receive:
+    post:
+      operationId: startReceiveStream
+      description: >
+        Starts an encrypted receive listener that writes into a local volume.
+        This is intentionally modeled as a stream control operation so the data
+        transport can later be HTTP upgraded or WebSocket-backed without
+        changing CSI snapshot orchestration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartReceiveRequest"
+      responses:
+        "200":
+          description: Receive listener is ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartReceiveResponse"
+  /v1/streams/send:
+    post:
+      operationId: startSendStream
+      description: Starts an encrypted send job from a local volume or snapshot.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartSendRequest"
+      responses:
+        "200":
+          description: Send job was queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartSendResponse"
+components:
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    HealthResponse:
+      type: object
+      required: [ok, version]
+      properties:
+        ok:
+          type: boolean
+        version:
+          type: string
+    LogStreamEntry:
+      type: object
+      required:
+        - schema_version
+        - stream
+        - sequence
+        - term
+        - offset
+        - timestamp_secs
+        - kind
+        - key
+        - value
+      properties:
+        schema_version:
+          type: integer
+          minimum: 1
+        stream:
+          type: string
+          example: zccusan.state
+        sequence:
+          type: integer
+          format: int64
+          minimum: 1
+        term:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Zero for the local file-backed log; future Raft terms fit here.
+        offset:
+          type: integer
+          format: int64
+          minimum: 0
+        timestamp_secs:
+          type: integer
+          format: int64
+          minimum: 0
+        kind:
+          type: string
+          example: snapshot.created
+        key:
+          type: string
+        value:
+          type: object
+          additionalProperties: true
+    LogStreamResponse:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/LogStreamEntry"
+    SnapshotSpec:
+      type: object
+      required:
+        - snapshot_id
+        - name_hex
+        - source_volume_id
+        - source_backend
+        - size_bytes
+        - snapshot_path
+        - snapshot_mode
+        - creation_time_secs
+        - ready_to_use
+      properties:
+        snapshot_id:
+          type: string
+        name_hex:
+          type: string
+        source_volume_id:
+          type: string
+        source_backend:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        snapshot_path:
+          type: string
+        snapshot_mode:
+          type: string
+          enum: [existing, reflink, copy]
+        creation_time_secs:
+          type: integer
+          format: int64
+        ready_to_use:
+          type: boolean
+    CreateSnapshotRequest:
+      type: object
+      required: [source_volume_id, snapshot_id, name]
+      properties:
+        source_volume_id:
+          type: string
+        snapshot_id:
+          type: string
+        name:
+          type: string
+    CreateSnapshotResponse:
+      type: object
+      required: [snapshot]
+      properties:
+        snapshot:
+          $ref: "#/components/schemas/SnapshotSpec"
+    DeleteSnapshotResponse:
+      type: object
+      required: [deleted]
+      properties:
+        deleted:
+          type: boolean
+    SnapshotDeviceSpec:
+      type: object
+      required:
+        - device_id
+        - snapshot_id
+        - source_volume_id
+        - mode
+        - device_name
+        - device_path
+        - configfs_path
+        - size_bytes
+        - readonly
+        - state
+        - compaction_job_id
+        - created_at_millis
+        - updated_at_millis
+      properties:
+        device_id:
+          type: string
+        snapshot_id:
+          type: string
+        source_volume_id:
+          type: string
+        mode:
+          type: string
+          enum: [cow, wal]
+        device_name:
+          type: string
+        device_path:
+          type: string
+        configfs_path:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        readonly:
+          type: boolean
+          const: true
+        state:
+          type: string
+          enum: [creating, ready, failed]
+        compaction_job_id:
+          type: [string, "null"]
+        created_at_millis:
+          type: integer
+          format: int64
+        updated_at_millis:
+          type: integer
+          format: int64
+    CreateSnapshotDeviceRequest:
+      type: object
+      required: [snapshot_id, mode]
+      properties:
+        snapshot_id:
+          type: string
+        device_id:
+          type: [string, "null"]
+          description: Optional idempotency key; defaults from snapshot id and mode.
+        mode:
+          type: string
+          enum: [cow, wal]
+        readonly:
+          type: [boolean, "null"]
+          default: true
+          description: Must be true; writable access requires restoring a new volume.
+        start_compaction:
+          type: [boolean, "null"]
+          default: false
+    SnapshotDeviceResponse:
+      type: object
+      required: [device]
+      properties:
+        device:
+          $ref: "#/components/schemas/SnapshotDeviceSpec"
+    SnapshotDeviceStatusResponse:
+      type: object
+      required: [devices]
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/SnapshotDeviceSpec"
+    DeleteSnapshotDeviceResponse:
+      type: object
+      required: [deleted]
+      properties:
+        deleted:
+          type: boolean
+    SnapshotCompactionJob:
+      type: object
+      required:
+        - job_id
+        - device_id
+        - snapshot_id
+        - mode
+        - strategy
+        - phase
+        - state
+        - bytes_compacted
+        - bytes_streamed_out
+        - bytes_streamed_in
+        - bytes_total
+        - outbound_stream_id
+        - inbound_stream_id
+        - target_location
+        - worker_id
+        - checkpoint
+        - started_at_millis
+        - updated_at_millis
+        - finished_at_millis
+        - error
+      properties:
+        job_id:
+          type: string
+        device_id:
+          type: string
+        snapshot_id:
+          type: string
+        mode:
+          type: string
+          enum: [cow, wal]
+        strategy:
+          type: string
+          enum: [stream-rewrite, in-place]
+        phase:
+          type: string
+          enum: [queued, stream-out, stream-in, in-place, registered, done]
+        state:
+          type: string
+          enum: [queued, running, succeeded, failed]
+        bytes_compacted:
+          type: integer
+          format: int64
+        bytes_streamed_out:
+          type: integer
+          format: int64
+        bytes_streamed_in:
+          type: integer
+          format: int64
+        bytes_total:
+          type: [integer, "null"]
+          format: int64
+        outbound_stream_id:
+          type: [string, "null"]
+        inbound_stream_id:
+          type: [string, "null"]
+        target_location:
+          type: [string, "null"]
+        worker_id:
+          type: [string, "null"]
+        checkpoint:
+          type: [string, "null"]
+          description: Small registered compaction watermark, not bulk data.
+        started_at_millis:
+          type: integer
+          format: int64
+        updated_at_millis:
+          type: integer
+          format: int64
+        finished_at_millis:
+          type: [integer, "null"]
+          format: int64
+        error:
+          type: [string, "null"]
+    StartSnapshotCompactionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        strategy:
+          type: [string, "null"]
+          enum: [stream-rewrite, in-place, null]
+          default: stream-rewrite
+        target_location:
+          type: [string, "null"]
+        worker_id:
+          type: [string, "null"]
+        checkpoint:
+          type: [string, "null"]
+          description: Optional small initial watermark.
+        outbound_stream_id:
+          type: [string, "null"]
+        inbound_stream_id:
+          type: [string, "null"]
+        bytes_total:
+          type: [integer, "null"]
+          format: int64
+    UpdateSnapshotCompactionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        state:
+          type: [string, "null"]
+          enum: [queued, running, succeeded, failed, null]
+        phase:
+          type: [string, "null"]
+          enum: [queued, stream-out, stream-in, in-place, registered, done, null]
+        bytes_compacted:
+          type: [integer, "null"]
+          format: int64
+        bytes_streamed_out:
+          type: [integer, "null"]
+          format: int64
+        bytes_streamed_in:
+          type: [integer, "null"]
+          format: int64
+        bytes_total:
+          type: [integer, "null"]
+          format: int64
+        outbound_stream_id:
+          type: [string, "null"]
+        inbound_stream_id:
+          type: [string, "null"]
+        target_location:
+          type: [string, "null"]
+        worker_id:
+          type: [string, "null"]
+        checkpoint:
+          type: [string, "null"]
+          description: Small registered compaction watermark, not bulk data.
+        error:
+          type: [string, "null"]
+        finished:
+          type: [boolean, "null"]
+    SnapshotCompactionResponse:
+      type: object
+      required: [job]
+      properties:
+        job:
+          $ref: "#/components/schemas/SnapshotCompactionJob"
+    SnapshotCompactionStatusResponse:
+      type: object
+      required: [jobs]
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/SnapshotCompactionJob"
+    FreezeRequest:
+      type: object
+      required: [barrier_id, ttl_ms]
+      properties:
+        barrier_id:
+          type: string
+        ttl_ms:
+          type: integer
+          format: int64
+          minimum: 1
+    FreezeResponse:
+      type: object
+      required: [barrier_id, frozen_mounts, remaining_ms]
+      properties:
+        barrier_id:
+          type: string
+        frozen_mounts:
+          type: array
+          items:
+            type: string
+        remaining_ms:
+          type: integer
+          format: int64
+          minimum: 0
+    FreezeStatusResponse:
+      type: object
+      required: [active, barrier_id, frozen_mounts, remaining_ms]
+      properties:
+        active:
+          type: boolean
+        barrier_id:
+          type: [string, "null"]
+        frozen_mounts:
+          type: array
+          items:
+            type: string
+        remaining_ms:
+          type: integer
+          format: int64
+          minimum: 0
+    StartReceiveRequest:
+      type: object
+      required: [volume_id, listen, port]
+      properties:
+        volume_id:
+          type: string
+        listen:
+          type: string
+          default: 0.0.0.0
+        port:
+          type: integer
+          minimum: 0
+          maximum: 65535
+        token:
+          type: [string, "null"]
+          description: Omit or set to auto to generate a token.
+        bytes:
+          type: [integer, "null"]
+          format: int64
+          minimum: 1
+    StartReceiveResponse:
+      type: object
+      required: [repl_id, role, volume_id, target, listen, port, token]
+      properties:
+        repl_id:
+          type: string
+        role:
+          type: string
+          const: receive
+        volume_id:
+          type: string
+        target:
+          type: string
+        listen:
+          type: string
+        port:
+          type: integer
+        token:
+          type: string
+        replication_mode:
+          type: string
+          enum: [async, sync]
+          default: async
+        target_cluster:
+          type: [string, "null"]
+        gateway_endpoint:
+          type: [string, "null"]
+        spillover_tier:
+          type: [string, "null"]
+    StartSendRequest:
+      type: object
+      required: [peer, port, token]
+      properties:
+        volume_id:
+          type: [string, "null"]
+        snapshot_id:
+          type: [string, "null"]
+        peer:
+          type: string
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        token:
+          type: string
+        bytes:
+          type: [integer, "null"]
+          format: int64
+          minimum: 1
+    StartSendResponse:
+      type: object
+      required: [repl_id, role, source, peer, port, bytes_limit]
+      properties:
+        repl_id:
+          type: string
+        role:
+          type: string
+          const: send
+        source:
+          type: string
+        peer:
+          type: string
+        port:
+          type: integer
+        bytes_limit:
+          type: integer
+          format: int64
+        replication_mode:
+          type: string
+          enum: [async, sync]
+          default: async
+        target_cluster:
+          type: [string, "null"]
+        gateway_endpoint:
+          type: [string, "null"]
+        spillover_tier:
+          type: [string, "null"]
+    ReplicationJob:
+      type: object
+      required:
+        - repl_id
+        - role
+        - state
+        - subject
+        - stream_kind
+        - volume_id
+        - snapshot_id
+        - peer
+        - port
+        - bytes
+        - error
+        - started_at_secs
+        - finished_at_secs
+      properties:
+        repl_id:
+          type: string
+        role:
+          type: string
+          enum: [send, receive]
+        state:
+          type: string
+        subject:
+          type: string
+        stream_kind:
+          type: string
+          enum: [volume, snapshot, unknown]
+        volume_id:
+          type: [string, "null"]
+        snapshot_id:
+          type: [string, "null"]
+        peer:
+          type: string
+        port:
+          type: [integer, "null"]
+        bytes:
+          type: integer
+          format: int64
+        bytes_limit:
+          type: [integer, "null"]
+          format: int64
+        error:
+          type: [string, "null"]
+        started_at_secs:
+          type: integer
+          format: int64
+        started_at_millis:
+          type: integer
+          format: int64
+        updated_at_millis:
+          type: integer
+          format: int64
+        finished_at_secs:
+          type: [integer, "null"]
+          format: int64
+        finished_at_millis:
+          type: [integer, "null"]
+          format: int64
+        replication_mode:
+          type: string
+          enum: [async, sync]
+          default: async
+        target_cluster:
+          type: [string, "null"]
+        gateway_endpoint:
+          type: [string, "null"]
+        spillover_tier:
+          type: [string, "null"]
+    ReplicationStatusResponse:
+      type: object
+      required: [jobs]
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplicationJob"
+    ReplicationDelaySample:
+      type: object
+      required:
+        - repl_id
+        - role
+        - state
+        - subject
+        - peer
+        - port
+        - replication_mode
+        - target_cluster
+        - gateway_endpoint
+        - spillover_tier
+        - bytes
+        - bytes_limit
+        - bytes_remaining
+        - started_at_millis
+        - updated_at_millis
+        - finished_at_millis
+        - elapsed_millis
+        - idle_millis
+      properties:
+        repl_id:
+          type: string
+        role:
+          type: string
+          enum: [send, receive]
+        state:
+          type: string
+        subject:
+          type: string
+        peer:
+          type: string
+        port:
+          type: [integer, "null"]
+        replication_mode:
+          type: string
+          enum: [async, sync]
+        target_cluster:
+          type: [string, "null"]
+        gateway_endpoint:
+          type: [string, "null"]
+        spillover_tier:
+          type: [string, "null"]
+        bytes:
+          type: integer
+          format: int64
+        bytes_limit:
+          type: [integer, "null"]
+          format: int64
+        bytes_remaining:
+          type: [integer, "null"]
+          format: int64
+        started_at_millis:
+          type: integer
+          format: int64
+        updated_at_millis:
+          type: integer
+          format: int64
+        finished_at_millis:
+          type: [integer, "null"]
+          format: int64
+        elapsed_millis:
+          type: integer
+          format: int64
+        idle_millis:
+          type: integer
+          format: int64
+    ReplicationDelayResponse:
+      type: object
+      required: [samples]
+      properties:
+        samples:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplicationDelaySample"
+    StatsTotals:
+      type: object
+      required:
+        - attention_required
+        - attention_failed_jobs
+        - attention_idle_jobs
+        - attention_idle_threshold_millis
+        - jobs_total
+        - jobs_active
+        - jobs_succeeded
+        - jobs_failed
+        - bytes
+        - bytes_limit_known
+        - bytes_limit
+        - bytes_remaining
+        - max_elapsed_millis
+        - max_idle_millis
+      properties:
+        attention_required:
+          type: boolean
+        attention_failed_jobs:
+          type: integer
+          format: int64
+        attention_idle_jobs:
+          type: integer
+          format: int64
+        attention_idle_threshold_millis:
+          type: integer
+          format: int64
+        jobs_total:
+          type: integer
+          format: int64
+        jobs_active:
+          type: integer
+          format: int64
+        jobs_succeeded:
+          type: integer
+          format: int64
+        jobs_failed:
+          type: integer
+          format: int64
+        bytes:
+          type: integer
+          format: int64
+        bytes_limit_known:
+          type: integer
+          format: int64
+        bytes_limit:
+          type: integer
+          format: int64
+        bytes_remaining:
+          type: integer
+          format: int64
+        max_elapsed_millis:
+          type: integer
+          format: int64
+        max_idle_millis:
+          type: integer
+          format: int64
+    StatsNode:
+      type: object
+      required: [kind, name, totals, children, samples]
+      properties:
+        kind:
+          type: string
+        name:
+          type: string
+        totals:
+          $ref: "#/components/schemas/StatsTotals"
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatsNode"
+        samples:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplicationDelaySample"
+    StatsHierarchy:
+      type: object
+      required: [placement, logical]
+      properties:
+        placement:
+          $ref: "#/components/schemas/StatsNode"
+        logical:
+          $ref: "#/components/schemas/StatsNode"
+    StatsResponse:
+      type: object
+      required: [generated_at_millis, summary, hierarchy, compactions]
+      properties:
+        generated_at_millis:
+          type: integer
+          format: int64
+        summary:
+          $ref: "#/components/schemas/StatsTotals"
+        hierarchy:
+          $ref: "#/components/schemas/StatsHierarchy"
+        compactions:
+          $ref: "#/components/schemas/SnapshotCompactionStatusResponse"
+    ReplicationModeSpec:
+      type: object
+      required: [scope, mode, generation, updated_at_secs]
+      properties:
+        scope:
+          type: string
+          default: global
+        mode:
+          type: string
+          enum: [async, sync]
+        generation:
+          type: integer
+          format: int64
+          minimum: 0
+        updated_at_secs:
+          type: integer
+          format: int64
+          minimum: 0
+    SetReplicationModeRequest:
+      type: object
+      required: [mode]
+      properties:
+        scope:
+          type: [string, "null"]
+          default: global
+        mode:
+          type: string
+          enum: [async, sync]
+    ReplicationModeResponse:
+      type: object
+      required: [policy]
+      properties:
+        policy:
+          $ref: "#/components/schemas/ReplicationModeSpec"
+    ReplicationModeStatusResponse:
+      type: object
+      required: [policies]
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplicationModeSpec"
+    ReplicationRouteSpec:
+      type: object
+      required:
+        - scope
+        - target_cluster
+        - gateway_endpoint
+        - spillover_tier
+        - generation
+        - updated_at_secs
+      properties:
+        scope:
+          type: string
+          default: global
+        target_cluster:
+          type: string
+        gateway_endpoint:
+          type: string
+        spillover_tier:
+          type: string
+        generation:
+          type: integer
+          format: int64
+          minimum: 0
+        updated_at_secs:
+          type: integer
+          format: int64
+          minimum: 0
+    SetReplicationRouteRequest:
+      type: object
+      required: [target_cluster, gateway_endpoint, spillover_tier]
+      properties:
+        scope:
+          type: [string, "null"]
+          default: global
+        target_cluster:
+          type: string
+        gateway_endpoint:
+          type: string
+        spillover_tier:
+          type: string
+    ReplicationRouteResponse:
+      type: object
+      required: [route]
+      properties:
+        route:
+          $ref: "#/components/schemas/ReplicationRouteSpec"
+    ReplicationRouteStatusResponse:
+      type: object
+      required: [routes]
+      properties:
+        routes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplicationRouteSpec"

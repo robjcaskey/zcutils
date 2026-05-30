@@ -82,6 +82,10 @@ Bulk Raft path:
   benchmark traffic must use private IPv4 addresses from the EC2 inventory.
 - No public IP, Elastic IP, NAT Gateway, load balancer, cross-AZ path, VPC
   peering, Transit Gateway, or cross-region path is allowed for bulk traffic.
+- For instance types advertised above 200 Gbit/s, usually launch the run with
+  at least two private NICs from the start. The ad hoc helper supports this
+  with `launch --network-card-count 2`, which avoids stop/start disruption and
+  gives topology tests a second private address/card to bind lanes against.
 
 Same-AZ private EC2-to-EC2 traffic is the intended no-cost bulk path. Public IP
 traffic between instances can be billed even when the instances are physically

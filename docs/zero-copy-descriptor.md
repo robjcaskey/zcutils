@@ -270,6 +270,26 @@ workers and the remote receive workers. `--send-cpu-list` and
 `--receive-cpu-list` can diverge the two sides when the machines have different
 topologies.
 
+## Zcnblk Topology Header
+
+`zcnblk` request and response headers are v2 fixed 64-byte frames. The first 32
+bytes keep the original block contract: op, flags, target shard, payload length,
+and offset. The second 32 bytes carry the placement contract:
+
+- `lane_id` and `lane_count`: transport lane identity for this request.
+- `preferred_worker`: sender-side worker or hardware queue that owns the lane.
+- `queue_id`: the queue-local owner, currently the TCP port lane or blk-mq lane.
+- `request_id`: wider request identity for batched or acknowledged flows.
+- `tier_id`: intended target tier or shard; for current block targets this must
+  match `shard`.
+- `topology_flags`: marks the placement fields valid and records port-lane
+  mapping.
+
+The userspace target rejects topology-marked requests that arrive on the wrong
+lane or target a different tier than the encoded shard. That makes silent lane
+remapping visible before the tiering and RAID paths depend on it for ordering,
+backpressure, and locality.
+
 ## Lifetime
 
 `zcutils` owns the authoritative lease table. Consumers receive descriptors and

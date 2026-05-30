@@ -1,0 +1,117 @@
+namespace:
+  create: true
+  name: ""
+
+nameOverride: ""
+fullnameOverride: ""
+
+driverName: io.zcutils.zcblock
+
+image:
+  repository: localhost/zcblock-csi
+  tag: dev
+  pullPolicy: IfNotPresent
+
+sidecars:
+  provisioner:
+    image:
+      repository: registry.k8s.io/sig-storage/csi-provisioner
+      tag: v5.3.0
+      pullPolicy: IfNotPresent
+    timeout: 60s
+    logLevel: 3
+  snapshotter:
+    image:
+      repository: registry.k8s.io/sig-storage/csi-snapshotter
+      tag: v8.3.0
+      pullPolicy: IfNotPresent
+    timeout: 600s
+    logLevel: 3
+    extraCreateMetadata: true
+  registrar:
+    image:
+      repository: registry.k8s.io/sig-storage/csi-node-driver-registrar
+      tag: v2.16.0
+      pullPolicy: IfNotPresent
+    logLevel: 3
+
+serviceAccount:
+  create: true
+  name: ""
+
+rbac:
+  create: true
+
+csidriver:
+  create: true
+  fsGroupPolicy: File
+
+daemonset:
+  priorityClassName: system-node-critical
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations:
+    - operator: Exists
+  affinity: {}
+
+stateDir: /var/lib/zcblock-csi
+pluginDir: ""
+kubeletDir: /var/lib/kubelet
+registrationDir: /var/lib/kubelet/plugins_registry
+configfsDir: /sys/kernel/config
+devDir: /dev
+
+control:
+  enabled: true
+  listen: 127.0.0.1:9788
+  url: http://127.0.0.1:9788
+
+logstream:
+  path: ""
+
+metrics:
+  enabled: false
+  port: 9788
+  path: /metrics
+  annotations: {}
+
+freezeMaxTtlMs: 5000
+snapshotMode: auto
+
+storageClasses:
+  zcbrd:
+    enabled: true
+    name: zcbrd
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: false
+    parameters:
+      backend: zcbrd
+      blocksize: "4096"
+      queues: "8"
+      queueDepth: "512"
+      descriptorMode: advertise
+  zcfile:
+    enabled: true
+    name: zcfile
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: false
+    parameters:
+      backend: file-loop
+  zcraw:
+    enabled: false
+    name: zcraw
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: false
+    annotations:
+      zcutils.io/raw-block-warning: "Only use with volumeMode: Block. The raw device is not formatted or wiped by the CSI driver."
+    parameters:
+      backend: raw-block
+      rawPartUUID: ""
+
+snapshotClass:
+  enabled: true
+  name: zcblock
+  deletionPolicy: Delete

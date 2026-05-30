@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::ffi::CString;
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::net::{
     IpAddr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream, ToSocketAddrs, UdpSocket,
 };
@@ -14,18 +14,29 @@ use std::process::{Command, Stdio};
 use std::ptr;
 use std::slice;
 use std::sync::atomic::{AtomicU64, Ordering, fence};
-use std::sync::{Arc, Barrier, mpsc};
+use std::sync::{Arc, Barrier, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+pub mod block;
+pub mod fanout;
 mod io_slots;
+pub mod window;
+
+use crate::block::zcnblk::{
+    ZCNBLK_FRAME_HEADER_LEN, ZCNBLK_OP_BATCH, ZCNBLK_OP_BATCH_RESP, ZCNBLK_OP_READ,
+    ZCNBLK_OP_READ_RESP, ZCNBLK_OP_WRITE, ZCNBLK_OP_WRITE_ACK, ZCNBLK_TOPOLOGY_PORT_LANE,
+    ZCNBLK_TOPOLOGY_VALID, ZcnblkFrameHeader, ZcnblkFrameTopology,
+};
 
 type ZcAes256Cipher = aws_lc_rs::aead::LessSafeKey;
+const ZC_FICLONE: libc::c_ulong = 0x40049409;
 
 const IORING_REGISTER_QUERY: u32 = 35;
 const IORING_REGISTER_ZCRX_IFQ: u32 = 32;
 const IO_URING_QUERY_OPCODES: u32 = 0;
 const IO_URING_QUERY_ZCRX: u32 = 1;
+const DEFAULT_ZCNBLK_TIER_WRITE_EXTENT_BYTES: usize = 64 * 1024;
 
 const IORING_OP_SEND: u32 = 26;
 const IORING_OP_RECV: u32 = 27;
@@ -10356,15 +10367,6 @@ fn tcp_wal_worker(
     })
 }
 
-const ZCNBLK_FRAME_MAGIC: &[u8; 8] = b"ZCNBLK01";
-const ZCNBLK_FRAME_VERSION: u16 = 1;
-const ZCNBLK_FRAME_HEADER_LEN: usize = 32;
-const ZCNBLK_OP_WRITE: u16 = 1;
-const ZCNBLK_OP_READ: u16 = 2;
-const ZCNBLK_OP_READ_RESP: u16 = 3;
-const ZCNBLK_OP_WRITE_ACK: u16 = 4;
-const ZCNBLK_OP_BATCH: u16 = 5;
-const ZCNBLK_OP_BATCH_RESP: u16 = 6;
 const ZCNBLK_AES256_MAGIC: &[u8; 8] = b"ZCNBAE01";
 const ZCNBLK_AES256_NONCE_BYTES: usize = 12;
 const ZCNBLK_AES256_HANDSHAKE_LEN: usize =
@@ -10941,116 +10943,10 @@ fn zcnblk_payload_aes256_cipher(token: &str) -> io::Result<ZcAes256Cipher> {
     zc_aes256_cipher_from_key(&key)
 }
 
-#[derive(Clone, Copy, Default)]
-struct ZcnblkFrameHeader {
-    op: u16,
-    flags: u16,
-    shard: u32,
-    len: u32,
-    offset: u64,
-}
-
-impl ZcnblkFrameHeader {
-    fn new(op: u16, shard: usize, len: usize, offset: u64) -> io::Result<Self> {
-        Self::with_flags(op, 0, shard, len, offset)
-    }
-
-    fn with_flags(op: u16, flags: u16, shard: usize, len: usize, offset: u64) -> io::Result<Self> {
-        if !matches!(
-            op,
-            ZCNBLK_OP_WRITE
-                | ZCNBLK_OP_READ
-                | ZCNBLK_OP_READ_RESP
-                | ZCNBLK_OP_WRITE_ACK
-                | ZCNBLK_OP_BATCH
-                | ZCNBLK_OP_BATCH_RESP
-        ) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unsupported zcnblk op {op}"),
-            ));
-        }
-        Ok(Self {
-            op,
-            flags,
-            shard: u32::try_from(shard).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "zcnblk shard index exceeds u32",
-                )
-            })?,
-            len: u32::try_from(len).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "zcnblk frame length exceeds u32",
-                )
-            })?,
-            offset,
-        })
-    }
-
-    fn encode(self) -> [u8; ZCNBLK_FRAME_HEADER_LEN] {
-        let mut buf = [0u8; ZCNBLK_FRAME_HEADER_LEN];
-        buf[0..8].copy_from_slice(ZCNBLK_FRAME_MAGIC);
-        buf[8..10].copy_from_slice(&ZCNBLK_FRAME_VERSION.to_le_bytes());
-        buf[10..12].copy_from_slice(&(ZCNBLK_FRAME_HEADER_LEN as u16).to_le_bytes());
-        buf[12..14].copy_from_slice(&self.op.to_le_bytes());
-        buf[14..16].copy_from_slice(&self.flags.to_le_bytes());
-        buf[16..20].copy_from_slice(&self.shard.to_le_bytes());
-        buf[20..24].copy_from_slice(&self.len.to_le_bytes());
-        buf[24..32].copy_from_slice(&self.offset.to_le_bytes());
-        buf
-    }
-
-    fn decode(buf: &[u8; ZCNBLK_FRAME_HEADER_LEN]) -> io::Result<Self> {
-        if &buf[0..8] != ZCNBLK_FRAME_MAGIC {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "zcnblk frame magic mismatch",
-            ));
-        }
-        let version = u16::from_le_bytes(buf[8..10].try_into().expect("u16"));
-        let header_len = u16::from_le_bytes(buf[10..12].try_into().expect("u16")) as usize;
-        let op = u16::from_le_bytes(buf[12..14].try_into().expect("u16"));
-        if version != ZCNBLK_FRAME_VERSION {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unsupported zcnblk frame version {version}"),
-            ));
-        }
-        if header_len != ZCNBLK_FRAME_HEADER_LEN {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unsupported zcnblk frame header length {header_len}"),
-            ));
-        }
-        if !matches!(
-            op,
-            ZCNBLK_OP_WRITE
-                | ZCNBLK_OP_READ
-                | ZCNBLK_OP_READ_RESP
-                | ZCNBLK_OP_WRITE_ACK
-                | ZCNBLK_OP_BATCH
-                | ZCNBLK_OP_BATCH_RESP
-        ) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unsupported zcnblk frame op {op}"),
-            ));
-        }
-        Ok(Self {
-            op,
-            flags: u16::from_le_bytes(buf[14..16].try_into().expect("u16")),
-            shard: u32::from_le_bytes(buf[16..20].try_into().expect("u32")),
-            len: u32::from_le_bytes(buf[20..24].try_into().expect("u32")),
-            offset: u64::from_le_bytes(buf[24..32].try_into().expect("u64")),
-        })
-    }
-}
-
 #[derive(Clone)]
 enum ZcnblkTargetBackend {
     Block(SlotWalTarget),
+    Tier(ZcnblkTierTarget),
     DevNull,
 }
 
@@ -11058,6 +10954,7 @@ impl ZcnblkTargetBackend {
     fn label(&self) -> &str {
         match self {
             Self::Block(target) => target.label(),
+            Self::Tier(_) => "zctier",
             Self::DevNull => "zcdevnull",
         }
     }
@@ -11065,6 +10962,7 @@ impl ZcnblkTargetBackend {
     fn open_path(&self) -> Option<&Path> {
         match self {
             Self::Block(target) => Some(target.open_path()),
+            Self::Tier(_) => None,
             Self::DevNull => None,
         }
     }
@@ -11072,6 +10970,37 @@ impl ZcnblkTargetBackend {
     fn is_devnull(&self) -> bool {
         matches!(self, Self::DevNull)
     }
+}
+
+#[derive(Clone)]
+struct ZcnblkTierTarget {
+    hot_path: PathBuf,
+    spill_path: Option<PathBuf>,
+    device_bytes: u64,
+    read_from_spill_on_open: bool,
+    backpressure: Arc<ZcTierBackpressure>,
+}
+
+struct ZcnblkTierSpillItem {
+    offset: u64,
+    data: Arc<Vec<u8>>,
+}
+
+struct ZcnblkTierBlockSpill {
+    label: String,
+    tx: mpsc::SyncSender<ZcnblkTierSpillItem>,
+    handle: thread::JoinHandle<io::Result<ZcTierSpillStats>>,
+    backpressure: Arc<ZcTierBackpressure>,
+}
+
+struct ZcnblkTierRuntime {
+    hot: fs::File,
+    read_fallback: Option<fs::File>,
+    read_from_spill: bool,
+    spill: Option<ZcnblkTierBlockSpill>,
+    write_extent_bytes: usize,
+    pending_offset: u64,
+    pending_write: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -11105,6 +11034,7 @@ struct ZcnblkWriteSlot {
     shard: usize,
     len: u32,
     offset: u64,
+    topology: ZcnblkFrameTopology,
 }
 
 #[derive(Clone)]
@@ -11266,6 +11196,387 @@ fn zcnblk_is_devnull_target(token: &str) -> bool {
         })
 }
 
+fn zcnblk_parse_tier_target(token: &str) -> io::Result<Option<ZcnblkTargetPlan>> {
+    let Some(spec) = token
+        .strip_prefix("zctier:")
+        .or_else(|| token.strip_prefix("zctier="))
+    else {
+        return Ok(None);
+    };
+    let parts = spec.split(':').collect::<Vec<_>>();
+    let hot = parts.first().copied().unwrap_or_default();
+    if hot.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk zctier target requires zctier:HOT[:SPILL[:BYTES[:ALIGN[:MEMORY]]]]",
+        ));
+    }
+    if parts.len() > 5 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk zctier target accepts at most HOT:SPILL:BYTES:ALIGN:MEMORY",
+        ));
+    }
+    let spill_path = parts
+        .get(1)
+        .filter(|value| !value.is_empty())
+        .map(|value| PathBuf::from(*value));
+    let device_bytes = match parts.get(2).filter(|value| !value.is_empty()) {
+        Some(value) => parse_size_arg(value, "zctier bytes")? as u64,
+        None => env_size_opt("URING_PLAY_ZCNBLK_TIER_BYTES")?
+            .unwrap_or(64usize * 1024 * 1024 * 1024) as u64,
+    };
+    let required_alignment = match parts.get(3).filter(|value| !value.is_empty()) {
+        Some(value) => parse_size_arg(value, "zctier alignment")?,
+        None => env_size_opt("URING_PLAY_ZCNBLK_TIER_ALIGNMENT")?.unwrap_or(SECTOR_SIZE),
+    };
+    let memory_bytes = match parts.get(4).filter(|value| !value.is_empty()) {
+        Some(value) => parse_size_arg(value, "zctier memory")?,
+        None => {
+            env_size_opt("URING_PLAY_ZCNBLK_TIER_MEMORY_BYTES")?.unwrap_or(256usize * 1024 * 1024)
+        }
+    };
+    if device_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zctier bytes must be non-zero",
+        ));
+    }
+    if required_alignment == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zctier alignment must be non-zero",
+        ));
+    }
+    if memory_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zctier memory must be non-zero",
+        ));
+    }
+    let hot_path = PathBuf::from(hot);
+    let read_from_spill_on_open =
+        !hot_path.exists() && spill_path.as_ref().is_some_and(|path| path.exists());
+    Ok(Some(ZcnblkTargetPlan {
+        backend: ZcnblkTargetBackend::Tier(ZcnblkTierTarget {
+            hot_path,
+            spill_path,
+            device_bytes,
+            read_from_spill_on_open,
+            backpressure: Arc::new(ZcTierBackpressure::new(memory_bytes)),
+        }),
+        device_bytes,
+        required_alignment,
+    }))
+}
+
+fn zcnblk_ensure_parent_dir(path: &Path, context: &str) -> io::Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    if parent.as_os_str().is_empty() || parent.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(parent).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("create {context} directory {}: {err}", parent.display()),
+        )
+    })
+}
+
+fn zcnblk_maybe_set_file_len(path: &Path, file: &fs::File, bytes: u64) -> io::Result<()> {
+    if fs::metadata(path)
+        .map(|metadata| metadata.file_type().is_block_device())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    file.set_len(bytes).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!(
+                "size zcnblk tier file {} to {bytes} bytes: {err}",
+                path.display()
+            ),
+        )
+    })
+}
+
+fn zcnblk_tier_read_at_zero_fill(
+    file: &fs::File,
+    mut buf: &mut [u8],
+    mut offset: u64,
+) -> io::Result<()> {
+    while !buf.is_empty() {
+        match file.read_at(buf, offset) {
+            Ok(0) => {
+                buf.fill(0);
+                return Ok(());
+            }
+            Ok(n) => {
+                let (_, rest) = buf.split_at_mut(n);
+                buf = rest;
+                offset = offset.checked_add(n as u64).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcnblk tier read offset overflow",
+                    )
+                })?;
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+fn zcnblk_tier_spill_loop(
+    file: fs::File,
+    rx: mpsc::Receiver<ZcnblkTierSpillItem>,
+    backpressure: Arc<ZcTierBackpressure>,
+) -> io::Result<ZcTierSpillStats> {
+    let mut stats = ZcTierSpillStats::default();
+    for item in rx {
+        let len = item.data.len();
+        let write_result = zc_write_all_at(&file, &item.data, item.offset);
+        backpressure.release(len)?;
+        write_result?;
+        stats.bytes = stats.bytes.checked_add(len as u64).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk tier spill byte count overflow",
+            )
+        })?;
+        stats.chunks = stats.chunks.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk tier spill chunk count overflow",
+            )
+        })?;
+    }
+    Ok(stats)
+}
+
+fn zcnblk_tier_write_extent_bytes() -> io::Result<usize> {
+    Ok(env_size_opt("URING_PLAY_ZCNBLK_TIER_WRITE_EXTENT_BYTES")?
+        .unwrap_or(DEFAULT_ZCNBLK_TIER_WRITE_EXTENT_BYTES))
+}
+
+fn zcnblk_spawn_tier_spill(
+    path: PathBuf,
+    device_bytes: u64,
+    queue_depth: usize,
+    backpressure: Arc<ZcTierBackpressure>,
+) -> ZcnblkTierBlockSpill {
+    let label = format!("file:{}", path.display());
+    let label_for_thread = label.clone();
+    let bp_for_thread = Arc::clone(&backpressure);
+    let (tx, rx) = mpsc::sync_channel::<ZcnblkTierSpillItem>(queue_depth);
+    let handle = thread::spawn(move || {
+        zcnblk_ensure_parent_dir(&path, "zcnblk tier spill")?;
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_CLOEXEC)
+            .open(&path)
+            .map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("open zcnblk tier spill {}: {err}", path.display()),
+                )
+            })?;
+        zcnblk_maybe_set_file_len(&path, &file, device_bytes)?;
+        zcnblk_tier_spill_loop(file, rx, bp_for_thread)
+    });
+    ZcnblkTierBlockSpill {
+        label: label_for_thread,
+        tx,
+        handle,
+        backpressure,
+    }
+}
+
+impl ZcnblkTierRuntime {
+    fn open(target: &ZcnblkTierTarget, queue_depth: usize) -> io::Result<Self> {
+        let write_extent_bytes = zcnblk_tier_write_extent_bytes()?;
+        zcnblk_ensure_parent_dir(&target.hot_path, "zcnblk tier hot")?;
+        let hot = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_CLOEXEC)
+            .open(&target.hot_path)
+            .map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("open zcnblk tier hot {}: {err}", target.hot_path.display()),
+                )
+            })?;
+        zcnblk_maybe_set_file_len(&target.hot_path, &hot, target.device_bytes)?;
+        let read_fallback = if let Some(path) = target.spill_path.as_ref()
+            && target.read_from_spill_on_open
+        {
+            Some(
+                OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_CLOEXEC)
+                    .open(path)
+                    .map_err(|err| {
+                        io::Error::new(
+                            err.kind(),
+                            format!("open zcnblk tier read fallback {}: {err}", path.display()),
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
+        let spill = target.spill_path.as_ref().map(|path| {
+            zcnblk_spawn_tier_spill(
+                path.clone(),
+                target.device_bytes,
+                queue_depth,
+                Arc::clone(&target.backpressure),
+            )
+        });
+        Ok(Self {
+            hot,
+            read_fallback,
+            read_from_spill: target.read_from_spill_on_open,
+            spill,
+            write_extent_bytes,
+            pending_offset: 0,
+            pending_write: Vec::with_capacity(write_extent_bytes.min(1024 * 1024)),
+        })
+    }
+
+    fn write_hot_and_spill_now(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
+        zc_write_all_at(&self.hot, data, offset)?;
+        let Some(spill) = self.spill.as_ref() else {
+            return Ok(());
+        };
+        spill.backpressure.acquire(data.len())?;
+        let item = ZcnblkTierSpillItem {
+            offset,
+            data: Arc::new(data.to_vec()),
+        };
+        let len = item.data.len();
+        spill.tx.send(item).map_err(|err| {
+            let _ = spill.backpressure.release(len);
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("zcnblk tier spill {} exited: {err}", spill.label),
+            )
+        })
+    }
+
+    fn write_hot_and_spill_owned(&mut self, offset: u64, data: Vec<u8>) -> io::Result<()> {
+        zc_write_all_at(&self.hot, &data, offset)?;
+        let Some(spill) = self.spill.as_ref() else {
+            return Ok(());
+        };
+        spill.backpressure.acquire(data.len())?;
+        let len = data.len();
+        let item = ZcnblkTierSpillItem {
+            offset,
+            data: Arc::new(data),
+        };
+        spill.tx.send(item).map_err(|err| {
+            let _ = spill.backpressure.release(len);
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("zcnblk tier spill {} exited: {err}", spill.label),
+            )
+        })
+    }
+
+    fn flush_pending_write(&mut self) -> io::Result<()> {
+        if self.pending_write.is_empty() {
+            return Ok(());
+        }
+        let offset = self.pending_offset;
+        if self.spill.is_some() {
+            let data = std::mem::replace(
+                &mut self.pending_write,
+                Vec::with_capacity(self.write_extent_bytes.min(1024 * 1024)),
+            );
+            self.write_hot_and_spill_owned(offset, data)
+        } else {
+            zc_write_all_at(&self.hot, &self.pending_write, offset)?;
+            self.pending_write.clear();
+            Ok(())
+        }
+    }
+
+    fn write_hot_and_spill(
+        &mut self,
+        offset: u64,
+        data: &[u8],
+        flush_for_ack: bool,
+    ) -> io::Result<()> {
+        if self.write_extent_bytes == 0 || data.len() >= self.write_extent_bytes || flush_for_ack {
+            self.flush_pending_write()?;
+            self.write_hot_and_spill_now(offset, data)?;
+            return Ok(());
+        }
+
+        if self.pending_write.is_empty() {
+            self.pending_offset = offset;
+        } else {
+            let pending_end = self
+                .pending_offset
+                .checked_add(self.pending_write.len() as u64)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk tier offset overflow")
+                })?;
+            if pending_end != offset
+                || self
+                    .pending_write
+                    .len()
+                    .checked_add(data.len())
+                    .is_none_or(|len| len > self.write_extent_bytes)
+            {
+                self.flush_pending_write()?;
+                self.pending_offset = offset;
+            }
+        }
+        self.pending_write.extend_from_slice(data);
+        if self.pending_write.len() >= self.write_extent_bytes {
+            self.flush_pending_write()?;
+        }
+        Ok(())
+    }
+
+    fn read_hot(&mut self, offset: u64, out: &mut [u8]) -> io::Result<()> {
+        self.flush_pending_write()?;
+        if self.read_from_spill
+            && let Some(spill) = self.read_fallback.as_ref()
+        {
+            zcnblk_tier_read_at_zero_fill(spill, out, offset)?;
+            zc_write_all_at(&self.hot, out, offset)?;
+            return Ok(());
+        }
+        zcnblk_tier_read_at_zero_fill(&self.hot, out, offset)
+    }
+
+    fn finish(mut self) -> io::Result<Option<(String, ZcTierSpillStats, usize, usize)>> {
+        self.flush_pending_write()?;
+        let Some(spill) = self.spill else {
+            return Ok(None);
+        };
+        let label = spill.label.clone();
+        drop(spill.tx);
+        let stats = spill
+            .handle
+            .join()
+            .map_err(|_| io::Error::other(format!("zcnblk tier spill {label} panicked")))??;
+        let (final_queued, max_queued) = spill.backpressure.snapshot()?;
+        Ok(Some((label, stats, final_queued, max_queued)))
+    }
+}
+
 fn parse_zcnblk_target_plans(
     target_spec: &str,
     chunk_bytes: usize,
@@ -11287,6 +11598,10 @@ fn parse_zcnblk_target_plans(
             continue;
         }
         for expanded in zcnblk_expand_target_token(token)? {
+            if let Some(plan) = zcnblk_parse_tier_target(&expanded)? {
+                targets.push(plan);
+                continue;
+            }
             if zcnblk_is_devnull_target(&expanded) {
                 targets.push(ZcnblkTargetPlan {
                     backend: ZcnblkTargetBackend::DevNull,
@@ -11365,6 +11680,51 @@ fn zcnblk_partition_accepted_streams(
         tcp_mux_counts_label(&counts)
     );
     shards
+}
+
+fn zcnblk_validate_frame_topology(
+    frame: ZcnblkFrameHeader,
+    stream_lane: usize,
+    lane_base: usize,
+    topology_lane_count: usize,
+) -> io::Result<()> {
+    if !frame.topology_valid() {
+        return Ok(());
+    }
+    let expected_lane = lane_base.checked_add(stream_lane).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk target lane base overflow",
+        )
+    })?;
+    if frame.topology.lane_id as usize != expected_lane {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk frame lane_id={} arrived on stream lane {stream_lane} expected_global_lane={expected_lane}",
+                frame.topology.lane_id
+            ),
+        ));
+    }
+    if frame.topology.lane_count != 0 && frame.topology.lane_count as usize != topology_lane_count {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk frame lane_count={} does not match target topology_lane_count={topology_lane_count}",
+                frame.topology.lane_count
+            ),
+        ));
+    }
+    if frame.topology.tier_id != frame.shard {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk frame tier_id={} does not match shard={}",
+                frame.topology.tier_id, frame.shard
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn zcnblk_queue_block_io(
@@ -11477,11 +11837,13 @@ fn zcnblk_send_read_response(
     shard: usize,
     len: usize,
     offset: u64,
+    topology: ZcnblkFrameTopology,
     buffers: &FixedSendBuffers,
     slot: usize,
 ) -> io::Result<usize> {
     let header =
-        ZcnblkFrameHeader::with_flags(ZCNBLK_OP_READ_RESP, flags, shard, len, offset)?.encode();
+        ZcnblkFrameHeader::with_topology(ZCNBLK_OP_READ_RESP, flags, shard, len, offset, topology)?
+            .encode();
     let payload = unsafe { slice::from_raw_parts(buffers.ptr(slot).cast_const(), len) };
     streams[stream_idx].write_frame_payload(&header, payload, true)
 }
@@ -11493,9 +11855,11 @@ fn zcnblk_send_write_ack(
     shard: usize,
     len: usize,
     offset: u64,
+    topology: ZcnblkFrameTopology,
 ) -> io::Result<usize> {
     let header =
-        ZcnblkFrameHeader::with_flags(ZCNBLK_OP_WRITE_ACK, flags, shard, len, offset)?.encode();
+        ZcnblkFrameHeader::with_topology(ZCNBLK_OP_WRITE_ACK, flags, shard, len, offset, topology)?
+            .encode();
     streams[stream_idx].write_frame_payload(&header, &[], true)
 }
 
@@ -11582,6 +11946,7 @@ struct ZcnblkReadyReadResponse {
     shard: usize,
     len: usize,
     offset: u64,
+    topology: ZcnblkFrameTopology,
     slot: usize,
 }
 
@@ -11605,6 +11970,7 @@ fn zcnblk_send_read_response_batch(
                     read.shard,
                     read.len,
                     read.offset,
+                    read.topology,
                     buffers,
                     read.slot,
                 )?)
@@ -11623,6 +11989,7 @@ fn zcnblk_send_read_response_batch(
             read.shard,
             read.len,
             read.offset,
+            read.topology,
             buffers,
             read.slot,
         );
@@ -11643,12 +12010,13 @@ fn zcnblk_send_read_response_batch(
     let mut headers = Vec::with_capacity(reads.len());
     for read in reads {
         headers.push(
-            ZcnblkFrameHeader::with_flags(
+            ZcnblkFrameHeader::with_topology(
                 ZCNBLK_OP_READ_RESP,
                 read.flags,
                 read.shard,
                 read.len,
                 read.offset,
+                read.topology,
             )?
             .encode(),
         );
@@ -11736,6 +12104,8 @@ fn zcnblk_target_process_request_frame(
     ring: &mut RawRing,
     fds_by_shard: &[Option<i32>],
     fixed_file_by_shard: &[Option<u32>],
+    tier_by_shard: &mut [Option<ZcnblkTierRuntime>],
+    tier_queue_depth: usize,
     buffers: &FixedSendBuffers,
     slots: &mut [ZcnblkWriteSlot],
     slot: usize,
@@ -11848,6 +12218,7 @@ fn zcnblk_target_process_request_frame(
                         shard,
                         len,
                         frame.offset,
+                        frame.topology,
                     )?)
                     .ok_or_else(|| {
                         io::Error::new(io::ErrorKind::InvalidData, "zcnblk total response overflow")
@@ -11864,6 +12235,71 @@ fn zcnblk_target_process_request_frame(
                     shard,
                     len,
                     frame.offset,
+                    frame.topology,
+                    buffers,
+                    slot,
+                )?)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk total response overflow")
+                })?;
+            *total_read = (*total_read).checked_add(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk total read overflow")
+            })?;
+        }
+        *total_completed = (*total_completed).checked_add(len).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcnblk total complete overflow")
+        })?;
+        free_slots.push(slot);
+        return Ok(false);
+    }
+
+    if let ZcnblkTargetBackend::Tier(tier_target) = &target.backend {
+        let tier_count = tier_by_shard.len();
+        let tier_slot = tier_by_shard.get_mut(shard).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("zcnblk tier shard {shard} out of runtime range {tier_count}"),
+            )
+        })?;
+        if tier_slot.is_none() {
+            *tier_slot = Some(ZcnblkTierRuntime::open(tier_target, tier_queue_depth)?);
+        }
+        let tier = tier_slot
+            .as_mut()
+            .expect("zcnblk tier runtime was opened above");
+        if frame.op == ZCNBLK_OP_WRITE {
+            let payload = unsafe { slice::from_raw_parts(buffers.ptr(slot).cast_const(), len) };
+            tier.write_hot_and_spill(frame.offset, payload, write_acks)?;
+            *total_written = (*total_written).checked_add(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk total write overflow")
+            })?;
+            if write_acks {
+                *total_response = (*total_response)
+                    .checked_add(zcnblk_send_write_ack(
+                        streams,
+                        stream_idx,
+                        frame.flags,
+                        shard,
+                        len,
+                        frame.offset,
+                        frame.topology,
+                    )?)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "zcnblk total response overflow")
+                    })?;
+            }
+        } else {
+            let payload = unsafe { slice::from_raw_parts_mut(buffers.ptr(slot), len) };
+            tier.read_hot(frame.offset, payload)?;
+            *total_response = (*total_response)
+                .checked_add(zcnblk_send_read_response(
+                    streams,
+                    stream_idx,
+                    frame.flags,
+                    shard,
+                    len,
+                    frame.offset,
+                    frame.topology,
                     buffers,
                     slot,
                 )?)
@@ -11888,6 +12324,7 @@ fn zcnblk_target_process_request_frame(
         shard,
         len: frame.len,
         offset: frame.offset,
+        topology: frame.topology,
     };
     zcnblk_queue_block_io(
         ring,
@@ -11948,6 +12385,7 @@ fn zcnblk_target_complete_cqe(
                     slots[slot].shard,
                     completed_len,
                     slots[slot].offset,
+                    slots[slot].topology,
                 )?)
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "zcnblk total response overflow")
@@ -11960,6 +12398,7 @@ fn zcnblk_target_complete_cqe(
             shard: slots[slot].shard,
             len: completed_len,
             offset: slots[slot].offset,
+            topology: slots[slot].topology,
             slot,
         });
         return Ok(());
@@ -11979,6 +12418,9 @@ fn zcnblk_target_worker(
     targets: Arc<Vec<ZcnblkTargetPlan>>,
     worker: usize,
     streams: Vec<TcpBenchAcceptedStream>,
+    _lane_count: usize,
+    topology_lane_base: usize,
+    topology_lane_count: usize,
     connections_per_port: usize,
     bytes_per_connection: usize,
     chunk_bytes: usize,
@@ -12018,10 +12460,60 @@ fn zcnblk_target_worker(
     }
     let write_acks = env_enabled_or("URING_PLAY_ZCNBLK_WRITE_ACKS", false);
 
+    let mut stream_lanes = Vec::with_capacity(stream_count);
+    let mut streams = streams
+        .into_iter()
+        .map(|accepted| {
+            let lane = accepted.lane;
+            let conn_index = accepted.conn_index;
+            println!(
+                "zcnblk-target-worker-stream: worker={worker} peer={} lane={} port={} conn={} {}",
+                accepted.peer_addr,
+                lane,
+                accepted.port,
+                conn_index,
+                socket_locality_label(accepted.locality)
+            );
+            stream_lanes.push(lane);
+            let conn_id = zcnblk_transport_conn_id(lane, conn_index, connections_per_port)?;
+            ZcnblkTransport::accept_target(accepted, conn_id, &crypto_config)
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+
+    let mut open_shards = vec![true; targets.len()];
+    if targets.len() == topology_lane_count && topology_lane_count != 0 {
+        open_shards.fill(false);
+        for lane in &stream_lanes {
+            let shard = topology_lane_base.checked_add(*lane).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "zcnblk target lane base overflow",
+                )
+            })?;
+            if shard >= targets.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "zcnblk target worker lane {lane} maps to shard {shard}, but target count is {}",
+                        targets.len()
+                    ),
+                ));
+            }
+            open_shards[shard] = true;
+        }
+    }
+
     let mut files = Vec::new();
     let mut fds_by_shard = vec![None; targets.len()];
     let mut fixed_file_by_shard = vec![None; targets.len()];
+    let mut tier_by_shard = (0..targets.len()).map(|_| None).collect::<Vec<_>>();
     for (shard, target) in targets.iter().enumerate() {
+        if !open_shards[shard] {
+            continue;
+        }
+        if matches!(target.backend, ZcnblkTargetBackend::Tier(_)) {
+            continue;
+        }
         let Some(path) = target.backend.open_path() else {
             continue;
         };
@@ -12051,28 +12543,26 @@ fn zcnblk_target_worker(
             .collect::<Vec<_>>();
         ring.register_files(&mut registered_fds)?;
     }
+    let opened_shards = fds_by_shard
+        .iter()
+        .enumerate()
+        .filter_map(|(shard, fd)| fd.map(|_| shard.to_string()))
+        .collect::<Vec<_>>()
+        .join(",");
+    println!(
+        "zcnblk-target-worker-files: worker={worker} opened_shards={} registered_files={registered_files}",
+        if opened_shards.is_empty() {
+            "-"
+        } else {
+            opened_shards.as_str()
+        }
+    );
     let buffers = buffer_mode.allocate(pipeline, chunk_bytes)?;
     let mut iovecs = buffers.iovecs(chunk_bytes);
     if write_mode.needs_registered_buffers() || read_mode.needs_registered_buffers() {
         ring.register_buffers(&mut iovecs)?;
     }
 
-    let mut streams = streams
-        .into_iter()
-        .map(|accepted| {
-            println!(
-                "zcnblk-target-worker-stream: worker={worker} peer={} lane={} port={} conn={} {}",
-                accepted.peer_addr,
-                accepted.lane,
-                accepted.port,
-                accepted.conn_index,
-                socket_locality_label(accepted.locality)
-            );
-            let conn_id =
-                zcnblk_transport_conn_id(accepted.lane, accepted.conn_index, connections_per_port)?;
-            ZcnblkTransport::accept_target(accepted, conn_id, &crypto_config)
-        })
-        .collect::<io::Result<Vec<_>>>()?;
     let mut logical_started = vec![0usize; streams.len()];
     let mut slots = vec![ZcnblkWriteSlot::default(); pipeline];
     let mut free_slots = (0..pipeline).rev().collect::<Vec<_>>();
@@ -12150,7 +12640,14 @@ fn zcnblk_target_worker(
                 let mut batch_queued = 0usize;
                 for batch_buf in &mut batch_bufs {
                     streams[stream_idx].read_exact(batch_buf)?;
-                    batch_frames.push(ZcnblkFrameHeader::decode(batch_buf)?);
+                    let batch_frame = ZcnblkFrameHeader::decode(batch_buf)?;
+                    zcnblk_validate_frame_topology(
+                        batch_frame,
+                        stream_lanes[stream_idx],
+                        topology_lane_base,
+                        topology_lane_count,
+                    )?;
+                    batch_frames.push(batch_frame);
                 }
                 for batch_frame in batch_frames {
                     let slot = free_slots.pop().expect("batch free slot");
@@ -12167,6 +12664,8 @@ fn zcnblk_target_worker(
                         &mut ring,
                         &fds_by_shard,
                         &fixed_file_by_shard,
+                        &mut tier_by_shard,
+                        pipeline,
                         &buffers,
                         &mut slots,
                         slot,
@@ -12192,6 +12691,12 @@ fn zcnblk_target_worker(
                 }
             } else {
                 let slot = free_slots.pop().expect("normal free slot");
+                zcnblk_validate_frame_topology(
+                    frame,
+                    stream_lanes[stream_idx],
+                    topology_lane_base,
+                    topology_lane_count,
+                )?;
                 if zcnblk_target_process_request_frame(
                     targets.as_ref(),
                     &mut streams,
@@ -12205,6 +12710,8 @@ fn zcnblk_target_worker(
                     &mut ring,
                     &fds_by_shard,
                     &fixed_file_by_shard,
+                    &mut tier_by_shard,
+                    pipeline,
                     &buffers,
                     &mut slots,
                     slot,
@@ -12225,6 +12732,10 @@ fn zcnblk_target_worker(
                 }
             }
             if queued_since_submit >= submit_batch {
+                break;
+            }
+            // Submit queued IO before doing another blocking header read.
+            if queued_since_submit > 0 {
                 break;
             }
         }
@@ -12309,6 +12820,17 @@ fn zcnblk_target_worker(
     for stream in &streams {
         let _ = stream.shutdown(Shutdown::Both);
     }
+    for (shard, tier) in tier_by_shard.into_iter().enumerate() {
+        let Some(runtime) = tier else {
+            continue;
+        };
+        if let Some((label, stats, final_queued, max_queued)) = runtime.finish()? {
+            println!(
+                "zcnblk-target-tier-spill: worker={worker} shard={shard} spill={} bytes={} chunks={} final_queued_bytes={} max_queued_bytes={}",
+                label, stats.bytes, stats.chunks, final_queued, max_queued
+            );
+        }
+    }
 
     Ok(ZcnblkWorkerStats {
         worker,
@@ -12364,6 +12886,7 @@ fn zcnblk_target(
     let write_mode = TcpWalWriteMode::from_env()?;
     let read_mode = zcnblk_read_mode_from_env(write_mode)?;
     let write_acks = env_enabled_or("URING_PLAY_ZCNBLK_WRITE_ACKS", false);
+    let tier_write_extent_bytes = zcnblk_tier_write_extent_bytes()?;
     if write_mode == TcpWalWriteMode::Slot || read_mode == TcpWalWriteMode::Slot {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -12372,11 +12895,9 @@ fn zcnblk_target(
     }
     let shard_policy =
         TcpMuxShardPolicy::from_env_or("URING_PLAY_ZCNBLK_SHARD", TcpMuxShardPolicy::PortLane)?;
-    let workers = if workers == 0 {
-        targets.len().max(1).min(total_connections.max(1))
-    } else {
-        workers
-    };
+    let topology_lane_base = env_usize_or("URING_PLAY_ZCNBLK_LANE_BASE", 0);
+    let topology_lane_count = env_usize_or("URING_PLAY_ZCNBLK_TOTAL_LANES", ports);
+    let workers = tcp_bench_auto_workers(workers, total_connections);
     let submit_batch = env_usize_or("URING_PLAY_ZCNBLK_SUBMIT_BATCH", pipeline.min(64)).max(1);
     let target_labels = targets
         .iter()
@@ -12399,7 +12920,9 @@ fn zcnblk_target(
          bytes_per_connection={bytes_per_connection} chunk_bytes={chunk_bytes} \
          pipeline={pipeline} workers={workers} ring_entries={ring_entries} \
          submit_batch={submit_batch} buffer_mode={} write_mode={} read_mode={} \
-         write_acks={write_acks} shard_policy={} encryption={} aes_frame_bytes={} \
+         write_acks={write_acks} tier_write_extent_bytes={tier_write_extent_bytes} \
+         shard_policy={} topology_lane_base={topology_lane_base} \
+         topology_lane_count={topology_lane_count} encryption={} aes_frame_bytes={} \
          pin_workers={pin_workers}",
         target_labels,
         buffer_mode.as_str(),
@@ -12432,6 +12955,9 @@ fn zcnblk_target(
                 targets,
                 worker_idx,
                 shard,
+                ports,
+                topology_lane_base,
+                topology_lane_count,
                 connections_per_port,
                 bytes_per_connection,
                 chunk_bytes,
@@ -12567,6 +13093,7 @@ fn zcnblk_send_worker(
     addr: Arc<String>,
     specs: Vec<ZcnblkConnectSpec>,
     connections_per_port: usize,
+    lane_count: usize,
     bytes_per_connection: usize,
     chunk_bytes: usize,
     payload_pattern: SendPayloadPattern,
@@ -12652,7 +13179,34 @@ fn zcnblk_send_worker(
                     .ok_or_else(|| {
                         io::Error::new(io::ErrorKind::InvalidInput, "zcnblk offset overflow")
                     })?;
-                let frame = ZcnblkFrameHeader::new(op, specs[idx].shard, len, offset)?;
+                let request_id = ((idx as u64) << 32) | frame_index as u64;
+                let topology = ZcnblkFrameTopology {
+                    lane_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "zcnblk lane exceeds u32")
+                    })?,
+                    lane_count: u32::try_from(lane_count).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "zcnblk lane count exceeds u32")
+                    })?,
+                    preferred_worker: u32::try_from(worker).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "zcnblk worker exceeds u32")
+                    })?,
+                    queue_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "zcnblk queue exceeds u32")
+                    })?,
+                    request_id,
+                    tier_id: u32::try_from(specs[idx].shard).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "zcnblk tier exceeds u32")
+                    })?,
+                    topology_flags: ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE,
+                };
+                let frame = ZcnblkFrameHeader::with_topology(
+                    op,
+                    0,
+                    specs[idx].shard,
+                    len,
+                    offset,
+                    topology,
+                )?;
                 let header = frame.encode();
                 issued[idx] += len;
                 frames += 1;
@@ -12882,6 +13436,7 @@ fn zcnblk_send(
                 addr,
                 shard,
                 connections_per_port,
+                ports,
                 bytes_per_connection,
                 chunk_bytes,
                 payload_pattern,
@@ -18847,6 +19402,15 @@ fn cpu_numa_node(cpu: usize) -> Option<i32> {
     })
 }
 
+fn cpu_online(cpu: usize) -> bool {
+    let path = Path::new("/sys/devices/system/cpu")
+        .join(format!("cpu{cpu}"))
+        .join("online");
+    read_trimmed_path(path)
+        .map(|value| value != "0")
+        .unwrap_or(true)
+}
+
 fn option_i32_label(value: Option<i32>) -> String {
     value
         .map(|value| value.to_string())
@@ -19477,6 +20041,303 @@ mod topology_tests {
     }
 
     #[test]
+    fn primitive_topology_parser_builds_env_contract() {
+        let mut topology = ZcPrimitiveTopology::default();
+        let mut args = vec![
+            "--descriptor-mode".to_string(),
+            "bytes".to_string(),
+            "--zero-copy".to_string(),
+            "auto".to_string(),
+            "--preserve-topology".to_string(),
+            "--topology".to_string(),
+            "node-a".to_string(),
+            "--ordered".to_string(),
+            "per-lane".to_string(),
+            "--lane-id".to_string(),
+            "7".to_string(),
+            "--lane-count".to_string(),
+            "16".to_string(),
+            "--queue-id".to_string(),
+            "3".to_string(),
+            "--preferred-worker".to_string(),
+            "11".to_string(),
+            "--lane-map".to_string(),
+            "7:11".to_string(),
+            "--preferred-cpu".to_string(),
+            "2".to_string(),
+            "--numa-node".to_string(),
+            "0".to_string(),
+        ]
+        .into_iter();
+        while let Some(arg) = args.next() {
+            assert!(topology.parse_common_flag(&mut args, &arg).unwrap());
+        }
+
+        topology.validate_lane_bounds("test").unwrap();
+        let env = topology
+            .child_env_pairs()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(env["ZC_DESCRIPTOR_MODE"], "bytes");
+        assert_eq!(env["ZC_TOPOLOGY"], "node-a");
+        assert_eq!(env["ZC_PRESERVE_LANES"], "yes");
+        assert_eq!(env["ZC_PRESERVE_TOPOLOGY"], "yes");
+        assert_eq!(env["ZC_ORDERED"], "per-lane");
+        assert_eq!(env["ZC_LANE_ID"], "7");
+        assert_eq!(env["ZC_LANE_COUNT"], "16");
+        assert_eq!(env["ZC_QUEUE_ID"], "3");
+        assert_eq!(env["ZC_PREFERRED_WORKER"], "11");
+        assert_eq!(env["ZC_LANE_MAP"], "7:11");
+        assert_eq!(env["ZC_PREFERRED_CPU"], "2");
+        assert_eq!(env["ZC_NUMA_NODE"], "0");
+    }
+
+    #[test]
+    fn primitive_topology_rejects_impossible_byte_zero_copy() {
+        let mut topology = ZcPrimitiveTopology::default();
+        let mut args = vec!["--must-zero-copy".to_string()].into_iter();
+        let arg = args.next().unwrap();
+        assert!(topology.parse_common_flag(&mut args, &arg).unwrap());
+        let err = topology.activate_byte_compatible("test").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn primitive_topology_rejects_out_of_range_lane() {
+        let mut topology = ZcPrimitiveTopology::default();
+        topology.lane_id = Some(4);
+        topology.lane_count = Some(4);
+        assert!(topology.validate_lane_bounds("test").is_err());
+    }
+
+    #[test]
+    fn zcraid_layout_parser_routes_nested_raidmirror() {
+        let layout = ZcRaidLayout::parse("stripe(4, mirror(2))").unwrap();
+        assert_eq!(layout.leaf_count().unwrap(), 8);
+        assert_eq!(layout.writes_per_chunk().unwrap(), 2);
+        assert_eq!(layout.route(0).unwrap(), vec![0, 1]);
+        assert_eq!(layout.route(1).unwrap(), vec![2, 3]);
+        assert_eq!(layout.route(4).unwrap(), vec![0, 1]);
+    }
+
+    #[test]
+    fn zcraid_layout_wave_plan_accepts_striped_mirrors_only() {
+        assert_eq!(
+            ZcRaidLayout::parse("stripe(4, mirror(2))")
+                .unwrap()
+                .stripe_mirror_plan(),
+            Some(ZcRaidStripeMirrorPlan {
+                stripes: 4,
+                mirrors: 2
+            })
+        );
+        assert_eq!(
+            ZcRaidLayout::parse("mirror(2, stripe(4))")
+                .unwrap()
+                .stripe_mirror_plan(),
+            None
+        );
+    }
+
+    #[test]
+    fn zcraid_wal_tree_node_count_matches_four_way_depth() {
+        assert_eq!(zcraidd_wal_tree_node_count(4, 4, 4).unwrap(), 4);
+        assert_eq!(zcraidd_wal_tree_node_count(16, 4, 4).unwrap(), 7);
+        assert_eq!(zcraidd_wal_tree_node_count(256, 4, 4).unwrap(), 85);
+        assert_eq!(
+            ZcRaidWalFaninMode::parse("descriptor-tree").unwrap(),
+            ZcRaidWalFaninMode::Tree
+        );
+    }
+
+    #[test]
+    fn zcraidd_tree_sim_levels_parse_and_generate() {
+        assert_eq!(
+            zcraidd_tree_sim_parse_levels("1, 2, 4").unwrap(),
+            vec![1, 2, 4]
+        );
+        assert_eq!(
+            zcraidd_tree_sim_default_levels(4, 3).unwrap(),
+            vec![1, 4, 16]
+        );
+        assert!(zcraidd_tree_sim_parse_levels("2,4").is_err());
+        assert!(zcraidd_tree_sim_parse_levels("1,4,2").is_err());
+    }
+
+    #[test]
+    fn zcjournal_join_four_to_two_to_one_descriptor_only() {
+        let mut input = Vec::new();
+        for stripe in 0..4u64 {
+            let frame = ZcJournalRef {
+                kind: ZcJournalRefKind::Extent,
+                tenant_id: "tenant-a".to_string(),
+                policy_id: "hot-raid".to_string(),
+                volume_id: "vol0".to_string(),
+                epoch_id: 9,
+                group_id: "42".to_string(),
+                fan_in_group: Some("explicit-test-tree".to_string()),
+                expected_fan_in: Some(2),
+                lane_id: stripe,
+                lane_count: Some(4),
+                lane_sequence: stripe,
+                shard_id: stripe,
+                stripe_id: stripe,
+                stripe_span: 1,
+                stripe_count: 4,
+                topology: "node-a".to_string(),
+                transport: "descriptor-test".to_string(),
+                offset_bytes: stripe * 4096,
+                length_bytes: 4096,
+                payload_checksum: stripe + 1,
+                ref_id: format!("e:42:{stripe}:1:{stripe}"),
+                payload_path: Some("/tmp/zcjournal-test-must-not-be-opened".to_string()),
+                children: Vec::new(),
+            };
+            zcjournal_write_ref(&mut input, &frame).unwrap();
+        }
+
+        let mut level1 = Vec::new();
+        let stats1 = zcjournal_join_with_io(
+            BufReader::new(std::io::Cursor::new(input)),
+            &mut level1,
+            2,
+            16,
+            true,
+            true,
+            Some("explicit-test-tree"),
+            true,
+        )
+        .unwrap();
+        assert_eq!(stats1.input_refs, 4);
+        assert_eq!(stats1.composite_refs, 2);
+        assert_eq!(stats1.logical_records_in, 4);
+        assert_eq!(stats1.logical_records_out, 4);
+
+        let mut level2 = Vec::new();
+        let stats2 = zcjournal_join_with_io(
+            BufReader::new(std::io::Cursor::new(level1)),
+            &mut level2,
+            2,
+            16,
+            true,
+            true,
+            Some("explicit-test-tree"),
+            true,
+        )
+        .unwrap();
+        assert_eq!(stats2.input_refs, 2);
+        assert_eq!(stats2.composite_refs, 1);
+        assert_eq!(stats2.logical_records_in, 4);
+        assert_eq!(stats2.logical_records_out, 4);
+
+        let output = String::from_utf8(level2.clone()).unwrap();
+        assert!(output.starts_with("COMPOSITE_REF "));
+        assert!(!output.contains("payload_path="));
+        assert!(output.contains("child_count=2"));
+        assert!(output.contains("transport=descriptor-tree"));
+
+        let parsed = zcjournal_parse_ref_line(&output, 1, true).unwrap().unwrap();
+        assert_eq!(parsed.kind, ZcJournalRefKind::Composite);
+        assert_eq!(parsed.tenant_id, "tenant-a");
+        assert_eq!(parsed.policy_id, "hot-raid");
+        assert_eq!(parsed.volume_id, "vol0");
+        assert_eq!(parsed.epoch_id, 9);
+        assert_eq!(parsed.group_id, "42");
+        assert_eq!(parsed.fan_in_group.as_deref(), Some("explicit-test-tree"));
+        assert_eq!(parsed.expected_fan_in, Some(2));
+        assert_eq!(parsed.stripe_id, 0);
+        assert_eq!(parsed.stripe_span, 4);
+        assert_eq!(parsed.stripe_count, 4);
+        assert_eq!(parsed.length_bytes, 16 * 1024);
+
+        let sink_stats =
+            zcjournal_sink_with_io(BufReader::new(std::io::Cursor::new(output)), true).unwrap();
+        assert_eq!(sink_stats.extent_refs, 0);
+        assert_eq!(sink_stats.composite_refs, 1);
+        assert_eq!(sink_stats.logical_records, 4);
+        assert_eq!(sink_stats.logical_bytes, 16 * 1024);
+    }
+
+    #[test]
+    fn zcjournal_parser_requires_topology_and_transport() {
+        let missing_topology = "EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_group=f fan_in=2 lane_id=0 lane_count=1 lane_sequence=0 shard_id=0 stripe_id=0 stripe_span=1 stripe_count=1 transport=x";
+        assert!(zcjournal_parse_ref_line(missing_topology, 1, true).is_err());
+
+        let missing_transport = "EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_group=f fan_in=2 lane_id=0 lane_count=1 lane_sequence=0 shard_id=0 stripe_id=0 stripe_span=1 stripe_count=1 topology=x";
+        assert!(zcjournal_parse_ref_line(missing_transport, 1, true).is_err());
+        assert!(zcjournal_parse_ref_line(missing_transport, 1, false).is_ok());
+    }
+
+    #[test]
+    fn zcjournal_join_requires_explicit_fanin_metadata() {
+        let input = b"EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g lane_id=0 lane_count=2 lane_sequence=0 shard_id=0 stripe_id=0 stripe_span=1 stripe_count=2 topology=x transport=y\n\
+EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g lane_id=1 lane_count=2 lane_sequence=1 shard_id=1 stripe_id=1 stripe_span=1 stripe_count=2 topology=x transport=y\n";
+        let mut output = Vec::new();
+        let err = zcjournal_join_with_io(
+            BufReader::new(std::io::Cursor::new(input)),
+            &mut output,
+            2,
+            16,
+            true,
+            true,
+            None,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn zcjournal_join_rejects_duplicate_lane_fanin() {
+        let input = b"EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_group=f fan_in=2 lane_id=0 lane_count=2 lane_sequence=0 shard_id=0 stripe_id=0 stripe_span=1 stripe_count=2 topology=x transport=y\n\
+EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_group=f fan_in=2 lane_id=0 lane_count=2 lane_sequence=1 shard_id=1 stripe_id=1 stripe_span=1 stripe_count=2 topology=x transport=y\n";
+        let mut output = Vec::new();
+        let err = zcjournal_join_with_io(
+            BufReader::new(std::io::Cursor::new(input)),
+            &mut output,
+            2,
+            16,
+            true,
+            true,
+            Some("f"),
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn zcjournal_mem_combine_modes_resolve_same_stream() {
+        let store = Arc::new(zcjournal_mem_combine_build(32, 16 * 1024, 4096, 4).unwrap());
+        assert_eq!(store.left_stream.len(), 32);
+        assert_eq!(store.right_stream.len(), 32);
+        assert_eq!(store.composites.len(), 32);
+        assert_eq!(store.records_per_extent, 4);
+        assert_eq!(store.records_per_composite, 8);
+        assert_eq!(store.logical_records, 256);
+
+        let (local, _) = zcjournal_mem_fulfill_local(Arc::clone(&store), 1024, 4).unwrap();
+        let (baton, _) = zcjournal_mem_fulfill_baton(Arc::clone(&store), 1024, 4, 16).unwrap();
+        let (atomic, _) = zcjournal_mem_fulfill_atomic(store, 1024, 4, 8).unwrap();
+        assert_eq!(local.reads, 1024);
+        assert_eq!(baton.reads, local.reads);
+        assert_eq!(atomic.reads, local.reads);
+        assert_eq!(baton.checksum, local.checksum);
+        assert_eq!(atomic.checksum, local.checksum);
+        assert!(baton.baton_handoffs > 0);
+    }
+
+    #[test]
+    fn zcraid_layout_parser_routes_deep_mirror_raid10() {
+        let layout = ZcRaidLayout::parse("mirror(2,raid10(4,2))").unwrap();
+        assert_eq!(layout.leaf_count().unwrap(), 16);
+        assert_eq!(layout.writes_per_chunk().unwrap(), 4);
+        assert_eq!(layout.route(0).unwrap(), vec![0, 1, 8, 9]);
+        assert_eq!(layout.route(3).unwrap(), vec![6, 7, 14, 15]);
+        assert_eq!(layout.route(4).unwrap(), vec![0, 1, 8, 9]);
+    }
+
+    #[test]
     fn offset_payload_depends_on_shard_and_offset() {
         let mut first = vec![0u8; 256];
         let mut same = vec![0u8; 256];
@@ -19534,6 +20395,53 @@ mod topology_tests {
         client.read_exact(&mut response).unwrap();
         assert_eq!(response, response_payload);
         target.join().unwrap();
+    }
+
+    #[test]
+    fn zcnblk_frame_v2_round_trips_topology() {
+        let topology = ZcnblkFrameTopology {
+            lane_id: 7,
+            lane_count: 64,
+            preferred_worker: 11,
+            queue_id: 7,
+            request_id: 0x1122_3344_5566_7788,
+            tier_id: 3,
+            topology_flags: ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE,
+        };
+        let frame =
+            ZcnblkFrameHeader::with_topology(ZCNBLK_OP_WRITE, 9, 3, 4096, 8192, topology).unwrap();
+        let encoded = frame.encode();
+        assert_eq!(encoded.len(), 64);
+        let decoded = ZcnblkFrameHeader::decode(&encoded).unwrap();
+        assert_eq!(decoded.op, ZCNBLK_OP_WRITE);
+        assert_eq!(decoded.flags, 9);
+        assert_eq!(decoded.shard, 3);
+        assert_eq!(decoded.len, 4096);
+        assert_eq!(decoded.offset, 8192);
+        assert!(decoded.topology_valid());
+        assert_eq!(decoded.topology.lane_id, 7);
+        assert_eq!(decoded.topology.lane_count, 64);
+        assert_eq!(decoded.topology.preferred_worker, 11);
+        assert_eq!(decoded.topology.queue_id, 7);
+        assert_eq!(decoded.topology.request_id, 0x1122_3344_5566_7788);
+        assert_eq!(decoded.topology.tier_id, 3);
+    }
+
+    #[test]
+    fn zcnblk_tier_target_parser_accepts_hot_spill_spec() {
+        let plan = zcnblk_parse_tier_target("zctier:/tmp/zc-hot:/tmp/zc-cold:1g:4k:2m")
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.device_bytes, 1024 * 1024 * 1024);
+        assert_eq!(plan.required_alignment, 4096);
+        match plan.backend {
+            ZcnblkTargetBackend::Tier(target) => {
+                assert_eq!(target.hot_path, PathBuf::from("/tmp/zc-hot"));
+                assert_eq!(target.spill_path, Some(PathBuf::from("/tmp/zc-cold")));
+                assert_eq!(target.device_bytes, 1024 * 1024 * 1024);
+            }
+            _ => panic!("expected tier target"),
+        }
     }
 
     #[test]
@@ -19652,9 +20560,11 @@ mod topology_tests {
         let receiver = thread::spawn(move || {
             zc_tcpmux_receive_parallel(
                 listeners,
+                0,
                 &receiver_output,
                 Some(data_len),
                 ZcTcpmuxReceiveAssembly::Ordered,
+                None,
                 None,
                 ZcTcpmuxEncryption::None,
                 false,
@@ -19723,9 +20633,11 @@ mod topology_tests {
         let receiver = thread::spawn(move || {
             zc_tcpmux_receive_parallel(
                 listeners,
+                0,
                 &receiver_output,
                 Some(data_len),
                 ZcTcpmuxReceiveAssembly::Shards,
+                None,
                 None,
                 ZcTcpmuxEncryption::None,
                 false,
@@ -19772,7 +20684,7 @@ mod topology_tests {
                 offset = offset.saturating_add(chunk_bytes * lanes);
             }
             assert_eq!(
-                fs::read(zc_tcpmux_receive_shard_path(&output_path, lane)).unwrap(),
+                fs::read(zc_tcpmux_receive_shard_path(&output_path, lane, None)).unwrap(),
                 expected,
                 "lane {lane} shard mismatch"
             );
@@ -19780,8 +20692,36 @@ mod topology_tests {
         let _ = fs::remove_file(input_path);
         let _ = fs::remove_file(zc_tcpmux_receive_shard_manifest_path(&output_path));
         for lane in 0..lanes {
-            let _ = fs::remove_file(zc_tcpmux_receive_shard_path(&output_path, lane));
+            let _ = fs::remove_file(zc_tcpmux_receive_shard_path(&output_path, lane, None));
         }
+    }
+
+    #[test]
+    fn tcpmux_ordered_stream_writer_reassembles_stdout_shape() {
+        let (tx, rx) = mpsc::sync_channel::<ZcTcpmuxReceivedChunk>(4);
+        tx.send(ZcTcpmuxReceivedChunk {
+            offset: 4,
+            data: b"efgh".to_vec(),
+        })
+        .unwrap();
+        tx.send(ZcTcpmuxReceivedChunk {
+            offset: 0,
+            data: b"abcd".to_vec(),
+        })
+        .unwrap();
+        tx.send(ZcTcpmuxReceivedChunk {
+            offset: 8,
+            data: b"ij".to_vec(),
+        })
+        .unwrap();
+        drop(tx);
+
+        let mut output = Vec::new();
+        let (bytes, max_end) =
+            zc_tcpmux_ordered_receive_stream_writer(&mut output, rx, Some(10)).unwrap();
+        assert_eq!(bytes, 10);
+        assert_eq!(max_end, 10);
+        assert_eq!(output, b"abcdefghij");
     }
 
     #[test]
@@ -24956,6 +25896,15 @@ fn parse_u64_value(value: &str, name: &str) -> io::Result<u64> {
     })
 }
 
+fn parse_i32_value(value: &str, name: &str) -> io::Result<i32> {
+    value.parse::<i32>().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name}={value:?} is invalid: {err}"),
+        )
+    })
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ZcRecvMode {
     Recv,
@@ -25059,6 +26008,403 @@ impl ZcRecvOptions {
         } else {
             ZcZeroCopyPolicy::Auto
         }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ZcPrimitiveDescriptorMode {
+    Auto,
+    Bytes,
+}
+
+impl ZcPrimitiveDescriptorMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "bytes" | "byte" | "compat" | "byte-compatible" => Ok(Self::Bytes),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown descriptor mode {other:?}; use auto or bytes"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Bytes => "bytes",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ZcPrimitiveOrdering {
+    Global,
+    PerLane,
+}
+
+impl ZcPrimitiveOrdering {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "global" => Ok(Self::Global),
+            "per-lane" | "lane" | "lanes" => Ok(Self::PerLane),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown ordering {other:?}; use global or per-lane"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::PerLane => "per-lane",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ZcPrimitiveAppliedTopology {
+    target_cpu: i32,
+    affinity_applied: bool,
+    start_cpu: i32,
+    end_cpu: i32,
+    target_numa_node: Option<i32>,
+    end_numa_node: Option<i32>,
+}
+
+impl ZcPrimitiveAppliedTopology {
+    fn log_fields(self) -> String {
+        format!(
+            "topology_target_cpu={} topology_affinity_applied={} topology_start_cpu={} topology_end_cpu={} topology_target_numa_node={} topology_end_numa_node={}",
+            self.target_cpu,
+            yes(self.affinity_applied),
+            self.start_cpu,
+            self.end_cpu,
+            ZcPrimitiveTopology::option_i32_label(self.target_numa_node),
+            ZcPrimitiveTopology::option_i32_label(self.end_numa_node)
+        )
+    }
+}
+
+#[derive(Clone)]
+struct ZcPrimitiveTopology {
+    descriptor_mode: ZcPrimitiveDescriptorMode,
+    zero_copy: ZcZeroCopyPolicy,
+    preserve_lanes: bool,
+    preserve_topology: bool,
+    ordered: ZcPrimitiveOrdering,
+    topology: Option<String>,
+    lane_id: Option<u64>,
+    lane_count: Option<u64>,
+    queue_id: Option<u64>,
+    preferred_worker: Option<u64>,
+    lane_map: Option<String>,
+    preferred_cpu: Option<usize>,
+    numa_node: Option<i32>,
+}
+
+impl Default for ZcPrimitiveTopology {
+    fn default() -> Self {
+        Self {
+            descriptor_mode: ZcPrimitiveDescriptorMode::Auto,
+            zero_copy: ZcZeroCopyPolicy::Auto,
+            preserve_lanes: false,
+            preserve_topology: false,
+            ordered: ZcPrimitiveOrdering::Global,
+            topology: None,
+            lane_id: None,
+            lane_count: None,
+            queue_id: None,
+            preferred_worker: None,
+            lane_map: None,
+            preferred_cpu: None,
+            numa_node: None,
+        }
+    }
+}
+
+impl ZcPrimitiveTopology {
+    fn with_ordered(ordered: ZcPrimitiveOrdering) -> Self {
+        Self {
+            ordered,
+            ..Self::default()
+        }
+    }
+
+    fn parse_common_flag<I>(&mut self, args: &mut I, arg: &str) -> io::Result<bool>
+    where
+        I: Iterator<Item = String>,
+    {
+        match arg {
+            "--descriptor-mode" => {
+                self.descriptor_mode =
+                    ZcPrimitiveDescriptorMode::parse(&next_flag_value(args, arg)?)?;
+                Ok(true)
+            }
+            "--zero-copy" | "--zero-copy-primitives" | "--zero-copy-descriptors" => {
+                self.zero_copy = ZcZeroCopyPolicy::parse(&next_flag_value(args, arg)?)?;
+                Ok(true)
+            }
+            "--must-zero-copy" => {
+                self.zero_copy = ZcZeroCopyPolicy::Required;
+                Ok(true)
+            }
+            "--preserve-lanes" => {
+                self.preserve_lanes = true;
+                Ok(true)
+            }
+            "--preserve-topology" => {
+                self.preserve_lanes = true;
+                self.preserve_topology = true;
+                Ok(true)
+            }
+            "--topology" => {
+                self.topology = Some(next_flag_value(args, arg)?);
+                Ok(true)
+            }
+            "--ordered" => {
+                self.ordered = ZcPrimitiveOrdering::parse(&next_flag_value(args, arg)?)?;
+                Ok(true)
+            }
+            "--lane-id" => {
+                self.lane_id = Some(parse_u64_value(&next_flag_value(args, arg)?, arg)?);
+                Ok(true)
+            }
+            "--lane-count" => {
+                self.lane_count = Some(parse_u64_value(&next_flag_value(args, arg)?, arg)?);
+                Ok(true)
+            }
+            "--queue-id" => {
+                self.queue_id = Some(parse_u64_value(&next_flag_value(args, arg)?, arg)?);
+                Ok(true)
+            }
+            "--preferred-worker" | "--worker-id" => {
+                self.preferred_worker = Some(parse_u64_value(&next_flag_value(args, arg)?, arg)?);
+                Ok(true)
+            }
+            "--lane-map" => {
+                self.lane_map = Some(next_flag_value(args, arg)?);
+                Ok(true)
+            }
+            "--preferred-cpu" => {
+                self.preferred_cpu = Some(parse_usize_value(&next_flag_value(args, arg)?, arg)?);
+                Ok(true)
+            }
+            "--numa-node" => {
+                self.numa_node = Some(parse_i32_value(&next_flag_value(args, arg)?, arg)?);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn validate_lane_bounds(&self, label: &str) -> io::Result<()> {
+        if let Some(lane_count) = self.lane_count
+            && lane_count == 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{label} lane-count must be greater than zero"),
+            ));
+        }
+        if let (Some(lane_id), Some(lane_count)) = (self.lane_id, self.lane_count)
+            && lane_id >= lane_count
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{label} lane-id={lane_id} must be less than lane-count={lane_count}"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_byte_compatible_zero_copy(&self, label: &str) -> io::Result<()> {
+        if self.zero_copy == ZcZeroCopyPolicy::Required {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "{label} --must-zero-copy requires descriptor-native transport; the current primitive path is byte-compatible"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn lane_index(&self) -> usize {
+        self.lane_id
+            .or(self.queue_id)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0)
+    }
+
+    fn effective_preferred_worker(&self) -> Option<u64> {
+        self.preferred_worker.or(self.lane_id).or(self.queue_id)
+    }
+
+    fn first_cpu_for_numa_node(numa_node: i32) -> Option<usize> {
+        if numa_node < 0 {
+            return None;
+        }
+        let cpulist =
+            read_trimmed_path(format!("/sys/devices/system/node/node{numa_node}/cpulist"))?;
+        parse_cpu_list(&cpulist)
+            .ok()?
+            .into_iter()
+            .find(|cpu| cpu_online(*cpu))
+    }
+
+    fn target_cpu(&self) -> Option<usize> {
+        self.preferred_cpu
+            .or_else(|| self.numa_node.and_then(Self::first_cpu_for_numa_node))
+    }
+
+    fn activate_byte_compatible(&self, label: &str) -> io::Result<ZcPrimitiveAppliedTopology> {
+        self.validate_lane_bounds(label)?;
+        self.ensure_byte_compatible_zero_copy(label)?;
+
+        let start_cpu = current_cpu();
+        let target_cpu = self.target_cpu();
+        let target_numa_node = target_cpu.and_then(cpu_numa_node).or(self.numa_node);
+        let mut target_cpu_label = -1;
+        let mut affinity_applied = false;
+
+        if let Some(cpu) = target_cpu {
+            target_cpu_label = i32::try_from(cpu).unwrap_or(i32::MAX);
+            match set_current_thread_affinity(cpu) {
+                Ok(()) => affinity_applied = true,
+                Err(err) => eprintln!(
+                    "{label}-topology-apply: target_cpu={cpu} status=error error={err} {}",
+                    self.log_fields()
+                ),
+            }
+        } else if self.numa_node.is_some() {
+            eprintln!(
+                "{label}-topology-apply: target_cpu=-1 status=no-cpu-for-numa {}",
+                self.log_fields()
+            );
+        }
+
+        let end_cpu = current_cpu();
+        let end_numa_node = (end_cpu >= 0)
+            .then_some(end_cpu as usize)
+            .and_then(cpu_numa_node);
+        let applied = ZcPrimitiveAppliedTopology {
+            target_cpu: target_cpu_label,
+            affinity_applied,
+            start_cpu,
+            end_cpu,
+            target_numa_node,
+            end_numa_node,
+        };
+
+        if target_cpu.is_some()
+            || self.topology.is_some()
+            || self.preserve_lanes
+            || self.preserve_topology
+            || self.lane_id.is_some()
+            || self.lane_count.is_some()
+            || self.queue_id.is_some()
+            || self.preferred_worker.is_some()
+            || self.lane_map.is_some()
+        {
+            eprintln!(
+                "{label}-topology: {} {}",
+                self.log_fields(),
+                applied.log_fields()
+            );
+        }
+
+        Ok(applied)
+    }
+
+    fn child_env_pairs(&self) -> Vec<(&'static str, String)> {
+        let mut pairs = vec![
+            (
+                "ZC_DESCRIPTOR_MODE",
+                self.descriptor_mode.label().to_string(),
+            ),
+            ("ZC_ZERO_COPY", self.zero_copy.label().to_string()),
+            ("ZC_PRESERVE_LANES", yes(self.preserve_lanes).to_string()),
+            (
+                "ZC_PRESERVE_TOPOLOGY",
+                yes(self.preserve_topology).to_string(),
+            ),
+            ("ZC_ORDERED", self.ordered.label().to_string()),
+            ("ZC_LANE_INDEX", self.lane_index().to_string()),
+        ];
+        if let Some(topology) = self.topology.as_ref() {
+            pairs.push(("ZC_TOPOLOGY", topology.clone()));
+        }
+        if let Some(lane_id) = self.lane_id {
+            pairs.push(("ZC_LANE_ID", lane_id.to_string()));
+        }
+        if let Some(lane_count) = self.lane_count {
+            pairs.push(("ZC_LANE_COUNT", lane_count.to_string()));
+        }
+        if let Some(queue_id) = self.queue_id {
+            pairs.push(("ZC_QUEUE_ID", queue_id.to_string()));
+        }
+        if let Some(preferred_worker) = self.effective_preferred_worker() {
+            pairs.push(("ZC_PREFERRED_WORKER", preferred_worker.to_string()));
+        }
+        if let Some(lane_map) = self.lane_map.as_ref() {
+            pairs.push(("ZC_LANE_MAP", lane_map.clone()));
+        }
+        if let Some(preferred_cpu) = self.preferred_cpu {
+            pairs.push(("ZC_PREFERRED_CPU", preferred_cpu.to_string()));
+        }
+        if let Some(numa_node) = self.numa_node {
+            pairs.push(("ZC_NUMA_NODE", numa_node.to_string()));
+        }
+        pairs
+    }
+
+    fn apply_child_env(&self, command: &mut Command) {
+        for (key, value) in self.child_env_pairs() {
+            command.env(key, value);
+        }
+    }
+
+    fn topology_label(&self) -> &str {
+        self.topology.as_deref().unwrap_or("-")
+    }
+
+    fn option_u64_label(value: Option<u64>) -> String {
+        value
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    fn option_usize_label(value: Option<usize>) -> String {
+        value
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    fn option_i32_label(value: Option<i32>) -> String {
+        value
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    fn log_fields(&self) -> String {
+        format!(
+            "descriptor_mode={} zero_copy={} preserve_lanes={} preserve_topology={} topology={} lane_id={} lane_count={} queue_id={} preferred_worker={} lane_map={} preferred_cpu={} numa_node={} ordered={}",
+            self.descriptor_mode.label(),
+            self.zero_copy.label(),
+            yes(self.preserve_lanes),
+            yes(self.preserve_topology),
+            self.topology_label(),
+            Self::option_u64_label(self.lane_id),
+            Self::option_u64_label(self.lane_count),
+            Self::option_u64_label(self.queue_id),
+            Self::option_u64_label(self.effective_preferred_worker()),
+            self.lane_map.as_deref().unwrap_or("-"),
+            Self::option_usize_label(self.preferred_cpu),
+            Self::option_i32_label(self.numa_node),
+            self.ordered.label()
+        )
     }
 }
 
@@ -25858,9 +27204,11 @@ impl ZcSinkConsume {
 fn zcsink(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut consume = ZcSinkConsume::Count;
     let mut buffer_bytes = 1024 * 1024usize;
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--consume" => {
                 consume = ZcSinkConsume::parse(&next_flag_value(&mut args, "--consume")?)?
             }
@@ -25875,6 +27223,7 @@ fn zcsink(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
+    primitive.activate_byte_compatible("zcsink")?;
     let mut input = io::stdin().lock();
     let mut buf = vec![0u8; buffer_bytes.max(4096)];
     let mut total = 0usize;
@@ -25894,9 +27243,10 @@ fn zcsink(args: impl Iterator<Item = String>) -> io::Result<()> {
         }
     }
     println!(
-        "zcsink-result: consume={} bytes={} checksum=0x{checksum:016x}",
+        "zcsink-result: consume={} bytes={} checksum=0x{checksum:016x} {}",
         consume.label(),
-        total
+        total,
+        primitive.log_fields()
     );
     print_tcp_bench_result("zcsink", total, started.elapsed());
     Ok(())
@@ -26008,6 +27358,7 @@ fn zccat(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut buffer_bytes = 1024 * 1024usize;
     let mut generate = false;
     let mut inputs = Vec::<PathBuf>::new();
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -26027,15 +27378,7 @@ fn zccat(args: impl Iterator<Item = String>) -> io::Result<()> {
             "--buffer-bytes" | "--chunk-bytes" => {
                 buffer_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
             }
-            "--descriptor-mode" => {
-                let mode = next_flag_value(&mut args, "--descriptor-mode")?;
-                if mode != "auto" && mode != "bytes" {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--descriptor-mode currently accepts auto or bytes",
-                    ));
-                }
-            }
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             other => {
                 if other.starts_with('-') {
                     return Err(io::Error::new(
@@ -26047,6 +27390,7 @@ fn zccat(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
+    primitive.activate_byte_compatible("zccat")?;
     if generate {
         if !inputs.is_empty() {
             return Err(io::Error::new(
@@ -26072,6 +27416,7 @@ fn zcout(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut max_bytes = None::<usize>;
     let mut buffer_bytes = 1024 * 1024usize;
     let mut output = None::<PathBuf>;
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -26088,15 +27433,7 @@ fn zcout(args: impl Iterator<Item = String>) -> io::Result<()> {
                     "--buffer-bytes",
                 )?
             }
-            "--descriptor-mode" => {
-                let mode = next_flag_value(&mut args, "--descriptor-mode")?;
-                if mode != "auto" && mode != "bytes" {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--descriptor-mode currently accepts auto or bytes",
-                    ));
-                }
-            }
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -26105,6 +27442,7 @@ fn zcout(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
+    primitive.activate_byte_compatible("zcout")?;
     if let Some(output) = output {
         copy_stdin_to_path(&output, max_bytes, buffer_bytes)
     } else {
@@ -26114,11 +27452,12 @@ fn zcout(args: impl Iterator<Item = String>) -> io::Result<()> {
 
 fn zcmap(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut buffer_bytes = 1024 * 1024usize;
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--preserve-lanes" | "--preserve-topology" => {}
-            "--ordered" | "--chunk" | "--chunk-bytes" | "--set" | "--clear" | "--lane-map" => {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
+            "--chunk" | "--chunk-bytes" | "--set" | "--clear" | "--lane-map" => {
                 let _ = next_flag_value(&mut args, &arg)?;
             }
             "--buffer-bytes" => {
@@ -26126,15 +27465,6 @@ fn zcmap(args: impl Iterator<Item = String>) -> io::Result<()> {
                     &next_flag_value(&mut args, "--buffer-bytes")?,
                     "--buffer-bytes",
                 )?
-            }
-            "--descriptor-mode" => {
-                let mode = next_flag_value(&mut args, "--descriptor-mode")?;
-                if mode != "auto" && mode != "bytes" {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--descriptor-mode currently accepts auto or bytes",
-                    ));
-                }
             }
             other => {
                 return Err(io::Error::new(
@@ -26144,6 +27474,7 @@ fn zcmap(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
+    primitive.activate_byte_compatible("zcmap")?;
     copy_stdin_to_stdout(None, buffer_bytes)
 }
 
@@ -26152,9 +27483,11 @@ fn zctee(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut append = false;
     let mut write_stdout = true;
     let mut buffer_bytes = 1024 * 1024usize;
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--output" => outputs.push(PathBuf::from(next_flag_value(&mut args, "--output")?)),
             "--append" => append = true,
             "--stdout" => {
@@ -26174,6 +27507,7 @@ fn zctee(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
+    primitive.activate_byte_compatible("zctee")?;
 
     let mut files = Vec::with_capacity(outputs.len());
     for path in outputs {
@@ -26215,23 +27549,407 @@ fn zctee(args: impl Iterator<Item = String>) -> io::Result<()> {
     Ok(())
 }
 
+#[derive(Default)]
+struct ZcTierSpillStats {
+    bytes: u64,
+    chunks: u64,
+}
+
+#[derive(Default)]
+struct ZcTierBackpressureState {
+    queued_bytes: usize,
+    max_queued_bytes: usize,
+}
+
+struct ZcTierBackpressure {
+    limit_bytes: usize,
+    state: Mutex<ZcTierBackpressureState>,
+    ready: Condvar,
+}
+
+impl ZcTierBackpressure {
+    fn new(limit_bytes: usize) -> Self {
+        Self {
+            limit_bytes,
+            state: Mutex::new(ZcTierBackpressureState::default()),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn acquire(&self, bytes: usize) -> io::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("zctier backpressure lock poisoned"))?;
+        while state.queued_bytes != 0
+            && state
+                .queued_bytes
+                .checked_add(bytes)
+                .is_none_or(|queued| queued > self.limit_bytes)
+        {
+            state = self
+                .ready
+                .wait(state)
+                .map_err(|_| io::Error::other("zctier backpressure lock poisoned"))?;
+        }
+        state.queued_bytes = state.queued_bytes.checked_add(bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zctier queued spill byte count overflow",
+            )
+        })?;
+        state.max_queued_bytes = state.max_queued_bytes.max(state.queued_bytes);
+        Ok(())
+    }
+
+    fn release(&self, bytes: usize) -> io::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("zctier backpressure lock poisoned"))?;
+        state.queued_bytes = state.queued_bytes.saturating_sub(bytes);
+        self.ready.notify_all();
+        Ok(())
+    }
+
+    fn snapshot(&self) -> io::Result<(usize, usize)> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("zctier backpressure lock poisoned"))?;
+        Ok((state.queued_bytes, state.max_queued_bytes))
+    }
+}
+
+struct ZcTierSpill {
+    label: String,
+    tx: mpsc::SyncSender<Arc<Vec<u8>>>,
+    handle: thread::JoinHandle<io::Result<ZcTierSpillStats>>,
+    backpressure: Arc<ZcTierBackpressure>,
+}
+
+fn zctier_spill_loop<W: Write>(
+    mut writer: W,
+    rx: mpsc::Receiver<Arc<Vec<u8>>>,
+    backpressure: Arc<ZcTierBackpressure>,
+) -> io::Result<ZcTierSpillStats> {
+    let mut stats = ZcTierSpillStats::default();
+    for chunk in rx {
+        let len = chunk.len();
+        let write_result = writer.write_all(&chunk);
+        backpressure.release(len)?;
+        write_result?;
+        stats.bytes = stats.bytes.checked_add(len as u64).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zctier spill byte count overflow",
+            )
+        })?;
+        stats.chunks = stats.chunks.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zctier spill chunk count overflow",
+            )
+        })?;
+    }
+    writer.flush()?;
+    Ok(stats)
+}
+
+fn zctier_spawn_path_spill(
+    path: PathBuf,
+    append: bool,
+    queue_depth: usize,
+    backpressure: Arc<ZcTierBackpressure>,
+) -> ZcTierSpill {
+    let label = format!("file:{}", path.display());
+    let label_for_thread = label.clone();
+    let bp_for_thread = Arc::clone(&backpressure);
+    let (tx, rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(queue_depth);
+    let handle = thread::spawn(move || {
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(append)
+            .truncate(!append)
+            .open(&path)
+            .map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("open zctier spill {}: {err}", path.display()),
+                )
+            })?;
+        zctier_spill_loop(file, rx, bp_for_thread)
+    });
+    ZcTierSpill {
+        label: label_for_thread,
+        tx,
+        handle,
+        backpressure,
+    }
+}
+
+fn zctier_spawn_command_spill(
+    command: String,
+    queue_depth: usize,
+    primitive: ZcPrimitiveTopology,
+    backpressure: Arc<ZcTierBackpressure>,
+) -> ZcTierSpill {
+    let label = format!("cmd:{command}");
+    let label_for_thread = label.clone();
+    let bp_for_thread = Arc::clone(&backpressure);
+    let (tx, rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(queue_depth);
+    let handle = thread::spawn(move || {
+        let mut builder = Command::new("sh");
+        primitive.apply_child_env(&mut builder);
+        let mut child = builder
+            .arg("-c")
+            .arg(&command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|err| {
+                io::Error::new(err.kind(), format!("spawn zctier spill {command:?}: {err}"))
+            })?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("zctier spill {command:?} has no stdin"),
+            )
+        })?;
+        let stats_result = zctier_spill_loop(stdin, rx, bp_for_thread);
+        let status = child.wait().map_err(|err| {
+            io::Error::new(err.kind(), format!("wait zctier spill {command:?}: {err}"))
+        })?;
+        let stats = stats_result?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "zctier spill {command:?} exited with {status}"
+            )));
+        }
+        Ok(stats)
+    });
+    ZcTierSpill {
+        label: label_for_thread,
+        tx,
+        handle,
+        backpressure,
+    }
+}
+
+fn print_zctier_help() {
+    println!(
+        "usage: zctier --hot PATH [--spill PATH | --spill-to CMD] [--chunk-bytes N]\n\
+         \n\
+         Writes stdin to the hot path synchronously, then queues the same chunks\n\
+         to an optional spill path/command. --memory-bytes bounds queued spill\n\
+         data so upstream writers see backpressure when cold storage falls behind.\n\
+         \n\
+         common:\n\
+           --hot PATH                 hot RAM/device/file materialization path\n\
+           --spill PATH               asynchronous cold spill file/device path\n\
+           --spill-to CMD             asynchronous cold spill command stdin\n\
+           --chunk-bytes N            stdin read and spill chunk size, default 1m\n\
+           --memory-bytes N           queued spill byte limit, default 256m\n\
+           --queue-depth N            queued spill chunk limit, default 128\n\
+           --append-hot               append hot path instead of truncating\n\
+           --append-spill             append spill path instead of truncating"
+    );
+}
+
+fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut hot_path = None::<PathBuf>;
+    let mut spill_path = None::<PathBuf>;
+    let mut spill_command = None::<String>;
+    let mut append_hot = false;
+    let mut append_spill = false;
+    let mut chunk_bytes = 1024 * 1024usize;
+    let mut memory_bytes = 256 * 1024 * 1024usize;
+    let mut queue_depth = 128usize;
+    let mut primitive = ZcPrimitiveTopology::default();
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
+            "--help" | "-h" => {
+                print_zctier_help();
+                return Ok(());
+            }
+            "--hot" | "--hot-path" | "--ram" | "--ram-path" => {
+                hot_path = Some(PathBuf::from(next_flag_value(&mut args, &arg)?))
+            }
+            "--spill" | "--spill-path" | "--cold" | "--cold-path" => {
+                spill_path = Some(PathBuf::from(next_flag_value(&mut args, &arg)?))
+            }
+            "--spill-to" | "--spill-command" => {
+                spill_command = Some(next_flag_value(&mut args, &arg)?)
+            }
+            "--append-hot" => append_hot = true,
+            "--append-spill" => append_spill = true,
+            "--buffer-bytes" | "--chunk-bytes" => {
+                chunk_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--memory-bytes" | "--backpressure-bytes" | "--spill-buffer-bytes" => {
+                memory_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--queue-depth" => {
+                queue_depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zctier option {other:?}"),
+                ));
+            }
+        }
+    }
+    primitive.activate_byte_compatible("zctier")?;
+    if chunk_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--chunk-bytes must be non-zero",
+        ));
+    }
+    if memory_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--memory-bytes must be non-zero",
+        ));
+    }
+    let hot_path = hot_path
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zctier requires --hot PATH"))?;
+    if spill_path.is_some() && spill_command.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zctier accepts either --spill or --spill-to, not both",
+        ));
+    }
+
+    let mut hot = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(append_hot)
+        .truncate(!append_hot)
+        .open(&hot_path)
+        .map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("open zctier hot {}: {err}", hot_path.display()),
+            )
+        })?;
+    let spill = if let Some(path) = spill_path {
+        let backpressure = Arc::new(ZcTierBackpressure::new(memory_bytes));
+        Some(zctier_spawn_path_spill(
+            path,
+            append_spill,
+            queue_depth,
+            backpressure,
+        ))
+    } else if let Some(command) = spill_command {
+        let backpressure = Arc::new(ZcTierBackpressure::new(memory_bytes));
+        Some(zctier_spawn_command_spill(
+            command,
+            queue_depth,
+            primitive.clone(),
+            backpressure,
+        ))
+    } else {
+        None
+    };
+
+    let started = Instant::now();
+    let mut input = io::stdin().lock();
+    let mut hot_bytes = 0u64;
+    let mut hot_chunks = 0u64;
+    loop {
+        let data = zc_read_coalesced_chunk(&mut input, chunk_bytes)?;
+        if data.is_empty() {
+            break;
+        }
+        hot.write_all(&data)?;
+        hot_bytes = hot_bytes.checked_add(data.len() as u64).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zctier hot byte count overflow")
+        })?;
+        hot_chunks = hot_chunks.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zctier hot chunk count overflow",
+            )
+        })?;
+        if let Some(spill) = spill.as_ref() {
+            spill.backpressure.acquire(data.len())?;
+            let len = data.len();
+            spill.tx.send(Arc::new(data)).map_err(|err| {
+                let _ = spill.backpressure.release(len);
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("zctier spill {} exited: {err}", spill.label),
+                )
+            })?;
+        }
+    }
+    hot.flush()?;
+
+    let mut spill_label = "-".to_string();
+    let mut spill_bytes = 0u64;
+    let mut spill_chunks = 0u64;
+    let mut final_queued_bytes = 0usize;
+    let mut max_queued_bytes = 0usize;
+    if let Some(spill) = spill {
+        spill_label = spill.label.clone();
+        drop(spill.tx);
+        let stats = spill
+            .handle
+            .join()
+            .map_err(|_| io::Error::other(format!("zctier spill {} panicked", spill_label)))??;
+        spill_bytes = stats.bytes;
+        spill_chunks = stats.chunks;
+        (final_queued_bytes, max_queued_bytes) = spill.backpressure.snapshot()?;
+        if spill_bytes != hot_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("zctier spill bytes={spill_bytes} did not match hot bytes={hot_bytes}"),
+            ));
+        }
+    }
+
+    let secs = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zctier-result: hot={} spill={} hot_bytes={} hot_chunks={} spill_bytes={} spill_chunks={} memory_bytes={} max_queued_bytes={} final_queued_bytes={} seconds={secs:.6} MiBps={:.2} {}",
+        hot_path.display(),
+        spill_label,
+        hot_bytes,
+        hot_chunks,
+        spill_bytes,
+        spill_chunks,
+        memory_bytes,
+        max_queued_bytes,
+        final_queued_bytes,
+        hot_bytes as f64 / (1024.0 * 1024.0) / secs,
+        primitive.log_fields()
+    );
+    Ok(())
+}
+
 fn zcmaptee(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut outputs = Vec::<PathBuf>::new();
     let mut branches = Vec::<String>::new();
     let mut append = false;
     let mut write_stdout = true;
     let mut buffer_bytes = 1024 * 1024usize;
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--to" => branches.push(next_flag_value(&mut args, "--to")?),
             "--output" => outputs.push(PathBuf::from(next_flag_value(&mut args, "--output")?)),
             "--append" => append = true,
             "--stdout" => {
                 write_stdout = parse_bool_arg(&next_flag_value(&mut args, "--stdout")?, "--stdout")?
             }
-            "--preserve-lanes" | "--preserve-topology" => {}
-            "--ordered" | "--chunk" | "--chunk-bytes" | "--set" | "--clear" | "--lane-map" => {
+            "--chunk" | "--chunk-bytes" | "--set" | "--clear" | "--lane-map" => {
                 let _ = next_flag_value(&mut args, &arg)?;
             }
             "--buffer-bytes" => {
@@ -26239,15 +27957,6 @@ fn zcmaptee(args: impl Iterator<Item = String>) -> io::Result<()> {
                     &next_flag_value(&mut args, "--buffer-bytes")?,
                     "--buffer-bytes",
                 )?
-            }
-            "--descriptor-mode" => {
-                let mode = next_flag_value(&mut args, "--descriptor-mode")?;
-                if mode != "auto" && mode != "bytes" {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--descriptor-mode currently accepts auto or bytes",
-                    ));
-                }
             }
             other => {
                 return Err(io::Error::new(
@@ -26257,6 +27966,7 @@ fn zcmaptee(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
+    primitive.activate_byte_compatible("zcmaptee")?;
 
     let mut files = Vec::with_capacity(outputs.len());
     for path in outputs {
@@ -26277,7 +27987,9 @@ fn zcmaptee(args: impl Iterator<Item = String>) -> io::Result<()> {
 
     let mut child_branches = Vec::with_capacity(branches.len());
     for branch in branches {
-        let mut child = Command::new("sh")
+        let mut builder = Command::new("sh");
+        primitive.apply_child_env(&mut builder);
+        let mut child = builder
             .arg("-c")
             .arg(&branch)
             .stdin(Stdio::piped())
@@ -26351,38 +28063,22 @@ fn zcmaptee(args: impl Iterator<Item = String>) -> io::Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum ZcSnapOrdered {
-    Global,
-    PerLane,
-}
-
-impl ZcSnapOrdered {
-    fn parse(value: &str) -> io::Result<Self> {
-        match value {
-            "global" => Ok(Self::Global),
-            "per-lane" | "lane" | "lanes" => Ok(Self::PerLane),
-            other => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unknown zcsnap ordering {other:?}; use global or per-lane"),
-            )),
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Global => "global",
-            Self::PerLane => "per-lane",
-        }
-    }
-}
-
 struct ZcSnapCut {
     snapshot_id: String,
     created_unix_nanos: u128,
-    ordered: ZcSnapOrdered,
+    descriptor_mode: ZcPrimitiveDescriptorMode,
+    zero_copy: ZcZeroCopyPolicy,
+    preserve_lanes: bool,
+    preserve_topology: bool,
+    topology: Option<String>,
+    ordered: ZcPrimitiveOrdering,
     lane_id: Option<u64>,
     lane_count: Option<u64>,
+    queue_id: Option<u64>,
+    preferred_worker: Option<u64>,
+    lane_map: Option<String>,
+    preferred_cpu: Option<usize>,
+    numa_node: Option<i32>,
     wal_epoch: u64,
     base_logical_index: u64,
     logical_record_bytes: u64,
@@ -26441,7 +28137,22 @@ fn zcsnap_write_manifest<W: Write>(mut writer: W, cut: &ZcSnapCut) -> io::Result
         "  \"created_unix_nanos\": {},",
         cut.created_unix_nanos
     )?;
-    writeln!(writer, "  \"descriptor_mode\": \"bytes\",")?;
+    writeln!(
+        writer,
+        "  \"descriptor_mode\": \"{}\",",
+        cut.descriptor_mode.label()
+    )?;
+    writeln!(writer, "  \"zero_copy\": \"{}\",", cut.zero_copy.label())?;
+    writeln!(writer, "  \"preserve_lanes\": {},", cut.preserve_lanes)?;
+    writeln!(
+        writer,
+        "  \"preserve_topology\": {},",
+        cut.preserve_topology
+    )?;
+    match cut.topology.as_deref() {
+        Some(topology) => writeln!(writer, "  \"topology\": \"{}\",", json_escape(topology))?,
+        None => writeln!(writer, "  \"topology\": null,")?,
+    }
     writeln!(writer, "  \"cut_kind\": \"stream-checkpoint\",")?;
     writeln!(writer, "  \"ordered\": \"{}\",", cut.ordered.label())?;
     match cut.lane_id {
@@ -26451,6 +28162,26 @@ fn zcsnap_write_manifest<W: Write>(mut writer: W, cut: &ZcSnapCut) -> io::Result
     match cut.lane_count {
         Some(lane_count) => writeln!(writer, "  \"lane_count\": {lane_count},")?,
         None => writeln!(writer, "  \"lane_count\": null,")?,
+    }
+    match cut.queue_id {
+        Some(queue_id) => writeln!(writer, "  \"queue_id\": {queue_id},")?,
+        None => writeln!(writer, "  \"queue_id\": null,")?,
+    }
+    match cut.preferred_worker {
+        Some(preferred_worker) => writeln!(writer, "  \"preferred_worker\": {preferred_worker},")?,
+        None => writeln!(writer, "  \"preferred_worker\": null,")?,
+    }
+    match cut.lane_map.as_deref() {
+        Some(lane_map) => writeln!(writer, "  \"lane_map\": \"{}\",", json_escape(lane_map))?,
+        None => writeln!(writer, "  \"lane_map\": null,")?,
+    }
+    match cut.preferred_cpu {
+        Some(preferred_cpu) => writeln!(writer, "  \"preferred_cpu\": {preferred_cpu},")?,
+        None => writeln!(writer, "  \"preferred_cpu\": null,")?,
+    }
+    match cut.numa_node {
+        Some(numa_node) => writeln!(writer, "  \"numa_node\": {numa_node},")?,
+        None => writeln!(writer, "  \"numa_node\": null,")?,
     }
     writeln!(writer, "  \"wal_epoch\": {},", cut.wal_epoch)?;
     writeln!(
@@ -26510,15 +28241,1741 @@ fn parse_zcsnap_cut_at(value: &str) -> io::Result<Option<u64>> {
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZcJournalRefKind {
+    Extent,
+    Composite,
+}
+
+impl ZcJournalRefKind {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "EXTENT_REF" | "extent" | "extent-ref" => Ok(Self::Extent),
+            "COMPOSITE_REF" | "composite" | "composite-ref" => Ok(Self::Composite),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown zcjournal frame kind {other:?}"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Extent => "EXTENT_REF",
+            Self::Composite => "COMPOSITE_REF",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ZcJournalRef {
+    kind: ZcJournalRefKind,
+    tenant_id: String,
+    policy_id: String,
+    volume_id: String,
+    epoch_id: u64,
+    group_id: String,
+    fan_in_group: Option<String>,
+    expected_fan_in: Option<u64>,
+    lane_id: u64,
+    lane_count: Option<u64>,
+    lane_sequence: u64,
+    shard_id: u64,
+    stripe_id: u64,
+    stripe_span: u64,
+    stripe_count: u64,
+    topology: String,
+    transport: String,
+    offset_bytes: u64,
+    length_bytes: u64,
+    payload_checksum: u64,
+    ref_id: String,
+    payload_path: Option<String>,
+    children: Vec<String>,
+}
+
+impl ZcJournalRef {
+    fn fallback_ref_id(&self) -> String {
+        let prefix = match self.kind {
+            ZcJournalRefKind::Extent => "e",
+            ZcJournalRefKind::Composite => "c",
+        };
+        format!(
+            "{}:{}:{}:{}:{}",
+            prefix, self.group_id, self.stripe_id, self.stripe_span, self.lane_sequence
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ZcJournalJoinKey {
+    tenant_id: String,
+    policy_id: String,
+    volume_id: String,
+    epoch_id: u64,
+    group_id: String,
+    fan_in_group: String,
+    stripe_count: u64,
+    input_span: u64,
+    partition_start: u64,
+}
+
+struct ZcJournalPendingGroup {
+    key: ZcJournalJoinKey,
+    expected_children: u64,
+    children: BTreeMap<u64, ZcJournalRef>,
+}
+
+#[derive(Debug, Default)]
+struct ZcJournalJoinStats {
+    input_refs: u64,
+    composite_refs: u64,
+    groups_completed: u64,
+    input_bytes: u64,
+    output_bytes: u64,
+    logical_records_in: u64,
+    logical_records_out: u64,
+    logical_bytes_in: u64,
+    logical_bytes_out: u64,
+}
+
+#[derive(Default)]
+struct ZcJournalSinkStats {
+    extent_refs: u64,
+    composite_refs: u64,
+    input_bytes: u64,
+    logical_records: u64,
+    logical_bytes: u64,
+}
+
+#[derive(Clone, Copy)]
+struct ZcJournalMemExtent {
+    lane_id: u32,
+    sequence: u64,
+    offset_records: u64,
+    records: u32,
+    checksum: u64,
+}
+
+#[derive(Clone, Copy)]
+struct ZcJournalMemComposite {
+    left_index: u32,
+    right_index: u32,
+    base_record: u64,
+    records: u32,
+    checksum: u64,
+}
+
+struct ZcJournalMemStore {
+    left_stream: Vec<ZcJournalMemExtent>,
+    right_stream: Vec<ZcJournalMemExtent>,
+    composites: Vec<ZcJournalMemComposite>,
+    record_bytes: u64,
+    records_per_extent: u32,
+    records_per_composite: u32,
+    logical_records: u64,
+    logical_bytes: u64,
+    build_checksum: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZcJournalMemQueueMode {
+    Local,
+    Baton,
+    Atomic,
+}
+
+impl ZcJournalMemQueueMode {
+    fn parse(value: &str) -> io::Result<Vec<Self>> {
+        match value {
+            "local" | "partitioned" | "partition" => Ok(vec![Self::Local]),
+            "baton" | "baton-wave" | "wave-baton" => Ok(vec![Self::Baton]),
+            "atomic" | "shared" | "shared-atomic" => Ok(vec![Self::Atomic]),
+            "all" => Ok(vec![Self::Local, Self::Baton, Self::Atomic]),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown zcjournal mem-combine queue mode {other:?}; use local, baton, atomic, or all"
+                ),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Baton => "baton",
+            Self::Atomic => "atomic",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct ZcJournalMemFulfillStats {
+    reads: u64,
+    checksum: u64,
+    baton_handoffs: u64,
+}
+
+impl ZcJournalMemFulfillStats {
+    fn add(&mut self, other: Self) {
+        self.reads = self.reads.saturating_add(other.reads);
+        self.checksum = self.checksum.wrapping_add(other.checksum);
+        self.baton_handoffs = self.baton_handoffs.saturating_add(other.baton_handoffs);
+    }
+}
+
+fn zcjournal_token_value(value: Option<String>, name: &str) -> io::Result<String> {
+    let value = value.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcjournal frame missing {name}"),
+        )
+    })?;
+    if value.is_empty() || value.chars().any(char::is_whitespace) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcjournal {name} must be a non-empty token"),
+        ));
+    }
+    Ok(value)
+}
+
+fn zcjournal_required_u64(value: Option<u64>, name: &str) -> io::Result<u64> {
+    value.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcjournal frame missing {name}"),
+        )
+    })
+}
+
+fn zcjournal_parse_u64_field(value: &str, key: &str, line_no: u64) -> io::Result<u64> {
+    value.parse::<u64>().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcjournal line {line_no} has invalid {key}={value:?}: {err}"),
+        )
+    })
+}
+
+fn zcjournal_line_len(line: &str) -> io::Result<u64> {
+    u64::try_from(line.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "zcjournal line length does not fit in u64",
+        )
+    })
+}
+
+fn zcjournal_parse_ref_line(
+    line: &str,
+    line_no: u64,
+    require_transport: bool,
+) -> io::Result<Option<ZcJournalRef>> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return Ok(None);
+    }
+
+    let mut kind = None;
+    let mut tenant_id = None;
+    let mut policy_id = None;
+    let mut volume_id = None;
+    let mut epoch_id = None;
+    let mut group_id = None;
+    let mut fan_in_group = None;
+    let mut expected_fan_in = None;
+    let mut lane_id = None;
+    let mut lane_count = None;
+    let mut lane_sequence = None;
+    let mut shard_id = None;
+    let mut stripe_id = None;
+    let mut stripe_span = None;
+    let mut stripe_count = None;
+    let mut topology = None;
+    let mut transport = None;
+    let mut offset_bytes = None;
+    let mut length_bytes = None;
+    let mut payload_checksum = None;
+    let mut ref_id = None;
+    let mut payload_path = None;
+    let mut children = Vec::new();
+
+    for (index, token) in trimmed.split_whitespace().enumerate() {
+        if index == 0 && !token.contains('=') {
+            kind = Some(ZcJournalRefKind::parse(token)?);
+            continue;
+        }
+        let (key, value) = token.split_once('=').ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("zcjournal line {line_no} token {token:?} is not key=value"),
+            )
+        })?;
+        match key {
+            "kind" | "frame" | "type" => kind = Some(ZcJournalRefKind::parse(value)?),
+            "tenant" | "tenant_id" => tenant_id = Some(value.to_string()),
+            "policy" | "policy_id" => policy_id = Some(value.to_string()),
+            "volume" | "volume_id" => volume_id = Some(value.to_string()),
+            "epoch" | "epoch_id" => {
+                epoch_id = Some(zcjournal_parse_u64_field(value, key, line_no)?)
+            }
+            "group" | "group_id" => group_id = Some(value.to_string()),
+            "fan_in_group" | "fanin_group" | "join_group" | "topology_group" => {
+                fan_in_group = Some(value.to_string())
+            }
+            "fan_in" | "fanin" | "expected_fan_in" | "expected_children" => {
+                expected_fan_in = Some(zcjournal_parse_u64_field(value, key, line_no)?)
+            }
+            "lane" | "lane_id" => lane_id = Some(zcjournal_parse_u64_field(value, key, line_no)?),
+            "lane_count" | "lanes" => {
+                lane_count = Some(zcjournal_parse_u64_field(value, key, line_no)?)
+            }
+            "seq" | "sequence" | "lane_sequence" => {
+                lane_sequence = Some(zcjournal_parse_u64_field(value, key, line_no)?)
+            }
+            "shard" | "shard_id" => {
+                shard_id = Some(zcjournal_parse_u64_field(value, key, line_no)?)
+            }
+            "stripe" | "stripe_id" => {
+                stripe_id = Some(zcjournal_parse_u64_field(value, key, line_no)?)
+            }
+            "span" | "stripe_span" => {
+                stripe_span = Some(zcjournal_parse_u64_field(value, key, line_no)?)
+            }
+            "stripes" | "stripe_count" => {
+                stripe_count = Some(zcjournal_parse_u64_field(value, key, line_no)?)
+            }
+            "topology" => topology = Some(value.to_string()),
+            "transport" => transport = Some(value.to_string()),
+            "offset" | "offset_bytes" => {
+                offset_bytes = Some(zcjournal_parse_u64_field(value, key, line_no)?)
+            }
+            "len" | "length" | "length_bytes" => {
+                length_bytes = Some(zcjournal_parse_u64_field(value, key, line_no)?)
+            }
+            "checksum" | "payload_checksum" | "checksum64" => {
+                payload_checksum = Some(zcjournal_parse_u64_field(value, key, line_no)?)
+            }
+            "ref" | "ref_id" => ref_id = Some(value.to_string()),
+            "payload_path" => payload_path = Some(value.to_string()),
+            "children" => {
+                children = value
+                    .split(',')
+                    .filter(|item| !item.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
+            "child_count" | "flags" => {}
+            _ => {}
+        }
+    }
+
+    let mut frame = ZcJournalRef {
+        kind: kind.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("zcjournal line {line_no} is missing frame kind"),
+            )
+        })?,
+        tenant_id: zcjournal_token_value(tenant_id, "tenant_id")?,
+        policy_id: zcjournal_token_value(policy_id, "policy_id")?,
+        volume_id: zcjournal_token_value(volume_id, "volume_id")?,
+        epoch_id: zcjournal_required_u64(epoch_id, "epoch_id")?,
+        group_id: zcjournal_token_value(group_id, "group_id")?,
+        fan_in_group,
+        expected_fan_in,
+        lane_id: zcjournal_required_u64(lane_id, "lane_id")?,
+        lane_count,
+        lane_sequence: zcjournal_required_u64(lane_sequence, "lane_sequence")?,
+        shard_id: zcjournal_required_u64(shard_id, "shard_id")?,
+        stripe_id: zcjournal_required_u64(stripe_id, "stripe_id")?,
+        stripe_span: zcjournal_required_u64(stripe_span, "stripe_span")?,
+        stripe_count: zcjournal_required_u64(stripe_count, "stripe_count")?,
+        topology: zcjournal_token_value(topology, "topology")?,
+        transport: match transport {
+            Some(value) => zcjournal_token_value(Some(value), "transport")?,
+            None if require_transport => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("zcjournal line {line_no} is missing transport"),
+                ));
+            }
+            None => "-".to_string(),
+        },
+        offset_bytes: offset_bytes.unwrap_or(0),
+        length_bytes: length_bytes.unwrap_or(0),
+        payload_checksum: payload_checksum.unwrap_or(0),
+        ref_id: ref_id.unwrap_or_default(),
+        payload_path,
+        children,
+    };
+    if frame.stripe_span == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcjournal line {line_no} has stripe_span=0"),
+        ));
+    }
+    if frame.stripe_count == 0 || frame.stripe_id >= frame.stripe_count {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcjournal line {line_no} has invalid stripe_id={} stripe_count={}",
+                frame.stripe_id, frame.stripe_count
+            ),
+        ));
+    }
+    if matches!(frame.expected_fan_in, Some(0)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcjournal line {line_no} has fan_in=0"),
+        ));
+    }
+    if matches!(frame.lane_count, Some(0)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcjournal line {line_no} has lane_count=0"),
+        ));
+    }
+    if let Some(lane_count) = frame.lane_count
+        && frame.lane_id >= lane_count
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcjournal line {line_no} has lane_id={} outside lane_count={lane_count}",
+                frame.lane_id
+            ),
+        ));
+    }
+    if frame.ref_id.is_empty() {
+        frame.ref_id = frame.fallback_ref_id();
+    }
+    Ok(Some(frame))
+}
+
+fn zcjournal_write_ref<W: Write>(writer: &mut W, frame: &ZcJournalRef) -> io::Result<u64> {
+    let mut line = format!(
+        "{} tenant_id={} policy_id={} volume_id={} epoch_id={} group_id={} lane_id={} lane_sequence={} shard_id={} stripe_id={} stripe_span={} stripe_count={} topology={} transport={} offset_bytes={} length_bytes={} payload_checksum={} ref_id={}",
+        frame.kind.label(),
+        frame.tenant_id,
+        frame.policy_id,
+        frame.volume_id,
+        frame.epoch_id,
+        frame.group_id,
+        frame.lane_id,
+        frame.lane_sequence,
+        frame.shard_id,
+        frame.stripe_id,
+        frame.stripe_span,
+        frame.stripe_count,
+        frame.topology,
+        frame.transport,
+        frame.offset_bytes,
+        frame.length_bytes,
+        frame.payload_checksum,
+        frame.ref_id
+    );
+    if let Some(fan_in_group) = frame.fan_in_group.as_ref() {
+        line.push_str(" fan_in_group=");
+        line.push_str(fan_in_group);
+    }
+    if let Some(expected_fan_in) = frame.expected_fan_in {
+        line.push_str(" fan_in=");
+        line.push_str(&expected_fan_in.to_string());
+    }
+    if let Some(lane_count) = frame.lane_count {
+        line.push_str(" lane_count=");
+        line.push_str(&lane_count.to_string());
+    }
+    if let Some(payload_path) = frame.payload_path.as_ref() {
+        line.push_str(" payload_path=");
+        line.push_str(payload_path);
+    }
+    if !frame.children.is_empty() {
+        line.push_str(" child_count=");
+        line.push_str(&frame.children.len().to_string());
+        line.push_str(" children=");
+        line.push_str(&frame.children.join(","));
+    }
+    line.push('\n');
+    writer.write_all(line.as_bytes())?;
+    zcjournal_line_len(&line)
+}
+
+fn zcjournal_validate_emit_token(value: &str, flag: &str) -> io::Result<()> {
+    if value.is_empty() || value.chars().any(char::is_whitespace) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{flag} must be a non-empty token"),
+        ));
+    }
+    Ok(())
+}
+
+fn zcjournal_emit(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut groups = 1u64;
+    let mut stripe_count = 4u64;
+    let mut segment_bytes = 4096u64;
+    let mut tenant_id = "tenant0".to_string();
+    let mut policy_id = "policy0".to_string();
+    let mut volume_id = "volume0".to_string();
+    let mut epoch_id = 0u64;
+    let mut lane_count = 1u64;
+    let mut shard_count = 1u64;
+    let mut fan_in_group = "default".to_string();
+    let mut expected_fan_in = 2u64;
+    let mut transport = "descriptor-local".to_string();
+    let mut payload_path = "/zcjournal/not-opened".to_string();
+    let mut primitive = ZcPrimitiveTopology::with_ordered(ZcPrimitiveOrdering::PerLane);
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
+            "--groups" | "--group-count" => {
+                groups = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--stripe-count" | "--stripes" => {
+                stripe_count = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--segment-bytes" | "--extent-bytes" | "--length-bytes" | "--len" => {
+                segment_bytes =
+                    u64::try_from(parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?)
+                        .map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                format!("{arg} does not fit in u64"),
+                            )
+                        })?
+            }
+            "--tenant-id" | "--tenant" => tenant_id = next_flag_value(&mut args, &arg)?,
+            "--policy-id" | "--policy" => policy_id = next_flag_value(&mut args, &arg)?,
+            "--volume-id" | "--volume" => volume_id = next_flag_value(&mut args, &arg)?,
+            "--epoch-id" | "--epoch" => {
+                epoch_id = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--lanes" => lane_count = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?,
+            "--shards" | "--shard-count" => {
+                shard_count = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--fan-in-group" | "--fanin-group" | "--join-group" | "--topology-group" => {
+                fan_in_group = next_flag_value(&mut args, &arg)?
+            }
+            "--fan-in" | "--expected-fan-in" | "--expected-children" => {
+                expected_fan_in = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--transport" => transport = next_flag_value(&mut args, &arg)?,
+            "--payload-path" => payload_path = next_flag_value(&mut args, &arg)?,
+            "--help" | "-h" => {
+                eprintln!(
+                    "usage: zcjournal emit --groups N --stripe-count N [--segment-bytes 4k] [--lanes N] [--shards N]"
+                );
+                return Ok(());
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcjournal emit option {other:?}"),
+                ));
+            }
+        }
+    }
+    if groups == 0
+        || stripe_count == 0
+        || segment_bytes == 0
+        || lane_count == 0
+        || shard_count == 0
+        || expected_fan_in == 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcjournal emit counts and segment bytes must be greater than zero",
+        ));
+    }
+    if let Some(common_lanes) = primitive.lane_count {
+        lane_count = common_lanes;
+    }
+    for (flag, value) in [
+        ("--tenant-id", tenant_id.as_str()),
+        ("--policy-id", policy_id.as_str()),
+        ("--volume-id", volume_id.as_str()),
+        ("--fan-in-group", fan_in_group.as_str()),
+        ("--transport", transport.as_str()),
+        ("--payload-path", payload_path.as_str()),
+    ] {
+        zcjournal_validate_emit_token(value, flag)?;
+    }
+    let _applied = primitive.activate_byte_compatible("zcjournal-emit")?;
+    let start = Instant::now();
+    let stdout = io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
+    let topology = primitive.topology_label().to_string();
+    zcjournal_validate_emit_token(&topology, "--topology")?;
+    let mut output_bytes = 0u64;
+    for group in 0..groups {
+        for stripe in 0..stripe_count {
+            let logical = group
+                .checked_mul(stripe_count)
+                .and_then(|value| value.checked_add(stripe))
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "zcjournal sequence overflow")
+                })?;
+            let frame = ZcJournalRef {
+                kind: ZcJournalRefKind::Extent,
+                tenant_id: tenant_id.clone(),
+                policy_id: policy_id.clone(),
+                volume_id: volume_id.clone(),
+                epoch_id,
+                group_id: group.to_string(),
+                fan_in_group: Some(fan_in_group.clone()),
+                expected_fan_in: Some(expected_fan_in),
+                lane_id: logical % lane_count,
+                lane_count: Some(lane_count),
+                lane_sequence: logical,
+                shard_id: stripe % shard_count,
+                stripe_id: stripe,
+                stripe_span: 1,
+                stripe_count,
+                topology: topology.clone(),
+                transport: transport.clone(),
+                offset_bytes: logical.checked_mul(segment_bytes).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "zcjournal offset overflow")
+                })?,
+                length_bytes: segment_bytes,
+                payload_checksum: logical
+                    .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                    .wrapping_add(segment_bytes),
+                ref_id: format!("e:{group}:{stripe}:1:{logical}"),
+                payload_path: Some(payload_path.clone()),
+                children: Vec::new(),
+            };
+            output_bytes = output_bytes
+                .checked_add(zcjournal_write_ref(&mut writer, &frame)?)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcjournal byte count overflow")
+                })?;
+        }
+    }
+    writer.flush()?;
+    let secs = start.elapsed().as_secs_f64();
+    let extent_refs = groups.checked_mul(stripe_count).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "zcjournal ref count overflow")
+    })?;
+    let logical_bytes = extent_refs.checked_mul(segment_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcjournal logical byte count overflow",
+        )
+    })?;
+    eprintln!(
+        "zcjournal-emit-result: groups={} stripe_count={} extent_refs={} logical_records={} logical_bytes={} output_bytes={} seconds={secs:.6} refs_per_sec={:.2} logical_4k_iops={:.2} logical_Gbitps={:.2}",
+        groups,
+        stripe_count,
+        extent_refs,
+        extent_refs,
+        logical_bytes,
+        output_bytes,
+        extent_refs as f64 / secs.max(1e-9),
+        logical_bytes as f64 / 4096.0 / secs.max(1e-9),
+        (logical_bytes as f64 * 8.0 / 1_000_000_000.0) / secs.max(1e-9)
+    );
+    Ok(())
+}
+
+fn zcjournal_join_key(
+    frame: &ZcJournalRef,
+    fan_in: u64,
+    require_explicit_fan_in: bool,
+    required_fan_in_group: Option<&str>,
+) -> io::Result<(ZcJournalJoinKey, u64, u64)> {
+    let fan_in_group = match frame.fan_in_group.as_deref() {
+        Some(value) => value,
+        None if require_explicit_fan_in => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcjournal join requires explicit fan_in_group on every cross-lane input frame",
+            ));
+        }
+        None => "-implicit-",
+    };
+    if let Some(required) = required_fan_in_group
+        && fan_in_group != required
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcjournal frame fan_in_group={fan_in_group:?} does not match required group {required:?}"
+            ),
+        ));
+    }
+    match frame.expected_fan_in {
+        Some(expected) if expected == fan_in => {}
+        Some(expected) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcjournal frame declares fan_in={expected} but join was started with --fan-in {fan_in}"
+                ),
+            ));
+        }
+        None if require_explicit_fan_in => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcjournal join requires explicit fan_in on every cross-lane input frame",
+            ));
+        }
+        None => {}
+    }
+    let join_span = frame.stripe_span.checked_mul(fan_in).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "zcjournal join span overflow")
+    })?;
+    let partition_start = (frame.stripe_id / join_span)
+        .checked_mul(join_span)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcjournal partition overflow")
+        })?;
+    let offset = frame
+        .stripe_id
+        .checked_sub(partition_start)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcjournal child partition underflow",
+            )
+        })?;
+    if offset % frame.stripe_span != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcjournal frame stripe_id={} is not aligned to span={} in partition {}",
+                frame.stripe_id, frame.stripe_span, partition_start
+            ),
+        ));
+    }
+    let child_index = offset / frame.stripe_span;
+    let remaining = frame.stripe_count.saturating_sub(partition_start);
+    let expected_children = fan_in.min(remaining.div_ceil(frame.stripe_span));
+    Ok((
+        ZcJournalJoinKey {
+            tenant_id: frame.tenant_id.clone(),
+            policy_id: frame.policy_id.clone(),
+            volume_id: frame.volume_id.clone(),
+            epoch_id: frame.epoch_id,
+            group_id: frame.group_id.clone(),
+            fan_in_group: fan_in_group.to_string(),
+            stripe_count: frame.stripe_count,
+            input_span: frame.stripe_span,
+            partition_start,
+        },
+        child_index,
+        expected_children,
+    ))
+}
+
+fn zcjournal_compose_group(group: ZcJournalPendingGroup) -> io::Result<ZcJournalRef> {
+    let first = group.children.values().next().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "zcjournal empty pending group")
+    })?;
+    let mut length_bytes = 0u64;
+    let mut checksum = 0u64;
+    let mut children = Vec::with_capacity(group.children.len());
+    for index in 0..group.expected_children {
+        let child = group.children.get(&index).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcjournal group {} missing child index {}",
+                    group.key.group_id, index
+                ),
+            )
+        })?;
+        children.push(child.ref_id.clone());
+        length_bytes = length_bytes
+            .checked_add(child.length_bytes)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcjournal length overflow")
+            })?;
+        checksum = checksum.wrapping_add(child.payload_checksum);
+    }
+    let output_span = group
+        .key
+        .input_span
+        .checked_mul(group.expected_children)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcjournal span overflow"))?;
+    Ok(ZcJournalRef {
+        kind: ZcJournalRefKind::Composite,
+        tenant_id: group.key.tenant_id,
+        policy_id: group.key.policy_id,
+        volume_id: group.key.volume_id,
+        epoch_id: group.key.epoch_id,
+        group_id: group.key.group_id.clone(),
+        fan_in_group: Some(group.key.fan_in_group.clone()),
+        expected_fan_in: first.expected_fan_in,
+        lane_id: first.lane_id,
+        lane_count: first.lane_count,
+        lane_sequence: first.lane_sequence,
+        shard_id: first.shard_id,
+        stripe_id: group.key.partition_start,
+        stripe_span: output_span,
+        stripe_count: group.key.stripe_count,
+        topology: first.topology.clone(),
+        transport: "descriptor-tree".to_string(),
+        offset_bytes: first.offset_bytes,
+        length_bytes,
+        payload_checksum: checksum,
+        ref_id: format!(
+            "c:{}:{}:{}:{}",
+            group.key.group_id, group.key.partition_start, output_span, first.lane_sequence
+        ),
+        payload_path: None,
+        children,
+    })
+}
+
+fn zcjournal_join_with_io<R: BufRead, W: Write>(
+    mut reader: R,
+    writer: &mut W,
+    fan_in: u64,
+    window_groups: usize,
+    require_transport: bool,
+    require_explicit_fan_in: bool,
+    required_fan_in_group: Option<&str>,
+    require_distinct_lanes: bool,
+) -> io::Result<ZcJournalJoinStats> {
+    if fan_in < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcjournal join --fan-in must be at least 2",
+        ));
+    }
+    if window_groups == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcjournal join --window-groups must be greater than zero",
+        ));
+    }
+    let mut pending = BTreeMap::<ZcJournalJoinKey, ZcJournalPendingGroup>::new();
+    let mut stats = ZcJournalJoinStats::default();
+    let mut line = String::new();
+    let mut line_no = 0u64;
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line)?;
+        if read == 0 {
+            break;
+        }
+        line_no = line_no.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcjournal line count overflow")
+        })?;
+        stats.input_bytes = stats
+            .input_bytes
+            .checked_add(u64::try_from(read).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcjournal read size overflow")
+            })?)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcjournal input byte overflow")
+            })?;
+        let Some(frame) = zcjournal_parse_ref_line(&line, line_no, require_transport)? else {
+            continue;
+        };
+        stats.input_refs = stats.input_refs.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcjournal input ref overflow")
+        })?;
+        stats.logical_records_in = stats
+            .logical_records_in
+            .checked_add(frame.stripe_span)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcjournal logical ref overflow")
+            })?;
+        stats.logical_bytes_in = stats
+            .logical_bytes_in
+            .checked_add(frame.length_bytes)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcjournal logical byte overflow",
+                )
+            })?;
+        let (key, child_index, expected_children) = zcjournal_join_key(
+            &frame,
+            fan_in,
+            require_explicit_fan_in,
+            required_fan_in_group,
+        )?;
+        let complete = {
+            let entry = pending
+                .entry(key.clone())
+                .or_insert_with(|| ZcJournalPendingGroup {
+                    key: key.clone(),
+                    expected_children,
+                    children: BTreeMap::new(),
+                });
+            if entry.expected_children != expected_children {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcjournal inconsistent child count for pending group",
+                ));
+            }
+            if child_index >= expected_children {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcjournal child index {} outside expected fan-in {}",
+                        child_index, expected_children
+                    ),
+                ));
+            }
+            if require_distinct_lanes
+                && entry
+                    .children
+                    .values()
+                    .any(|child| child.lane_id == frame.lane_id)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcjournal fan-in group {} tried to merge duplicate lane_id={}; use --allow-duplicate-lanes only for explicit same-lane reductions",
+                        entry.key.fan_in_group, frame.lane_id
+                    ),
+                ));
+            }
+            if entry.children.insert(child_index, frame).is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcjournal duplicate child index {} in group {}",
+                        child_index, entry.key.group_id
+                    ),
+                ));
+            }
+            u64::try_from(entry.children.len()).unwrap_or(u64::MAX) == entry.expected_children
+        };
+        if complete {
+            let group = pending.remove(&key).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcjournal missing completed group",
+                )
+            })?;
+            let composite = zcjournal_compose_group(group)?;
+            stats.logical_records_out = stats
+                .logical_records_out
+                .checked_add(composite.stripe_span)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcjournal logical output overflow",
+                    )
+                })?;
+            stats.logical_bytes_out = stats
+                .logical_bytes_out
+                .checked_add(composite.length_bytes)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcjournal logical output byte overflow",
+                    )
+                })?;
+            stats.output_bytes = stats
+                .output_bytes
+                .checked_add(zcjournal_write_ref(writer, &composite)?)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcjournal output byte overflow")
+                })?;
+            stats.composite_refs = stats.composite_refs.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcjournal output ref overflow")
+            })?;
+            stats.groups_completed = stats.groups_completed.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcjournal group count overflow")
+            })?;
+        } else if pending.len() > window_groups {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcjournal pending group window exceeded: {} > {}",
+                    pending.len(),
+                    window_groups
+                ),
+            ));
+        }
+    }
+    if !pending.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "zcjournal join ended with {} incomplete groups",
+                pending.len()
+            ),
+        ));
+    }
+    writer.flush()?;
+    Ok(stats)
+}
+
+fn zcjournal_join(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut fan_in = 2u64;
+    let mut window_groups = 1024usize;
+    let mut require_transport = true;
+    let mut require_explicit_fan_in = true;
+    let mut require_distinct_lanes = true;
+    let mut required_fan_in_group = None::<String>;
+    let mut primitive = ZcPrimitiveTopology::with_ordered(ZcPrimitiveOrdering::PerLane);
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
+            "--fan-in" | "--expect" | "--children" => {
+                fan_in = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--window-groups" => {
+                window_groups = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--require-transport" => {
+                require_transport = parse_bool_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--allow-missing-transport" => require_transport = false,
+            "--require-explicit-fan-in" | "--require-explicit-fanin" => {
+                require_explicit_fan_in = parse_bool_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--allow-implicit-fan-in" | "--allow-implicit-fanin" => require_explicit_fan_in = false,
+            "--fan-in-group" | "--fanin-group" | "--join-group" | "--topology-group" => {
+                required_fan_in_group = Some(next_flag_value(&mut args, &arg)?)
+            }
+            "--require-distinct-lanes" => {
+                require_distinct_lanes = parse_bool_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--allow-duplicate-lanes" => require_distinct_lanes = false,
+            "--help" | "-h" => {
+                eprintln!(
+                    "usage: zcjournal join --fan-in N [--fan-in-group GROUP] [--allow-implicit-fan-in] [--allow-duplicate-lanes]"
+                );
+                return Ok(());
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcjournal join option {other:?}"),
+                ));
+            }
+        }
+    }
+    let _applied = primitive.activate_byte_compatible("zcjournal-join")?;
+    let start = Instant::now();
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
+    let stats = zcjournal_join_with_io(
+        BufReader::new(stdin.lock()),
+        &mut writer,
+        fan_in,
+        window_groups,
+        require_transport,
+        require_explicit_fan_in,
+        required_fan_in_group.as_deref(),
+        require_distinct_lanes,
+    )?;
+    let secs = start.elapsed().as_secs_f64();
+    eprintln!(
+        "zcjournal-join-result: fan_in={} fan_in_group={} explicit_fan_in={} distinct_lanes={} input_refs={} composite_refs={} groups_completed={} logical_records_in={} logical_records_out={} logical_bytes_in={} logical_bytes_out={} input_bytes={} output_bytes={} seconds={secs:.6} input_refs_per_sec={:.2} composite_refs_per_sec={:.2} logical_4k_iops_out={:.2} logical_Gbitps_out={:.2}",
+        fan_in,
+        required_fan_in_group.as_deref().unwrap_or("*"),
+        yes(require_explicit_fan_in),
+        yes(require_distinct_lanes),
+        stats.input_refs,
+        stats.composite_refs,
+        stats.groups_completed,
+        stats.logical_records_in,
+        stats.logical_records_out,
+        stats.logical_bytes_in,
+        stats.logical_bytes_out,
+        stats.input_bytes,
+        stats.output_bytes,
+        stats.input_refs as f64 / secs.max(1e-9),
+        stats.composite_refs as f64 / secs.max(1e-9),
+        stats.logical_bytes_out as f64 / 4096.0 / secs.max(1e-9),
+        (stats.logical_bytes_out as f64 * 8.0 / 1_000_000_000.0) / secs.max(1e-9)
+    );
+    Ok(())
+}
+
+fn zcjournal_sink_with_io<R: BufRead>(
+    mut reader: R,
+    require_transport: bool,
+) -> io::Result<ZcJournalSinkStats> {
+    let mut stats = ZcJournalSinkStats::default();
+    let mut line = String::new();
+    let mut line_no = 0u64;
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line)?;
+        if read == 0 {
+            break;
+        }
+        line_no = line_no.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcjournal line count overflow")
+        })?;
+        stats.input_bytes = stats
+            .input_bytes
+            .checked_add(u64::try_from(read).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcjournal read size overflow")
+            })?)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcjournal input byte overflow")
+            })?;
+        let Some(frame) = zcjournal_parse_ref_line(&line, line_no, require_transport)? else {
+            continue;
+        };
+        match frame.kind {
+            ZcJournalRefKind::Extent => stats.extent_refs = stats.extent_refs.saturating_add(1),
+            ZcJournalRefKind::Composite => {
+                stats.composite_refs = stats.composite_refs.saturating_add(1)
+            }
+        }
+        stats.logical_records = stats
+            .logical_records
+            .checked_add(frame.stripe_span)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcjournal logical record count overflow",
+                )
+            })?;
+        stats.logical_bytes = stats
+            .logical_bytes
+            .checked_add(frame.length_bytes)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcjournal logical byte count overflow",
+                )
+            })?;
+    }
+    Ok(stats)
+}
+
+fn zcjournal_sink(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut require_transport = true;
+    let mut primitive = ZcPrimitiveTopology::with_ordered(ZcPrimitiveOrdering::PerLane);
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
+            "--require-transport" => {
+                require_transport = parse_bool_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--allow-missing-transport" => require_transport = false,
+            "--help" | "-h" => {
+                eprintln!("usage: zcjournal sink [--allow-missing-transport]");
+                return Ok(());
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcjournal sink option {other:?}"),
+                ));
+            }
+        }
+    }
+    let _applied = primitive.activate_byte_compatible("zcjournal-sink")?;
+    let start = Instant::now();
+    let stdin = io::stdin();
+    let stats = zcjournal_sink_with_io(BufReader::new(stdin.lock()), require_transport)?;
+    let secs = start.elapsed().as_secs_f64();
+    let refs = stats.extent_refs.saturating_add(stats.composite_refs);
+    eprintln!(
+        "zcjournal-sink-result: extent_refs={} composite_refs={} refs={} logical_records={} logical_bytes={} input_bytes={} seconds={secs:.6} refs_per_sec={:.2} logical_records_per_sec={:.2} logical_4k_iops={:.2} logical_Gbitps={:.2}",
+        stats.extent_refs,
+        stats.composite_refs,
+        refs,
+        stats.logical_records,
+        stats.logical_bytes,
+        stats.input_bytes,
+        refs as f64 / secs.max(1e-9),
+        stats.logical_records as f64 / secs.max(1e-9),
+        stats.logical_bytes as f64 / 4096.0 / secs.max(1e-9),
+        (stats.logical_bytes as f64 * 8.0 / 1_000_000_000.0) / secs.max(1e-9)
+    );
+    Ok(())
+}
+
+#[inline(always)]
+fn zcjournal_mem_hash(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn zcjournal_mem_combine_build(
+    pairs: usize,
+    extent_bytes: usize,
+    record_bytes: usize,
+    lanes: usize,
+) -> io::Result<ZcJournalMemStore> {
+    if pairs == 0 || extent_bytes == 0 || record_bytes == 0 || lanes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcjournal mem-combine counts, extent bytes, record bytes, and lanes must be non-zero",
+        ));
+    }
+    if extent_bytes % record_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--extent-bytes must be an integer multiple of --record-bytes",
+        ));
+    }
+    if pairs > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcjournal mem-combine --pairs must fit in u32 descriptor indices",
+        ));
+    }
+    let records_per_extent = u32::try_from(extent_bytes / record_bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcjournal mem-combine records per extent does not fit in u32",
+        )
+    })?;
+    let records_per_composite = records_per_extent.checked_mul(2).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcjournal mem-combine composite record count overflow",
+        )
+    })?;
+    let pairs_u64 = u64::try_from(pairs).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcjournal mem-combine --pairs does not fit in u64",
+        )
+    })?;
+    let record_bytes_u64 = u64::try_from(record_bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcjournal mem-combine --record-bytes does not fit in u64",
+        )
+    })?;
+    let logical_records = pairs_u64
+        .checked_mul(u64::from(records_per_composite))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcjournal mem-combine logical record overflow",
+            )
+        })?;
+    let logical_bytes = logical_records
+        .checked_mul(record_bytes_u64)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcjournal mem-combine logical byte overflow",
+            )
+        })?;
+
+    let mut left_stream = Vec::with_capacity(pairs);
+    let mut right_stream = Vec::with_capacity(pairs);
+    let mut composites = Vec::with_capacity(pairs);
+    let mut build_checksum = 0u64;
+    let lanes_u64 = lanes as u64;
+    for pair in 0..pairs {
+        let pair_u64 = pair as u64;
+        let base_record = pair_u64
+            .checked_mul(u64::from(records_per_composite))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "zcjournal mem-combine base record overflow",
+                )
+            })?;
+        let left_checksum = zcjournal_mem_hash(
+            pair_u64 ^ (u64::from(records_per_extent) << 32) ^ ((pair_u64 % lanes_u64) << 48),
+        );
+        let right_checksum = zcjournal_mem_hash(
+            pair_u64
+                ^ 0xd1b5_4a32_d192_ed03
+                ^ (u64::from(records_per_extent) << 32)
+                ^ (((pair_u64 + 1) % lanes_u64) << 48),
+        );
+        left_stream.push(ZcJournalMemExtent {
+            lane_id: (pair_u64 % lanes_u64) as u32,
+            sequence: pair_u64,
+            offset_records: base_record,
+            records: records_per_extent,
+            checksum: left_checksum,
+        });
+        right_stream.push(ZcJournalMemExtent {
+            lane_id: ((pair_u64 + 1) % lanes_u64) as u32,
+            sequence: pair_u64,
+            offset_records: base_record + u64::from(records_per_extent),
+            records: records_per_extent,
+            checksum: right_checksum,
+        });
+        let checksum = left_checksum.wrapping_add(right_checksum);
+        composites.push(ZcJournalMemComposite {
+            left_index: pair as u32,
+            right_index: pair as u32,
+            base_record,
+            records: records_per_composite,
+            checksum,
+        });
+        build_checksum = build_checksum.wrapping_add(checksum);
+    }
+
+    Ok(ZcJournalMemStore {
+        left_stream,
+        right_stream,
+        composites,
+        record_bytes: record_bytes_u64,
+        records_per_extent,
+        records_per_composite,
+        logical_records,
+        logical_bytes,
+        build_checksum,
+    })
+}
+
+#[inline(always)]
+fn zcjournal_mem_resolve_record(store: &ZcJournalMemStore, logical_record: u64) -> u64 {
+    let normalized = logical_record % store.logical_records;
+    let records_per_composite = u64::from(store.records_per_composite);
+    let composite_index = (normalized / records_per_composite) as usize;
+    let within_composite = normalized % records_per_composite;
+    // The normalized record bounds the composite index; child indices are built
+    // from the same pair count. Avoiding checked indexing keeps this benchmark
+    // focused on descriptor resolution instead of bounds-check overhead.
+    let composite = unsafe { *store.composites.get_unchecked(composite_index) };
+    let records_per_extent = u64::from(store.records_per_extent);
+    let (extent, local_record, stream_bit) = if within_composite < records_per_extent {
+        (
+            unsafe {
+                *store
+                    .left_stream
+                    .get_unchecked(composite.left_index as usize)
+            },
+            within_composite,
+            0u64,
+        )
+    } else {
+        (
+            unsafe {
+                *store
+                    .right_stream
+                    .get_unchecked(composite.right_index as usize)
+            },
+            within_composite - records_per_extent,
+            1u64,
+        )
+    };
+    debug_assert!(local_record < u64::from(extent.records));
+    debug_assert!(within_composite < u64::from(composite.records));
+    let absolute_record = extent.offset_records + local_record;
+    composite.checksum
+        ^ extent.checksum.rotate_left((local_record as u32) & 31)
+        ^ zcjournal_mem_hash(
+            absolute_record
+                ^ composite.base_record.rotate_left(7)
+                ^ store.record_bytes.rotate_left(13)
+                ^ u64::from(extent.lane_id).rotate_left(19)
+                ^ extent.sequence.rotate_left(23)
+                ^ stream_bit,
+        )
+}
+
+fn zcjournal_mem_partition_range(total: u64, worker: usize, workers: usize) -> (u64, u64) {
+    let total = total as u128;
+    let worker = worker as u128;
+    let workers = workers as u128;
+    let start = (total * worker / workers) as u64;
+    let end = (total * (worker + 1) / workers) as u64;
+    (start, end)
+}
+
+fn zcjournal_mem_process_range(
+    store: &ZcJournalMemStore,
+    start: u64,
+    end: u64,
+) -> ZcJournalMemFulfillStats {
+    let mut checksum = 0u64;
+    for record in start..end {
+        checksum = checksum.wrapping_add(std::hint::black_box(zcjournal_mem_resolve_record(
+            store, record,
+        )));
+    }
+    ZcJournalMemFulfillStats {
+        reads: end.saturating_sub(start),
+        checksum,
+        baton_handoffs: 0,
+    }
+}
+
+fn zcjournal_mem_join_fulfill_workers(
+    handles: Vec<thread::JoinHandle<ZcJournalMemFulfillStats>>,
+) -> io::Result<ZcJournalMemFulfillStats> {
+    let mut total = ZcJournalMemFulfillStats::default();
+    for handle in handles {
+        total.add(
+            handle
+                .join()
+                .map_err(|_| io::Error::other("zcjournal mem-combine worker panicked"))?,
+        );
+    }
+    Ok(total)
+}
+
+fn zcjournal_mem_fulfill_local(
+    store: Arc<ZcJournalMemStore>,
+    reads: u64,
+    workers: usize,
+) -> io::Result<(ZcJournalMemFulfillStats, f64)> {
+    let workers = workers.max(1);
+    let barrier = Arc::new(Barrier::new(workers + 1));
+    let mut handles = Vec::with_capacity(workers);
+    for worker in 0..workers {
+        let store_for_thread = Arc::clone(&store);
+        let barrier_for_thread = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            let (start, end) = zcjournal_mem_partition_range(reads, worker, workers);
+            barrier_for_thread.wait();
+            zcjournal_mem_process_range(&store_for_thread, start, end)
+        }));
+    }
+    let start = Instant::now();
+    barrier.wait();
+    let stats = zcjournal_mem_join_fulfill_workers(handles)?;
+    Ok((stats, start.elapsed().as_secs_f64()))
+}
+
+fn zcjournal_mem_fulfill_atomic(
+    store: Arc<ZcJournalMemStore>,
+    reads: u64,
+    workers: usize,
+    queue_batch: u64,
+) -> io::Result<(ZcJournalMemFulfillStats, f64)> {
+    let workers = workers.max(1);
+    let queue_batch = queue_batch.max(1);
+    let cursor = Arc::new(AtomicU64::new(0));
+    let barrier = Arc::new(Barrier::new(workers + 1));
+    let mut handles = Vec::with_capacity(workers);
+    for _worker in 0..workers {
+        let store_for_thread = Arc::clone(&store);
+        let cursor_for_thread = Arc::clone(&cursor);
+        let barrier_for_thread = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            let mut stats = ZcJournalMemFulfillStats::default();
+            barrier_for_thread.wait();
+            loop {
+                let start = cursor_for_thread.fetch_add(queue_batch, Ordering::Relaxed);
+                if start >= reads {
+                    break;
+                }
+                let end = start.saturating_add(queue_batch).min(reads);
+                stats.add(zcjournal_mem_process_range(&store_for_thread, start, end));
+            }
+            stats
+        }));
+    }
+    let start = Instant::now();
+    barrier.wait();
+    let stats = zcjournal_mem_join_fulfill_workers(handles)?;
+    Ok((stats, start.elapsed().as_secs_f64()))
+}
+
+fn zcjournal_mem_fulfill_baton(
+    store: Arc<ZcJournalMemStore>,
+    reads: u64,
+    workers: usize,
+    wave_records: u64,
+) -> io::Result<(ZcJournalMemFulfillStats, f64)> {
+    let workers = workers.max(1);
+    let wave_records = wave_records.max(1);
+    let total_waves = reads.div_ceil(wave_records);
+    if total_waves == 0 {
+        return Ok((ZcJournalMemFulfillStats::default(), 0.0));
+    }
+    let active_batons = workers.min(usize::try_from(total_waves).unwrap_or(usize::MAX));
+    let slots = Arc::new(
+        (0..workers)
+            .map(|worker| {
+                if worker < active_batons {
+                    AtomicU64::new(worker as u64 + 1)
+                } else {
+                    AtomicU64::new(0)
+                }
+            })
+            .collect::<Vec<_>>(),
+    );
+    let completed_batons = Arc::new(AtomicU64::new(0));
+    let barrier = Arc::new(Barrier::new(workers + 1));
+    let mut handles = Vec::with_capacity(workers);
+    for worker in 0..workers {
+        let store_for_thread = Arc::clone(&store);
+        let slots_for_thread = Arc::clone(&slots);
+        let completed_for_thread = Arc::clone(&completed_batons);
+        let barrier_for_thread = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            let mut stats = ZcJournalMemFulfillStats::default();
+            barrier_for_thread.wait();
+            loop {
+                let raw = slots_for_thread[worker].swap(0, Ordering::Acquire);
+                if raw == 0 {
+                    if completed_for_thread.load(Ordering::Acquire) >= active_batons as u64 {
+                        break;
+                    }
+                    std::hint::spin_loop();
+                    continue;
+                }
+                let wave = raw - 1;
+                let start = wave.saturating_mul(wave_records);
+                if start < reads {
+                    let end = start.saturating_add(wave_records).min(reads);
+                    stats.add(zcjournal_mem_process_range(&store_for_thread, start, end));
+                }
+                let next_wave = wave.saturating_add(active_batons as u64);
+                if next_wave < total_waves {
+                    let target = (worker + 1) % workers;
+                    while slots_for_thread[target].load(Ordering::Acquire) != 0 {
+                        std::hint::spin_loop();
+                    }
+                    slots_for_thread[target].store(next_wave + 1, Ordering::Release);
+                    stats.baton_handoffs = stats.baton_handoffs.saturating_add(1);
+                } else {
+                    completed_for_thread.fetch_add(1, Ordering::AcqRel);
+                }
+            }
+            stats
+        }));
+    }
+    let start = Instant::now();
+    barrier.wait();
+    let stats = zcjournal_mem_join_fulfill_workers(handles)?;
+    Ok((stats, start.elapsed().as_secs_f64()))
+}
+
+fn zcjournal_mem_combine_bench(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut pairs = 1_000_000usize;
+    let mut extent_bytes = 64 * 1024usize;
+    let mut record_bytes = 4096usize;
+    let mut workers = online_cpu_count().max(1);
+    let mut lanes = workers;
+    let mut queue_modes = vec![
+        ZcJournalMemQueueMode::Local,
+        ZcJournalMemQueueMode::Baton,
+        ZcJournalMemQueueMode::Atomic,
+    ];
+    let mut queue_batch = 256u64;
+    let mut wave_records = 8192u64;
+    let mut rounds = 1u64;
+    let mut reads = None::<u64>;
+    let mut primitive = ZcPrimitiveTopology::with_ordered(ZcPrimitiveOrdering::PerLane);
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
+            "--pairs" | "--extent-pairs" | "--composites" => {
+                pairs = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--extent-bytes" | "--segment-bytes" => {
+                extent_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--record-bytes" | "--logical-record-bytes" => {
+                record_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--workers" => {
+                workers = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--lanes" => lanes = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?,
+            "--queue-mode" | "--mode" => {
+                queue_modes = ZcJournalMemQueueMode::parse(&next_flag_value(&mut args, &arg)?)?
+            }
+            "--queue-batch" | "--atomic-batch" => {
+                queue_batch = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--wave-records" | "--baton-wave-records" => {
+                wave_records = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--rounds" => {
+                rounds = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--reads" | "--logical-reads" => {
+                reads = Some(parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1))
+            }
+            "--help" | "-h" => {
+                eprintln!(
+                    "usage: zcjournal mem-combine-bench [--pairs N] [--extent-bytes 64k] [--record-bytes 4k] [--workers N] [--queue-mode local|baton|atomic|all] [--queue-batch N] [--wave-records N] [--rounds N|--reads N]"
+                );
+                return Ok(());
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcjournal mem-combine-bench option {other:?}"),
+                ));
+            }
+        }
+    }
+    if let Some(common_lanes) = primitive.lane_count {
+        lanes = usize::try_from(common_lanes).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcjournal mem-combine primitive lane count does not fit in usize",
+            )
+        })?;
+    }
+    lanes = lanes.max(1);
+    let _applied = primitive.activate_byte_compatible("zcjournal-mem-combine")?;
+    let build_start = Instant::now();
+    let store = zcjournal_mem_combine_build(pairs, extent_bytes, record_bytes, lanes)?;
+    let build_secs = build_start.elapsed().as_secs_f64();
+    let requested_reads = match reads {
+        Some(value) => value,
+        None => store.logical_records.checked_mul(rounds).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcjournal mem-combine requested read count overflow",
+            )
+        })?,
+    };
+    let extent_refs = pairs.checked_mul(2).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcjournal mem-combine extent ref count overflow",
+        )
+    })?;
+    let extent_table_bytes = extent_refs
+        .checked_mul(std::mem::size_of::<ZcJournalMemExtent>())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcjournal mem-combine extent table byte overflow",
+            )
+        })?;
+    let composite_table_bytes = pairs
+        .checked_mul(std::mem::size_of::<ZcJournalMemComposite>())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcjournal mem-combine composite table byte overflow",
+            )
+        })?;
+    eprintln!(
+        "zcjournal-mem-combine-build-result: streams=2 pairs={} extent_refs={} composite_refs={} lanes={} extent_bytes={} record_bytes={} records_per_extent={} records_per_composite={} logical_records={} logical_bytes={} extent_table_bytes={} composite_table_bytes={} payload=descriptor-only copy_bytes=0 checksum={} seconds={build_secs:.6} extent_refs_per_sec={:.2} composite_refs_per_sec={:.2}",
+        pairs,
+        extent_refs,
+        pairs,
+        lanes,
+        extent_bytes,
+        record_bytes,
+        store.records_per_extent,
+        store.records_per_composite,
+        store.logical_records,
+        store.logical_bytes,
+        extent_table_bytes,
+        composite_table_bytes,
+        store.build_checksum,
+        extent_refs as f64 / build_secs.max(1e-9),
+        pairs as f64 / build_secs.max(1e-9),
+    );
+
+    let store = Arc::new(store);
+    let mut expected_checksum = None::<u64>;
+    for mode in queue_modes {
+        let (stats, secs) = match mode {
+            ZcJournalMemQueueMode::Local => {
+                zcjournal_mem_fulfill_local(Arc::clone(&store), requested_reads, workers)?
+            }
+            ZcJournalMemQueueMode::Baton => zcjournal_mem_fulfill_baton(
+                Arc::clone(&store),
+                requested_reads,
+                workers,
+                wave_records,
+            )?,
+            ZcJournalMemQueueMode::Atomic => zcjournal_mem_fulfill_atomic(
+                Arc::clone(&store),
+                requested_reads,
+                workers,
+                queue_batch,
+            )?,
+        };
+        if let Some(expected) = expected_checksum {
+            if stats.checksum != expected {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcjournal mem-combine checksum mismatch in mode {}: got {} expected {}",
+                        mode.label(),
+                        stats.checksum,
+                        expected
+                    ),
+                ));
+            }
+        } else {
+            expected_checksum = Some(stats.checksum);
+        }
+        let logical_bytes = stats.reads.checked_mul(store.record_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcjournal mem-combine fulfill byte overflow",
+            )
+        })?;
+        eprintln!(
+            "zcjournal-mem-combine-fulfill-result: queue_mode={} exposure=brd-fulfiller-queue-sim streams=2 workers={} pairs={} reads={} record_bytes={} logical_bytes={} seconds={secs:.6} records_per_sec={:.2} logical_4k_iops={:.2} logical_Gbitps={:.2} queue_batch={} wave_records={} baton_handoffs={} checksum={} copy_bytes=0",
+            mode.label(),
+            workers,
+            pairs,
+            stats.reads,
+            store.record_bytes,
+            logical_bytes,
+            stats.reads as f64 / secs.max(1e-9),
+            logical_bytes as f64 / 4096.0 / secs.max(1e-9),
+            logical_bytes as f64 * 8.0 / 1_000_000_000.0 / secs.max(1e-9),
+            queue_batch,
+            wave_records,
+            stats.baton_handoffs,
+            stats.checksum,
+        );
+    }
+    Ok(())
+}
+
+fn zcjournal(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut args = args.peekable();
+    let subcommand = match args.peek() {
+        Some(value) if !value.starts_with('-') => args.next().unwrap(),
+        _ => "join".to_string(),
+    };
+    match subcommand.as_str() {
+        "emit" | "gen" | "generate" => zcjournal_emit(args),
+        "join" | "fanin" | "fan-in" => zcjournal_join(args),
+        "sink" | "count" => zcjournal_sink(args),
+        "mem-combine-bench" | "mem-combine" | "combine-bench" | "brd-fulfill-bench" => {
+            zcjournal_mem_combine_bench(args)
+        }
+        "help" | "--help" | "-h" => {
+            eprintln!(
+                "usage: zcjournal <emit|join|sink|mem-combine-bench>\n\
+                 zcjournal emit --groups N --stripe-count N\n\
+                 zcjournal join --fan-in N\n\
+                 zcjournal sink\n\
+                 zcjournal mem-combine-bench --queue-mode all"
+            );
+            Ok(())
+        }
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "unknown zcjournal subcommand {other:?}; use emit, join, sink, or mem-combine-bench"
+            ),
+        )),
+    }
+}
+
 fn zcsnap(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut snapshot_id = None::<String>;
     let mut manifest = None::<PathBuf>;
     let mut cut_at_bytes = None::<u64>;
     let mut buffer_bytes = 1024 * 1024usize;
     let mut pass_through = true;
-    let mut ordered = ZcSnapOrdered::PerLane;
-    let mut lane_id = None::<u64>;
-    let mut lane_count = None::<u64>;
+    let mut primitive = ZcPrimitiveTopology::with_ordered(ZcPrimitiveOrdering::PerLane);
     let mut wal_epoch = 0u64;
     let mut base_logical_index = 0u64;
     let mut logical_record_bytes = 4096u64;
@@ -26526,6 +29983,7 @@ fn zcsnap(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--id" | "--snapshot-id" => snapshot_id = Some(next_flag_value(&mut args, &arg)?),
             "--manifest" | "-m" => {
                 manifest = Some(PathBuf::from(next_flag_value(&mut args, &arg)?))
@@ -26540,13 +29998,6 @@ fn zcsnap(args: impl Iterator<Item = String>) -> io::Result<()> {
                 pass_through = parse_bool_arg(&next_flag_value(&mut args, &arg)?, &arg)?
             }
             "--no-pass-through" => pass_through = false,
-            "--ordered" => ordered = ZcSnapOrdered::parse(&next_flag_value(&mut args, &arg)?)?,
-            "--lane-id" => {
-                lane_id = Some(parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?)
-            }
-            "--lane-count" => {
-                lane_count = Some(parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?)
-            }
             "--wal-epoch" => wal_epoch = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?,
             "--base-logical-index" => {
                 base_logical_index = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?
@@ -26555,15 +30006,6 @@ fn zcsnap(args: impl Iterator<Item = String>) -> io::Result<()> {
                 logical_record_bytes = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?
             }
             "--require-record-aligned" => require_record_aligned = true,
-            "--descriptor-mode" => {
-                let mode = next_flag_value(&mut args, "--descriptor-mode")?;
-                if mode != "auto" && mode != "bytes" {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--descriptor-mode currently accepts auto or bytes",
-                    ));
-                }
-            }
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -26584,14 +30026,7 @@ fn zcsnap(args: impl Iterator<Item = String>) -> io::Result<()> {
             "zcsnap logical record bytes must be non-zero",
         ));
     }
-    if let (Some(lane_id), Some(lane_count)) = (lane_id, lane_count) {
-        if lane_count == 0 || lane_id >= lane_count {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("zcsnap lane-id={lane_id} must be less than lane-count={lane_count}"),
-            ));
-        }
-    }
+    primitive.activate_byte_compatible("zcsnap")?;
 
     let snapshot_id = snapshot_id.map_or_else(zcsnap_default_id, Ok)?;
     let created_unix_nanos = zcsnap_unix_nanos()?;
@@ -26656,9 +30091,19 @@ fn zcsnap(args: impl Iterator<Item = String>) -> io::Result<()> {
     let cut_manifest = ZcSnapCut {
         snapshot_id,
         created_unix_nanos,
-        ordered,
-        lane_id,
-        lane_count,
+        descriptor_mode: primitive.descriptor_mode,
+        zero_copy: primitive.zero_copy,
+        preserve_lanes: primitive.preserve_lanes,
+        preserve_topology: primitive.preserve_topology,
+        topology: primitive.topology.clone(),
+        ordered: primitive.ordered,
+        lane_id: primitive.lane_id,
+        lane_count: primitive.lane_count,
+        queue_id: primitive.queue_id,
+        preferred_worker: primitive.effective_preferred_worker(),
+        lane_map: primitive.lane_map.clone(),
+        preferred_cpu: primitive.preferred_cpu,
+        numa_node: primitive.numa_node,
         wal_epoch,
         base_logical_index,
         logical_record_bytes,
@@ -26678,7 +30123,7 @@ fn zcsnap(args: impl Iterator<Item = String>) -> io::Result<()> {
         zcsnap_write_manifest(io::stderr().lock(), &cut_manifest)?;
     }
     eprintln!(
-        "zcsnap-result: snapshot_id={} cut_bytes={} cut_chunks={} total_bytes={} total_chunks={} ordered={} wal_epoch={} manifest={}",
+        "zcsnap-result: snapshot_id={} cut_bytes={} cut_chunks={} total_bytes={} total_chunks={} ordered={} wal_epoch={} manifest={} {}",
         cut_manifest.snapshot_id,
         cut_manifest.cut_bytes,
         cut_manifest.cut_chunks,
@@ -26686,7 +30131,8 @@ fn zcsnap(args: impl Iterator<Item = String>) -> io::Result<()> {
         cut_manifest.total_chunks,
         cut_manifest.ordered.label(),
         cut_manifest.wal_epoch,
-        manifest_label
+        manifest_label,
+        primitive.log_fields()
     );
     Ok(())
 }
@@ -26701,6 +30147,172 @@ struct ZcForwardBranch {
 struct ZcForwardBranchStats {
     bytes: u64,
     chunks: u64,
+}
+
+struct ZcForwardChannelReader {
+    rx: mpsc::Receiver<Arc<Vec<u8>>>,
+    current: Option<Arc<Vec<u8>>>,
+    offset: usize,
+    stats: ZcForwardBranchStats,
+}
+
+impl ZcForwardChannelReader {
+    fn new(rx: mpsc::Receiver<Arc<Vec<u8>>>) -> Self {
+        Self {
+            rx,
+            current: None,
+            offset: 0,
+            stats: ZcForwardBranchStats::default(),
+        }
+    }
+}
+
+impl Read for ZcForwardChannelReader {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.current.is_none() {
+                match self.rx.recv() {
+                    Ok(chunk) => {
+                        self.stats.chunks = self.stats.chunks.checked_add(1).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "zcforward chunk count overflow",
+                            )
+                        })?;
+                        self.current = Some(chunk);
+                        self.offset = 0;
+                    }
+                    Err(_) => return Ok(0),
+                }
+            }
+
+            let Some(chunk) = self.current.as_ref() else {
+                continue;
+            };
+            if self.offset >= chunk.len() {
+                self.current = None;
+                self.offset = 0;
+                continue;
+            }
+
+            let n = out.len().min(chunk.len() - self.offset);
+            out[..n].copy_from_slice(&chunk[self.offset..self.offset + n]);
+            self.offset += n;
+            self.stats.bytes = self.stats.bytes.checked_add(n as u64).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcforward byte count overflow")
+            })?;
+            if self.offset >= chunk.len() {
+                self.current = None;
+                self.offset = 0;
+            }
+            return Ok(n);
+        }
+    }
+}
+
+struct ZcForwardTcpmuxTarget {
+    peer_address: String,
+    port: u16,
+    local_data_address: Option<String>,
+    token: Option<String>,
+    encryption: ZcTcpmuxEncryption,
+    already_encrypted: bool,
+    buffer_bytes: usize,
+}
+
+struct ZcForwardTcpmuxSource {
+    listen_address: String,
+    port: u16,
+    token: Option<String>,
+    encryption: ZcTcpmuxEncryption,
+    already_encrypted: bool,
+    buffer_bytes: usize,
+    ready_stderr: bool,
+}
+
+struct ZcForwardFanoutStats {
+    bytes: u64,
+    chunks: u64,
+    branch_total: u64,
+    branch_labels: Vec<String>,
+}
+
+struct ZcForwardFanout {
+    branches: Vec<ZcForwardBranch>,
+    total: u64,
+    chunks: u64,
+}
+
+impl ZcForwardFanout {
+    fn new(branches: Vec<ZcForwardBranch>) -> Self {
+        Self {
+            branches,
+            total: 0,
+            chunks: 0,
+        }
+    }
+
+    fn finish(self) -> io::Result<ZcForwardFanoutStats> {
+        let branch_labels = self
+            .branches
+            .iter()
+            .map(|branch| branch.label.clone())
+            .collect::<Vec<_>>();
+        let mut branch_total = 0u64;
+        for branch in self.branches {
+            drop(branch.tx);
+            let stats = branch.handle.join().map_err(|_| {
+                io::Error::other(format!("zcforward branch {} panicked", branch.label))
+            })??;
+            eprintln!(
+                "zcforward-branch-result: branch={} bytes={} chunks={}",
+                branch.label, stats.bytes, stats.chunks
+            );
+            branch_total = branch_total.checked_add(stats.bytes).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcforward branch total overflow",
+                )
+            })?;
+        }
+        Ok(ZcForwardFanoutStats {
+            bytes: self.total,
+            chunks: self.chunks,
+            branch_total,
+            branch_labels,
+        })
+    }
+}
+
+impl Write for ZcForwardFanout {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if data.is_empty() {
+            return Ok(0);
+        }
+        let chunk = Arc::new(data.to_vec());
+        for branch in &self.branches {
+            branch.tx.send(Arc::clone(&chunk)).map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("zcforward branch {} exited: {err}", branch.label),
+                )
+            })?;
+        }
+        self.total = self.total.checked_add(data.len() as u64).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcforward byte count overflow")
+        })?;
+        self.chunks = self.chunks.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcforward chunk count overflow")
+        })?;
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn zcforward_writer_loop<W: Write>(
@@ -26721,12 +30333,18 @@ fn zcforward_writer_loop<W: Write>(
     Ok(stats)
 }
 
-fn zcforward_spawn_command_branch(command: String, queue_depth: usize) -> ZcForwardBranch {
+fn zcforward_spawn_command_branch(
+    command: String,
+    queue_depth: usize,
+    primitive: ZcPrimitiveTopology,
+) -> ZcForwardBranch {
     let label = format!("cmd:{command}");
     let label_for_thread = label.clone();
     let (tx, rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(queue_depth);
     let handle = thread::spawn(move || {
-        let mut child = Command::new("sh")
+        let mut builder = Command::new("sh");
+        primitive.apply_child_env(&mut builder);
+        let mut child = builder
             .arg("-c")
             .arg(&command)
             .stdin(Stdio::piped())
@@ -26799,17 +30417,169 @@ fn zcforward_spawn_stdout_branch(queue_depth: usize) -> ZcForwardBranch {
     ZcForwardBranch { label, tx, handle }
 }
 
+fn zcforward_spawn_tcpmux_branch(
+    target: ZcForwardTcpmuxTarget,
+    queue_depth: usize,
+) -> ZcForwardBranch {
+    let label = format!(
+        "tcpmux:{}:{}:{}:{}",
+        target.peer_address,
+        target.port,
+        target.encryption.as_arg(),
+        if target.already_encrypted {
+            "already-encrypted"
+        } else {
+            "encrypt"
+        }
+    );
+    let label_for_thread = label.clone();
+    let (tx, rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(queue_depth);
+    let handle = thread::spawn(move || {
+        let mut reader = ZcForwardChannelReader::new(rx);
+        let bytes = zc_tcpmux_copy_reader_to_tcp(
+            &mut reader,
+            &target.peer_address,
+            target.port,
+            target.local_data_address.as_deref(),
+            target.token.as_deref(),
+            target.encryption,
+            target.already_encrypted,
+            target.buffer_bytes,
+        )?;
+        if bytes != reader.stats.bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcforward tcpmux byte mismatch copied={} read={}",
+                    bytes, reader.stats.bytes
+                ),
+            ));
+        }
+        Ok(reader.stats)
+    });
+    ZcForwardBranch {
+        label: label_for_thread,
+        tx,
+        handle,
+    }
+}
+
+fn zcforward_parse_tcpmux_source(value: &str) -> io::Result<(String, u16)> {
+    if let Some((host, port)) = value.rsplit_once(':') {
+        if host.is_empty() || port.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--from-tcpmux requires [HOST:]PORT",
+            ));
+        }
+        return Ok((host.to_string(), parse_u16_value(port, "--from-tcpmux")?));
+    }
+    Ok((
+        "0.0.0.0".to_string(),
+        parse_u16_value(value, "--from-tcpmux")?,
+    ))
+}
+
+fn zcforward_receive_tcpmux_to_fanout(
+    source: &ZcForwardTcpmuxSource,
+    fanout: &mut ZcForwardFanout,
+    ready_stdout_safe: bool,
+) -> io::Result<(u64, SocketAddr)> {
+    let listeners = zc_tcpmux_bind_listeners_on_addresses(
+        &[source.listen_address.clone()],
+        (source.port, source.port),
+        1,
+    )?;
+    let listener = listeners.into_iter().next().expect("one listener");
+    let ready_port = listener.local_addr()?.port();
+    let ready_line = format!(
+        "ZC_TCPMUX_READY listen_address={} listen_addresses={} port={} ports={} lanes=1 authentication={} encryption={}",
+        source.listen_address,
+        source.listen_address,
+        ready_port,
+        ready_port,
+        if source.token.is_some() {
+            "token"
+        } else {
+            "disabled"
+        },
+        source.encryption.as_arg()
+    );
+    if source.ready_stderr || !ready_stdout_safe {
+        eprintln!("{ready_line}");
+    } else {
+        println!("{ready_line}");
+        io::stdout().flush()?;
+    }
+    eprintln!(
+        "zcforward-source-topology: source=tcpmux lane=0 receiver_cpu={} receiver_numa_node={}",
+        current_cpu_usize().map(|cpu| cpu as i32).unwrap_or(-1),
+        current_cpu_usize().and_then(cpu_numa_node).unwrap_or(-1)
+    );
+    let (stream, peer) = listener.accept()?;
+    let bytes = zc_tcpmux_copy_tcp_to_writer(
+        stream,
+        fanout,
+        source.token.as_deref(),
+        source.encryption,
+        source.already_encrypted,
+        source.buffer_bytes,
+    )?;
+    Ok((bytes, peer))
+}
+
 fn zcforward(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut commands = Vec::<String>::new();
+    let mut tcpmux_endpoints = Vec::<(String, u16)>::new();
     let mut outputs = Vec::<PathBuf>::new();
     let mut append = false;
     let mut write_stdout = false;
     let mut buffer_bytes = 1024 * 1024usize;
     let mut queue_depth = 4usize;
+    let mut tcpmux_source = None::<(String, u16)>;
+    let mut tcpmux_local_data_address = None::<String>;
+    let mut token = None::<String>;
+    let mut disable_authentication = false;
+    let mut encryption = ZcTcpmuxEncryption::Aes256;
+    let mut already_encrypted = false;
+    let mut ready_stderr = false;
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--to" => commands.push(next_flag_value(&mut args, "--to")?),
+            "--from-tcpmux" | "--listen-tcpmux" => {
+                tcpmux_source = Some(zcforward_parse_tcpmux_source(&next_flag_value(
+                    &mut args, &arg,
+                )?)?)
+            }
+            "--to-tcpmux" => {
+                let endpoint = next_flag_value(&mut args, "--to-tcpmux")?;
+                let (host, port) = endpoint.split_once(':').ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--to-tcpmux requires HOST:PORT",
+                    )
+                })?;
+                if host.is_empty() || port.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--to-tcpmux requires HOST:PORT",
+                    ));
+                }
+                tcpmux_endpoints.push((host.to_string(), parse_u16_value(port, "--to-tcpmux")?));
+            }
+            "--local-data-address" | "--send-local-address" | "--source-address" => {
+                tcpmux_local_data_address = Some(next_flag_value(&mut args, &arg)?)
+            }
+            "--token" => token = Some(next_flag_value(&mut args, &arg)?),
+            "--disable-authentication" => disable_authentication = true,
+            "--encryption" => {
+                encryption = ZcTcpmuxEncryption::parse(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--already-encrypted" => already_encrypted = true,
+            "--ready-stderr" => ready_stderr = true,
             "--output" | "-o" => outputs.push(PathBuf::from(next_flag_value(&mut args, &arg)?)),
             "--append" => append = true,
             "--stdout" => {
@@ -26821,16 +30591,6 @@ fn zcforward(args: impl Iterator<Item = String>) -> io::Result<()> {
             "--queue-depth" => {
                 queue_depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
             }
-            "--preserve-lanes" | "--preserve-topology" | "--already-encrypted" => {}
-            "--descriptor-mode" => {
-                let mode = next_flag_value(&mut args, "--descriptor-mode")?;
-                if mode != "auto" && mode != "bytes" {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--descriptor-mode currently accepts auto or bytes",
-                    ));
-                }
-            }
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -26839,18 +30599,64 @@ fn zcforward(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
+    primitive.activate_byte_compatible("zcforward")?;
+    if !tcpmux_endpoints.is_empty() || tcpmux_source.is_some() {
+        if disable_authentication && token.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot combine --token and --disable-authentication",
+            ));
+        }
+        if disable_authentication && encryption.requires_token() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--disable-authentication requires --encryption none",
+            ));
+        }
+        if already_encrypted && encryption != ZcTcpmuxEncryption::Aes256 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--already-encrypted requires --encryption aes-256",
+            ));
+        }
+        if !disable_authentication && token.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcforward tcpmux paths require --token or --disable-authentication",
+            ));
+        }
+    }
 
-    let branch_count = commands.len() + outputs.len() + usize::from(write_stdout);
+    let branch_count =
+        commands.len() + tcpmux_endpoints.len() + outputs.len() + usize::from(write_stdout);
     if branch_count == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "zcforward requires --to, --output, or --stdout true",
+            "zcforward requires --to, --to-tcpmux, --output, or --stdout true",
         ));
     }
 
     let mut branches = Vec::<ZcForwardBranch>::with_capacity(branch_count);
     for command in commands {
-        branches.push(zcforward_spawn_command_branch(command, queue_depth));
+        branches.push(zcforward_spawn_command_branch(
+            command,
+            queue_depth,
+            primitive.clone(),
+        ));
+    }
+    for (peer_address, port) in tcpmux_endpoints {
+        branches.push(zcforward_spawn_tcpmux_branch(
+            ZcForwardTcpmuxTarget {
+                peer_address,
+                port,
+                local_data_address: tcpmux_local_data_address.clone(),
+                token: token.clone(),
+                encryption,
+                already_encrypted,
+                buffer_bytes,
+            },
+            queue_depth,
+        ));
     }
     for output in outputs {
         branches.push(zcforward_spawn_file_branch(output, append, queue_depth));
@@ -26860,64 +30666,57 @@ fn zcforward(args: impl Iterator<Item = String>) -> io::Result<()> {
     }
 
     let started = Instant::now();
-    let mut input = io::stdin().lock();
-    let mut total = 0u64;
-    let mut chunks = 0u64;
-    loop {
-        let mut data = vec![0u8; buffer_bytes.max(4096)];
-        let n = input.read(&mut data)?;
-        if n == 0 {
-            break;
-        }
-        data.truncate(n);
-        let chunk = Arc::new(data);
-        for branch in &branches {
-            branch.tx.send(Arc::clone(&chunk)).map_err(|err| {
-                io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    format!("zcforward branch {} exited: {err}", branch.label),
-                )
-            })?;
-        }
-        total = total.checked_add(n as u64).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "zcforward byte count overflow")
-        })?;
-        chunks = chunks.checked_add(1).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "zcforward chunk count overflow")
-        })?;
-    }
-
-    let branch_labels = branches
-        .iter()
-        .map(|branch| branch.label.clone())
-        .collect::<Vec<_>>();
-    let mut branch_handles = Vec::with_capacity(branches.len());
-    for branch in branches {
-        drop(branch.tx);
-        branch_handles.push((branch.label, branch.handle));
-    }
-    let mut branch_total = 0u64;
-    for (label, handle) in branch_handles {
-        let stats = handle
-            .join()
-            .map_err(|_| io::Error::other(format!("zcforward branch {label} panicked")))??;
-        eprintln!(
-            "zcforward-branch-result: branch={} bytes={} chunks={}",
-            label, stats.bytes, stats.chunks
-        );
-        branch_total = branch_total.checked_add(stats.bytes).ok_or_else(|| {
-            io::Error::new(
+    let mut fanout = ZcForwardFanout::new(branches);
+    if let Some((listen_address, port)) = tcpmux_source {
+        let source = ZcForwardTcpmuxSource {
+            listen_address,
+            port,
+            token: token.clone(),
+            encryption,
+            already_encrypted,
+            buffer_bytes,
+            ready_stderr,
+        };
+        let (bytes, peer) =
+            zcforward_receive_tcpmux_to_fanout(&source, &mut fanout, !write_stdout)?;
+        if bytes != fanout.total {
+            return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "zcforward branch total overflow",
-            )
-        })?;
+                format!(
+                    "zcforward tcpmux source byte mismatch copied={} fanout={}",
+                    bytes, fanout.total
+                ),
+            ));
+        }
+        eprintln!(
+            "zcforward-source-result: source=tcpmux peer={peer} bytes={bytes} encryption={} already_encrypted={}",
+            encryption.as_arg(),
+            already_encrypted
+        );
+    } else {
+        let mut input = io::stdin().lock();
+        let copied = zc_copy_plain_stream(&mut input, &mut fanout, buffer_bytes)?;
+        if copied != fanout.total {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcforward stdin byte mismatch copied={} fanout={}",
+                    copied, fanout.total
+                ),
+            ));
+        }
     }
+    let stats = fanout.finish()?;
     let secs = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
     eprintln!(
-        "zcforward-result: bytes={total} chunks={chunks} branches={} branch_bytes={branch_total} seconds={secs:.6} MiBps={:.2} branch_labels={}",
-        branch_labels.len(),
-        total as f64 / (1024.0 * 1024.0) / secs,
-        branch_labels.join(",")
+        "zcforward-result: bytes={} chunks={} branches={} branch_bytes={} seconds={secs:.6} MiBps={:.2} branch_labels={} {}",
+        stats.bytes,
+        stats.chunks,
+        stats.branch_labels.len(),
+        stats.branch_total,
+        stats.bytes as f64 / (1024.0 * 1024.0) / secs,
+        stats.branch_labels.join(","),
+        primitive.log_fields()
     );
     Ok(())
 }
@@ -26983,6 +30782,380 @@ impl ZcRaidMode {
             Self::Mirror => "mirror",
             Self::Raid10 => "raid10",
         }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ZcRaidLayout {
+    Leaf,
+    Stripe {
+        width: usize,
+        child: Box<ZcRaidLayout>,
+    },
+    Mirror {
+        copies: usize,
+        child: Box<ZcRaidLayout>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ZcRaidStripeMirrorPlan {
+    stripes: usize,
+    mirrors: usize,
+}
+
+impl ZcRaidLayout {
+    fn parse(value: &str) -> io::Result<Self> {
+        let mut parser = ZcRaidLayoutParser::new(value);
+        let layout = parser.parse_layout()?;
+        parser.skip_ws();
+        if !parser.is_eof() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unexpected zcraid layout suffix {:?} in {value:?}",
+                    parser.remaining()
+                ),
+            ));
+        }
+        layout.validate(value)?;
+        Ok(layout)
+    }
+
+    fn from_legacy(mode: ZcRaidMode, branches: usize, replicas: usize) -> Self {
+        match mode {
+            ZcRaidMode::Stripe => Self::Stripe {
+                width: branches,
+                child: Box::new(Self::Leaf),
+            },
+            ZcRaidMode::Mirror => Self::Mirror {
+                copies: branches,
+                child: Box::new(Self::Leaf),
+            },
+            ZcRaidMode::Raid10 => Self::Stripe {
+                width: branches,
+                child: Box::new(Self::Mirror {
+                    copies: replicas.max(1),
+                    child: Box::new(Self::Leaf),
+                }),
+            },
+        }
+    }
+
+    fn validate(&self, label: &str) -> io::Result<()> {
+        match self {
+            Self::Leaf => Ok(()),
+            Self::Stripe { width, child } => {
+                if *width == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("zcraid layout {label:?} has stripe width 0"),
+                    ));
+                }
+                child.validate(label)
+            }
+            Self::Mirror { copies, child } => {
+                if *copies == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("zcraid layout {label:?} has mirror copy count 0"),
+                    ));
+                }
+                child.validate(label)
+            }
+        }
+    }
+
+    fn leaf_count(&self) -> io::Result<usize> {
+        match self {
+            Self::Leaf => Ok(1),
+            Self::Stripe { width, child } => {
+                child.leaf_count()?.checked_mul(*width).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "zcraid layout leaf count overflow",
+                    )
+                })
+            }
+            Self::Mirror { copies, child } => {
+                child.leaf_count()?.checked_mul(*copies).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "zcraid layout leaf count overflow",
+                    )
+                })
+            }
+        }
+    }
+
+    fn writes_per_chunk(&self) -> io::Result<usize> {
+        match self {
+            Self::Leaf => Ok(1),
+            Self::Stripe { child, .. } => child.writes_per_chunk(),
+            Self::Mirror { copies, child } => child
+                .writes_per_chunk()?
+                .checked_mul(*copies)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "zcraid layout write fanout overflow",
+                    )
+                }),
+        }
+    }
+
+    fn route(&self, chunk_index: u64) -> io::Result<Vec<usize>> {
+        let mut route = Vec::with_capacity(self.writes_per_chunk()?);
+        self.route_into(chunk_index, 0, &mut route)?;
+        Ok(route)
+    }
+
+    fn stripe_mirror_plan(&self) -> Option<ZcRaidStripeMirrorPlan> {
+        match self {
+            Self::Leaf => Some(ZcRaidStripeMirrorPlan {
+                stripes: 1,
+                mirrors: 1,
+            }),
+            Self::Stripe { width, child } => match child.as_ref() {
+                Self::Leaf => Some(ZcRaidStripeMirrorPlan {
+                    stripes: *width,
+                    mirrors: 1,
+                }),
+                Self::Mirror { copies, child } if matches!(child.as_ref(), Self::Leaf) => {
+                    Some(ZcRaidStripeMirrorPlan {
+                        stripes: *width,
+                        mirrors: *copies,
+                    })
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn route_into(&self, chunk_index: u64, base: usize, out: &mut Vec<usize>) -> io::Result<()> {
+        match self {
+            Self::Leaf => {
+                out.push(base);
+                Ok(())
+            }
+            Self::Stripe { width, child } => {
+                let child_leaves = child.leaf_count()?;
+                let stripe = (chunk_index as usize) % *width;
+                let child_base = base
+                    .checked_add(stripe.checked_mul(child_leaves).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "zcraid stripe route overflow")
+                    })?)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "zcraid route overflow")
+                    })?;
+                child.route_into(chunk_index / *width as u64, child_base, out)
+            }
+            Self::Mirror { copies, child } => {
+                let child_leaves = child.leaf_count()?;
+                for copy in 0..*copies {
+                    let child_base = base
+                        .checked_add(copy.checked_mul(child_leaves).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "zcraid mirror route overflow",
+                            )
+                        })?)
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidInput, "zcraid route overflow")
+                        })?;
+                    child.route_into(chunk_index, child_base, out)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Self::Leaf => "leaf".to_string(),
+            Self::Stripe { width, child } if matches!(child.as_ref(), Self::Leaf) => {
+                format!("stripe({width})")
+            }
+            Self::Stripe { width, child } => format!("stripe({width},{})", child.describe()),
+            Self::Mirror { copies, child } if matches!(child.as_ref(), Self::Leaf) => {
+                format!("mirror({copies})")
+            }
+            Self::Mirror { copies, child } => format!("mirror({copies},{})", child.describe()),
+        }
+    }
+}
+
+struct ZcRaidLayoutParser<'a> {
+    input: &'a str,
+    pos: usize,
+}
+
+impl<'a> ZcRaidLayoutParser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self { input, pos: 0 }
+    }
+
+    fn is_eof(&self) -> bool {
+        self.pos >= self.input.len()
+    }
+
+    fn remaining(&self) -> &'a str {
+        &self.input[self.pos..]
+    }
+
+    fn skip_ws(&mut self) {
+        while let Some(ch) = self.peek_char() {
+            if ch.is_whitespace() {
+                self.pos += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.input[self.pos..].chars().next()
+    }
+
+    fn take_char(&mut self, expected: char) -> io::Result<()> {
+        self.skip_ws();
+        match self.peek_char() {
+            Some(ch) if ch == expected => {
+                self.pos += ch.len_utf8();
+                Ok(())
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "expected {expected:?} in zcraid layout near {:?}",
+                    self.remaining()
+                ),
+            )),
+        }
+    }
+
+    fn take_optional_char(&mut self, expected: char) -> bool {
+        self.skip_ws();
+        if self.peek_char() == Some(expected) {
+            self.pos += expected.len_utf8();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn parse_ident(&mut self) -> io::Result<String> {
+        self.skip_ws();
+        let start = self.pos;
+        while let Some(ch) = self.peek_char() {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                self.pos += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if self.pos == start {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "expected zcraid layout operator near {:?}",
+                    self.remaining()
+                ),
+            ));
+        }
+        Ok(self.input[start..self.pos].to_ascii_lowercase())
+    }
+
+    fn parse_count(&mut self) -> io::Result<usize> {
+        self.skip_ws();
+        let start = self.pos;
+        while let Some(ch) = self.peek_char() {
+            if ch.is_ascii_digit() || ch == '_' {
+                self.pos += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if self.pos == start {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("expected zcraid layout count near {:?}", self.remaining()),
+            ));
+        }
+        let raw = self.input[start..self.pos].replace('_', "");
+        parse_usize_value(&raw, "zcraid layout count")
+    }
+
+    fn parse_optional_child(&mut self) -> io::Result<ZcRaidLayout> {
+        if self.take_optional_char(',') {
+            self.parse_layout()
+        } else {
+            Ok(ZcRaidLayout::Leaf)
+        }
+    }
+
+    fn parse_layout(&mut self) -> io::Result<ZcRaidLayout> {
+        let ident = self.parse_ident()?;
+        if ident == "leaf" {
+            return Ok(ZcRaidLayout::Leaf);
+        }
+
+        self.take_char('(')?;
+        let layout = match ident.as_str() {
+            "stripe" | "raid0" | "raid" | "fanin" => {
+                let width = self.parse_count()?;
+                let child = self.parse_optional_child()?;
+                ZcRaidLayout::Stripe {
+                    width,
+                    child: Box::new(child),
+                }
+            }
+            "mirror" | "raid1" | "fanout" => {
+                let copies = self.parse_count()?;
+                let child = self.parse_optional_child()?;
+                ZcRaidLayout::Mirror {
+                    copies,
+                    child: Box::new(child),
+                }
+            }
+            "raid10" | "raidmirror" | "stripe-mirror" | "mirrored-stripe" => {
+                let width = self.parse_count()?;
+                self.take_char(',')?;
+                let copies = self.parse_count()?;
+                let child = self.parse_optional_child()?;
+                ZcRaidLayout::Stripe {
+                    width,
+                    child: Box::new(ZcRaidLayout::Mirror {
+                        copies,
+                        child: Box::new(child),
+                    }),
+                }
+            }
+            "mirrorraid" | "mirror-stripe" => {
+                let copies = self.parse_count()?;
+                self.take_char(',')?;
+                let width = self.parse_count()?;
+                let child = self.parse_optional_child()?;
+                ZcRaidLayout::Mirror {
+                    copies,
+                    child: Box::new(ZcRaidLayout::Stripe {
+                        width,
+                        child: Box::new(child),
+                    }),
+                }
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "unknown zcraid layout operator {other:?}; use stripe, mirror, fanout, fanin, raid10, or raidmirror"
+                    ),
+                ));
+            }
+        };
+        self.take_char(')')?;
+        Ok(layout)
     }
 }
 
@@ -27099,6 +31272,29 @@ fn zcraid_read_frame<R: Read>(reader: &mut R) -> io::Result<Option<(ZcRaidFrameH
     Ok(Some((header, data)))
 }
 
+fn zcraid_read_frame_header_skip_payload<R: Read + Seek>(
+    reader: &mut R,
+) -> io::Result<Option<ZcRaidFrameHeader>> {
+    let mut header_bytes = [0u8; ZCRAID_FRAME_HEADER_LEN];
+    match reader.read_exact(&mut header_bytes) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(err) => return Err(err),
+    }
+    let header = zcraid_decode_header(&header_bytes)?;
+    if header.flags & ZCRAID_FLAG_EOF != 0 {
+        if header.payload_len != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraid EOF frame carried payload",
+            ));
+        }
+        return Ok(Some(header));
+    }
+    reader.seek_relative(header.payload_len as i64)?;
+    Ok(Some(header))
+}
+
 fn zcraid_writer_loop<W: Write>(
     mut writer: W,
     rx: mpsc::Receiver<ZcRaidBranchItem>,
@@ -27124,12 +31320,18 @@ fn zcraid_writer_loop<W: Write>(
     Ok(stats)
 }
 
-fn zcraid_spawn_command_branch(command: String, queue_depth: usize) -> ZcRaidBranch {
+fn zcraid_spawn_command_branch(
+    command: String,
+    queue_depth: usize,
+    primitive: ZcPrimitiveTopology,
+) -> ZcRaidBranch {
     let label = format!("cmd:{command}");
     let label_for_thread = label.clone();
     let (tx, rx) = mpsc::sync_channel::<ZcRaidBranchItem>(queue_depth);
     let handle = thread::spawn(move || {
-        let mut child = Command::new("sh")
+        let mut builder = Command::new("sh");
+        primitive.apply_child_env(&mut builder);
+        let mut child = builder
             .arg("-c")
             .arg(&command)
             .stdin(Stdio::piped())
@@ -27166,7 +31368,12 @@ fn zcraid_spawn_command_branch(command: String, queue_depth: usize) -> ZcRaidBra
     }
 }
 
-fn zcraid_spawn_file_branch(path: PathBuf, append: bool, queue_depth: usize) -> ZcRaidBranch {
+fn zcraid_spawn_file_branch_with_capacity(
+    path: PathBuf,
+    append: bool,
+    queue_depth: usize,
+    buffer_capacity: usize,
+) -> ZcRaidBranch {
     let label = format!("file:{}", path.display());
     let label_for_thread = label.clone();
     let (tx, rx) = mpsc::sync_channel::<ZcRaidBranchItem>(queue_depth);
@@ -27183,13 +31390,17 @@ fn zcraid_spawn_file_branch(path: PathBuf, append: bool, queue_depth: usize) -> 
                     format!("open zcraid output {}: {err}", path.display()),
                 )
             })?;
-        zcraid_writer_loop(BufWriter::new(file), rx)
+        zcraid_writer_loop(BufWriter::with_capacity(buffer_capacity, file), rx)
     });
     ZcRaidBranch {
         label: label_for_thread,
         tx,
         handle,
     }
+}
+
+fn zcraid_spawn_file_branch(path: PathBuf, append: bool, queue_depth: usize) -> ZcRaidBranch {
+    zcraid_spawn_file_branch_with_capacity(path, append, queue_depth, 8 * 1024)
 }
 
 fn zcraid_spawn_stdout_branch(queue_depth: usize) -> ZcRaidBranch {
@@ -27209,9 +31420,12 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut mode = ZcRaidMode::Stripe;
     let mut replicas = None::<usize>;
     let mut checksum = false;
+    let mut layout = None::<ZcRaidLayout>;
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--to" => commands.push(next_flag_value(&mut args, "--to")?),
             "--output" | "-o" => outputs.push(PathBuf::from(next_flag_value(&mut args, &arg)?)),
             "--append" => append = true,
@@ -27225,6 +31439,9 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
                 queue_depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
             }
             "--mode" => mode = ZcRaidMode::parse(&next_flag_value(&mut args, "--mode")?)?,
+            "--shape" | "--layout" | "--raid-layout" => {
+                layout = Some(ZcRaidLayout::parse(&next_flag_value(&mut args, &arg)?)?)
+            }
             "--replicas" => {
                 replicas = Some(parse_usize_value(
                     &next_flag_value(&mut args, "--replicas")?,
@@ -27241,6 +31458,19 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
+    primitive.activate_byte_compatible("zcraid-split")?;
+    if chunk_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--chunk-bytes must be non-zero",
+        ));
+    }
+    if chunk_bytes > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--chunk-bytes must fit in a zcraid frame payload_len u32",
+        ));
+    }
 
     let branch_count = commands.len() + outputs.len() + usize::from(write_stdout);
     if branch_count == 0 {
@@ -27249,16 +31479,51 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
             "zcraid-split requires --to, --output, or --stdout true",
         ));
     }
+    if branch_count > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraid branch count must fit in a frame shard_count u32",
+        ));
+    }
     let replica_count = match mode {
         ZcRaidMode::Stripe => replicas.unwrap_or(1),
         ZcRaidMode::Mirror => branch_count,
         ZcRaidMode::Raid10 => replicas.unwrap_or(2),
     }
     .clamp(1, branch_count);
+    let layout_label = layout
+        .as_ref()
+        .map(ZcRaidLayout::describe)
+        .unwrap_or_else(|| "-".to_string());
+    let layout_writes_per_chunk = if let Some(layout) = layout.as_ref() {
+        let leaves = layout.leaf_count()?;
+        if leaves != branch_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "zcraid-split --shape {} has {leaves} leaves but {branch_count} branch outputs were configured",
+                    layout.describe()
+                ),
+            ));
+        }
+        layout.writes_per_chunk()?
+    } else {
+        replica_count
+    };
+    if layout_writes_per_chunk > u16::MAX as usize + 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraid writes per chunk must fit in a frame copy_id u16",
+        ));
+    }
 
     let mut branches = Vec::<ZcRaidBranch>::with_capacity(branch_count);
     for command in commands {
-        branches.push(zcraid_spawn_command_branch(command, queue_depth));
+        branches.push(zcraid_spawn_command_branch(
+            command,
+            queue_depth,
+            primitive.clone(),
+        ));
     }
     for output in outputs {
         branches.push(zcraid_spawn_file_branch(output, append, queue_depth));
@@ -27277,7 +31542,20 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
             break;
         }
         let data_len = data.len();
-        let primary = (chunk_index as usize) % branch_count;
+        let route = if let Some(layout) = layout.as_ref() {
+            layout.route(chunk_index)?
+        } else {
+            let primary = (chunk_index as usize) % branch_count;
+            (0..replica_count)
+                .map(|copy_id| (primary + copy_id) % branch_count)
+                .collect::<Vec<_>>()
+        };
+        let primary = route.first().copied().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraid route produced no branch outputs",
+            )
+        })?;
         let checksum_value = checksum.then(|| checksum_bytes_scalar(&data)).unwrap_or(0);
         let checksum_kind = if checksum {
             ZCRAID_CHECKSUM_SUM64
@@ -27286,8 +31564,7 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
         };
         let flags = if checksum { ZCRAID_FLAG_CHECKSUM } else { 0 };
         let data = Arc::new(data);
-        for copy_id in 0..replica_count {
-            let branch_idx = (primary + copy_id) % branch_count;
+        for (copy_id, branch_idx) in route.into_iter().enumerate() {
             let header = ZcRaidFrameHeader {
                 flags,
                 copy_id: copy_id as u16,
@@ -27391,13 +31668,16 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
     }
     let secs = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
     eprintln!(
-        "zcraid-split-result: mode={} branches={} replicas={} bytes={total} chunks={chunk_index} branch_logical_bytes={branch_logical} branch_wire_bytes={branch_wire} checksum={} seconds={secs:.6} MiBps={:.2} branch_labels={}",
+        "zcraid-split-result: mode={} branches={} replicas={} layout={} layout_writes_per_chunk={} bytes={total} chunks={chunk_index} branch_logical_bytes={branch_logical} branch_wire_bytes={branch_wire} checksum={} seconds={secs:.6} MiBps={:.2} branch_labels={} {}",
         mode.label(),
         labels.len(),
         replica_count,
+        layout_label,
+        layout_writes_per_chunk,
         checksum,
         total as f64 / (1024.0 * 1024.0) / secs,
-        labels.join(",")
+        labels.join(","),
+        primitive.log_fields()
     );
     Ok(())
 }
@@ -27519,10 +31799,13 @@ fn zcraid_spawn_command_source(
     command: String,
     verify_checksum: bool,
     tx: mpsc::SyncSender<ZcRaidMergeEvent>,
+    primitive: ZcPrimitiveTopology,
 ) -> thread::JoinHandle<io::Result<(String, ZcRaidSourceStats)>> {
     let label = format!("cmd:{command}");
     thread::spawn(move || {
-        let mut child = Command::new("sh")
+        let mut builder = Command::new("sh");
+        primitive.apply_child_env(&mut builder);
+        let mut child = builder
             .arg("-c")
             .arg(&command)
             .stdout(Stdio::piped())
@@ -27572,9 +31855,11 @@ fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut output = PathBuf::from("-");
     let mut verify_checksum = true;
     let mut queue_depth = 128usize;
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--from" => commands.push(next_flag_value(&mut args, "--from")?),
             "--input" | "-i" => inputs.push(PathBuf::from(next_flag_value(&mut args, &arg)?)),
             "--output" | "-o" => output = PathBuf::from(next_flag_value(&mut args, &arg)?),
@@ -27596,6 +31881,7 @@ fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
+    primitive.activate_byte_compatible("zcraid-merge")?;
     if commands.is_empty() && inputs.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -27618,6 +31904,7 @@ fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
             command,
             verify_checksum,
             tx.clone(),
+            primitive.clone(),
         ));
     }
     drop(tx);
@@ -27770,29 +32057,2943 @@ fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
     }
     let secs = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
     eprintln!(
-        "zcraid-merge-result: bytes={next_offset} data_frames={data_frames} duplicate_frames={duplicate_frames} eof_frames={eof_frames} verify_checksum={verify_checksum} seconds={secs:.6} MiBps={:.2} output={}",
+        "zcraid-merge-result: bytes={next_offset} data_frames={data_frames} duplicate_frames={duplicate_frames} eof_frames={eof_frames} verify_checksum={verify_checksum} seconds={secs:.6} MiBps={:.2} output={} {}",
         next_offset as f64 / (1024.0 * 1024.0) / secs,
-        output.display()
+        output.display(),
+        primitive.log_fields()
     );
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZcRaidBenchVerify {
+    None,
+    Checksum,
+    Payload,
+}
+
+impl ZcRaidBenchVerify {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "none" | "off" | "false" | "0" => Ok(Self::None),
+            "checksum" | "sum64" => Ok(Self::Checksum),
+            "payload" | "full" | "bytes" | "true" | "1" => Ok(Self::Payload),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("--verify must be none, checksum, or payload, got {other:?}"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Checksum => "checksum",
+            Self::Payload => "payload",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZcRaidWalScheduler {
+    Auto,
+    Central,
+    Wave,
+}
+
+impl ZcRaidWalScheduler {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "central" | "queue" | "legacy" => Ok(Self::Central),
+            "wave" | "waves" | "lane" | "lanes" => Ok(Self::Wave),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("--scheduler must be auto, central, or wave, got {other:?}"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Central => "central",
+            Self::Wave => "wave",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZcRaidWalFaninMode {
+    Primary,
+    Tree,
+}
+
+impl ZcRaidWalFaninMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "primary" | "payload" | "materialize" | "materialized" => Ok(Self::Primary),
+            "tree" | "descriptor-tree" | "descriptors" | "descriptor" | "reap" => Ok(Self::Tree),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("--fanin-mode must be primary or tree, got {other:?}"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Tree => "tree",
+        }
+    }
+}
+
+#[derive(Default)]
+struct ZcRaidBenchFanoutStats {
+    bytes: u64,
+    chunks: u64,
+    branch_logical_bytes: u64,
+    branch_wire_bytes: u64,
+    frames: u64,
+}
+
+#[derive(Default)]
+struct ZcRaidBenchFaninStats {
+    bytes: u64,
+    chunks: u64,
+    branch_logical_bytes: u64,
+    branch_wire_bytes: u64,
+    data_frames: u64,
+    duplicate_frames: u64,
+    eof_frames: u64,
+}
+
+fn zcraidd_usage() {
+    eprintln!(
+        "usage:\n\
+         zcraidd bench [--shape EXPR] [--bytes N] [--chunk-bytes N] [--dir PATH] [--keep] [--verify none|checksum|payload]\n\
+         zcraidd wal-bench [--shape EXPR] [--bytes N] [--record-bytes N] [--segment-bytes N] [--scheduler auto|wave|central] [--wave-segments N] [--fanin-mode primary|tree] [--tree-fanout N] [--tree-depth N]\n\
+         zcraidd tree-sim [--levels 1,4,16 | --fan-factor 4 --depth 3] [--bytes N] [--record-bytes N] [--segment-bytes N]\n\
+         zcraidd fanout <zcraid-split flags>\n\
+         zcraidd fanin <zcraid-merge flags>\n\
+         \n\
+         shape examples: stripe(8), mirror(3), raid10(4,2), stripe(4,mirror(2)), mirror(2,raid10(4,2))"
+    );
+}
+
+fn zcraidd(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut args = args.peekable();
+    match args.next().as_deref() {
+        Some("bench") | None => zcraidd_bench(args),
+        Some("wal") | Some("wal-bench") | Some("wal-segment-bench") => zcraidd_wal_bench(args),
+        Some("tree-sim") | Some("topology-sim") | Some("multi-machine-sim") => {
+            zcraidd_tree_sim(args)
+        }
+        Some("fanout") | Some("split") | Some("send") => zcraid_split(args),
+        Some("fanin") | Some("merge") | Some("recv") => zcraid_merge(args),
+        Some("help") | Some("--help") | Some("-h") => {
+            zcraidd_usage();
+            Ok(())
+        }
+        Some(other) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unknown zcraidd mode {other:?}; use bench, fanout, or fanin"),
+        )),
+    }
+}
+
+fn zcraidd_bench(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut mode = ZcRaidMode::Raid10;
+    let mut branches = 4usize;
+    let mut replicas = 2usize;
+    let mut layout = None::<ZcRaidLayout>;
+    let mut total_bytes = 256 * 1024 * 1024usize;
+    let mut chunk_bytes = 1024 * 1024usize;
+    let mut queue_depth = 128usize;
+    let mut verify = ZcRaidBenchVerify::Payload;
+    let mut checksum = true;
+    let mut keep = false;
+    let mut dir = None::<PathBuf>;
+    let mut primitive = ZcPrimitiveTopology::default();
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
+            "--mode" => mode = ZcRaidMode::parse(&next_flag_value(&mut args, "--mode")?)?,
+            "--branches" | "--leaves" => {
+                branches = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--replicas" | "--copies" => {
+                replicas = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--shape" | "--layout" | "--raid-layout" => {
+                layout = Some(ZcRaidLayout::parse(&next_flag_value(&mut args, &arg)?)?)
+            }
+            "--bytes" => {
+                total_bytes = parse_size_arg(&next_flag_value(&mut args, "--bytes")?, "--bytes")?
+            }
+            "--chunk-bytes" | "--buffer-bytes" => {
+                chunk_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--queue-depth" => {
+                queue_depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--verify" => {
+                verify = ZcRaidBenchVerify::parse(&next_flag_value(&mut args, "--verify")?)?
+            }
+            "--checksum" => checksum = true,
+            "--no-checksum" => checksum = false,
+            "--dir" => dir = Some(PathBuf::from(next_flag_value(&mut args, "--dir")?)),
+            "--keep" => keep = true,
+            "--help" | "-h" => {
+                zcraidd_usage();
+                return Ok(());
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcraidd bench option {other:?}"),
+                ));
+            }
+        }
+    }
+    primitive.activate_byte_compatible("zcraidd")?;
+    if chunk_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--chunk-bytes must be non-zero",
+        ));
+    }
+    if chunk_bytes > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--chunk-bytes must fit in a zcraid frame payload_len u32",
+        ));
+    }
+
+    let layout = layout.unwrap_or_else(|| ZcRaidLayout::from_legacy(mode, branches, replicas));
+    layout.validate("zcraidd bench")?;
+    let leaf_count = layout.leaf_count()?;
+    let writes_per_chunk = layout.writes_per_chunk()?;
+    if leaf_count > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraidd layout leaf count must fit in a frame shard_count u32",
+        ));
+    }
+    if writes_per_chunk > u16::MAX as usize + 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraidd writes per chunk must fit in a frame copy_id u16",
+        ));
+    }
+    let auto_dir = dir.is_none();
+    let dir = dir.unwrap_or_else(|| {
+        let base = if Path::new("/dev/shm").is_dir() {
+            PathBuf::from("/dev/shm")
+        } else {
+            env::temp_dir()
+        };
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        base.join(format!("zcraidd-bench-{}-{nanos}", std::process::id()))
+    });
+    fs::create_dir_all(&dir).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("create zcraidd bench directory {}: {err}", dir.display()),
+        )
+    })?;
+    let shard_paths = (0..leaf_count)
+        .map(|idx| dir.join(format!("leaf-{idx:04}.zcraid")))
+        .collect::<Vec<_>>();
+
+    eprintln!(
+        "zcraidd-bench-plan: layout={} leaves={} writes_per_chunk={} bytes={} chunk_bytes={} queue_depth={} checksum={} verify={} dir={} {}",
+        layout.describe(),
+        leaf_count,
+        writes_per_chunk,
+        total_bytes,
+        chunk_bytes,
+        queue_depth,
+        checksum,
+        verify.label(),
+        dir.display(),
+        primitive.log_fields()
+    );
+
+    let fanout_started = Instant::now();
+    let fanout = zcraidd_bench_fanout(
+        &layout,
+        &shard_paths,
+        total_bytes,
+        chunk_bytes,
+        checksum,
+        verify == ZcRaidBenchVerify::Payload,
+        queue_depth,
+    )?;
+    let fanout_secs = fanout_started
+        .elapsed()
+        .as_secs_f64()
+        .max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraidd-bench-fanout-result: bytes={} chunks={} branch_logical_bytes={} branch_wire_bytes={} frames={} seconds={fanout_secs:.6} logical_MiBps={:.2} branch_MiBps={:.2} logical_iops={:.0} branch_frame_iops={:.0}",
+        fanout.bytes,
+        fanout.chunks,
+        fanout.branch_logical_bytes,
+        fanout.branch_wire_bytes,
+        fanout.frames,
+        fanout.bytes as f64 / (1024.0 * 1024.0) / fanout_secs,
+        fanout.branch_logical_bytes as f64 / (1024.0 * 1024.0) / fanout_secs,
+        fanout.chunks as f64 / fanout_secs,
+        fanout.frames as f64 / fanout_secs
+    );
+
+    let fanin_started = Instant::now();
+    let fanin = zcraidd_bench_fanin(&shard_paths, total_bytes, chunk_bytes, verify, queue_depth)?;
+    let fanin_secs = fanin_started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraidd-bench-fanin-result: bytes={} chunks={} branch_logical_bytes={} branch_wire_bytes={} data_frames={} duplicate_frames={} eof_frames={} verify={} seconds={fanin_secs:.6} logical_MiBps={:.2} branch_MiBps={:.2} logical_iops={:.0} branch_frame_iops={:.0}",
+        fanin.bytes,
+        fanin.chunks,
+        fanin.branch_logical_bytes,
+        fanin.branch_wire_bytes,
+        fanin.data_frames,
+        fanin.duplicate_frames,
+        fanin.eof_frames,
+        verify.label(),
+        fanin.bytes as f64 / (1024.0 * 1024.0) / fanin_secs,
+        fanin.branch_logical_bytes as f64 / (1024.0 * 1024.0) / fanin_secs,
+        fanin.chunks as f64 / fanin_secs,
+        fanin.data_frames as f64 / fanin_secs
+    );
+
+    let total_secs = fanout_started
+        .elapsed()
+        .as_secs_f64()
+        .max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraidd-bench-result: layout={} leaves={} writes_per_chunk={} bytes={} verify={} checksum={} fanout_MiBps={:.2} fanin_MiBps={:.2} total_seconds={total_secs:.6} effective_MiBps={:.2}",
+        layout.describe(),
+        leaf_count,
+        writes_per_chunk,
+        fanin.bytes,
+        verify.label(),
+        checksum,
+        fanout.bytes as f64 / (1024.0 * 1024.0) / fanout_secs,
+        fanin.bytes as f64 / (1024.0 * 1024.0) / fanin_secs,
+        fanin.bytes as f64 / (1024.0 * 1024.0) / total_secs
+    );
+
+    if auto_dir && !keep {
+        fs::remove_dir_all(&dir).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("remove zcraidd bench directory {}: {err}", dir.display()),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ZcTreeSimDescriptor {
+    segment: u64,
+    leaf: usize,
+    records: u32,
+    bytes: u32,
+}
+
+#[derive(Debug)]
+struct ZcTreeSimDescriptorBatch {
+    descs: Vec<ZcTreeSimDescriptor>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ZcTreeSimAckBatch {
+    records: u64,
+    bytes: u64,
+    segments: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ZcTreeSimStats {
+    records: u64,
+    bytes: u64,
+    segments: u64,
+    input_batches: u64,
+    output_batches: u64,
+    root_batches: u64,
+    leaf_batches: u64,
+    node_batches: u64,
+    nodes: u64,
+}
+
+impl ZcTreeSimStats {
+    fn add(&mut self, other: Self) -> io::Result<()> {
+        self.records = self.records.checked_add(other.records).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim record overflow",
+            )
+        })?;
+        self.bytes = self.bytes.checked_add(other.bytes).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraidd tree-sim byte overflow")
+        })?;
+        self.segments = self.segments.checked_add(other.segments).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim segment overflow",
+            )
+        })?;
+        self.input_batches = self
+            .input_batches
+            .checked_add(other.input_batches)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd tree-sim input batch overflow",
+                )
+            })?;
+        self.output_batches = self
+            .output_batches
+            .checked_add(other.output_batches)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd tree-sim output batch overflow",
+                )
+            })?;
+        self.root_batches = self
+            .root_batches
+            .checked_add(other.root_batches)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd tree-sim root batch overflow",
+                )
+            })?;
+        self.leaf_batches = self
+            .leaf_batches
+            .checked_add(other.leaf_batches)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd tree-sim leaf batch overflow",
+                )
+            })?;
+        self.node_batches = self
+            .node_batches
+            .checked_add(other.node_batches)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd tree-sim node batch overflow",
+                )
+            })?;
+        self.nodes = self.nodes.checked_add(other.nodes).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraidd tree-sim node overflow")
+        })?;
+        Ok(())
+    }
+}
+
+fn zcraidd_tree_sim(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut levels = None::<Vec<usize>>;
+    let mut fan_factor = 4usize;
+    let mut depth = 3usize;
+    let mut total_bytes = 1024 * 1024 * 1024usize;
+    let mut record_bytes = 4096usize;
+    let mut segment_bytes = 384 * 1024usize;
+    let mut wave_segments = 64usize;
+    let mut queue_depth = 128usize;
+    let mut primitive = ZcPrimitiveTopology::default();
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
+            "--levels" | "--topology" => {
+                levels = Some(zcraidd_tree_sim_parse_levels(&next_flag_value(
+                    &mut args, &arg,
+                )?)?)
+            }
+            "--fan-factor" | "--fanout" | "--branching" => {
+                fan_factor = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--depth" | "--levels-count" => {
+                depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(2)
+            }
+            "--bytes" => {
+                total_bytes = parse_size_arg(&next_flag_value(&mut args, "--bytes")?, "--bytes")?
+            }
+            "--record-bytes" | "--entry-bytes" => {
+                record_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--segment-bytes" | "--extent-bytes" | "--chunk-bytes" => {
+                segment_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--wave-segments" | "--wave-credits" => {
+                wave_segments = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--queue-depth" => {
+                queue_depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--help" | "-h" => {
+                zcraidd_usage();
+                return Ok(());
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcraidd tree-sim option {other:?}"),
+                ));
+            }
+        }
+    }
+    primitive.activate_byte_compatible("zcraidd-tree-sim")?;
+    if record_bytes == 0 || segment_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--record-bytes and --segment-bytes must be non-zero",
+        ));
+    }
+    if !segment_bytes.is_multiple_of(record_bytes) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--segment-bytes must be a whole number of records",
+        ));
+    }
+    if !total_bytes.is_multiple_of(record_bytes) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--bytes must be a whole number of records",
+        ));
+    }
+    let levels = match levels {
+        Some(levels) => levels,
+        None => zcraidd_tree_sim_default_levels(fan_factor, depth)?,
+    };
+    zcraidd_tree_sim_validate_levels(&levels)?;
+    let leaves = *levels.last().expect("validated levels");
+    let records = total_bytes / record_bytes;
+    let total_segments = zcraidd_wal_wave_segment_count(total_bytes, segment_bytes);
+    let records_per_segment = segment_bytes / record_bytes;
+    let level_label = zcraidd_tree_sim_levels_label(&levels);
+    let node_count = levels.iter().try_fold(0usize, |acc, count| {
+        acc.checked_add(*count).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraidd tree-sim node count overflow",
+            )
+        })
+    })?;
+
+    eprintln!(
+        "zcraidd-tree-sim-plan: levels={} nodes={} leaves={} bytes={} records={} segments={} record_bytes={} segment_bytes={} records_per_segment={} wave_segments={} queue_depth={} {}",
+        level_label,
+        node_count,
+        leaves,
+        total_bytes,
+        records,
+        total_segments,
+        record_bytes,
+        segment_bytes,
+        records_per_segment,
+        wave_segments,
+        queue_depth,
+        primitive.log_fields()
+    );
+
+    let started = Instant::now();
+    let fanout_started = Instant::now();
+    let fanout = zcraidd_tree_sim_run_fanout(
+        &levels,
+        total_bytes,
+        record_bytes,
+        segment_bytes,
+        wave_segments,
+        queue_depth,
+    )?;
+    let fanout_secs = fanout_started
+        .elapsed()
+        .as_secs_f64()
+        .max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraidd-tree-sim-result: direction=fanout levels={} records={} segments={} bytes={} root_batches={} leaf_batches={} input_batches={} output_batches={} node_batches={} nodes={} seconds={fanout_secs:.6} record_iops={:.0} segment_iops={:.0} descriptor_batches_per_sec={:.0}",
+        level_label,
+        fanout.records,
+        fanout.segments,
+        fanout.bytes,
+        fanout.root_batches,
+        fanout.leaf_batches,
+        fanout.input_batches,
+        fanout.output_batches,
+        fanout.node_batches,
+        fanout.nodes,
+        fanout.records as f64 / fanout_secs,
+        fanout.segments as f64 / fanout_secs,
+        (fanout.root_batches + fanout.output_batches + fanout.leaf_batches) as f64 / fanout_secs
+    );
+
+    let fanin_started = Instant::now();
+    let fanin = zcraidd_tree_sim_run_fanin(
+        &levels,
+        total_bytes,
+        record_bytes,
+        segment_bytes,
+        wave_segments,
+        queue_depth,
+    )?;
+    let fanin_secs = fanin_started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraidd-tree-sim-result: direction=fanin levels={} records={} segments={} bytes={} root_batches={} leaf_batches={} input_batches={} output_batches={} node_batches={} nodes={} seconds={fanin_secs:.6} record_iops={:.0} segment_iops={:.0} ack_batches_per_sec={:.0}",
+        level_label,
+        fanin.records,
+        fanin.segments,
+        fanin.bytes,
+        fanin.root_batches,
+        fanin.leaf_batches,
+        fanin.input_batches,
+        fanin.output_batches,
+        fanin.node_batches,
+        fanin.nodes,
+        fanin.records as f64 / fanin_secs,
+        fanin.segments as f64 / fanin_secs,
+        (fanin.root_batches + fanin.output_batches + fanin.leaf_batches) as f64 / fanin_secs
+    );
+
+    let total_secs = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraidd-tree-sim-summary: levels={} records={} segments={} bytes={} fanout_record_iops={:.0} fanin_record_iops={:.0} total_seconds={total_secs:.6} roundtrip_record_iops={:.0}",
+        level_label,
+        records,
+        total_segments,
+        total_bytes,
+        fanout.records as f64 / fanout_secs,
+        fanin.records as f64 / fanin_secs,
+        records as f64 / total_secs
+    );
+    Ok(())
+}
+
+fn zcraidd_tree_sim_parse_levels(value: &str) -> io::Result<Vec<usize>> {
+    let mut levels = Vec::new();
+    for part in value
+        .split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, ',' | ':' | '/' | 'x' | 'X'))
+    {
+        if part.is_empty() {
+            continue;
+        }
+        levels.push(parse_usize_value(part, "--levels")?);
+    }
+    zcraidd_tree_sim_validate_levels(&levels)?;
+    Ok(levels)
+}
+
+fn zcraidd_tree_sim_default_levels(fan_factor: usize, depth: usize) -> io::Result<Vec<usize>> {
+    if depth < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--depth must be at least 2",
+        ));
+    }
+    let mut levels = Vec::with_capacity(depth);
+    let mut nodes = 1usize;
+    for _ in 0..depth {
+        levels.push(nodes);
+        nodes = nodes.checked_mul(fan_factor).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraidd tree-sim generated topology overflow",
+            )
+        })?;
+    }
+    Ok(levels)
+}
+
+fn zcraidd_tree_sim_validate_levels(levels: &[usize]) -> io::Result<()> {
+    if levels.len() < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraidd tree-sim topology requires at least two levels",
+        ));
+    }
+    if levels[0] != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraidd tree-sim topology must start with one root node",
+        ));
+    }
+    for (idx, count) in levels.iter().copied().enumerate() {
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("zcraidd tree-sim level {idx} has zero nodes"),
+            ));
+        }
+        if idx != 0 && count < levels[idx - 1] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraidd tree-sim topology must not shrink toward leaves",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn zcraidd_tree_sim_levels_label(levels: &[usize]) -> String {
+    levels
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn zcraidd_tree_sim_node_for_leaf(levels: &[usize], level: usize, leaf: usize) -> usize {
+    let leaves = levels[levels.len() - 1];
+    leaf.saturating_mul(levels[level]) / leaves
+}
+
+fn zcraidd_tree_sim_parent(levels: &[usize], level: usize, node: usize) -> usize {
+    node.saturating_mul(levels[level - 1]) / levels[level]
+}
+
+fn zcraidd_tree_sim_route_descriptor_batch(
+    levels: &[usize],
+    next_level: usize,
+    child_txs: &[mpsc::SyncSender<ZcTreeSimDescriptorBatch>],
+    batch: ZcTreeSimDescriptorBatch,
+    stats: &mut ZcTreeSimStats,
+    label: &str,
+) -> io::Result<()> {
+    if batch.descs.is_empty() {
+        return Ok(());
+    }
+    let mut buckets = (0..levels[next_level])
+        .map(|_| Vec::<ZcTreeSimDescriptor>::new())
+        .collect::<Vec<_>>();
+    for desc in batch.descs {
+        let child = zcraidd_tree_sim_node_for_leaf(levels, next_level, desc.leaf);
+        buckets[child].push(desc);
+    }
+    for (child, descs) in buckets.into_iter().enumerate() {
+        if descs.is_empty() {
+            continue;
+        }
+        child_txs[child]
+            .send(ZcTreeSimDescriptorBatch { descs })
+            .map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("zcraidd tree-sim fanout {label} child {child} exited: {err}"),
+                )
+            })?;
+        stats.output_batches = stats.output_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim fanout output batch overflow",
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn zcraidd_tree_sim_fanout_node(
+    levels: Arc<Vec<usize>>,
+    level: usize,
+    node: usize,
+    rx: mpsc::Receiver<ZcTreeSimDescriptorBatch>,
+    child_txs: Vec<mpsc::SyncSender<ZcTreeSimDescriptorBatch>>,
+) -> io::Result<ZcTreeSimStats> {
+    let mut stats = ZcTreeSimStats {
+        nodes: 1,
+        ..ZcTreeSimStats::default()
+    };
+    let label = format!("level={level} node={node}");
+    for batch in rx {
+        stats.input_batches = stats.input_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim fanout input batch overflow",
+            )
+        })?;
+        stats.node_batches = stats.node_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim fanout node batch overflow",
+            )
+        })?;
+        zcraidd_tree_sim_route_descriptor_batch(
+            &levels,
+            level + 1,
+            &child_txs,
+            batch,
+            &mut stats,
+            &label,
+        )?;
+    }
+    Ok(stats)
+}
+
+fn zcraidd_tree_sim_fanout_leaf(
+    rx: mpsc::Receiver<ZcTreeSimDescriptorBatch>,
+) -> io::Result<ZcTreeSimStats> {
+    let mut stats = ZcTreeSimStats {
+        nodes: 1,
+        ..ZcTreeSimStats::default()
+    };
+    for batch in rx {
+        stats.input_batches = stats.input_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim leaf input batch overflow",
+            )
+        })?;
+        stats.leaf_batches = stats.leaf_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim leaf batch overflow",
+            )
+        })?;
+        for desc in batch.descs {
+            stats.segments = stats.segments.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd tree-sim leaf segment overflow",
+                )
+            })?;
+            stats.records = stats
+                .records
+                .checked_add(desc.records as u64)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcraidd tree-sim leaf record overflow",
+                    )
+                })?;
+            stats.bytes = stats.bytes.checked_add(desc.bytes as u64).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd tree-sim leaf byte overflow",
+                )
+            })?;
+            let _ = desc.segment;
+        }
+    }
+    Ok(stats)
+}
+
+fn zcraidd_tree_sim_run_fanout(
+    levels: &[usize],
+    total_bytes: usize,
+    record_bytes: usize,
+    segment_bytes: usize,
+    wave_segments: usize,
+    queue_depth: usize,
+) -> io::Result<ZcTreeSimStats> {
+    let levels_arc = Arc::new(levels.to_vec());
+    let last_level = levels.len() - 1;
+    let leaves = levels[last_level];
+    let total_segments = zcraidd_wal_wave_segment_count(total_bytes, segment_bytes);
+    let mut down_txs = vec![Vec::<mpsc::SyncSender<ZcTreeSimDescriptorBatch>>::new(); levels.len()];
+    let mut down_rxs = Vec::with_capacity(levels.len());
+    down_rxs.push(Vec::new());
+    for level in 1..levels.len() {
+        let mut txs = Vec::with_capacity(levels[level]);
+        let mut rxs = Vec::with_capacity(levels[level]);
+        for _ in 0..levels[level] {
+            let (tx, rx) = mpsc::sync_channel::<ZcTreeSimDescriptorBatch>(queue_depth);
+            txs.push(tx);
+            rxs.push(Some(rx));
+        }
+        down_txs[level] = txs;
+        down_rxs.push(rxs);
+    }
+
+    let mut handles = Vec::new();
+    for level in 1..last_level {
+        for node in 0..levels[level] {
+            let rx = down_rxs[level][node].take().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "zcraidd tree-sim missing fanout receiver",
+                )
+            })?;
+            let child_txs = down_txs[level + 1].clone();
+            let levels_for_thread = Arc::clone(&levels_arc);
+            handles.push(thread::spawn(move || {
+                zcraidd_tree_sim_fanout_node(levels_for_thread, level, node, rx, child_txs)
+            }));
+        }
+    }
+    for leaf in 0..levels[last_level] {
+        let rx = down_rxs[last_level][leaf].take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraidd tree-sim missing leaf receiver",
+            )
+        })?;
+        handles.push(thread::spawn(move || zcraidd_tree_sim_fanout_leaf(rx)));
+    }
+
+    let mut root_stats = ZcTreeSimStats {
+        nodes: 1,
+        ..ZcTreeSimStats::default()
+    };
+    let mut descs = Vec::with_capacity(wave_segments);
+    for segment in 0..total_segments {
+        let bytes = zcraidd_wal_wave_segment_len(segment, total_bytes, segment_bytes);
+        descs.push(ZcTreeSimDescriptor {
+            segment: segment as u64,
+            leaf: segment % leaves,
+            records: (bytes / record_bytes) as u32,
+            bytes: bytes as u32,
+        });
+        if descs.len() >= wave_segments {
+            root_stats.root_batches = root_stats.root_batches.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd tree-sim root batch overflow",
+                )
+            })?;
+            zcraidd_tree_sim_route_descriptor_batch(
+                levels,
+                1,
+                &down_txs[1],
+                ZcTreeSimDescriptorBatch {
+                    descs: std::mem::take(&mut descs),
+                },
+                &mut root_stats,
+                "root",
+            )?;
+        }
+    }
+    if !descs.is_empty() {
+        root_stats.root_batches = root_stats.root_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim root batch overflow",
+            )
+        })?;
+        zcraidd_tree_sim_route_descriptor_batch(
+            levels,
+            1,
+            &down_txs[1],
+            ZcTreeSimDescriptorBatch { descs },
+            &mut root_stats,
+            "root",
+        )?;
+    }
+    drop(down_txs);
+
+    let mut total = root_stats;
+    for handle in handles {
+        total.add(
+            handle
+                .join()
+                .map_err(|_| io::Error::other("zcraidd tree-sim fanout node panicked"))??,
+        )?;
+    }
+    if total.segments != total_segments as u64 || total.bytes != total_bytes as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcraidd tree-sim fanout delivered bytes={} segments={} but expected bytes={} segments={total_segments}",
+                total.bytes, total.segments, total_bytes
+            ),
+        ));
+    }
+    Ok(total)
+}
+
+fn zcraidd_tree_sim_send_ack_batch(
+    tx: &mpsc::SyncSender<ZcTreeSimAckBatch>,
+    batch: &mut ZcTreeSimAckBatch,
+    stats: &mut ZcTreeSimStats,
+    label: &str,
+) -> io::Result<()> {
+    if batch.segments == 0 {
+        return Ok(());
+    }
+    tx.send(*batch).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            format!("zcraidd tree-sim fanin {label} parent exited: {err}"),
+        )
+    })?;
+    stats.output_batches = stats.output_batches.checked_add(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "zcraidd tree-sim fanin output batch overflow",
+        )
+    })?;
+    *batch = ZcTreeSimAckBatch::default();
+    Ok(())
+}
+
+fn zcraidd_tree_sim_fanin_node(
+    level: usize,
+    node: usize,
+    rx: mpsc::Receiver<ZcTreeSimAckBatch>,
+    parent_tx: mpsc::SyncSender<ZcTreeSimAckBatch>,
+    tree_fanout: usize,
+) -> io::Result<ZcTreeSimStats> {
+    let mut stats = ZcTreeSimStats {
+        nodes: 1,
+        ..ZcTreeSimStats::default()
+    };
+    let mut grouped = 0usize;
+    let mut pending = ZcTreeSimAckBatch::default();
+    let label = format!("level={level} node={node}");
+    for batch in rx {
+        stats.input_batches = stats.input_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim fanin input batch overflow",
+            )
+        })?;
+        stats.node_batches = stats.node_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim fanin node batch overflow",
+            )
+        })?;
+        pending.records = pending.records.checked_add(batch.records).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim fanin record overflow",
+            )
+        })?;
+        pending.bytes = pending.bytes.checked_add(batch.bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim fanin byte overflow",
+            )
+        })?;
+        pending.segments = pending
+            .segments
+            .checked_add(batch.segments)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd tree-sim fanin segment overflow",
+                )
+            })?;
+        grouped += 1;
+        if grouped >= tree_fanout {
+            zcraidd_tree_sim_send_ack_batch(&parent_tx, &mut pending, &mut stats, &label)?;
+            grouped = 0;
+        }
+    }
+    zcraidd_tree_sim_send_ack_batch(&parent_tx, &mut pending, &mut stats, &label)?;
+    Ok(stats)
+}
+
+fn zcraidd_tree_sim_fanin_leaf(
+    levels: Arc<Vec<usize>>,
+    leaf: usize,
+    total_bytes: usize,
+    record_bytes: usize,
+    segment_bytes: usize,
+    wave_segments: usize,
+    parent_tx: mpsc::SyncSender<ZcTreeSimAckBatch>,
+) -> io::Result<ZcTreeSimStats> {
+    let leaves = levels[levels.len() - 1];
+    let total_segments = zcraidd_wal_wave_segment_count(total_bytes, segment_bytes);
+    let mut stats = ZcTreeSimStats {
+        nodes: 1,
+        ..ZcTreeSimStats::default()
+    };
+    let mut pending = ZcTreeSimAckBatch::default();
+    let label = format!("leaf={leaf}");
+    let mut segment = leaf;
+    while segment < total_segments {
+        let bytes = zcraidd_wal_wave_segment_len(segment, total_bytes, segment_bytes);
+        pending.segments = pending.segments.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim leaf ack segment overflow",
+            )
+        })?;
+        pending.records = pending
+            .records
+            .checked_add((bytes / record_bytes) as u64)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd tree-sim leaf ack record overflow",
+                )
+            })?;
+        pending.bytes = pending.bytes.checked_add(bytes as u64).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim leaf ack byte overflow",
+            )
+        })?;
+        if pending.segments >= wave_segments as u64 {
+            stats.leaf_batches = stats.leaf_batches.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd tree-sim leaf ack batch overflow",
+                )
+            })?;
+            zcraidd_tree_sim_send_ack_batch(&parent_tx, &mut pending, &mut stats, &label)?;
+        }
+        segment = segment.checked_add(leaves).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim leaf segment index overflow",
+            )
+        })?;
+    }
+    if pending.segments != 0 {
+        stats.leaf_batches = stats.leaf_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim leaf ack batch overflow",
+            )
+        })?;
+        zcraidd_tree_sim_send_ack_batch(&parent_tx, &mut pending, &mut stats, &label)?;
+    }
+    Ok(stats)
+}
+
+fn zcraidd_tree_sim_run_fanin(
+    levels: &[usize],
+    total_bytes: usize,
+    record_bytes: usize,
+    segment_bytes: usize,
+    wave_segments: usize,
+    queue_depth: usize,
+) -> io::Result<ZcTreeSimStats> {
+    let levels_arc = Arc::new(levels.to_vec());
+    let last_level = levels.len() - 1;
+    let leaves = levels[last_level];
+    let tree_fanout = levels
+        .windows(2)
+        .map(|pair| pair[1].div_ceil(pair[0]).max(1))
+        .max()
+        .unwrap_or(1);
+    let mut up_txs = Vec::with_capacity(last_level);
+    let mut up_rxs = Vec::with_capacity(last_level);
+    for level in 0..last_level {
+        let mut txs = Vec::with_capacity(levels[level]);
+        let mut rxs = Vec::with_capacity(levels[level]);
+        for _ in 0..levels[level] {
+            let (tx, rx) = mpsc::sync_channel::<ZcTreeSimAckBatch>(queue_depth);
+            txs.push(tx);
+            rxs.push(Some(rx));
+        }
+        up_txs.push(txs);
+        up_rxs.push(rxs);
+    }
+
+    let mut handles = Vec::new();
+    for level in 1..last_level {
+        for node in 0..levels[level] {
+            let rx = up_rxs[level][node].take().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "zcraidd tree-sim missing fanin receiver",
+                )
+            })?;
+            let parent = zcraidd_tree_sim_parent(levels, level, node);
+            let parent_tx = up_txs[level - 1][parent].clone();
+            handles.push(thread::spawn(move || {
+                zcraidd_tree_sim_fanin_node(level, node, rx, parent_tx, tree_fanout)
+            }));
+        }
+    }
+    for leaf in 0..leaves {
+        let parent = zcraidd_tree_sim_parent(levels, last_level, leaf);
+        let parent_tx = up_txs[last_level - 1][parent].clone();
+        let levels_for_thread = Arc::clone(&levels_arc);
+        handles.push(thread::spawn(move || {
+            zcraidd_tree_sim_fanin_leaf(
+                levels_for_thread,
+                leaf,
+                total_bytes,
+                record_bytes,
+                segment_bytes,
+                wave_segments,
+                parent_tx,
+            )
+        }));
+    }
+
+    let root_rx = up_rxs[0][0].take().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraidd tree-sim missing root fanin receiver",
+        )
+    })?;
+    drop(up_txs);
+    let mut root_stats = ZcTreeSimStats {
+        nodes: 1,
+        ..ZcTreeSimStats::default()
+    };
+    for batch in root_rx {
+        root_stats.root_batches = root_stats.root_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim root ack batch overflow",
+            )
+        })?;
+        root_stats.input_batches = root_stats.input_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim root input batch overflow",
+            )
+        })?;
+        root_stats.records = root_stats
+            .records
+            .checked_add(batch.records)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd tree-sim root record overflow",
+                )
+            })?;
+        root_stats.bytes = root_stats.bytes.checked_add(batch.bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd tree-sim root byte overflow",
+            )
+        })?;
+        root_stats.segments = root_stats
+            .segments
+            .checked_add(batch.segments)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd tree-sim root segment overflow",
+                )
+            })?;
+    }
+
+    let mut total = root_stats;
+    for handle in handles {
+        total.add(
+            handle
+                .join()
+                .map_err(|_| io::Error::other("zcraidd tree-sim fanin node panicked"))??,
+        )?;
+    }
+    let expected_segments = zcraidd_wal_wave_segment_count(total_bytes, segment_bytes);
+    if total.segments != expected_segments as u64 || total.bytes != total_bytes as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcraidd tree-sim fanin returned bytes={} segments={} but expected bytes={} segments={expected_segments}",
+                total.bytes, total.segments, total_bytes
+            ),
+        ));
+    }
+    Ok(total)
+}
+
+fn zcraidd_wal_bench(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut mode = ZcRaidMode::Raid10;
+    let mut branches = 4usize;
+    let mut replicas = 2usize;
+    let mut layout = None::<ZcRaidLayout>;
+    let mut total_bytes = 1024 * 1024 * 1024usize;
+    let mut record_bytes = 4096usize;
+    let mut segment_bytes = 1024 * 1024usize;
+    let mut queue_depth = 128usize;
+    let mut scheduler = ZcRaidWalScheduler::Auto;
+    let mut wave_segments = 64usize;
+    let mut fanin_mode = ZcRaidWalFaninMode::Primary;
+    let mut tree_fanout = 4usize;
+    let mut tree_depth = 4usize;
+    let mut verify = ZcRaidBenchVerify::Payload;
+    let mut checksum = true;
+    let mut keep = false;
+    let mut dir = None::<PathBuf>;
+    let mut primitive = ZcPrimitiveTopology::default();
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
+            "--mode" => mode = ZcRaidMode::parse(&next_flag_value(&mut args, "--mode")?)?,
+            "--branches" | "--leaves" => {
+                branches = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--replicas" | "--copies" => {
+                replicas = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--shape" | "--layout" | "--raid-layout" => {
+                layout = Some(ZcRaidLayout::parse(&next_flag_value(&mut args, &arg)?)?)
+            }
+            "--bytes" => {
+                total_bytes = parse_size_arg(&next_flag_value(&mut args, "--bytes")?, "--bytes")?
+            }
+            "--record-bytes" | "--entry-bytes" => {
+                record_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--segment-bytes" | "--extent-bytes" | "--chunk-bytes" => {
+                segment_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--queue-depth" => {
+                queue_depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--scheduler" | "--wal-scheduler" => {
+                scheduler = ZcRaidWalScheduler::parse(&next_flag_value(&mut args, &arg)?)?
+            }
+            "--wave-segments" | "--wave-credits" => {
+                wave_segments = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--fanin-mode" | "--reap-mode" => {
+                fanin_mode = ZcRaidWalFaninMode::parse(&next_flag_value(&mut args, &arg)?)?
+            }
+            "--tree-fanout" | "--reap-fanout" => {
+                tree_fanout = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--tree-depth" | "--reap-depth" => {
+                tree_depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--verify" => {
+                verify = ZcRaidBenchVerify::parse(&next_flag_value(&mut args, "--verify")?)?
+            }
+            "--checksum" => checksum = true,
+            "--no-checksum" => checksum = false,
+            "--dir" => dir = Some(PathBuf::from(next_flag_value(&mut args, "--dir")?)),
+            "--keep" => keep = true,
+            "--help" | "-h" => {
+                zcraidd_usage();
+                return Ok(());
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcraidd wal-bench option {other:?}"),
+                ));
+            }
+        }
+    }
+    primitive.activate_byte_compatible("zcraidd-wal")?;
+    if record_bytes == 0 || segment_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--record-bytes and --segment-bytes must be non-zero",
+        ));
+    }
+    if segment_bytes > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--segment-bytes must fit in a zcraid frame payload_len u32",
+        ));
+    }
+    if !segment_bytes.is_multiple_of(record_bytes) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--segment-bytes must be a whole number of WAL records",
+        ));
+    }
+    if !total_bytes.is_multiple_of(record_bytes) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--bytes must be a whole number of WAL records",
+        ));
+    }
+
+    let layout = layout.unwrap_or_else(|| ZcRaidLayout::from_legacy(mode, branches, replicas));
+    layout.validate("zcraidd wal-bench")?;
+    let leaf_count = layout.leaf_count()?;
+    let writes_per_segment = layout.writes_per_chunk()?;
+    if leaf_count > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraidd layout leaf count must fit in a frame shard_count u32",
+        ));
+    }
+    if writes_per_segment > u16::MAX as usize + 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraidd writes per segment must fit in a frame copy_id u16",
+        ));
+    }
+    let records = total_bytes / record_bytes;
+    let records_per_segment = segment_bytes / record_bytes;
+    let stripe_mirror_plan = layout.stripe_mirror_plan();
+    let effective_scheduler = match scheduler {
+        ZcRaidWalScheduler::Auto if stripe_mirror_plan.is_some() => ZcRaidWalScheduler::Wave,
+        ZcRaidWalScheduler::Auto => ZcRaidWalScheduler::Central,
+        other => other,
+    };
+    if effective_scheduler == ZcRaidWalScheduler::Wave && stripe_mirror_plan.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "--scheduler wave currently supports leaf, stripe(N), and stripe(N,mirror(M)); got {}",
+                layout.describe()
+            ),
+        ));
+    }
+    if fanin_mode == ZcRaidWalFaninMode::Tree && verify != ZcRaidBenchVerify::None {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--fanin-mode tree is descriptor-only and requires --verify none",
+        ));
+    }
+    let auto_dir = dir.is_none();
+    let dir = dir.unwrap_or_else(|| {
+        let base = if Path::new("/dev/shm").is_dir() {
+            PathBuf::from("/dev/shm")
+        } else {
+            env::temp_dir()
+        };
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        base.join(format!("zcraidd-wal-bench-{}-{nanos}", std::process::id()))
+    });
+    fs::create_dir_all(&dir).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!(
+                "create zcraidd WAL bench directory {}: {err}",
+                dir.display()
+            ),
+        )
+    })?;
+    let shard_paths = (0..leaf_count)
+        .map(|idx| dir.join(format!("wal-leaf-{idx:04}.zcraid")))
+        .collect::<Vec<_>>();
+
+    eprintln!(
+        "zcraidd-wal-plan: layout={} leaves={} writes_per_segment={} bytes={} records={} record_bytes={} segment_bytes={} records_per_segment={} scheduler={} requested_scheduler={} queue_depth={} wave_segments={} fanin_mode={} tree_fanout={} tree_depth={} checksum={} verify={} dir={} {}",
+        layout.describe(),
+        leaf_count,
+        writes_per_segment,
+        total_bytes,
+        records,
+        record_bytes,
+        segment_bytes,
+        records_per_segment,
+        effective_scheduler.label(),
+        scheduler.label(),
+        queue_depth,
+        wave_segments,
+        fanin_mode.label(),
+        tree_fanout,
+        tree_depth,
+        checksum,
+        verify.label(),
+        dir.display(),
+        primitive.log_fields()
+    );
+
+    if let Some(plan) = stripe_mirror_plan
+        && effective_scheduler == ZcRaidWalScheduler::Wave
+    {
+        zcraidd_wal_bench_wave(
+            plan,
+            &shard_paths,
+            total_bytes,
+            record_bytes,
+            segment_bytes,
+            checksum,
+            verify,
+            wave_segments,
+            fanin_mode,
+            tree_fanout,
+            tree_depth,
+        )?;
+        if auto_dir && !keep {
+            fs::remove_dir_all(&dir).map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!(
+                        "remove zcraidd WAL bench directory {}: {err}",
+                        dir.display()
+                    ),
+                )
+            })?;
+        }
+        return Ok(());
+    }
+
+    let fanout_started = Instant::now();
+    let fanout = zcraidd_bench_fanout(
+        &layout,
+        &shard_paths,
+        total_bytes,
+        segment_bytes,
+        checksum,
+        verify == ZcRaidBenchVerify::Payload,
+        queue_depth,
+    )?;
+    let fanout_secs = fanout_started
+        .elapsed()
+        .as_secs_f64()
+        .max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraidd-wal-segment-result: direction=fanout bytes={} records={} segments={} branch_logical_bytes={} branch_wire_bytes={} frames={} seconds={fanout_secs:.6} logical_MiBps={:.2} record_iops={:.0} segment_iops={:.0} branch_frame_iops={:.0}",
+        fanout.bytes,
+        records,
+        fanout.chunks,
+        fanout.branch_logical_bytes,
+        fanout.branch_wire_bytes,
+        fanout.frames,
+        fanout.bytes as f64 / (1024.0 * 1024.0) / fanout_secs,
+        records as f64 / fanout_secs,
+        fanout.chunks as f64 / fanout_secs,
+        fanout.frames as f64 / fanout_secs
+    );
+
+    let fanin_started = Instant::now();
+    let fanin = zcraidd_bench_fanin(
+        &shard_paths,
+        total_bytes,
+        segment_bytes,
+        verify,
+        queue_depth,
+    )?;
+    let fanin_secs = fanin_started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraidd-wal-segment-result: direction=fanin bytes={} records={} segments={} branch_logical_bytes={} branch_wire_bytes={} data_frames={} duplicate_frames={} eof_frames={} seconds={fanin_secs:.6} logical_MiBps={:.2} record_iops={:.0} segment_iops={:.0} branch_frame_iops={:.0}",
+        fanin.bytes,
+        records,
+        fanin.chunks,
+        fanin.branch_logical_bytes,
+        fanin.branch_wire_bytes,
+        fanin.data_frames,
+        fanin.duplicate_frames,
+        fanin.eof_frames,
+        fanin.bytes as f64 / (1024.0 * 1024.0) / fanin_secs,
+        records as f64 / fanin_secs,
+        fanin.chunks as f64 / fanin_secs,
+        fanin.data_frames as f64 / fanin_secs
+    );
+
+    let total_secs = fanout_started
+        .elapsed()
+        .as_secs_f64()
+        .max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraidd-wal-result: layout={} records={} record_bytes={} segment_bytes={} records_per_segment={} leaves={} writes_per_segment={} verify={} checksum={} fanout_record_iops={:.0} fanin_record_iops={:.0} total_seconds={total_secs:.6} effective_record_iops={:.0}",
+        layout.describe(),
+        records,
+        record_bytes,
+        segment_bytes,
+        records_per_segment,
+        leaf_count,
+        writes_per_segment,
+        verify.label(),
+        checksum,
+        records as f64 / fanout_secs,
+        records as f64 / fanin_secs,
+        records as f64 / total_secs
+    );
+
+    if auto_dir && !keep {
+        fs::remove_dir_all(&dir).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "remove zcraidd WAL bench directory {}: {err}",
+                    dir.display()
+                ),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ZcRaidWalWaveIoStats {
+    bytes: u64,
+    segments: u64,
+    branch_logical_bytes: u64,
+    branch_wire_bytes: u64,
+    data_frames: u64,
+    eof_frames: u64,
+    descriptor_batches: u64,
+    composite_batches: u64,
+    root_batches: u64,
+    tree_levels: u64,
+    tree_nodes: u64,
+}
+
+impl ZcRaidWalWaveIoStats {
+    fn frames(self) -> u64 {
+        self.data_frames + self.eof_frames
+    }
+
+    fn add(&mut self, other: Self) -> io::Result<()> {
+        self.bytes = self.bytes.checked_add(other.bytes).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraidd wave byte overflow")
+        })?;
+        self.segments = self.segments.checked_add(other.segments).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraidd wave segment overflow")
+        })?;
+        self.branch_logical_bytes = self
+            .branch_logical_bytes
+            .checked_add(other.branch_logical_bytes)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd wave branch byte overflow",
+                )
+            })?;
+        self.branch_wire_bytes = self
+            .branch_wire_bytes
+            .checked_add(other.branch_wire_bytes)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd wave branch wire overflow",
+                )
+            })?;
+        self.data_frames = self
+            .data_frames
+            .checked_add(other.data_frames)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcraidd wave frame overflow")
+            })?;
+        self.eof_frames = self
+            .eof_frames
+            .checked_add(other.eof_frames)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcraidd wave EOF overflow")
+            })?;
+        self.descriptor_batches = self
+            .descriptor_batches
+            .checked_add(other.descriptor_batches)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd wave descriptor batch overflow",
+                )
+            })?;
+        self.composite_batches = self
+            .composite_batches
+            .checked_add(other.composite_batches)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd wave composite batch overflow",
+                )
+            })?;
+        self.root_batches = self
+            .root_batches
+            .checked_add(other.root_batches)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd wave root batch overflow",
+                )
+            })?;
+        self.tree_levels = self
+            .tree_levels
+            .checked_add(other.tree_levels)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd wave tree level overflow",
+                )
+            })?;
+        self.tree_nodes = self
+            .tree_nodes
+            .checked_add(other.tree_nodes)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd wave tree node overflow",
+                )
+            })?;
+        Ok(())
+    }
+}
+
+fn zcraidd_wal_wave_segment_count(total_bytes: usize, segment_bytes: usize) -> usize {
+    total_bytes.div_ceil(segment_bytes)
+}
+
+fn zcraidd_wal_wave_segment_len(
+    segment_index: usize,
+    total_bytes: usize,
+    segment_bytes: usize,
+) -> usize {
+    let offset = segment_index.saturating_mul(segment_bytes);
+    total_bytes.saturating_sub(offset).min(segment_bytes)
+}
+
+fn zcraidd_wal_wave_leaf(plan: ZcRaidStripeMirrorPlan, lane: usize, copy: usize) -> usize {
+    lane * plan.mirrors + copy
+}
+
+fn zcraidd_wal_wave_buffer_capacity(segment_bytes: usize, wave_segments: usize) -> usize {
+    segment_bytes
+        .saturating_add(ZCRAID_FRAME_HEADER_LEN)
+        .saturating_mul(wave_segments)
+        .clamp(64 * 1024, 8 * 1024 * 1024)
+}
+
+fn zcraidd_wal_bench_wave(
+    plan: ZcRaidStripeMirrorPlan,
+    shard_paths: &[PathBuf],
+    total_bytes: usize,
+    record_bytes: usize,
+    segment_bytes: usize,
+    checksum: bool,
+    verify: ZcRaidBenchVerify,
+    wave_segments: usize,
+    fanin_mode: ZcRaidWalFaninMode,
+    tree_fanout: usize,
+    tree_depth: usize,
+) -> io::Result<()> {
+    let expected_leaves = plan
+        .stripes
+        .checked_mul(plan.mirrors)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zcraidd wave leaf overflow"))?;
+    if shard_paths.len() != expected_leaves {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "zcraidd wave plan expected {expected_leaves} leaves but got {} paths",
+                shard_paths.len()
+            ),
+        ));
+    }
+
+    let records = total_bytes / record_bytes;
+    let records_per_segment = segment_bytes / record_bytes;
+    let total_segments = zcraidd_wal_wave_segment_count(total_bytes, segment_bytes);
+    let buffer_capacity = zcraidd_wal_wave_buffer_capacity(segment_bytes, wave_segments);
+    let started = Instant::now();
+
+    let fanout_started = Instant::now();
+    let fanout = zcraidd_wal_wave_fanout(
+        plan,
+        shard_paths,
+        total_bytes,
+        segment_bytes,
+        checksum,
+        verify == ZcRaidBenchVerify::Payload,
+        wave_segments,
+        buffer_capacity,
+    )?;
+    let fanout_secs = fanout_started
+        .elapsed()
+        .as_secs_f64()
+        .max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraidd-wal-segment-result: scheduler=wave direction=fanout stripes={} mirrors={} bytes={} records={} segments={} branch_logical_bytes={} branch_wire_bytes={} frames={} wave_segments={} buffer_capacity={} seconds={fanout_secs:.6} logical_MiBps={:.2} branch_MiBps={:.2} record_iops={:.0} segment_iops={:.0} branch_frame_iops={:.0}",
+        plan.stripes,
+        plan.mirrors,
+        fanout.bytes,
+        records,
+        fanout.segments,
+        fanout.branch_logical_bytes,
+        fanout.branch_wire_bytes,
+        fanout.frames(),
+        wave_segments,
+        buffer_capacity,
+        fanout.bytes as f64 / (1024.0 * 1024.0) / fanout_secs,
+        fanout.branch_logical_bytes as f64 / (1024.0 * 1024.0) / fanout_secs,
+        records as f64 / fanout_secs,
+        fanout.segments as f64 / fanout_secs,
+        fanout.data_frames as f64 / fanout_secs
+    );
+
+    let fanin_started = Instant::now();
+    let fanin = match fanin_mode {
+        ZcRaidWalFaninMode::Primary => zcraidd_wal_wave_fanin(
+            plan,
+            shard_paths,
+            total_bytes,
+            segment_bytes,
+            verify,
+            wave_segments,
+            buffer_capacity,
+        )?,
+        ZcRaidWalFaninMode::Tree => zcraidd_wal_wave_tree_fanin(
+            plan,
+            shard_paths,
+            total_bytes,
+            segment_bytes,
+            wave_segments,
+            tree_fanout,
+            tree_depth,
+            buffer_capacity,
+        )?,
+    };
+    let fanin_secs = fanin_started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraidd-wal-segment-result: scheduler=wave direction=fanin mode={} stripes={} mirrors={} primary_mirror_only=true payload_materialized={} bytes={} records={} segments={} branch_logical_bytes={} branch_wire_bytes={} data_frames={} eof_frames={} descriptor_batches={} composite_batches={} root_batches={} tree_levels={} tree_nodes={} tree_fanout={} wave_segments={} buffer_capacity={} seconds={fanin_secs:.6} logical_MiBps={:.2} branch_MiBps={:.2} record_iops={:.0} segment_iops={:.0} branch_frame_iops={:.0}",
+        fanin_mode.label(),
+        plan.stripes,
+        plan.mirrors,
+        yes(fanin_mode == ZcRaidWalFaninMode::Primary),
+        fanin.bytes,
+        records,
+        fanin.segments,
+        fanin.branch_logical_bytes,
+        fanin.branch_wire_bytes,
+        fanin.data_frames,
+        fanin.eof_frames,
+        fanin.descriptor_batches,
+        fanin.composite_batches,
+        fanin.root_batches,
+        fanin.tree_levels,
+        fanin.tree_nodes,
+        tree_fanout,
+        wave_segments,
+        buffer_capacity,
+        fanin.bytes as f64 / (1024.0 * 1024.0) / fanin_secs,
+        fanin.branch_logical_bytes as f64 / (1024.0 * 1024.0) / fanin_secs,
+        records as f64 / fanin_secs,
+        fanin.segments as f64 / fanin_secs,
+        fanin.data_frames as f64 / fanin_secs
+    );
+
+    let total_secs = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    eprintln!(
+        "zcraidd-wal-result: scheduler=wave fanin_mode={} stripes={} mirrors={} records={} record_bytes={} segment_bytes={} records_per_segment={} segments={} verify={} checksum={} descriptor_batches={} composite_batches={} root_batches={} tree_levels={} tree_nodes={} fanout_record_iops={:.0} fanin_record_iops={:.0} total_seconds={total_secs:.6} effective_record_iops={:.0}",
+        fanin_mode.label(),
+        plan.stripes,
+        plan.mirrors,
+        records,
+        record_bytes,
+        segment_bytes,
+        records_per_segment,
+        total_segments,
+        verify.label(),
+        checksum,
+        fanin.descriptor_batches,
+        fanin.composite_batches,
+        fanin.root_batches,
+        fanin.tree_levels,
+        fanin.tree_nodes,
+        records as f64 / fanout_secs,
+        records as f64 / fanin_secs,
+        records as f64 / total_secs
+    );
+    Ok(())
+}
+
+fn zcraidd_wal_wave_fanout(
+    plan: ZcRaidStripeMirrorPlan,
+    shard_paths: &[PathBuf],
+    total_bytes: usize,
+    segment_bytes: usize,
+    checksum: bool,
+    offset_pattern: bool,
+    wave_segments: usize,
+    buffer_capacity: usize,
+) -> io::Result<ZcRaidWalWaveIoStats> {
+    let total_segments = zcraidd_wal_wave_segment_count(total_bytes, segment_bytes);
+    let flags = if checksum { ZCRAID_FLAG_CHECKSUM } else { 0 };
+    let checksum_kind = if checksum {
+        ZCRAID_CHECKSUM_SUM64
+    } else {
+        ZCRAID_CHECKSUM_NONE
+    };
+    let mut branches = Vec::<ZcRaidBranch>::with_capacity(shard_paths.len());
+    for path in shard_paths {
+        branches.push(zcraid_spawn_file_branch_with_capacity(
+            path.clone(),
+            false,
+            wave_segments,
+            buffer_capacity,
+        ));
+    }
+
+    let branch_txs = branches
+        .iter()
+        .map(|branch| branch.tx.clone())
+        .collect::<Vec<_>>();
+    let branch_labels = branches
+        .iter()
+        .map(|branch| branch.label.clone())
+        .collect::<Vec<_>>();
+    let mut handles: Vec<thread::JoinHandle<io::Result<ZcRaidWalWaveIoStats>>> =
+        Vec::with_capacity(plan.stripes);
+    for lane in 0..plan.stripes {
+        let lane_outputs = (0..plan.mirrors)
+            .map(|copy| {
+                let branch_idx = zcraidd_wal_wave_leaf(plan, lane, copy);
+                (
+                    copy,
+                    branch_idx,
+                    branch_txs[branch_idx].clone(),
+                    branch_labels[branch_idx].clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        handles.push(thread::spawn(move || {
+            let mut stats = ZcRaidWalWaveIoStats::default();
+            let mut full_template = vec![0u8; segment_bytes];
+            if checksum && !offset_pattern {
+                fill_pattern(&mut full_template, 0);
+            }
+            let full_checksum = checksum
+                .then(|| checksum_bytes_scalar(&full_template))
+                .unwrap_or(0);
+            let full_template = Arc::new(full_template);
+            let mut segment_index = lane;
+            while segment_index < total_segments {
+                for _ in 0..wave_segments {
+                    if segment_index >= total_segments {
+                        break;
+                    }
+                    let data_len =
+                        zcraidd_wal_wave_segment_len(segment_index, total_bytes, segment_bytes);
+                    let offset = segment_index.checked_mul(segment_bytes).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "zcraidd wave offset overflow")
+                    })?;
+                    let (data, checksum_value) = if offset_pattern {
+                        let mut data = vec![0u8; data_len];
+                        fill_pattern(&mut data, offset);
+                        let checksum_value = checksum
+                            .then(|| checksum_bytes_scalar(&data))
+                            .unwrap_or(0);
+                        (Arc::new(data), checksum_value)
+                    } else if data_len == segment_bytes {
+                        (Arc::clone(&full_template), full_checksum)
+                    } else if checksum {
+                        let mut data = vec![0u8; data_len];
+                        fill_pattern(&mut data, 0);
+                        let checksum_value = checksum_bytes_scalar(&data);
+                        (Arc::new(data), checksum_value)
+                    } else {
+                        (Arc::new(vec![0u8; data_len]), 0)
+                    };
+                    let primary = zcraidd_wal_wave_leaf(plan, lane, 0);
+                    for (copy, branch_idx, tx, label) in &lane_outputs {
+                        let header = ZcRaidFrameHeader {
+                            flags,
+                            copy_id: *copy as u16,
+                            shard_id: primary as u32,
+                            shard_count: (plan.stripes * plan.mirrors) as u32,
+                            chunk_index: segment_index as u64,
+                            offset: offset as u64,
+                            payload_len: data_len as u32,
+                            checksum_kind,
+                            checksum: checksum_value,
+                            total_len: 0,
+                        };
+                        tx.send(ZcRaidBranchItem {
+                            header,
+                            data: Arc::clone(&data),
+                        })
+                        .map_err(|err| {
+                            io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                format!(
+                                    "zcraidd wave fanout branch {label} index {branch_idx} exited: {err}"
+                                ),
+                            )
+                        })?;
+                    }
+                    stats.bytes = stats.bytes.checked_add(data_len as u64).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "zcraidd wave fanout logical byte overflow",
+                        )
+                    })?;
+                    stats.segments = stats.segments.checked_add(1).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "zcraidd wave fanout segment overflow",
+                        )
+                    })?;
+                    segment_index = segment_index.checked_add(plan.stripes).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "zcraidd wave fanout segment index overflow",
+                        )
+                    })?;
+                }
+            }
+            Ok(stats)
+        }));
+    }
+
+    let mut total = ZcRaidWalWaveIoStats::default();
+    for handle in handles {
+        total.add(
+            handle
+                .join()
+                .map_err(|_| io::Error::other("zcraidd wave fanout lane panicked"))??,
+        )?;
+    }
+    drop(branch_txs);
+
+    let eof_data = Arc::new(Vec::new());
+    for (idx, branch) in branches.iter().enumerate() {
+        let header = ZcRaidFrameHeader {
+            flags: ZCRAID_FLAG_EOF,
+            copy_id: (idx % plan.mirrors) as u16,
+            shard_id: idx as u32,
+            shard_count: (plan.stripes * plan.mirrors) as u32,
+            chunk_index: total_segments as u64,
+            offset: total_bytes as u64,
+            payload_len: 0,
+            checksum_kind: ZCRAID_CHECKSUM_NONE,
+            checksum: 0,
+            total_len: total_bytes as u64,
+        };
+        branch
+            .tx
+            .send(ZcRaidBranchItem {
+                header,
+                data: Arc::clone(&eof_data),
+            })
+            .map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!(
+                        "zcraidd wave fanout branch {} exited before EOF: {err}",
+                        branch.label
+                    ),
+                )
+            })?;
+    }
+    for branch in branches {
+        drop(branch.tx);
+        let branch_stats = branch
+            .handle
+            .join()
+            .map_err(|_| io::Error::other(format!("zcraidd branch {} panicked", branch.label)))??;
+        total.branch_logical_bytes = total
+            .branch_logical_bytes
+            .checked_add(branch_stats.logical_bytes)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd wave fanout branch logical overflow",
+                )
+            })?;
+        total.branch_wire_bytes = total
+            .branch_wire_bytes
+            .checked_add(branch_stats.wire_bytes)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd wave fanout branch wire overflow",
+                )
+            })?;
+        total.data_frames = total
+            .data_frames
+            .checked_add(branch_stats.frames.saturating_sub(1))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd wave fanout branch frame overflow",
+                )
+            })?;
+        total.eof_frames = total.eof_frames.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd wave fanout branch EOF overflow",
+            )
+        })?;
+    }
+    if total.bytes != total_bytes as u64 || total.segments != total_segments as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcraidd wave fanout produced bytes={} segments={} but expected bytes={} segments={total_segments}",
+                total.bytes, total.segments, total_bytes
+            ),
+        ));
+    }
+    Ok(total)
+}
+
+fn zcraidd_wal_emit_reap_batch(
+    tx: &mpsc::SyncSender<ZcRaidWalWaveIoStats>,
+    batch: &mut ZcRaidWalWaveIoStats,
+    composite: bool,
+    label: &str,
+) -> io::Result<()> {
+    if batch.segments == 0 {
+        return Ok(());
+    }
+    if composite {
+        batch.composite_batches = batch.composite_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd WAL reaper composite batch overflow",
+            )
+        })?;
+    } else {
+        batch.descriptor_batches = batch.descriptor_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd WAL reaper descriptor batch overflow",
+            )
+        })?;
+    }
+    let out = *batch;
+    tx.send(out).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            format!("zcraidd WAL reaper {label} parent exited: {err}"),
+        )
+    })?;
+    *batch = ZcRaidWalWaveIoStats::default();
+    Ok(())
+}
+
+fn zcraidd_wal_tree_leaf_reader(
+    plan: ZcRaidStripeMirrorPlan,
+    lane: usize,
+    path: PathBuf,
+    expected_bytes: usize,
+    segment_bytes: usize,
+    wave_segments: usize,
+    tx: mpsc::SyncSender<ZcRaidWalWaveIoStats>,
+) -> io::Result<ZcRaidWalWaveIoStats> {
+    let total_segments = zcraidd_wal_wave_segment_count(expected_bytes, segment_bytes);
+    let file = fs::File::open(&path).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("open zcraidd WAL tree input {}: {err}", path.display()),
+        )
+    })?;
+    let mut reader = BufReader::with_capacity(8 * 1024, file);
+    let mut batch = ZcRaidWalWaveIoStats::default();
+    let mut eof_stats = ZcRaidWalWaveIoStats::default();
+    let mut expected_segment = lane;
+    let leaf = zcraidd_wal_wave_leaf(plan, lane, 0);
+    loop {
+        let Some(header) = zcraid_read_frame_header_skip_payload(&mut reader)? else {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("zcraidd WAL tree lane {lane} ended without EOF"),
+            ));
+        };
+        if header.flags & ZCRAID_FLAG_EOF != 0 {
+            if expected_segment < total_segments {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!("zcraidd WAL tree lane {lane} EOF before segment {expected_segment}"),
+                ));
+            }
+            if header.total_len != expected_bytes as u64 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcraidd WAL tree lane {lane} EOF total_len={} expected={expected_bytes}",
+                        header.total_len
+                    ),
+                ));
+            }
+            zcraidd_wal_emit_reap_batch(&tx, &mut batch, false, "leaf")?;
+            eof_stats.eof_frames = 1;
+            eof_stats.branch_wire_bytes = ZCRAID_FRAME_HEADER_LEN as u64;
+            return Ok(eof_stats);
+        }
+        if expected_segment >= total_segments {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcraidd WAL tree lane {lane} received extra segment {}",
+                    header.chunk_index
+                ),
+            ));
+        }
+        let expected_len =
+            zcraidd_wal_wave_segment_len(expected_segment, expected_bytes, segment_bytes);
+        let expected_offset = expected_segment.checked_mul(segment_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd WAL tree expected offset overflow",
+            )
+        })?;
+        if header.chunk_index != expected_segment as u64
+            || header.offset != expected_offset as u64
+            || header.shard_id != leaf as u32
+            || header.copy_id != 0
+            || header.shard_count != (plan.stripes * plan.mirrors) as u32
+            || header.payload_len as usize != expected_len
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcraidd WAL tree lane {lane} unexpected frame chunk={} offset={} shard={} copy={} len={} expected_chunk={expected_segment} expected_offset={expected_offset} expected_shard={leaf} expected_len={expected_len}",
+                    header.chunk_index,
+                    header.offset,
+                    header.shard_id,
+                    header.copy_id,
+                    header.payload_len
+                ),
+            ));
+        }
+        batch.bytes = batch
+            .bytes
+            .checked_add(header.payload_len as u64)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcraidd WAL tree byte overflow")
+            })?;
+        batch.segments = batch.segments.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd WAL tree segment overflow",
+            )
+        })?;
+        batch.branch_logical_bytes = batch
+            .branch_logical_bytes
+            .checked_add(header.payload_len as u64)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraidd WAL tree branch byte overflow",
+                )
+            })?;
+        batch.branch_wire_bytes = batch
+            .branch_wire_bytes
+            .checked_add(ZCRAID_FRAME_HEADER_LEN as u64 + header.payload_len as u64)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcraidd WAL tree wire overflow")
+            })?;
+        batch.data_frames = batch.data_frames.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd WAL tree frame overflow",
+            )
+        })?;
+        if batch.segments >= wave_segments as u64 {
+            zcraidd_wal_emit_reap_batch(&tx, &mut batch, false, "leaf")?;
+        }
+        expected_segment = expected_segment.checked_add(plan.stripes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd WAL tree segment index overflow",
+            )
+        })?;
+    }
+}
+
+fn zcraidd_wal_tree_reap_node(
+    level: usize,
+    node: usize,
+    rx: mpsc::Receiver<ZcRaidWalWaveIoStats>,
+    tx: mpsc::SyncSender<ZcRaidWalWaveIoStats>,
+    tree_fanout: usize,
+) -> io::Result<()> {
+    let mut batch = ZcRaidWalWaveIoStats::default();
+    let mut grouped = 0usize;
+    let label = format!("level={level} node={node}");
+    for child in rx {
+        batch.add(child)?;
+        grouped += 1;
+        if grouped >= tree_fanout {
+            zcraidd_wal_emit_reap_batch(&tx, &mut batch, true, &label)?;
+            grouped = 0;
+        }
+    }
+    zcraidd_wal_emit_reap_batch(&tx, &mut batch, true, &label)
+}
+
+fn zcraidd_wal_wave_tree_fanin(
+    plan: ZcRaidStripeMirrorPlan,
+    shard_paths: &[PathBuf],
+    expected_bytes: usize,
+    segment_bytes: usize,
+    wave_segments: usize,
+    tree_fanout: usize,
+    tree_depth: usize,
+    _buffer_capacity: usize,
+) -> io::Result<ZcRaidWalWaveIoStats> {
+    let queue_depth = wave_segments.max(tree_fanout).max(1);
+    let first_nodes = plan.stripes.div_ceil(tree_fanout).max(1);
+    let mut first_txs = Vec::with_capacity(first_nodes);
+    let mut current_rxs = Vec::with_capacity(first_nodes);
+    for _ in 0..first_nodes {
+        let (tx, rx) = mpsc::sync_channel::<ZcRaidWalWaveIoStats>(queue_depth);
+        first_txs.push(tx);
+        current_rxs.push(rx);
+    }
+    let leaf_txs = (0..plan.stripes)
+        .map(|lane| first_txs[(lane / tree_fanout).min(first_nodes - 1)].clone())
+        .collect::<Vec<_>>();
+    drop(first_txs);
+
+    let mut reaper_handles = Vec::new();
+    let mut current_nodes = first_nodes;
+    for level in 0..tree_depth {
+        let next_nodes = if level + 1 == tree_depth {
+            1
+        } else {
+            current_nodes.div_ceil(tree_fanout).max(1)
+        };
+        let mut next_txs = Vec::with_capacity(next_nodes);
+        let mut next_rxs = Vec::with_capacity(next_nodes);
+        for _ in 0..next_nodes {
+            let (tx, rx) = mpsc::sync_channel::<ZcRaidWalWaveIoStats>(queue_depth);
+            next_txs.push(tx);
+            next_rxs.push(rx);
+        }
+        for (node, rx) in current_rxs.into_iter().enumerate() {
+            let parent = if next_nodes == 1 {
+                0
+            } else {
+                (node / tree_fanout).min(next_nodes - 1)
+            };
+            let tx = next_txs[parent].clone();
+            reaper_handles.push(thread::spawn(move || {
+                zcraidd_wal_tree_reap_node(level, node, rx, tx, tree_fanout)
+            }));
+        }
+        drop(next_txs);
+        current_rxs = next_rxs;
+        current_nodes = next_nodes;
+    }
+
+    let mut leaf_handles = Vec::with_capacity(plan.stripes);
+    for (lane, tx) in leaf_txs.into_iter().enumerate() {
+        let path = shard_paths[zcraidd_wal_wave_leaf(plan, lane, 0)].clone();
+        leaf_handles.push(thread::spawn(move || {
+            zcraidd_wal_tree_leaf_reader(
+                plan,
+                lane,
+                path,
+                expected_bytes,
+                segment_bytes,
+                wave_segments,
+                tx,
+            )
+        }));
+    }
+
+    let root_rx = current_rxs.pop().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraidd WAL tree produced no root receiver",
+        )
+    })?;
+    let mut total = ZcRaidWalWaveIoStats::default();
+    for batch in root_rx {
+        total.add(batch)?;
+        total.root_batches = total.root_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd WAL tree root batch overflow",
+            )
+        })?;
+    }
+
+    for handle in leaf_handles {
+        total.add(
+            handle
+                .join()
+                .map_err(|_| io::Error::other("zcraidd WAL tree leaf panicked"))??,
+        )?;
+    }
+    for handle in reaper_handles {
+        handle
+            .join()
+            .map_err(|_| io::Error::other("zcraidd WAL tree reaper panicked"))??;
+    }
+
+    total.tree_levels = tree_depth as u64;
+    total.tree_nodes = zcraidd_wal_tree_node_count(plan.stripes, tree_fanout, tree_depth)? as u64;
+    let total_segments = zcraidd_wal_wave_segment_count(expected_bytes, segment_bytes);
+    if total.bytes != expected_bytes as u64 || total.segments != total_segments as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcraidd WAL tree reaped bytes={} segments={} but expected bytes={} segments={total_segments}",
+                total.bytes, total.segments, expected_bytes
+            ),
+        ));
+    }
+    Ok(total)
+}
+
+fn zcraidd_wal_tree_node_count(
+    stripes: usize,
+    tree_fanout: usize,
+    tree_depth: usize,
+) -> io::Result<usize> {
+    let mut nodes = stripes.div_ceil(tree_fanout).max(1);
+    let mut total = 0usize;
+    for level in 0..tree_depth {
+        total = total.checked_add(nodes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraidd WAL tree node count overflow",
+            )
+        })?;
+        nodes = if level + 1 == tree_depth {
+            1
+        } else {
+            nodes.div_ceil(tree_fanout).max(1)
+        };
+    }
+    Ok(total)
+}
+
+fn zcraidd_wal_wave_fanin(
+    plan: ZcRaidStripeMirrorPlan,
+    shard_paths: &[PathBuf],
+    expected_bytes: usize,
+    segment_bytes: usize,
+    verify: ZcRaidBenchVerify,
+    wave_segments: usize,
+    buffer_capacity: usize,
+) -> io::Result<ZcRaidWalWaveIoStats> {
+    let total_segments = zcraidd_wal_wave_segment_count(expected_bytes, segment_bytes);
+    let verify_checksum = matches!(
+        verify,
+        ZcRaidBenchVerify::Checksum | ZcRaidBenchVerify::Payload
+    );
+    let mut handles: Vec<thread::JoinHandle<io::Result<ZcRaidWalWaveIoStats>>> =
+        Vec::with_capacity(plan.stripes);
+    for lane in 0..plan.stripes {
+        let path = shard_paths[zcraidd_wal_wave_leaf(plan, lane, 0)].clone();
+        handles.push(thread::spawn(
+            move || -> io::Result<ZcRaidWalWaveIoStats> {
+                let file = fs::File::open(&path).map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("open zcraidd wave input {}: {err}", path.display()),
+                )
+            })?;
+                let mut reader = BufReader::with_capacity(buffer_capacity, file);
+                let mut stats = ZcRaidWalWaveIoStats::default();
+                let mut expected_segment = lane;
+                loop {
+                    for _ in 0..wave_segments {
+                        let Some((header, data)) = zcraid_read_frame(&mut reader)? else {
+                            return Err(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                format!(
+                                    "zcraidd wave lane {lane} ended without EOF at segment {expected_segment}"
+                                ),
+                            ));
+                        };
+                        if header.flags & ZCRAID_FLAG_EOF != 0 {
+                            if header.total_len != expected_bytes as u64 {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "zcraidd wave lane {lane} EOF total_len={} expected={expected_bytes}",
+                                        header.total_len
+                                    ),
+                                ));
+                            }
+                            stats.eof_frames = stats.eof_frames.checked_add(1).ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcraidd wave fanin EOF overflow",
+                                )
+                            })?;
+                            return Ok(stats);
+                        }
+                        if expected_segment >= total_segments {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "zcraidd wave lane {lane} received extra segment {}",
+                                    header.chunk_index
+                                ),
+                            ));
+                        }
+                        let expected_len = zcraidd_wal_wave_segment_len(
+                            expected_segment,
+                            expected_bytes,
+                            segment_bytes,
+                        );
+                        let expected_offset =
+                            expected_segment.checked_mul(segment_bytes).ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcraidd wave fanin offset overflow",
+                                )
+                            })?;
+                        let expected_leaf = zcraidd_wal_wave_leaf(plan, lane, 0);
+                        if header.chunk_index != expected_segment as u64
+                            || header.offset != expected_offset as u64
+                            || header.shard_id != expected_leaf as u32
+                            || header.copy_id != 0
+                            || header.payload_len as usize != expected_len
+                            || data.len() != expected_len
+                        {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "zcraidd wave lane {lane} unexpected frame chunk={} offset={} shard={} copy={} len={} expected_chunk={expected_segment} expected_offset={expected_offset} expected_shard={expected_leaf} expected_len={expected_len}",
+                                    header.chunk_index,
+                                    header.offset,
+                                    header.shard_id,
+                                    header.copy_id,
+                                    data.len()
+                                ),
+                            ));
+                        }
+                        if verify_checksum && header.checksum_kind == ZCRAID_CHECKSUM_SUM64 {
+                            let actual = checksum_bytes_scalar(&data);
+                            if actual != header.checksum {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "zcraidd wave lane {lane} checksum mismatch segment={} expected=0x{:016x} actual=0x{actual:016x}",
+                                        header.chunk_index, header.checksum
+                                    ),
+                                ));
+                            }
+                        }
+                        if verify == ZcRaidBenchVerify::Payload {
+                            verify_pattern(&data, expected_offset)?;
+                        }
+                        stats.bytes = stats.bytes.checked_add(data.len() as u64).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "zcraidd wave fanin byte overflow",
+                            )
+                        })?;
+                        stats.branch_logical_bytes = stats
+                            .branch_logical_bytes
+                            .checked_add(data.len() as u64)
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcraidd wave fanin branch byte overflow",
+                                )
+                            })?;
+                        stats.branch_wire_bytes = stats
+                            .branch_wire_bytes
+                            .checked_add(ZCRAID_FRAME_HEADER_LEN as u64 + data.len() as u64)
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcraidd wave fanin wire overflow",
+                                )
+                            })?;
+                        stats.data_frames = stats.data_frames.checked_add(1).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "zcraidd wave fanin frame overflow",
+                            )
+                        })?;
+                        stats.segments = stats.segments.checked_add(1).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "zcraidd wave fanin segment overflow",
+                            )
+                        })?;
+                        expected_segment =
+                            expected_segment.checked_add(plan.stripes).ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcraidd wave fanin segment index overflow",
+                                )
+                            })?;
+                    }
+                }
+            },
+        ));
+    }
+
+    let mut total = ZcRaidWalWaveIoStats::default();
+    for handle in handles {
+        total.add(
+            handle
+                .join()
+                .map_err(|_| io::Error::other("zcraidd wave fanin lane panicked"))??,
+        )?;
+    }
+    total.branch_wire_bytes = total
+        .branch_wire_bytes
+        .checked_add(
+            total
+                .eof_frames
+                .checked_mul(ZCRAID_FRAME_HEADER_LEN as u64)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcraidd wave EOF wire overflow")
+                })?,
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraidd wave fanin wire overflow",
+            )
+        })?;
+    if total.bytes != expected_bytes as u64 || total.segments != total_segments as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcraidd wave fanin reconstructed bytes={} segments={} but expected bytes={} segments={total_segments}",
+                total.bytes, total.segments, expected_bytes
+            ),
+        ));
+    }
+    Ok(total)
+}
+
+fn zcraidd_bench_fanout(
+    layout: &ZcRaidLayout,
+    shard_paths: &[PathBuf],
+    total_bytes: usize,
+    chunk_bytes: usize,
+    checksum: bool,
+    offset_pattern: bool,
+    queue_depth: usize,
+) -> io::Result<ZcRaidBenchFanoutStats> {
+    let mut branches = Vec::<ZcRaidBranch>::with_capacity(shard_paths.len());
+    for path in shard_paths {
+        branches.push(zcraid_spawn_file_branch(path.clone(), false, queue_depth));
+    }
+
+    let mut stats = ZcRaidBenchFanoutStats::default();
+    let mut checksum_template = vec![0u8; chunk_bytes];
+    if checksum && !offset_pattern {
+        fill_pattern(&mut checksum_template, 0);
+    }
+    let checksum_kind = if checksum {
+        ZCRAID_CHECKSUM_SUM64
+    } else {
+        ZCRAID_CHECKSUM_NONE
+    };
+    let flags = if checksum { ZCRAID_FLAG_CHECKSUM } else { 0 };
+    while stats.bytes < total_bytes as u64 {
+        let remaining = total_bytes as u64 - stats.bytes;
+        let data_len = remaining.min(chunk_bytes as u64) as usize;
+        let mut data = vec![0u8; data_len];
+        if offset_pattern {
+            fill_pattern(&mut data, stats.bytes as usize);
+        } else if checksum {
+            data.copy_from_slice(&checksum_template[..data_len]);
+        }
+        let checksum_value = checksum.then(|| checksum_bytes_scalar(&data)).unwrap_or(0);
+        let route = layout.route(stats.chunks)?;
+        let primary = route.first().copied().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraidd layout produced no branch outputs",
+            )
+        })?;
+        let data = Arc::new(data);
+        for (copy_id, branch_idx) in route.into_iter().enumerate() {
+            let header = ZcRaidFrameHeader {
+                flags,
+                copy_id: copy_id as u16,
+                shard_id: primary as u32,
+                shard_count: shard_paths.len() as u32,
+                chunk_index: stats.chunks,
+                offset: stats.bytes,
+                payload_len: data_len as u32,
+                checksum_kind,
+                checksum: checksum_value,
+                total_len: 0,
+            };
+            branches[branch_idx]
+                .tx
+                .send(ZcRaidBranchItem {
+                    header,
+                    data: Arc::clone(&data),
+                })
+                .map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        format!(
+                            "zcraidd fanout branch {} exited: {err}",
+                            branches[branch_idx].label
+                        ),
+                    )
+                })?;
+            stats.branch_logical_bytes = stats
+                .branch_logical_bytes
+                .checked_add(data_len as u64)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanout byte overflow")
+                })?;
+            stats.branch_wire_bytes = stats
+                .branch_wire_bytes
+                .checked_add(ZCRAID_FRAME_HEADER_LEN as u64 + data_len as u64)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanout wire overflow")
+                })?;
+            stats.frames = stats.frames.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanout frame overflow")
+            })?;
+        }
+        stats.bytes = stats.bytes.checked_add(data_len as u64).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanout byte overflow")
+        })?;
+        stats.chunks = stats.chunks.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanout chunk overflow")
+        })?;
+    }
+
+    let eof_data = Arc::new(Vec::new());
+    for (idx, branch) in branches.iter().enumerate() {
+        let header = ZcRaidFrameHeader {
+            flags: ZCRAID_FLAG_EOF,
+            copy_id: 0,
+            shard_id: idx as u32,
+            shard_count: shard_paths.len() as u32,
+            chunk_index: stats.chunks,
+            offset: stats.bytes,
+            payload_len: 0,
+            checksum_kind: ZCRAID_CHECKSUM_NONE,
+            checksum: 0,
+            total_len: stats.bytes,
+        };
+        branch
+            .tx
+            .send(ZcRaidBranchItem {
+                header,
+                data: Arc::clone(&eof_data),
+            })
+            .map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!(
+                        "zcraidd fanout branch {} exited before EOF: {err}",
+                        branch.label
+                    ),
+                )
+            })?;
+        stats.branch_wire_bytes = stats
+            .branch_wire_bytes
+            .checked_add(ZCRAID_FRAME_HEADER_LEN as u64)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanout wire overflow")
+            })?;
+        stats.frames = stats.frames.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanout frame overflow")
+        })?;
+    }
+    for branch in branches {
+        drop(branch.tx);
+        branch
+            .handle
+            .join()
+            .map_err(|_| io::Error::other(format!("zcraidd branch {} panicked", branch.label)))??;
+    }
+    Ok(stats)
+}
+
+fn zcraidd_emit_reassembled_chunk(
+    data: &[u8],
+    next_offset: &mut u64,
+    stats: &mut ZcRaidBenchFaninStats,
+    verify: ZcRaidBenchVerify,
+    chunk_bytes: usize,
+) -> io::Result<()> {
+    if data.len() > chunk_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcraidd fanin chunk at offset {} exceeded chunk_bytes: {} > {chunk_bytes}",
+                *next_offset,
+                data.len()
+            ),
+        ));
+    }
+    if verify == ZcRaidBenchVerify::Payload {
+        verify_pattern(data, *next_offset as usize)?;
+    }
+    stats.chunks = stats.chunks.checked_add(1).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanin chunk overflow")
+    })?;
+    *next_offset = next_offset.checked_add(data.len() as u64).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanin offset overflow")
+    })?;
+    Ok(())
+}
+
+fn zcraidd_bench_fanin(
+    shard_paths: &[PathBuf],
+    expected_bytes: usize,
+    chunk_bytes: usize,
+    verify: ZcRaidBenchVerify,
+    queue_depth: usize,
+) -> io::Result<ZcRaidBenchFaninStats> {
+    let verify_checksum = matches!(
+        verify,
+        ZcRaidBenchVerify::Checksum | ZcRaidBenchVerify::Payload
+    );
+    let (tx, rx) = mpsc::sync_channel::<ZcRaidMergeEvent>(queue_depth);
+    let mut handles = Vec::with_capacity(shard_paths.len());
+    for path in shard_paths {
+        handles.push(zcraid_spawn_input_source(
+            path.clone(),
+            verify_checksum,
+            tx.clone(),
+        ));
+    }
+    drop(tx);
+
+    let mut pending = BTreeMap::<u64, (Vec<u8>, u64)>::new();
+    let mut next_offset = 0u64;
+    let mut expected_total = None::<u64>;
+    let mut stats = ZcRaidBenchFaninStats::default();
+    for event in rx {
+        match event {
+            ZcRaidMergeEvent::Eof { label, total_len } => {
+                stats.eof_frames = stats.eof_frames.checked_add(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanin EOF overflow")
+                })?;
+                if let Some(expected) = expected_total {
+                    if expected != total_len {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "zcraidd source {label} EOF total_len={total_len} conflicts with {expected}"
+                            ),
+                        ));
+                    }
+                } else {
+                    expected_total = Some(total_len);
+                }
+            }
+            ZcRaidMergeEvent::Data {
+                label,
+                header,
+                data,
+            } => {
+                stats.data_frames = stats.data_frames.checked_add(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanin frame overflow")
+                })?;
+                stats.branch_logical_bytes = stats
+                    .branch_logical_bytes
+                    .checked_add(data.len() as u64)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanin byte overflow")
+                    })?;
+                let checksum = if header.checksum_kind == ZCRAID_CHECKSUM_SUM64 {
+                    header.checksum
+                } else {
+                    0
+                };
+                let len = data.len() as u64;
+                let end = header.offset.checked_add(len).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcraidd frame offset overflow")
+                })?;
+                if header.offset < next_offset {
+                    if end <= next_offset {
+                        stats.duplicate_frames =
+                            stats.duplicate_frames.checked_add(1).ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcraidd fanin duplicate overflow",
+                                )
+                            })?;
+                        continue;
+                    }
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "zcraidd source {label} overlapping frame offset={} len={} next_offset={next_offset}",
+                            header.offset, len
+                        ),
+                    ));
+                }
+                if header.offset == next_offset {
+                    zcraidd_emit_reassembled_chunk(
+                        &data,
+                        &mut next_offset,
+                        &mut stats,
+                        verify,
+                        chunk_bytes,
+                    )?;
+                    while let Some((pending_data, _checksum)) = pending.remove(&next_offset) {
+                        zcraidd_emit_reassembled_chunk(
+                            &pending_data,
+                            &mut next_offset,
+                            &mut stats,
+                            verify,
+                            chunk_bytes,
+                        )?;
+                    }
+                } else if let Some((existing, existing_checksum)) = pending.get(&header.offset) {
+                    let duplicate_ok = existing.len() as u64 == len
+                        && (verify == ZcRaidBenchVerify::None
+                            || (*existing_checksum != 0 && *existing_checksum == checksum)
+                            || existing.as_slice() == data.as_slice());
+                    if duplicate_ok {
+                        stats.duplicate_frames =
+                            stats.duplicate_frames.checked_add(1).ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcraidd fanin duplicate overflow",
+                                )
+                            })?;
+                        continue;
+                    }
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("zcraidd conflicting duplicate at offset {}", header.offset),
+                    ));
+                } else {
+                    pending.insert(header.offset, (data, checksum));
+                }
+            }
+        }
+    }
+
+    stats.branch_wire_bytes = stats
+        .branch_logical_bytes
+        .checked_add(
+            (stats.data_frames + stats.eof_frames)
+                .checked_mul(ZCRAID_FRAME_HEADER_LEN as u64)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanin wire overflow")
+                })?,
+        )
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcraidd fanin wire overflow"))?;
+
+    for handle in handles {
+        let (label, source_stats) = handle
+            .join()
+            .map_err(|_| io::Error::other("zcraidd source panicked"))??;
+        if !source_stats.eof {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("zcraidd source {label} ended without EOF"),
+            ));
+        }
+    }
+
+    if !pending.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "zcraidd fanin missing chunk at offset {next_offset}; pending_chunks={}",
+                pending.len()
+            ),
+        ));
+    }
+    if next_offset != expected_bytes as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "zcraidd fanin reconstructed {next_offset} bytes but expected {expected_bytes}"
+            ),
+        ));
+    }
+    if let Some(total) = expected_total
+        && total != next_offset
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("zcraidd fanin EOF advertised {total} bytes but reconstructed {next_offset}"),
+        ));
+    }
+    stats.bytes = next_offset;
+    Ok(stats)
+}
+
 fn zcrun(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut commands = Vec::<String>::new();
-    let mut descriptor_mode = "auto".to_string();
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut spec = None::<String>;
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--descriptor-mode" => {
-                descriptor_mode = next_flag_value(&mut args, "--descriptor-mode")?;
-                if descriptor_mode != "auto" && descriptor_mode != "bytes" {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--descriptor-mode currently accepts auto or bytes",
-                    ));
-                }
-            }
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--spec" => spec = Some(next_flag_value(&mut args, "--spec")?),
             "--" => {
                 commands.extend(args);
@@ -27807,6 +35008,7 @@ fn zcrun(args: impl Iterator<Item = String>) -> io::Result<()> {
             _ => commands.push(arg),
         }
     }
+    primitive.activate_byte_compatible("zcflow")?;
     if let Some(spec) = spec {
         if !commands.is_empty() {
             return Err(io::Error::new(
@@ -27852,7 +35054,11 @@ fn zcrun(args: impl Iterator<Item = String>) -> io::Result<()> {
         ));
     }
     if commands.len() == 1 {
-        let status = Command::new("sh")
+        let mut builder = Command::new("sh");
+        primitive.apply_child_env(&mut builder);
+        builder.env("ZC_STAGE_INDEX", "0");
+        builder.env("ZC_STAGE_COUNT", "1");
+        let status = builder
             .arg("-c")
             .arg(&commands[0])
             .stdin(Stdio::inherit())
@@ -27870,15 +35076,19 @@ fn zcrun(args: impl Iterator<Item = String>) -> io::Result<()> {
         };
     }
 
-    if descriptor_mode == "auto" {
+    if primitive.descriptor_mode == ZcPrimitiveDescriptorMode::Auto {
         eprintln!(
-            "zcflow: descriptor transport is not implemented yet; using byte-compatible pipes"
+            "zcflow: descriptor transport is not implemented yet; using byte-compatible pipes ({})",
+            primitive.log_fields()
         );
     }
     let mut previous_stdout = None;
     let mut children = Vec::with_capacity(commands.len());
     for (index, command) in commands.iter().enumerate() {
         let mut builder = Command::new("sh");
+        primitive.apply_child_env(&mut builder);
+        builder.env("ZC_STAGE_INDEX", index.to_string());
+        builder.env("ZC_STAGE_COUNT", commands.len().to_string());
         builder.arg("-c").arg(command).stderr(Stdio::inherit());
         if let Some(stdout) = previous_stdout.take() {
             builder.stdin(Stdio::from(stdout));
@@ -28044,6 +35254,21 @@ fn zc_tcpmux_token_auth_line(token: &str) -> String {
 enum ZcTcpmuxEncryption {
     Aes256,
     None,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ZcStreamEncryption {
+    Aes256,
+    None,
+}
+
+impl ZcStreamEncryption {
+    fn to_tcpmux(self) -> ZcTcpmuxEncryption {
+        match self {
+            Self::Aes256 => ZcTcpmuxEncryption::Aes256,
+            Self::None => ZcTcpmuxEncryption::None,
+        }
+    }
 }
 
 impl ZcTcpmuxEncryption {
@@ -28396,6 +35621,101 @@ fn zc_tcpmux_copy_tcp_to_writer<W: Write>(
     };
     writer.flush()?;
     Ok(total)
+}
+
+pub fn zc_stream_generate_token() -> io::Result<String> {
+    zc_tcpmux_generate_token()
+}
+
+pub fn zc_stream_bind_listener(
+    listen_address: &str,
+    port_range: (u16, u16),
+) -> io::Result<TcpListener> {
+    zc_tcpmux_bind_listener(listen_address, port_range)
+}
+
+pub fn zc_stream_receive_listener_to_writer<W: Write>(
+    listener: TcpListener,
+    writer: W,
+    token: Option<&str>,
+    encryption: ZcStreamEncryption,
+    already_encrypted: bool,
+    buffer_bytes: usize,
+) -> io::Result<(SocketAddr, u64)> {
+    let (stream, peer) = listener
+        .accept()
+        .map_err(|err| io::Error::new(err.kind(), format!("accept zc stream receiver: {err}")))?;
+    let bytes = zc_tcpmux_copy_tcp_to_writer(
+        stream,
+        writer,
+        token,
+        encryption.to_tcpmux(),
+        already_encrypted,
+        buffer_bytes,
+    )?;
+    Ok((peer, bytes))
+}
+
+pub fn zc_stream_send_reader_to_tcp<R: Read>(
+    reader: R,
+    data_host: &str,
+    port: u16,
+    local_data_address: Option<&str>,
+    token: Option<&str>,
+    encryption: ZcStreamEncryption,
+    already_encrypted: bool,
+    buffer_bytes: usize,
+) -> io::Result<u64> {
+    zc_tcpmux_copy_reader_to_tcp(
+        reader,
+        data_host,
+        port,
+        local_data_address,
+        token,
+        encryption.to_tcpmux(),
+        already_encrypted,
+        buffer_bytes,
+    )
+}
+
+pub fn zc_pit_reflink_file(
+    source: impl AsRef<Path>,
+    snapshot: impl AsRef<Path>,
+    size_bytes: Option<u64>,
+) -> io::Result<()> {
+    let source = source.as_ref();
+    let snapshot = snapshot.as_ref();
+    let result = (|| {
+        if let Some(parent) = snapshot.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let src = OpenOptions::new().read(true).open(source)?;
+        let dst = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(snapshot)?;
+        let rc = unsafe { libc::ioctl(dst.as_raw_fd(), ZC_FICLONE, src.as_raw_fd()) };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if let Some(size_bytes) = size_bytes {
+            dst.set_len(size_bytes)?;
+        }
+        dst.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(snapshot);
+    }
+    result
+}
+
+pub fn zc_pit_is_reflink_unsupported(err: &io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(libc::EOPNOTSUPP | libc::EXDEV | libc::ENOTTY | libc::EINVAL | libc::ENOSYS)
+    )
 }
 
 struct ZcTcpmuxParallelChunk {
@@ -28789,6 +36109,26 @@ fn zc_write_all_at(file: &fs::File, mut buf: &[u8], mut offset: u64) -> io::Resu
         })?;
     }
     Ok(())
+}
+
+fn zc_tcpmux_open_output_path(path: &Path, label: &str) -> io::Result<(fs::File, bool)> {
+    let is_block = fs::metadata(path)
+        .map(|metadata| metadata.file_type().is_block_device())
+        .unwrap_or(false);
+    let mut options = OpenOptions::new();
+    options.write(true);
+    if is_block {
+        options.read(true);
+    } else {
+        options.create(true).truncate(true);
+    }
+    let file = options.open(path).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("open {label} {}: {err}", path.display()),
+        )
+    })?;
+    Ok((file, is_block))
 }
 
 fn zc_tcpmux_write_parallel_header(
@@ -29391,6 +36731,7 @@ fn zc_tcpmux_copy_file_to_tcp_parallel(
 
 fn zc_tcpmux_parallel_receive_worker(
     lane: usize,
+    expected_lane_id: usize,
     listener: TcpListener,
     output: Option<Arc<fs::File>>,
     shard_output: Option<PathBuf>,
@@ -29423,17 +36764,17 @@ fn zc_tcpmux_parallel_receive_worker(
         }
     }
     let (topology, nonce_base) = zc_tcpmux_read_parallel_header(&mut reader)?;
-    if topology.lane_id as usize != lane {
+    if topology.lane_id as usize != expected_lane_id {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "parallel lane id mismatch listener={lane} header={}",
+                "parallel lane id mismatch listener={lane} expected={expected_lane_id} header={}",
                 topology.lane_id
             ),
         ));
     }
     eprintln!(
-        "zc-tcpmux-receive-lane-topology: lane={lane} sender={} receiver_cpu={} receiver_numa_node={} affinity_target_cpu={} affinity_applied={} affinity={}",
+        "zc-tcpmux-receive-lane-topology: lane={lane} expected_lane_id={expected_lane_id} sender={} receiver_cpu={} receiver_numa_node={} affinity_target_cpu={} affinity_applied={} affinity={}",
         topology.log_fields(),
         local_cpu,
         local_numa,
@@ -29451,19 +36792,11 @@ fn zc_tcpmux_parallel_receive_worker(
     } else {
         None
     };
-    let shard_file = if let Some(path) = shard_output.as_ref() {
-        Some(
-            OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(path)
-                .map_err(|err| {
-                    io::Error::new(err.kind(), format!("open shard {}: {err}", path.display()))
-                })?,
-        )
+    let (shard_file, shard_file_is_block) = if let Some(path) = shard_output.as_ref() {
+        let (file, is_block) = zc_tcpmux_open_output_path(path, "shard")?;
+        (Some(file), is_block)
     } else {
-        None
+        (None, false)
     };
 
     let mut stats = ZcTcpmuxParallelStats::default();
@@ -29603,7 +36936,9 @@ fn zc_tcpmux_parallel_receive_worker(
             )
         })?;
     }
-    if let Some(file) = shard_file.as_ref() {
+    if let Some(file) = shard_file.as_ref()
+        && !shard_file_is_block
+    {
         file.set_len(shard_offset)?;
     }
     eprintln!(
@@ -29697,8 +37032,102 @@ fn zc_tcpmux_ordered_receive_writer(
     Ok((total, max_end))
 }
 
-fn zc_tcpmux_receive_shard_path(base: &Path, lane: usize) -> PathBuf {
-    PathBuf::from(format!("{}.lane{lane:04}", base.display()))
+fn zc_tcpmux_ordered_receive_stream_writer<W: Write>(
+    mut writer: W,
+    rx: mpsc::Receiver<ZcTcpmuxReceivedChunk>,
+    expected_bytes: Option<u64>,
+) -> io::Result<(u64, u64)> {
+    let mut pending = BTreeMap::<u64, Vec<u8>>::new();
+    let mut next_offset = 0u64;
+    let mut total = 0u64;
+    let mut max_end = 0u64;
+
+    for chunk in rx {
+        let len = chunk.data.len() as u64;
+        let end = chunk.offset.checked_add(len).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ordered stream receive chunk offset overflow",
+            )
+        })?;
+        if chunk.offset < next_offset {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "ordered stream receive duplicate or overlapping chunk at offset {} next_offset={next_offset}",
+                    chunk.offset
+                ),
+            ));
+        }
+        total = total.checked_add(len).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ordered stream receive byte count overflow",
+            )
+        })?;
+        max_end = max_end.max(end);
+
+        if chunk.offset == next_offset {
+            writer.write_all(&chunk.data)?;
+            next_offset = end;
+            while let Some(data) = pending.remove(&next_offset) {
+                let len = data.len() as u64;
+                writer.write_all(&data)?;
+                next_offset = next_offset.checked_add(len).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "ordered stream receive next offset overflow",
+                    )
+                })?;
+            }
+        } else if pending.insert(chunk.offset, chunk.data).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "ordered stream receive duplicate chunk at offset {}",
+                    chunk.offset
+                ),
+            ));
+        }
+    }
+
+    if !pending.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "ordered stream receive is missing chunk at offset {next_offset}; pending_chunks={}",
+                pending.len()
+            ),
+        ));
+    }
+    if let Some(expected_bytes) = expected_bytes
+        && next_offset != expected_bytes
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "ordered stream receive wrote {next_offset} bytes but expected {expected_bytes}"
+            ),
+        ));
+    }
+
+    writer.flush()?;
+    eprintln!(
+        "zc-tcpmux-ordered-stream-writer-result: bytes={total} max_end={max_end} pending_chunks=0"
+    );
+    Ok((total, max_end))
+}
+
+fn zc_tcpmux_receive_shard_path(
+    base: &Path,
+    lane: usize,
+    shard_device_prefix: Option<&str>,
+) -> PathBuf {
+    if let Some(prefix) = shard_device_prefix {
+        PathBuf::from(format!("{prefix}{lane}"))
+    } else {
+        PathBuf::from(format!("{}.lane{lane:04}", base.display()))
+    }
 }
 
 fn zc_tcpmux_receive_shard_manifest_path(base: &Path) -> PathBuf {
@@ -29715,6 +37144,7 @@ fn zc_remove_file_if_exists(path: &Path) -> io::Result<()> {
 
 fn zc_tcpmux_write_shard_manifest(
     output: &Path,
+    shard_device_prefix: Option<&str>,
     expected_bytes: Option<u64>,
     lane_stats: &[(usize, ZcTcpmuxParallelStats)],
 ) -> io::Result<()> {
@@ -29730,11 +37160,14 @@ fn zc_tcpmux_write_shard_manifest(
     ));
     text.push_str(&format!("lanes={}\n", lane_stats.len()));
     text.push_str("layout=lane-contiguous-round-robin\n");
+    if let Some(prefix) = shard_device_prefix {
+        text.push_str(&format!("shard_device_prefix={prefix}\n"));
+    }
     for (lane, stats) in lane_stats {
         text.push_str(&format!(
             "lane={} path={} bytes={} chunks={} max_end={} topology={}\n",
             lane,
-            zc_tcpmux_receive_shard_path(output, *lane).display(),
+            zc_tcpmux_receive_shard_path(output, *lane, shard_device_prefix).display(),
             stats.bytes,
             stats.chunks,
             stats.max_end,
@@ -29754,47 +37187,54 @@ fn zc_tcpmux_write_shard_manifest(
 
 fn zc_tcpmux_receive_parallel(
     listeners: Vec<TcpListener>,
+    lane_base: usize,
     output: &Path,
     expected_bytes: Option<u64>,
     assembly: ZcTcpmuxReceiveAssembly,
+    shard_device_prefix: Option<&str>,
     token: Option<&str>,
     encryption: ZcTcpmuxEncryption,
     already_encrypted: bool,
     affinity: &ZcTcpmuxAffinityConfig,
 ) -> io::Result<u64> {
-    if output.as_os_str() == "-" {
+    let output_is_stdout = output.as_os_str() == "-";
+    if output_is_stdout && assembly != ZcTcpmuxReceiveAssembly::Ordered {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "parallel zc-tcpmux receive cannot write ordered data to stdout; use --lanes 1",
+            "parallel zc-tcpmux stdout receive requires --receive-assembly ordered",
         ));
     }
     let discard = output == Path::new("/dev/null");
     let sharded = !discard && assembly == ZcTcpmuxReceiveAssembly::Shards;
+    let output_is_block = if discard || sharded || output_is_stdout {
+        false
+    } else {
+        fs::metadata(output)
+            .map(|metadata| metadata.file_type().is_block_device())
+            .unwrap_or(false)
+    };
     if sharded {
-        zc_remove_file_if_exists(output)?;
         zc_remove_file_if_exists(&zc_tcpmux_receive_shard_manifest_path(output))?;
-        for lane in 0..listeners.len() {
-            zc_remove_file_if_exists(&zc_tcpmux_receive_shard_path(output, lane))?;
+        if shard_device_prefix.is_none() {
+            zc_remove_file_if_exists(output)?;
+            for lane in 0..listeners.len() {
+                zc_remove_file_if_exists(&zc_tcpmux_receive_shard_path(
+                    output,
+                    lane_base + lane,
+                    None,
+                ))?;
+            }
         }
     }
-    let file = if discard || sharded {
+    let file = if discard || sharded || output_is_stdout {
         None
     } else {
-        let file = Some(Arc::new(
-            OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(output)
-                .map_err(|err| {
-                    io::Error::new(
-                        err.kind(),
-                        format!("open output {}: {err}", output.display()),
-                    )
-                })?,
-        ));
+        let (opened, _) = zc_tcpmux_open_output_path(output, "output")?;
+        let file = Some(Arc::new(opened));
         if let Some(expected_bytes) = expected_bytes {
-            if let Some(file) = file.as_ref() {
+            if let Some(file) = file.as_ref()
+                && !output_is_block
+            {
                 file.set_len(expected_bytes)?;
             }
         }
@@ -29802,19 +37242,27 @@ fn zc_tcpmux_receive_parallel(
     };
 
     let (chunk_tx, writer_handle) = if !discard && assembly == ZcTcpmuxReceiveAssembly::Ordered {
-        let file = file.as_ref().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "ordered receive assembly requires an output file",
-            )
-        })?;
         let (tx, rx) = mpsc::sync_channel::<ZcTcpmuxReceivedChunk>(
             listeners.len().saturating_mul(4).clamp(16, 1024),
         );
-        let writer_file = Arc::clone(file);
-        let handle = thread::spawn(move || {
-            zc_tcpmux_ordered_receive_writer(writer_file, rx, expected_bytes)
-        });
+        let handle = if output_is_stdout {
+            thread::spawn(move || {
+                zc_tcpmux_ordered_receive_stream_writer(
+                    BufWriter::new(io::stdout()),
+                    rx,
+                    expected_bytes,
+                )
+            })
+        } else {
+            let file = file.as_ref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "ordered receive assembly requires an output file",
+                )
+            })?;
+            let writer_file = Arc::clone(file);
+            thread::spawn(move || zc_tcpmux_ordered_receive_writer(writer_file, rx, expected_bytes))
+        };
         (Some(tx), Some(handle))
     } else {
         (None, None)
@@ -29822,8 +37270,15 @@ fn zc_tcpmux_receive_parallel(
 
     let mut handles = Vec::with_capacity(listeners.len());
     for (lane, listener) in listeners.into_iter().enumerate() {
+        let expected_lane_id = lane_base.checked_add(lane).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "parallel receive lane base overflow",
+            )
+        })?;
         let worker_chunk_tx = chunk_tx.as_ref().cloned();
-        let shard_output = sharded.then(|| zc_tcpmux_receive_shard_path(output, lane));
+        let shard_output = sharded
+            .then(|| zc_tcpmux_receive_shard_path(output, expected_lane_id, shard_device_prefix));
         let file = if worker_chunk_tx.is_some() || shard_output.is_some() {
             None
         } else {
@@ -29834,6 +37289,7 @@ fn zc_tcpmux_receive_parallel(
         handles.push(thread::spawn(move || {
             zc_tcpmux_parallel_receive_worker(
                 lane,
+                expected_lane_id,
                 listener,
                 file,
                 shard_output,
@@ -29866,7 +37322,7 @@ fn zc_tcpmux_receive_parallel(
                     None => {}
                 }
                 max_end = max_end.max(stats.max_end);
-                lane_stats.push((lane, stats));
+                lane_stats.push((lane_base + lane, stats));
             }
             Ok(Err(err)) if first_error.is_none() => first_error = Some(err),
             Ok(Err(_)) => {}
@@ -29906,11 +37362,13 @@ fn zc_tcpmux_receive_parallel(
             format!("parallel receive got {total} bytes but expected {expected_bytes}"),
         ));
     }
-    if let Some(file) = file {
+    if let Some(file) = file
+        && !output_is_block
+    {
         file.set_len(expected_bytes.unwrap_or(max_end))?;
     }
     if sharded {
-        zc_tcpmux_write_shard_manifest(output, expected_bytes, &lane_stats)?;
+        zc_tcpmux_write_shard_manifest(output, shard_device_prefix, expected_bytes, &lane_stats)?;
     }
     Ok(total)
 }
@@ -29939,6 +37397,38 @@ fn zc_tcpmux_parse_port_range(value: &str) -> io::Result<(u16, u16)> {
         let port = parse_u16_value(value, "--listen-port-range")?;
         Ok((port, port))
     }
+}
+
+fn zc_tcpmux_consecutive_ports(base: u16, lanes: usize, label: &str) -> io::Result<Vec<u16>> {
+    if lanes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{label} requires at least one lane"),
+        ));
+    }
+    let end = base as usize + lanes - 1;
+    if end > u16::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{label} overflows TCP port range: base={base} lanes={lanes}"),
+        ));
+    }
+    Ok((0..lanes).map(|lane| base + lane as u16).collect())
+}
+
+fn zc_tcpmux_parse_ports_csv(value: &str, label: &str) -> io::Result<Vec<u16>> {
+    let ports = value
+        .split(',')
+        .map(str::trim)
+        .map(|item| parse_u16_value(item, label))
+        .collect::<io::Result<Vec<_>>>()?;
+    if ports.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{label} requires at least one port"),
+        ));
+    }
+    Ok(ports)
 }
 
 fn zc_tcpmux_bind_listener(
@@ -30096,6 +37586,8 @@ fn zc_tcpmux_receive(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut expected_bytes = None::<u64>;
     let mut assembly = ZcTcpmuxReceiveAssembly::Direct;
     let mut lanes = 1usize;
+    let mut lane_base = 0usize;
+    let mut shard_device_prefix = None::<String>;
     let mut encryption = ZcTcpmuxEncryption::Aes256;
     let mut already_encrypted = false;
     let mut ready_stderr = false;
@@ -30141,8 +37633,14 @@ fn zc_tcpmux_receive(args: impl Iterator<Item = String>) -> io::Result<()> {
             "--ordered-assembly" | "--receive-ordered-assembly" => {
                 assembly = ZcTcpmuxReceiveAssembly::Ordered
             }
+            "--shard-device-prefix" | "--receive-shard-device-prefix" => {
+                shard_device_prefix = Some(next_flag_value(&mut args, &arg)?)
+            }
             "--lanes" | "--receive-lanes" => {
                 lanes = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--lane-base" | "--receive-lane-base" => {
+                lane_base = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
             }
             "--encryption" | "--receive-encryption" => {
                 encryption = ZcTcpmuxEncryption::parse(&next_flag_value(&mut args, &arg)?, &arg)?
@@ -30187,6 +37685,12 @@ fn zc_tcpmux_receive(args: impl Iterator<Item = String>) -> io::Result<()> {
             "--lanes must be greater than zero",
         ));
     }
+    if shard_device_prefix.is_some() && assembly != ZcTcpmuxReceiveAssembly::Shards {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--shard-device-prefix requires --receive-assembly shards",
+        ));
+    }
     if !disable_authentication && token.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -30229,12 +37733,13 @@ fn zc_tcpmux_receive(args: impl Iterator<Item = String>) -> io::Result<()> {
         .collect::<Vec<_>>()
         .join(",");
     let ready_line = format!(
-        "ZC_TCPMUX_READY listen_address={} listen_addresses={} port={} ports={} lanes={} authentication={} encryption={}",
+        "ZC_TCPMUX_READY listen_address={} listen_addresses={} port={} ports={} lanes={} lane_base={} authentication={} encryption={}",
         listen_addresses[0],
         listen_addresses.join(","),
         ready_port,
         ready_ports_csv,
         lanes,
+        lane_base,
         if disable_authentication {
             "disabled"
         } else {
@@ -30253,9 +37758,11 @@ fn zc_tcpmux_receive(args: impl Iterator<Item = String>) -> io::Result<()> {
     if lanes > 1 {
         let total = zc_tcpmux_receive_parallel(
             listeners,
+            lane_base,
             &output,
             expected_bytes,
             assembly,
+            shard_device_prefix.as_deref(),
             token.as_deref(),
             encryption,
             already_encrypted,
@@ -30292,19 +37799,22 @@ fn zc_tcpmux_receive(args: impl Iterator<Item = String>) -> io::Result<()> {
             buffer_bytes,
         )?
     } else {
-        let file = BufWriter::new(
-            OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&output)
-                .map_err(|err| {
-                    io::Error::new(
-                        err.kind(),
-                        format!("open output {}: {err}", output.display()),
-                    )
-                })?,
-        );
+        let output_is_block = fs::metadata(&output)
+            .map(|metadata| metadata.file_type().is_block_device())
+            .unwrap_or(false);
+        let mut options = OpenOptions::new();
+        options.write(true);
+        if output_is_block {
+            options.read(true);
+        } else {
+            options.create(true).truncate(true);
+        }
+        let file = BufWriter::new(options.open(&output).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("open output {}: {err}", output.display()),
+            )
+        })?);
         zc_tcpmux_copy_tcp_to_writer(
             stream,
             file,
@@ -30326,13 +37836,17 @@ fn zc_tcpmux_receive(args: impl Iterator<Item = String>) -> io::Result<()> {
 fn zc_tcpmux_send(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut peer_address = None::<String>;
     let mut port = None::<u16>;
+    let mut ports = None::<Vec<u16>>;
     let mut input = None::<PathBuf>;
     let mut buffer_bytes = 1024 * 1024usize;
+    let mut lanes = 1usize;
     let mut encryption = ZcTcpmuxEncryption::Aes256;
     let mut already_encrypted = false;
     let mut token = None::<String>;
     let mut disable_authentication = false;
     let mut local_data_address = None::<String>;
+    let mut pin_cpus = false;
+    let mut cpu_list = None::<String>;
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -30345,12 +37859,21 @@ fn zc_tcpmux_send(args: impl Iterator<Item = String>) -> io::Result<()> {
                     "--port",
                 )?)
             }
+            "--ports" => {
+                ports = Some(zc_tcpmux_parse_ports_csv(
+                    &next_flag_value(&mut args, "--ports")?,
+                    "--ports",
+                )?)
+            }
             "--local-data-address" | "--send-local-address" | "--source-address" => {
                 local_data_address = Some(next_flag_value(&mut args, &arg)?)
             }
             "--input" | "-i" => input = Some(PathBuf::from(next_flag_value(&mut args, &arg)?)),
             "--buffer-bytes" | "--chunk-bytes" => {
                 buffer_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--lanes" | "--send-lanes" => {
+                lanes = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
             }
             "--token" => token = Some(next_flag_value(&mut args, &arg)?),
             "--disable-authentication" => disable_authentication = true,
@@ -30361,6 +37884,8 @@ fn zc_tcpmux_send(args: impl Iterator<Item = String>) -> io::Result<()> {
                 )?
             }
             "--already-encrypted" => already_encrypted = true,
+            "--pin-cpus" => pin_cpus = true,
+            "--cpu-list" | "--pin-cpu-list" => cpu_list = Some(next_flag_value(&mut args, &arg)?),
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -30387,6 +37912,22 @@ fn zc_tcpmux_send(args: impl Iterator<Item = String>) -> io::Result<()> {
             "--already-encrypted requires --encryption aes-256",
         ));
     }
+    if lanes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--lanes must be greater than zero",
+        ));
+    }
+    if let Some(ports) = ports.as_ref() {
+        if lanes == 1 {
+            lanes = ports.len();
+        } else if ports.len() != lanes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("--ports has {} entries but --lanes is {lanes}", ports.len()),
+            ));
+        }
+    }
     if !disable_authentication && token.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -30405,34 +37946,81 @@ fn zc_tcpmux_send(args: impl Iterator<Item = String>) -> io::Result<()> {
             "zc-tcpmux-send requires --port",
         )
     })?;
+    let affinity = ZcTcpmuxAffinityConfig::from_cli(pin_cpus, cpu_list.as_deref(), "--cpu-list")?;
+    let parallel_ports = |lanes| {
+        if let Some(ports) = ports.clone() {
+            Ok(ports)
+        } else {
+            zc_tcpmux_consecutive_ports(port, lanes, "--port/--lanes")
+        }
+    };
     let bytes = if let Some(input) = input {
         let source = fs::File::open(&input).map_err(|err| {
             io::Error::new(err.kind(), format!("open input {}: {err}", input.display()))
         })?;
-        zc_tcpmux_copy_reader_to_tcp(
-            source,
-            &peer_address,
-            port,
-            local_data_address.as_deref(),
-            token.as_deref(),
-            encryption,
-            already_encrypted,
-            buffer_bytes,
-        )?
+        if lanes == 1 {
+            zc_tcpmux_copy_reader_to_tcp(
+                source,
+                &peer_address,
+                port,
+                local_data_address.as_deref(),
+                token.as_deref(),
+                encryption,
+                already_encrypted,
+                buffer_bytes,
+            )?
+        } else {
+            let ports = parallel_ports(lanes)?;
+            let paths = vec![ZcTcpmuxDataPath {
+                data_host: peer_address.clone(),
+                local_data_address: local_data_address.clone(),
+                receive_listen_address: peer_address.clone(),
+            }];
+            zc_tcpmux_copy_reader_to_tcp_parallel(
+                source,
+                &paths,
+                &ports,
+                token.as_deref(),
+                encryption,
+                already_encrypted,
+                buffer_bytes,
+                &affinity,
+            )?
+        }
     } else {
-        zc_tcpmux_copy_reader_to_tcp(
-            io::stdin().lock(),
-            &peer_address,
-            port,
-            local_data_address.as_deref(),
-            token.as_deref(),
-            encryption,
-            already_encrypted,
-            buffer_bytes,
-        )?
+        let stdin = io::stdin().lock();
+        if lanes == 1 {
+            zc_tcpmux_copy_reader_to_tcp(
+                stdin,
+                &peer_address,
+                port,
+                local_data_address.as_deref(),
+                token.as_deref(),
+                encryption,
+                already_encrypted,
+                buffer_bytes,
+            )?
+        } else {
+            let ports = parallel_ports(lanes)?;
+            let paths = vec![ZcTcpmuxDataPath {
+                data_host: peer_address.clone(),
+                local_data_address: local_data_address.clone(),
+                receive_listen_address: peer_address.clone(),
+            }];
+            zc_tcpmux_copy_reader_to_tcp_parallel(
+                stdin,
+                &paths,
+                &ports,
+                token.as_deref(),
+                encryption,
+                already_encrypted,
+                buffer_bytes,
+                &affinity,
+            )?
+        }
     };
     eprintln!(
-        "zc-tcpmux-send-result: peer={peer_address}:{port} local_data_address={} bytes={bytes} encryption={} already_encrypted={}",
+        "zc-tcpmux-send-result: peer={peer_address}:{port} lanes={lanes} local_data_address={} bytes={bytes} encryption={} already_encrypted={}",
         local_data_address.as_deref().unwrap_or("-"),
         encryption.as_arg(),
         already_encrypted
@@ -30444,12 +38032,7 @@ fn zcencrypt(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut input = None::<PathBuf>;
     let mut output = None::<PathBuf>;
     let mut token = None::<String>;
-    let mut topology = None::<String>;
-    let mut lane_id = None::<String>;
-    let mut queue_id = None::<String>;
-    let mut preferred_cpu = None::<String>;
-    let mut numa_node = None::<String>;
-    let mut ordered = "global".to_string();
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut buffer_bytes = 1024 * 1024usize;
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -30461,24 +38044,17 @@ fn zcencrypt(args: impl Iterator<Item = String>) -> io::Result<()> {
                      zcencrypt --token TOKEN [--input PATH] [--output PATH]\n\
                      \n\
                      Topology hint flags are accepted for descriptor pipelines:\n\
-                     --topology NAME --lane-id N --queue-id N --preferred-cpu N --numa-node N --ordered global|per-lane"
+                     --topology NAME --lane-id N --lane-count N --queue-id N --preferred-cpu N --numa-node N --ordered global|per-lane"
                 );
                 return Ok(());
             }
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--token" => token = Some(next_flag_value(&mut args, "--token")?),
             "--input" | "-i" => input = Some(PathBuf::from(next_flag_value(&mut args, &arg)?)),
             "--output" | "-o" => output = Some(PathBuf::from(next_flag_value(&mut args, &arg)?)),
             "--buffer-bytes" | "--chunk-bytes" => {
                 buffer_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
             }
-            "--topology" => topology = Some(next_flag_value(&mut args, "--topology")?),
-            "--lane-id" => lane_id = Some(next_flag_value(&mut args, "--lane-id")?),
-            "--queue-id" => queue_id = Some(next_flag_value(&mut args, "--queue-id")?),
-            "--preferred-cpu" => {
-                preferred_cpu = Some(next_flag_value(&mut args, "--preferred-cpu")?)
-            }
-            "--numa-node" => numa_node = Some(next_flag_value(&mut args, "--numa-node")?),
-            "--ordered" => ordered = next_flag_value(&mut args, "--ordered")?,
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -30487,12 +38063,7 @@ fn zcencrypt(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
-    if ordered != "global" && ordered != "per-lane" {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--ordered must be global or per-lane",
-        ));
-    }
+    primitive.activate_byte_compatible("zcencrypt")?;
     let token = token
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zcencrypt requires --token"))?;
     zc_tcpmux_validate_token(&token)?;
@@ -30538,14 +38109,7 @@ fn zcencrypt(args: impl Iterator<Item = String>) -> io::Result<()> {
     };
     let total = zc_encrypt_aes256_stream(&mut reader, &mut writer, &token, buffer_bytes)?;
     writer.flush()?;
-    eprintln!(
-        "zcencrypt-result: bytes={total} topology={} lane_id={} queue_id={} preferred_cpu={} numa_node={} ordered={ordered}",
-        topology.as_deref().unwrap_or("-"),
-        lane_id.as_deref().unwrap_or("-"),
-        queue_id.as_deref().unwrap_or("-"),
-        preferred_cpu.as_deref().unwrap_or("-"),
-        numa_node.as_deref().unwrap_or("-")
-    );
+    eprintln!("zcencrypt-result: bytes={total} {}", primitive.log_fields());
     Ok(())
 }
 
@@ -30553,12 +38117,7 @@ fn zcdecrypt(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut input = None::<PathBuf>;
     let mut output = None::<PathBuf>;
     let mut token = None::<String>;
-    let mut topology = None::<String>;
-    let mut lane_id = None::<String>;
-    let mut queue_id = None::<String>;
-    let mut preferred_cpu = None::<String>;
-    let mut numa_node = None::<String>;
-    let mut ordered = "global".to_string();
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -30569,21 +38128,14 @@ fn zcdecrypt(args: impl Iterator<Item = String>) -> io::Result<()> {
                      zcdecrypt --token TOKEN [--input PATH] [--output PATH]\n\
                      \n\
                      Topology hint flags are accepted for descriptor pipelines:\n\
-                     --topology NAME --lane-id N --queue-id N --preferred-cpu N --numa-node N --ordered global|per-lane"
+                     --topology NAME --lane-id N --lane-count N --queue-id N --preferred-cpu N --numa-node N --ordered global|per-lane"
                 );
                 return Ok(());
             }
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--token" => token = Some(next_flag_value(&mut args, "--token")?),
             "--input" | "-i" => input = Some(PathBuf::from(next_flag_value(&mut args, &arg)?)),
             "--output" | "-o" => output = Some(PathBuf::from(next_flag_value(&mut args, &arg)?)),
-            "--topology" => topology = Some(next_flag_value(&mut args, "--topology")?),
-            "--lane-id" => lane_id = Some(next_flag_value(&mut args, "--lane-id")?),
-            "--queue-id" => queue_id = Some(next_flag_value(&mut args, "--queue-id")?),
-            "--preferred-cpu" => {
-                preferred_cpu = Some(next_flag_value(&mut args, "--preferred-cpu")?)
-            }
-            "--numa-node" => numa_node = Some(next_flag_value(&mut args, "--numa-node")?),
-            "--ordered" => ordered = next_flag_value(&mut args, "--ordered")?,
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -30592,12 +38144,7 @@ fn zcdecrypt(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
-    if ordered != "global" && ordered != "per-lane" {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--ordered must be global or per-lane",
-        ));
-    }
+    primitive.activate_byte_compatible("zcdecrypt")?;
     let token = token
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zcdecrypt requires --token"))?;
     zc_tcpmux_validate_token(&token)?;
@@ -30643,14 +38190,7 @@ fn zcdecrypt(args: impl Iterator<Item = String>) -> io::Result<()> {
     };
     let total = zc_decrypt_aes256_stream(&mut reader, &mut writer, &token)?;
     writer.flush()?;
-    eprintln!(
-        "zcdecrypt-result: bytes={total} topology={} lane_id={} queue_id={} preferred_cpu={} numa_node={} ordered={ordered}",
-        topology.as_deref().unwrap_or("-"),
-        lane_id.as_deref().unwrap_or("-"),
-        queue_id.as_deref().unwrap_or("-"),
-        preferred_cpu.as_deref().unwrap_or("-"),
-        numa_node.as_deref().unwrap_or("-")
-    );
+    eprintln!("zcdecrypt-result: bytes={total} {}", primitive.log_fields());
     Ok(())
 }
 
@@ -31367,9 +38907,11 @@ fn zcgrep(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut pattern = None::<Vec<u8>>;
     let mut invert_match = false;
     let mut count_only = false;
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--pattern" => pattern = Some(next_flag_value(&mut args, "--pattern")?.into_bytes()),
             "--invert-match" => invert_match = true,
             "--count-only" => count_only = true,
@@ -31381,6 +38923,7 @@ fn zcgrep(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
+    primitive.activate_byte_compatible("zcgrep")?;
     let pattern = pattern.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -31421,9 +38964,11 @@ fn zcgrep(args: impl Iterator<Item = String>) -> io::Result<()> {
 fn zcstat(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut pass_through = false;
     let mut buffer_bytes = 1024 * 1024usize;
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--pass-through" => pass_through = true,
             "--buffer-bytes" => {
                 buffer_bytes = parse_size_arg(
@@ -31439,6 +38984,7 @@ fn zcstat(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
+    primitive.activate_byte_compatible("zcstat")?;
     let mut input = io::stdin().lock();
     let mut output = BufWriter::new(io::stdout().lock());
     let mut buf = vec![0u8; buffer_bytes.max(4096)];
@@ -31461,8 +39007,9 @@ fn zcstat(args: impl Iterator<Item = String>) -> io::Result<()> {
     }
     let elapsed = started.elapsed();
     eprintln!(
-        "zcstat-result: bytes={total} chunks={chunks} seconds={:.6}",
-        elapsed.as_secs_f64()
+        "zcstat-result: bytes={total} chunks={chunks} seconds={:.6} {}",
+        elapsed.as_secs_f64(),
+        primitive.log_fields()
     );
     print_tcp_bench_result("zcstat", total, elapsed);
     Ok(())
@@ -31473,9 +39020,11 @@ fn zcmeter(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut buffer_bytes = 1024 * 1024usize;
     let mut interval = Duration::from_secs(1);
     let mut label = "zcmeter".to_string();
+    let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--pass-through" => pass_through = true,
             "--no-pass-through" | "--consume" => pass_through = false,
             "--buffer-bytes" | "--chunk-bytes" => {
@@ -31512,6 +39061,7 @@ fn zcmeter(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
+    primitive.activate_byte_compatible("zcmeter")?;
 
     let mut input = io::stdin().lock();
     let mut output = BufWriter::new(io::stdout().lock());
@@ -31573,7 +39123,8 @@ fn zcmeter(args: impl Iterator<Item = String>) -> io::Result<()> {
         0.0
     };
     eprintln!(
-        "{label}-final: received_bytes={total} interval_bytes={interval_bytes} bytes_per_second={bytes_per_second:.0} average_bytes_per_second={average_bytes_per_second:.0} chunks={chunks} total_seconds={total_seconds:.3}"
+        "{label}-final: received_bytes={total} interval_bytes={interval_bytes} bytes_per_second={bytes_per_second:.0} average_bytes_per_second={average_bytes_per_second:.0} chunks={chunks} total_seconds={total_seconds:.3} {}",
+        primitive.log_fields()
     );
     Ok(())
 }
@@ -32057,11 +39608,16 @@ fn print_zcutils_help() {
          zcforward               fused fanout for encrypted forward/local-consume paths\n\
          zcmaptee                map/fan out descriptors; byte fanout today\n\
          zctee                   fan out descriptors; file/stdout byte fanout today\n\
+         zctier                  hot-write plus bounded asynchronous spill endpoint\n\
+         zcfanplan               derive sparse lane/NIC/port fanout execution plans\n\
+         zcjournal               emit/join/sink plus mem-combine descriptor benches\n\
+         zcjournal-join          direct descriptor fan-in alias for zcjournal join\n\
          zcsnap                  mark descriptor/WAL snapshot cuts; byte manifest today\n\
          zcraid-split            frame and stripe/mirror stdin across branch streams\n\
          zcraid-merge            reassemble zcraid branch streams in global order\n\
          zcraid-fanoutd          daemon alias for zcraid-split\n\
          zcraid-fanind           daemon alias for zcraid-merge\n\
+         zcraidd                 local nested RAID/fanout/fanin bench and daemon wrapper\n\
          zcsink                  consume stdin by count/drop/checksum\n\
          zccat                   source descriptors; byte copy today\n\
          zcout                   materialize descriptors to stdout; byte copy today\n\
@@ -32097,9 +39653,14 @@ fn zc_argv0_command(argv0: &str) -> Option<&'static str> {
         "zcforward" | "zcfwd" => Some("zcforward"),
         "zcmaptee" => Some("zcmaptee"),
         "zctee" => Some("zctee"),
+        "zctier" => Some("zctier"),
+        "zcfanplan" => Some("zcfanplan"),
+        "zcjournal" => Some("zcjournal"),
+        "zcjournal-join" | "zcjoin" => Some("zcjournal-join"),
         "zcsnap" | "zcsnapshot" => Some("zcsnap"),
         "zcraid-split" | "zcraid-send" | "zcraid-fanoutd" => Some("zcraid-split"),
         "zcraid-merge" | "zcraid-recv" | "zcraid-fanind" => Some("zcraid-merge"),
+        "zcraidd" => Some("zcraidd"),
         "zcsink" => Some("zcsink"),
         "zccat" => Some("zccat"),
         "zcout" => Some("zcout"),
@@ -32138,9 +39699,14 @@ pub fn main_entry() -> io::Result<()> {
         Some("zcforward") | Some("zcfwd") => zcforward(args),
         Some("zcmaptee") => zcmaptee(args),
         Some("zctee") => zctee(args),
+        Some("zctier") => zctier(args),
+        Some("zcfanplan") => fanout::cli(args),
+        Some("zcjournal") => zcjournal(args),
+        Some("zcjournal-join") | Some("zcjoin") => zcjournal_join(args),
         Some("zcsnap") | Some("zcsnapshot") => zcsnap(args),
         Some("zcraid-split") | Some("zcraid-send") | Some("zcraid-fanoutd") => zcraid_split(args),
         Some("zcraid-merge") | Some("zcraid-recv") | Some("zcraid-fanind") => zcraid_merge(args),
+        Some("zcraidd") => zcraidd(args),
         Some("zcsink") => zcsink(args),
         Some("zccat") => zccat(args),
         Some("zcout") => zcout(args),
@@ -34017,8 +41583,8 @@ pub fn main_entry() -> io::Result<()> {
                  tcp-bench-server, tcp-bench-mux-send, tcp-bench-mux-server, \
                  tcp-bench-uring-mux-send, tcp-bench-uring-mux-server, \
                  tcp-wal-mux-server, udp-wal-mux-server, udp-bench-mux-send, \
-                 zcnblk-target, zcnblk-send, \
-                 zcsnap, \
+                 zcraidd, zcnblk-target, zcnblk-send, \
+                 zcjournal, zcjournal-join, zcsnap, \
                  uring-baton-bench, uring-write-bench, \
                  cache-copy-microbench, cache-smt-microbench, \
                  slot-wal-bench, slot-rand-bench, slot-rand-sharded-bench, \

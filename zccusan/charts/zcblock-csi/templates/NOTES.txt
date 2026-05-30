@@ -1,0 +1,17 @@
+zcblock-csi installed with driver name {{ .Values.driverName }}.
+
+Control API:
+{{- if .Values.control.enabled }}
+  Local pod URL: {{ .Values.control.url }}
+  OpenAPI path: /openapi.yaml
+{{- else }}
+  Disabled; CSI will use only its legacy Unix socket.
+{{- end }}
+
+Raw block StorageClass:
+{{- if .Values.storageClasses.zcraw.enabled }}
+  Enabled as {{ .Values.storageClasses.zcraw.name }}.
+{{- else }}
+  Disabled by default. Enable storageClasses.zcraw.enabled and set
+  storageClasses.zcraw.parameters.rawPartUUID for a real partition.
+{{- end }}

@@ -38,13 +38,15 @@ zc-tcpmux-xfer ./file nodeB:/tmp/file
   sender and receiver primitives.
 - `zcencrypt` and `zcdecrypt`: AES-256-GCM framed stream filters.
 - `zcflow`: descriptor-aware pipeline runner; byte pipes today.
-- `zccat`, `zcout`, `zcmap`, `zcmaptee`, `zctee`, `zcsink`, `zcstat`,
+- `zccat`, `zcout`, `zcmap`, `zcmaptee`, `zctee`, `zctier`, `zcsink`, `zcstat`,
   `zcmeter`, and `zcgrep`: byte-compatible forms of the planned descriptor
   pipeline tools.
 - `zcsnap`: descriptor/WAL snapshot cut marker; byte-compatible manifest
   emission today.
 - `zcmux`, `zcdemux`, and `zcnc`: lane-multiplexed TCP and netcat-like
   network experiments.
+- `zcraid-split`, `zcraid-merge`, and `zctier`: userspace RAID/fanout,
+  reassembly, hot-tier, and bounded spill building blocks.
 - `zcwritebench` and the umbrella-only benchmark subcommands such as
   `slot-wal-bench`, `slot-rand-bench`, `slot-rand-sharded-bench`,
   `zckv-page-bench`, and `zckv-compact-bench`: low-level io_uring and storage
@@ -91,6 +93,11 @@ frame, and topology-header rules.
 
 ## Documentation
 
+For the smallest complete sample of the repo's intended style, start with
+`zc-tcpmux-send` and `zc-tcpmux-receive`: token-authenticated transport,
+lane-aware TCP muxing, AES framing, clear CLI shape, and direct command binaries
+without dragging in the SAN stack.
+
 - `docs/zero-copy-descriptor.md`: descriptor, collection, list, lease, and
   protocol upgrade model.
 - `docs/faq.md`: terminology and design notes, starting with what zcutils
@@ -98,8 +105,18 @@ frame, and topology-header rules.
 - `docs/wal-extent-framing.md`: lane-preserving WAL extent framing for logical
   4K records over coalesced physical appends.
 - `docs/zcutils-commands.md`: command design and examples.
+- `src/bin/zc-tcpmux-send.rs` and `src/bin/zc-tcpmux-receive.rs`: the golden
+  child sample app pair for stream transport behavior.
+- `docs/block-vs-userspace-bench-plan.md`: benchmark plan and short recipes
+  for comparing kernel block, zcnblk, TCP userspace, and zcraid logical paths.
 - `docs/man/zcutils.1.md`: man-page style command reference.
 - `docs/nvme-slot-topology-todo.md`: storage topology notes.
+
+## zccusan Docs
+
+The SAN/Kubernetes storage-network material lives under `zccusan/`, separate
+from the main stream and pipeline documentation. Start with
+`zccusan/README.md`.
 
 ## License
 

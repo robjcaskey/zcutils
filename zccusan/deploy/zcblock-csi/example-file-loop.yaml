@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zcblock-demo
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zcfile-smoke
+  namespace: zcblock-demo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: zcfile
+  resources:
+    requests:
+      storage: 64Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: zcfile-smoke
+  namespace: zcblock-demo
+spec:
+  restartPolicy: Never
+  containers:
+    - name: smoke
+      image: debian:bookworm-slim
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          echo zcfile-csi > /data/probe
+          cat /data/probe
+          df -T /data
+          sleep 3600
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: zcfile-smoke

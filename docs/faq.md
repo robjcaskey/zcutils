@@ -116,3 +116,7 @@ range are already explicit.
 path still pays normal block request overhead. Descriptor-native WAL or block
 targets should use the lane and shard metadata directly so we can compare the
 cost of old block semantics against a purpose-built data path.
+
+## What is the proton pack principle?
+
+Don't cross the ~~streams~~ lanes.

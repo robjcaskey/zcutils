@@ -1,0 +1,10 @@
+{{- if .Values.snapshotClass.enabled }}
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: {{ .Values.snapshotClass.name }}
+  labels:
+    {{- include "zcblock-csi.labels" . | nindent 4 }}
+driver: {{ .Values.driverName }}
+deletionPolicy: {{ .Values.snapshotClass.deletionPolicy }}
+{{- end }}

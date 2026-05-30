@@ -170,6 +170,49 @@ In descriptor-native mode the tee branches should share encrypted-buffer leases:
 the forwarding branch releases after the send completes, and the local branch
 releases after decrypt/demux consumes the ordered plaintext view.
 
+### zcrepl
+
+Replication-facing command surface for direct stream tests and CSI/control
+orchestration. `zcrepl send/recv` is a one-shot encrypted byte stream using the
+same Rust tcpmux/AES functions as the controller. `zcrepl csi-*` can talk to the
+OpenAPI REST sidecar with `--control-url` or to the legacy Unix socket with
+`--socket`, then asks the local control plane to open its own volume or snapshot
+backing path.
+
+```bash
+TOKEN="$(zcrepl token)"
+zcrepl recv --output /dev/target --listen 0.0.0.0 --port 42000 --token "$TOKEN"
+zcrepl send --input /dev/source --peer node-b --port 42000 --token "$TOKEN"
+
+zcrepl csi-recv --socket /var/lib/zcblock-csi-b/control.sock --volume "$TARGET_VOL" --token auto
+zcrepl csi-send --socket /var/lib/zcblock-csi-a/control.sock --snapshot "$SNAP" --peer "$IP" --port "$PORT" --token "$TOKEN"
+zcrepl csi-status --socket /var/lib/zcblock-csi-b/control.sock --repl-id "$REPL"
+
+zcrepl csi-recv --control-url http://127.0.0.1:9788 --volume "$TARGET_VOL" --token auto
+zcrepl csi-send --control-url http://127.0.0.1:9788 --snapshot "$SNAP" --peer "$IP" --port "$PORT" --token "$TOKEN"
+```
+
+This is not the final zero-copy topology path. It exposes the operational
+surface now, while the descriptor-native implementation remains responsible for
+cross-process buffer leases, lane metadata, NUMA/queue alignment, and target
+durable ACK accounting.
+
+### zcpit
+
+Create a point-in-time file snapshot. The strict zero-copy mode uses Linux
+`FICLONE`, so the source and snapshot must live on a reflink-capable filesystem
+such as XFS with reflink enabled or btrfs. `--mode auto` falls back to a full
+copy when reflink is unavailable; `--mode reflink` fails instead.
+
+```bash
+zcpit snapshot --source /var/lib/zcblock-csi/files/vol.img \
+  --snapshot /var/lib/zcblock-csi/snapshots/images/vol-snap.img \
+  --mode reflink
+```
+
+For a filesystem mounted through a loop-backed file, use the freeze/barrier
+path before creating the PIT snapshot when application consistency matters.
+
 ### zccat
 
 Source bytes, files, block ranges, or generated payloads as descriptors. Today
@@ -254,10 +297,13 @@ release, and replay.
 
 ### zcforward
 
-`zcforward` is the fused B-node primitive for A -> B -> C replication. It reads
-one stream from stdin, shares each chunk with bounded branch queues, and writes
-to command or file branches in parallel. That keeps the forwarding branch from
-serializing behind the local consume branch.
+`zcforward` is the fused B-node primitive for A -> B -> C replication. It can
+read one stream from stdin, or accept a single tcpmux stream with
+`--from-tcpmux [HOST:]PORT`. It shares each chunk with bounded branch queues,
+then writes to command, file, stdout, or direct tcpmux branches in parallel.
+That keeps the forwarding branch from serializing behind the local consume
+branch and avoids shell pipes on the hot B-node path when tcpmux ingress and
+egress are both fused.
 
 ```bash
 zc-tcpmux-receive --output - --token "$TOKEN" --already-encrypted |
@@ -266,6 +312,24 @@ zcforward \
   --to "zc-tcpmux-send --peer-address nodeC --port 43000 --token '$TOKEN' --already-encrypted" \
   --to "zcdecrypt --token '$TOKEN' | zcsink --consume checksum"
 ```
+
+The lower-overhead A -> B -> C form lets `zcforward` own both the B-node
+receive socket and the outbound tcpmux connection:
+
+```bash
+zcforward \
+  --from-tcpmux 0.0.0.0:42000 \
+  --ready-stderr \
+  --token "$TOKEN" \
+  --already-encrypted \
+  --to-tcpmux nodeC:43000 \
+  --local-data-address nodeB-private-ip \
+  --to "zcdecrypt --token '$TOKEN' | zcsink --consume checksum"
+```
+
+Use `--encryption none --disable-authentication` for plaintext test paths.
+With AES paths, `--already-encrypted` means the input is forwarded as the
+existing AES frame stream; omit it when B should decrypt and re-encrypt.
 
 ### zcraid-split, zcraid-merge, and Daemon Aliases
 
@@ -288,6 +352,41 @@ zcraid-merge \
   --from "zc-tcpmux-receive --output - --port 44001 --encryption none --disable-authentication" \
   --output /tmp/reassembled
 ```
+
+### zctier
+
+`zctier` is the userspace hot-tier plus spill endpoint. It writes each input
+chunk to the hot path synchronously, then queues the same bytes to an optional
+cold spill path or spill command. `--memory-bytes` bounds queued spill data, so
+the upstream pipeline gets backpressure when the cold tier falls behind.
+
+This composes with `zcraid-split` for RAID1-style fanout without putting the
+tier policy into every fanout command:
+
+```bash
+zccat --generate --bytes 8g --chunk-bytes 1m |
+zcraid-split --mode mirror --chunk-bytes 1m \
+  --to "zctier --hot /dev/shm/mirror-a.hot --spill /mnt/cold/mirror-a --memory-bytes 2g" \
+  --to "zctier --hot /dev/shm/mirror-b.hot --spill /mnt/cold/mirror-b --memory-bytes 2g"
+```
+
+The same policy is available as a `zcnblk-target` backend for the block path:
+
+```bash
+URING_PLAY_TCP_WAL_WRITE_MODE=write \
+URING_PLAY_ZCNBLK_READ_MODE=write \
+zcutils zcnblk-target \
+  zctier:/dev/shm/zcnblk.hot:/mnt/cold/zcnblk.spill:64g:4k:2g \
+  0.0.0.0 23600 64 1 64g 4k 256 64 4096 small-pages true
+```
+
+The block backend uses sparse/random-access files or block-like paths: writes
+are `pwrite`d to the hot path, copied into a bounded spill queue, and ACKed
+after the hot write plus spill admission. Reads are served from the hot path;
+if a restarted target finds the hot path missing and the spill path present, it
+uses the spill path as a cold-start read fallback and rehydrates the hot path as
+reads arrive. The target logs `zcnblk-target-tier-spill` lines with spill
+bytes, chunks, and queued-byte high-water marks.
 
 ### zcsink
 
@@ -446,13 +545,24 @@ printf 'abc\n' | zcstat
 ### zcnblk-target and zcnblk-send
 
 `zcnblk-target` receives mux-aligned block read/write frames for synthetic
-targets such as `zcdevnullN`, `/dev/zcbrdN`, and `/dev/zcstripeN`.
+targets such as `zcdevnullN`, `/dev/zcbrdN`, `/dev/zcstripeN`, and the
+userspace tier backend `zctier:HOT[:SPILL[:BYTES[:ALIGN[:MEMORY]]]]`.
 `zcnblk-send` is the user-space generator for write, read, and mixed 4K block
 traffic.
+
+`zcnblk` request frames are now v2 64-byte headers. In addition to op, flags,
+shard, length, and offset, each request carries `lane_id`, `lane_count`,
+`preferred_worker`, `queue_id`, `request_id`, `tier_id`, and topology flags.
+The userspace target validates that a topology-marked frame arrived on the lane
+it claims and that `tier_id` matches the target shard. This is the framing hook
+for end-to-end lane preservation across kernel block client, userspace sender,
+tier backend, RAID0 striping, and RAID1 mirroring.
 
 For the concrete point-to-point single-target unencrypted `/dev/zcnblk0` fio
 setup, including module config and recorded read/write benchmark numbers, see
 [`zcnblk-single-target-howto.md`](zcnblk-single-target-howto.md).
+For the broader block-vs-userspace comparison matrix and short recipes, see
+[`block-vs-userspace-bench-plan.md`](block-vs-userspace-bench-plan.md).
 
 AES-256-GCM is optional and off by default for zcnblk so existing plaintext
 benchmarks remain comparable. Enable it on both sides with:

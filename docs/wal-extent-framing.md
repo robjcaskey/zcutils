@@ -168,6 +168,50 @@ the c8gn two-node RAM WAL tests showed:
 The frame therefore carries both `lane_id` and `shard_id`; receivers should not
 guess placement from connection order.
 
+## Local Segmentation Matrix
+
+Use the local matrix before spending cluster time:
+
+```bash
+BYTES=2g \
+SEGMENT_BYTES_LIST='64k 384k 1m' \
+STRIPES_LIST='8' \
+MIRRORS_LIST='2' \
+FANIN_MODES='primary tree' \
+INTEGRITY_MODES='none checksum' \
+scripts/zcraidd-wal-segment-matrix.sh
+```
+
+The script runs `zcraidd wal-bench` against temporary local files, normally on
+`/dev/shm`. It does not touch block devices, remote hosts, AWS, or
+`/tmp/cluster.lock`. The matrix covers:
+
+- lane count through `stripe(N,mirror(M))`
+- extent size through `--segment-bytes`
+- checksum generation and fanin verification through `--checksum`,
+  `--no-checksum`, and `--verify`
+- payload fanin versus descriptor-tree reaping through `--fanin-mode`
+- wave reaping credits through `--wave-segments`
+
+A local UTC 2026-05-30 smoke run on a 32-thread RAM-backed host used 2 GiB of
+logical WAL, 8 lanes, 2 mirrors, and 4 KiB records:
+
+| extent | fanin | integrity | fanout rec/s | fanin rec/s | effective rec/s |
+| --- | --- | --- | ---: | ---: | ---: |
+| 64 KiB | primary | none | 1.85M | 8.61M | 1.52M |
+| 64 KiB | primary | checksum | 1.73M | 6.97M | 1.39M |
+| 64 KiB | tree | none | 1.86M | 49.5M | 1.79M |
+| 384 KiB | primary | none | 1.45M | 5.49M | 1.15M |
+| 384 KiB | primary | checksum | 1.46M | 5.08M | 1.13M |
+| 384 KiB | tree | none | 1.53M | 277M | 1.52M |
+| 1 MiB | primary | none | 1.60M | 5.01M | 1.21M |
+| 1 MiB | primary | checksum | 1.51M | 3.99M | 1.09M |
+| 1 MiB | tree | none | 1.64M | 597M | 1.64M |
+
+Treat these numbers as a functional and CPU/cache sanity check. The c8gn network
+path can still prefer a larger extent, as the earlier two-node RAM WAL run did
+with 384 KiB.
+
 ## Descriptor Mapping
 
 When a zero-copy descriptor is available, the extent frame should be metadata

@@ -1,0 +1,25 @@
+{{- range $key, $class := .Values.storageClasses }}
+{{- if $class.enabled }}
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ $class.name }}
+  labels:
+    {{- include "zcblock-csi.labels" $ | nindent 4 }}
+  {{- with $class.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+provisioner: {{ $.Values.driverName }}
+reclaimPolicy: {{ $class.reclaimPolicy }}
+allowVolumeExpansion: {{ $class.allowVolumeExpansion }}
+volumeBindingMode: {{ $class.volumeBindingMode }}
+parameters:
+  {{- range $paramKey, $paramValue := $class.parameters }}
+  {{- if or (ne $key "zcraw") (ne $paramKey "rawPartUUID") $paramValue }}
+  {{ $paramKey }}: {{ $paramValue | quote }}
+  {{- end }}
+  {{- end }}
+{{- end }}
+{{- end }}

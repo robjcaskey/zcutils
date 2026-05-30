@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zcblock-demo
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zcfile-snap-source
+  namespace: zcblock-demo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: zcfile
+  resources:
+    requests:
+      storage: 64Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: zcfile-snap-writer
+  namespace: zcblock-demo
+spec:
+  restartPolicy: Never
+  containers:
+    - name: writer
+      image: debian:bookworm-slim
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          echo snapshot-data > /data/probe
+          sync
+          sleep 3600
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: zcfile-snap-source
