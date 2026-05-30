@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
@@ -542,6 +544,33 @@ fn fanout_send_lane(
     })
 }
 
+fn fanout_source_len(source: &fs::File, path: &str, requested_bytes: u64) -> io::Result<u64> {
+    let metadata = source.metadata()?;
+    if metadata.file_type().is_block_device() {
+        let device_bytes = crate::block_device_size(source.as_raw_fd()).map_err(|err| {
+            io::Error::new(err.kind(), format!("get block size for {path}: {err}"))
+        })?;
+        if requested_bytes > device_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "zcfanplan --bytes {requested_bytes} exceeds source device size {device_bytes}"
+                ),
+            ));
+        }
+        return Ok(requested_bytes);
+    }
+
+    let file_len = metadata.len();
+    if requested_bytes != file_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("zcfanplan --bytes {requested_bytes} does not match source length {file_len}"),
+        ));
+    }
+    Ok(file_len)
+}
+
 fn send_plan(args: FanoutPlanArgs) -> io::Result<ZcFanoutSendResult> {
     if args.source == "-" {
         return Err(io::Error::new(
@@ -579,16 +608,7 @@ fn send_plan(args: FanoutPlanArgs) -> io::Result<ZcFanoutSendResult> {
             format!("open zcfanplan source {}: {err}", args.source),
         )
     })?;
-    let file_len = source.metadata()?.len();
-    if args.bytes != file_len {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "zcfanplan --bytes {} does not match source length {file_len}",
-                args.bytes
-            ),
-        ));
-    }
+    let file_len = fanout_source_len(&source, &args.source, args.bytes)?;
     let source = Arc::new(source);
     let started = Instant::now();
     let mut handles = Vec::with_capacity(plan.lanes.len());
