@@ -121,6 +121,9 @@ without dragging in the SAN stack.
 - `docs/block-vs-userspace-bench-plan.md`: benchmark plan and short recipes
   for comparing `/dev/zcnblk0`, the zcnblk wire path, TCP userspace, and zcraid
   logical paths.
+- `docs/zcnblk-zcbrd-high-iops-getting-started.md`: cross-machine high-IOPS
+  `/dev/zcnblk0 -> zcnblk-target -> /dev/zcbrd0` getting-started recipe with
+  explicit lane, CPU, and queue mapping.
 - `docs/man/zcutils.1.md`: man-page style command reference.
 - `docs/nvme-slot-topology-todo.md`: storage topology notes.
 
