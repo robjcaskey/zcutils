@@ -8,7 +8,6 @@ LOG_DIR="${LOG_DIR:-$REPO_DIR/qemu-zcrx/ec2-ram-topology-$(date -u +%Y%m%dT%H%M%
 CPUS="$(nproc)"
 COUNTS="${COUNTS:-1 2 4 8 16 32 64}"
 CHUNKS="${CHUNKS:-4096 65536}"
-STRIPE_UNITS="${STRIPE_UNITS:-4096 65536 1048576 8388608}"
 WORKERS="${WORKERS:-$CPUS}"
 BYTES_PER_WORKER="${BYTES_PER_WORKER:-268435456}"
 PIPELINE="${PIPELINE:-64}"
@@ -24,7 +23,6 @@ BLOCKSIZE="${BLOCKSIZE:-4096}"
 ZCBRD_NUMA_POWER="${ZCBRD_NUMA_POWER:-align}"
 PIN_WORKERS="${PIN_WORKERS:-true}"
 COMPLETION_BATCH="${COMPLETION_BATCH:-64}"
-MAX_STRIPE_TARGETS="${MAX_STRIPE_TARGETS:-32}"
 
 usage() {
 	cat <<'EOF'
@@ -33,7 +31,6 @@ usage: scripts/ec2-ram-topology-matrix.sh
 Environment:
   COUNTS             ram disk counts, default: 1 2 4 8 16 32 64
   CHUNKS             IO sizes, default: 4096 65536
-  STRIPE_UNITS       zcstripe stripe units, default: 4096 65536 1048576 8388608
   WORKERS            aggregate workers, default: nproc
   BYTES_PER_WORKER   bytes per worker for each run, default: 256MiB
   PIPELINE           io_uring pipeline per worker, default: 64
@@ -87,18 +84,6 @@ load_modules() {
 	if ! lsmod | awk '{print $1}' | grep -qx zcbrd_mod; then
 		sudo insmod "$REPO_DIR/kmods/zcbrd_mod.ko"
 	fi
-	if ! lsmod | awk '{print $1}' | grep -qx zcstripe_mod; then
-		sudo insmod "$REPO_DIR/kmods/zcstripe_mod.ko"
-	fi
-}
-
-destroy_stripes() {
-	local dir
-	for dir in /sys/kernel/config/zcstripe/*; do
-		[ -d "$dir" ] || continue
-		tee_attr "$dir/power" 0 || true
-		sudo rmdir "$dir" 2>/dev/null || true
-	done
 }
 
 destroy_zcbrds() {
@@ -115,7 +100,6 @@ create_zcbrds() {
 	local size_mib="$2"
 	local idx dir workers start_cpu node
 
-	destroy_stripes
 	destroy_zcbrds
 
 	start_cpu=0
@@ -140,74 +124,6 @@ create_zcbrds() {
 		start_cpu=$((start_cpu + workers))
 	done
 	sudo chmod a+rw /dev/zcbrd* 2>/dev/null || true
-}
-
-create_stripe() {
-	local count="$1"
-	local unit="$2"
-	local dir="/sys/kernel/config/zcstripe/zcstripe0"
-	local targets=()
-	local idx target_csv
-
-	destroy_stripes
-	for idx in $(seq 0 $((count - 1))); do
-		targets+=("/dev/zcbrd$idx")
-	done
-	target_csv="$(IFS=,; printf '%s' "${targets[*]}")"
-
-	sudo mkdir "$dir"
-	tee_attr "$dir/targets" "$target_csv"
-	tee_attr "$dir/stripe_unit" "$unit"
-	tee_attr "$dir/blocksize" "$BLOCKSIZE"
-	tee_attr "$dir/queues" "$QUEUES"
-	tee_attr "$dir/queue_depth" "$QUEUE_DEPTH"
-	tee_attr "$dir/descriptor_mode" advertise
-	tee_attr "$dir/power" 1
-	wait_for_path /dev/zcstripe0
-	sudo chmod a+rw /dev/zcstripe0 2>/dev/null || true
-}
-
-kv_from_line() {
-	local line="$1"
-	local key="$2"
-	printf '%s\n' "$line" | tr ' ' '\n' | awk -F= -v key="$key" '$1 == key { print $2; exit }'
-}
-
-emit_single_result() {
-	local topology="$1"
-	local count="$2"
-	local stripe_unit="$3"
-	local chunk="$4"
-	local log_file="$5"
-	local line
-
-	line="$(grep 'uring-write-bench-summary:' "$log_file" | tail -n 1 || true)"
-	if [ -z "$line" ]; then
-		printf 'matrix-result topology=%s count=%s stripe_unit=%s chunk=%s status=missing-summary log=%s\n' \
-			"$topology" "$count" "$stripe_unit" "$chunk" "$log_file" | tee -a "$LOG_DIR/matrix-results.log"
-		return 1
-	fi
-	printf 'matrix-result topology=%s count=%s stripe_unit=%s chunk=%s workers=%s pipeline=%s ring=%s write_mode=%s ops_per_sec=%s MiBps=%s Gbitps=%s seconds=%s bytes=%s log=%s\n' \
-		"$topology" "$count" "$stripe_unit" "$chunk" "$WORKERS" "$PIPELINE" "$RING" \
-		"$(kv_from_line "$line" write_mode)" "$(kv_from_line "$line" ops_per_sec)" "$(kv_from_line "$line" MiBps)" \
-		"$(kv_from_line "$line" Gbitps)" "$(kv_from_line "$line" wall_seconds)" \
-		"$(kv_from_line "$line" bytes)" "$log_file" | tee -a "$LOG_DIR/matrix-results.log"
-}
-
-run_single_target() {
-	local topology="$1"
-	local count="$2"
-	local stripe_unit="$3"
-	local target="$4"
-	local chunk="$5"
-	local log_file="$LOG_DIR/${topology}-n${count}-su${stripe_unit}-chunk${chunk}.log"
-
-	log "run topology=$topology count=$count stripe_unit=$stripe_unit chunk=$chunk"
-	sudo env URING_PLAY_URING_WRITE_COMPLETION_BATCH="$COMPLETION_BATCH" \
-		"$BIN" uring-write-bench "$target" "$WORKERS" "$BYTES_PER_WORKER" \
-		"$chunk" "$PIPELINE" "$RING" "$BUFFER_MODE" "$WRITE_MODE" "$PIN_WORKERS" \
-		2>&1 | tee "$log_file"
-	emit_single_result "$topology" "$count" "$stripe_unit" "$chunk" "$log_file"
 }
 
 workers_for_shard() {
@@ -285,7 +201,7 @@ mibps = total_bytes / 1024.0 / 1024.0 / elapsed
 gbitps = total_bytes * 8.0 / 1_000_000_000.0 / elapsed
 print(
     "matrix-result "
-    f"topology=sharded-direct count={count} stripe_unit=none chunk={chunk} "
+    f"topology=sharded-direct count={count} chunk={chunk} "
     f"workers={workers} pipeline={pipeline} ring={ring} write_mode={write_mode} status={status} "
     f"ops_per_sec={iops:.0f} MiBps={mibps:.2f} Gbitps={gbitps:.3f} "
     f"seconds={elapsed:.6f} bytes={total_bytes} log_dir={case_dir}"
@@ -304,11 +220,11 @@ main() {
 
 	mkdir -p "$LOG_DIR"
 	load_modules
-	printf 'matrix-config counts=%q chunks=%q stripe_units=%q workers=%s bytes_per_worker=%s pipeline=%s ring=%s write_mode=%s queue_depth=%s zcbrd_numa_power=%s\n' \
-		"$COUNTS" "$CHUNKS" "$STRIPE_UNITS" "$WORKERS" "$BYTES_PER_WORKER" \
+	printf 'matrix-config counts=%q chunks=%q workers=%s bytes_per_worker=%s pipeline=%s ring=%s write_mode=%s queue_depth=%s zcbrd_numa_power=%s\n' \
+		"$COUNTS" "$CHUNKS" "$WORKERS" "$BYTES_PER_WORKER" \
 		"$PIPELINES" "$RING" "$WRITE_MODES" "$QUEUE_DEPTH" "$ZCBRD_NUMA_POWER" | tee "$LOG_DIR/matrix-results.log"
 
-	local count size_mib chunk unit mode pipeline_value
+	local count size_mib chunk mode pipeline_value
 	for count in $COUNTS; do
 		size_mib="$(size_mib_for_count "$count")"
 		log "setup count=$count size_mib_each=$size_mib queues=$QUEUES depth=$QUEUE_DEPTH"
@@ -322,12 +238,6 @@ main() {
 				PIPELINE="$pipeline_value"
 				for chunk in $CHUNKS; do
 					run_sharded_direct "$count" "$chunk"
-					if [ "$count" -ge 2 ] && [ "$count" -le "$MAX_STRIPE_TARGETS" ]; then
-						for unit in $STRIPE_UNITS; do
-							create_stripe "$count" "$unit"
-							run_single_target "zcstripe" "$count" "$unit" /dev/zcstripe0 "$chunk"
-						done
-					fi
 				done
 			done
 		done

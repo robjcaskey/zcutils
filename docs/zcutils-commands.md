@@ -44,6 +44,28 @@ zcdemux -> zcmap -> zcmux
 zcdemux -> zcmaptee -> zcmux + zcsink + zcstat
 ```
 
+## Block Boundary
+
+`/dev/zcnblk0` is the client-side block onramp to the SAN fabric. Existing
+block-speaking applications, fio, filesystems, and databases should see one
+client block device family there. It uses the `zcnblk` wire protocol and the
+userspace `zcnblk-target` service.
+
+Target hosts should not be assembled from custom zc block targets. A target is
+a userspace service. It may finally land bytes on `zcdevnullN`, ordinary files,
+real allowlisted block devices, or optional `/dev/zcbrdN` RAM media, but those
+are last-hop backing media, not the topology. Custom stripe block targets are
+not SAN target backends.
+
+Keep the fan tree in userspace: `fanplan`, mux/demux routing, forwarding,
+RAID0/RAID1 policy, tiering, tier spill decisions, backpressure, descriptor
+lane scheduling, and fanin assembly belong in the userspace pipeline. A
+userspace tier may choose to write its hot or spill leg to a block device, but
+that block device is only the last hop. That boundary is why recipes may use
+`/dev/zcbrdN` as a convenient edge source or sink during tests while the
+topology itself is still expressed with `zcraid-*`, `zcfanplan`, `zcforward`,
+`zctier`, `zcmux`, and `zcdemux`.
+
 ## Descriptor Commands
 
 ### zcflow
@@ -291,9 +313,8 @@ Useful flags:
   record size.
 
 This command is intentionally not a volume clone, block freeze, RAID member
-operation, `zcbrd` feature, `zcstripe` feature, or `zcnblk` mode. It only
-describes a logical stream/WAL cut that future descriptor-aware stages can pin,
-release, and replay.
+operation, `zcbrd` feature, or `zcnblk` mode. It only describes a logical
+stream/WAL cut that future descriptor-aware stages can pin, release, and replay.
 
 ### zcforward
 
@@ -339,7 +360,9 @@ deduplicates mirrored chunks, verifies optional checksums, and writes the
 ordered byte stream. `zcraid-fanoutd` is an alias for `zcraid-split`, and
 `zcraid-fanind` is an alias for `zcraid-merge`; use those names when the process
 is acting as a long-running fanout or fanin daemon around tcpmux receive/send
-commands.
+commands. These commands are userspace RAID stand-ins: block devices may appear
+behind a branch command as an edge target, but branch selection and reassembly
+stay in userspace.
 
 ```bash
 zccat --generate --bytes 8g |
@@ -361,7 +384,7 @@ cold spill path or spill command. `--memory-bytes` bounds queued spill data, so
 the upstream pipeline gets backpressure when the cold tier falls behind.
 
 This composes with `zcraid-split` for RAID1-style fanout without putting the
-tier policy into every fanout command:
+tier policy into every fanout command. Spill remains userspace work:
 
 ```bash
 zccat --generate --bytes 8g --chunk-bytes 1m |
@@ -370,7 +393,9 @@ zcraid-split --mode mirror --chunk-bytes 1m \
   --to "zctier --hot /dev/shm/mirror-b.hot --spill /mnt/cold/mirror-b --memory-bytes 2g"
 ```
 
-The same policy is available as a `zcnblk-target` backend for the block path:
+The same policy is available as a `zcnblk-target` backend for the block path.
+That keeps spill admission and cold-tier writes inside the userspace fabric
+target instead of the kernel block client:
 
 ```bash
 URING_PLAY_TCP_WAL_WRITE_MODE=write \
@@ -387,6 +412,11 @@ if a restarted target finds the hot path missing and the spill path present, it
 uses the spill path as a cold-start read fallback and rehydrates the hot path as
 reads arrive. The target logs `zcnblk-target-tier-spill` lines with spill
 bytes, chunks, and queued-byte high-water marks.
+
+The block backend is an ingress/edge adapter for block-speaking clients. It
+does not move the tier policy into the kernel block layer; the hot/write/spill
+decision, queued spill pressure, and rehydration behavior remain userspace
+policy.
 
 ### zcsink
 
@@ -544,25 +574,70 @@ printf 'abc\n' | zcstat
 
 ### zcnblk-target and zcnblk-send
 
-`zcnblk-target` receives mux-aligned block read/write frames for synthetic
-targets such as `zcdevnullN`, `/dev/zcbrdN`, `/dev/zcstripeN`, and the
-userspace tier backend `zctier:HOT[:SPILL[:BYTES[:ALIGN[:MEMORY]]]]`.
+`zcnblk-target` receives mux-aligned block read/write frames for userspace
+targets such as `zcdevnullN` and the userspace tier backend
+`zctier:HOT[:SPILL[:BYTES[:ALIGN[:MEMORY]]]]`. It may also write directly to
+optional last-hop backing media such as `/dev/zcbrdN`, Linux test block
+devices, or allowlisted real devices by `PARTUUID=...`. It deliberately rejects
+custom zc stripe block backends so forwarding, RAID, fanout/fanin, tier spill,
+and backpressure stay in userspace instead of becoming target-side custom block
+topology.
+
+`zcnblk-target zcwal:ADDR[:WAL_BASE[:EXTENT[:ACK[:BYTES[:ALIGN]]]]] ...`
+turns the existing target into a zcnblk-to-WAL userspace onramp. It accepts
+normal zcnblk write frames, keeps the incoming lane/port topology, coalesces
+4 KiB records into fixed WAL extents, sends those extents to a matching
+`zcwal-extent-recv ... extent blocking` receiver, and can return zcnblk write
+ACKs after WAL ACKs when `URING_PLAY_ZCNBLK_WRITE_ACKS=1`. This is still not a
+block stripe or mirror path; the block device is only the edge protocol into a
+userspace WAL socket pipeline. Plaintext zcwal mode uses socket-to-socket
+`splice(2)` payload forwarding by default to avoid copying payloads through the
+middle process; set `URING_PLAY_ZCNBLK_WAL_SPLICE=0` to force the copy path.
+When the client sends `ZCNBLK_OP_BATCH` frames, the target validates each inner
+4 KiB request but moves the contiguous batch payload into the WAL as one
+splice/copy group, so device-edge write coalescing happens before the
+userspace WAL write without doing placement in the kernel.
+The onramp is write-only for now.
+
 `zcnblk-send` is the user-space generator for write, read, and mixed 4K block
-traffic.
+traffic. Set `URING_PLAY_ZCNBLK_WAIT_WRITE_ACKS=1` when testing a target that
+returns write ACKs. Set `URING_PLAY_ZCNBLK_BATCH_DEPTH=N` on write-only
+generator runs to emit kernel-client-style `ZCNBLK_OP_BATCH` frames and test
+the same coalesced WAL path without loading `/dev/zcnblk0`.
 
 `zcnblk` request frames are now v2 64-byte headers. In addition to op, flags,
 shard, length, and offset, each request carries `lane_id`, `lane_count`,
 `preferred_worker`, `queue_id`, `request_id`, `tier_id`, and topology flags.
 The userspace target validates that a topology-marked frame arrived on the lane
-it claims and that `tier_id` matches the target shard. This is the framing hook
-for end-to-end lane preservation across kernel block client, userspace sender,
-tier backend, RAID0 striping, and RAID1 mirroring.
+it claims and that `tier_id` matches the userspace-selected target shard. This
+is the framing hook for end-to-end lane preservation across the kernel block
+edge, userspace sender, target tier backend, and userspace RAID/fanout policy.
 
 For the concrete point-to-point single-target unencrypted `/dev/zcnblk0` fio
 setup, including module config and recorded read/write benchmark numbers, see
 [`zcnblk-single-target-howto.md`](zcnblk-single-target-howto.md).
 For the broader block-vs-userspace comparison matrix and short recipes, see
 [`block-vs-userspace-bench-plan.md`](block-vs-userspace-bench-plan.md).
+
+High-IOPS results are only meaningful when the run is topology-explicit:
+reserve hugetlb pages, raise memlock, pin target workers, pin the zcnblk client
+kthreads, keep `hctx_affinity=1`, and state the lane-to-CPU mapping. The
+zcnblk tools intentionally print `PERF WARNING` lines when these assumptions
+are missing; treat those warnings as benchmark blockers unless the run is only a
+functional smoke test.
+
+`zcwal-extent-send` and `zcwal-extent-recv` are isolated tcpmux-compatible
+WAL extent smoke tools. They preserve lane/shard identity in a fixed extent
+header, move megabyte-class extents by default, account logical IOPS as 4 KiB
+records inside those extents, and can ack by extent range. The default framing
+is `stream` with an io_uring bulk payload path: one lane header, bulk payload,
+and one ack per lane. Pass `extent blocking` at the end to force the older
+per-extent header/ack blocking path. The uring path defaults to a 32-deep send
+pipeline and receive buffers up to 4 MiB; override with
+`URING_PLAY_ZCWAL_URING_PIPELINE`, `URING_PLAY_ZCWAL_URING_ENTRIES`, and
+`URING_PLAY_ZCWAL_RECV_BYTES` when tuning. They intentionally do not implement
+RAID, tiering, spill, or any block-device striping/mirroring path; those remain
+userspace topology decisions outside this primitive.
 
 AES-256-GCM is optional and off by default for zcnblk so existing plaintext
 benchmarks remain comparable. Enable it on both sides with:

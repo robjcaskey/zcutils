@@ -1,10 +1,21 @@
-# zcbrd/zcstripe/zcwalblk C Modules
+# zcbrd/zcwalblk C Module Lab Notes
 
-These out-of-tree modules provide C equivalents of the Rust `zcbrd_mod` and
-`zcstripe_mod` prototypes so they can run on kernels that have the io-slot API
+These out-of-tree modules provide C equivalents of the `zcbrd_mod` and
+`zcwalblk_mod` prototypes so they can run on kernels that have the io-slot API
 but were not built with `CONFIG_RUST=y`. `zcwalblk_mod` is a thicker block
 facade over generated WAL/composite descriptors; it is intentionally separate
 from `zcbrd`, which remains a plain RAM block device.
+
+`zcbrd` is an edge/backing tool. It gives block-speaking programs and fio a
+RAM-backed surface, and it gives a userspace target a convenient local source
+or sink when testing. It is not intended to own mux/demux fanout, fanin, RAID
+policy, forwarding, tier spill decisions, backpressure, or descriptor lane
+scheduling.
+
+The SAN fabric client block device is `/dev/zcnblk0`. Target-side topology
+should be userspace: mirroring, striping, tier spill, WAL, and snapshot
+composition do not belong in custom block modules. Use `zctee` for mirror/RAID1
+fanout and userspace split/fanplan primitives for stripe/RAID0 fanout.
 
 Build against the running kernel:
 
@@ -17,8 +28,6 @@ On Secure Boot systems, sign the modules with an enrolled MOK before loading:
 ```sh
 sudo /usr/src/linux-headers-$(uname -r)/scripts/sign-file sha256 \
   /root/mok/MOK.priv /root/mok/MOK.pem kmods/zcbrd_mod.ko
-sudo /usr/src/linux-headers-$(uname -r)/scripts/sign-file sha256 \
-  /root/mok/MOK.priv /root/mok/MOK.pem kmods/zcstripe_mod.ko
 sudo /usr/src/linux-headers-$(uname -r)/scripts/sign-file sha256 \
   /root/mok/MOK.priv /root/mok/MOK.pem kmods/zcwalblk_mod.ko
 ```
@@ -36,21 +45,8 @@ echo advertise | sudo tee /sys/kernel/config/zcbrd/zcbrd0/descriptor_mode
 echo 1 | sudo tee /sys/kernel/config/zcbrd/zcbrd0/power
 ```
 
-Repeat with `zcbrd1` if you want a two-device stripe.
-
-Create a stripe target across two lower devices:
-
-```sh
-sudo insmod kmods/zcstripe_mod.ko
-sudo mkdir /sys/kernel/config/zcstripe/zcstripe0
-echo /dev/zcbrd0,/dev/zcbrd1 | sudo tee /sys/kernel/config/zcstripe/zcstripe0/targets
-echo 4096 | sudo tee /sys/kernel/config/zcstripe/zcstripe0/stripe_unit
-echo 4096 | sudo tee /sys/kernel/config/zcstripe/zcstripe0/blocksize
-echo 8 | sudo tee /sys/kernel/config/zcstripe/zcstripe0/queues
-echo 512 | sudo tee /sys/kernel/config/zcstripe/zcstripe0/queue_depth
-echo advertise | sudo tee /sys/kernel/config/zcstripe/zcstripe0/descriptor_mode
-echo 1 | sudo tee /sys/kernel/config/zcstripe/zcstripe0/power
-```
+Repeat with `zcbrd1` only for local lab tests that need multiple RAM-backed
+media devices.
 
 These modules expose `descriptor_abi` through configfs and use blk-mq, so the
 io-slot path accepts them on the `7.0.8-io-slots` kernel.

@@ -18,7 +18,7 @@ Cases:
   network-zcnc   raw n1->n2 and n2->n3 zcnc leg baseline
   tcpmux-line    encrypted n1->n2->n3 tcpmux + zcforward line
   deepraid-tree  zcraid split/merge tree over the 8-node inventory
-  zcbrd-local    local zcbrd/zcstripe 4K io-slot WAL fanout/fanin
+  zcbrd-local    local zcbrd 4K io-slot WAL fanout/fanin
   all            run or prepare all cases in the order above
 
 Defaults are intentionally short and 4K-shaped. Cluster cases rely on the
@@ -106,7 +106,7 @@ Experiment matrix, 4K logical records:
    DEEPRAID_BYTES and DEEPRAID_CHUNK_BYTES and locks /tmp/cluster.lock itself.
 
 4. zcbrd-local
-   Local io-slot WAL fanout/fanin against zcbrd/zcstripe. This does not create
+   Local io-slot WAL fanout/fanin against zcbrd. This does not create
    network traffic; use it to isolate the RAID/WAL device path.
 
 Post-process logs:

@@ -35,6 +35,20 @@ Those belong to zccusan below it.
   device paths, snapshot images, freeze barriers, and stream jobs. Today this is
   implemented by `zcblock-control`.
 
+## Block Boundary
+
+zccusan has one custom fabric-facing block device family: `/dev/zcnblk0`, backed
+by the `zcnblk` wire protocol today. It is the block-speaking onramp for fio,
+filesystems, databases, and CSI consumers. Target-side storage is a userspace
+service. A target may choose ordinary files, allowlisted raw devices, or
+optional `/dev/zcbrdN` RAM media as last-hop backing, but custom zc block
+devices are not the place where SAN topology lives.
+
+Mirroring, striping, forwarding, tier admission, tier spill, snapshot COW/WAL
+resolution, compaction placement, and replica fanin/fanout are userspace
+zccusan/gateway policy. Kernel block code should only expose the fabric edge or
+act as optional final media behind a userspace target.
+
 ## zccsi Rule
 
 The CSI driver is `zccsi`: an adapter. It must stay replaceable by another
@@ -93,17 +107,19 @@ path, and WAL catch-up becomes real when the WAL/gateway journal primitives land
 
 ## Snapshot Devices And Compaction
 
-Point-in-time snapshots can be represented as native read-only block devices via
-`POST /v1/snapshot-devices`. The requested `mode` is explicit: `cow` or `wal`.
-The controller does not fall back to loop devices, copied restore volumes, or
-other short-term substitutes. If the matching native provider is missing, device
-creation fails.
+Point-in-time snapshots can be registered as read-only fabric snapshot exports
+via `POST /v1/snapshot-devices`. The requested `mode` is explicit: `cow` or
+`wal`, but that mode is resolved by the userspace fabric target/gateway. There
+are no separate `zccowsnap` or `zcwalsnap` kernel providers, and the controller
+does not fall back to loop devices, copied restore volumes, or other short-term
+substitutes.
 
 Snapshot compaction is tracked as a workflow, not just a local kernel command:
 
 - `strategy=stream-rewrite` is the default. The compactor streams data off the
   machine, then streams the compacted representation back into the new location.
-- `strategy=in-place` asks the native provider to compact locally.
+- `strategy=in-place` means a userspace worker compacts the current placement
+  locally and reports the same small registered state.
 - `PUT /v1/compactions/{jobId}` lets the worker register the small control-plane
   state we need to remember: phase, outbound/inbound stream ids, byte counters,
   target location, worker id, and a compact checkpoint/watermark.

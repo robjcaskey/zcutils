@@ -131,9 +131,9 @@ manifest extents, then resume WAL replay after each lane watermark.
 The required storage action is an extent pin or lease on the referenced WAL
 regions so compaction and buffer recycling cannot discard bytes still named by
 the snapshot. This is intentionally separate from block-device snapshots,
-volume clones, RAID membership, `zcbrd`, `zcstripe`, `zcnblk`, and `zcraid-*`.
-The current `zcsnap` command is the byte-compatible placeholder for emitting
-that manifest shape.
+volume clones, RAID membership, `zcbrd`, `zcnblk`, and `zcraid-*`. The current
+`zcsnap` command is the byte-compatible placeholder for emitting that manifest
+shape.
 
 ## Extent Sizing Policy
 
@@ -157,9 +157,9 @@ the c8gn two-node RAM WAL tests showed:
 
 - short single-`zcbrd` runs with port-lane sharding reached `188.8 Gbit/s` at
   32 lanes and 4K physical writes, but the hot window was only about 0.14 s
-- longer 24 GiB `zcstripe0` runs reached `175.3 Gbit/s` at 64 lanes and 4K
-  physical writes, `179.7 Gbit/s` at 64K extents, and `231.8 Gbit/s` at 384K
-  extents
+- longer 24 GiB pre-userspace-stripe block lab runs reached `175.3 Gbit/s` at
+  64 lanes and 4K physical writes, `179.7 Gbit/s` at 64K extents, and
+  `231.8 Gbit/s` at 384K extents
 - pinned 64-lane/384K repeats were steadier at `197.0..214.7 Gbit/s`, or about
   `6.0..6.6M` logical 4K records/sec
 - with the same 64-lane/384K shape, `port-lane` sharding beat `observed`
@@ -241,8 +241,8 @@ right physical IO shape, but it does not yet carry:
 - durable range ack
 - descriptor id
 
-The next code step should be a framed WAL mode rather than another block target
-variant:
+The next code step should be a framed WAL mode rather than another target-side
+block variant:
 
 ```text
 tcp-wal-extent-send  -> lane-local ZcWalExtentV1 frames

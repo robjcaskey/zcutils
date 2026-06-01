@@ -28,8 +28,9 @@ usage() {
 usage: scripts/zcbrd-logical-fanin-64.sh
 
 Creates many topologically aligned zcbrd RAM block devices, then runs one
-slot-WAL lane per device so aggregate fan-in/fanout IOPS are spread across
-processors.
+slot-WAL lane per edge device so aggregate logical IOPS are spread across
+processors. This is an edge-media benchmark; userspace remains responsible for
+fanout/fanin topology and RAID policy.
 
 Environment:
   DEVICE_COUNT          zcbrd device count, default: 64
@@ -43,7 +44,7 @@ Environment:
   CPU_LIST              optional CPU list, e.g. 0-63 or 0-31,96-127
   USE_NUMACTL           auto|true|false; bind zcbrd power-on and workers to NUMA
   PHASES                phases to run: "write read", "write", or "read"
-  DESTROY_EXISTING      recreate zcbrd/zcstripe configfs entries, default: true
+  DESTROY_EXISTING      recreate zcbrd configfs entries, default: true
   LOG_DIR               output directory
 EOF
 }
@@ -151,7 +152,6 @@ create_devices() {
 
 	load_modules
 	if [ "$DESTROY_EXISTING" = true ]; then
-		destroy_family zcstripe
 		destroy_family zcbrd
 	fi
 

@@ -15,6 +15,7 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/vmalloc.h>
+#include <asm/barrier.h>
 
 #define ZCBRD_DESC_MAGIC 0x435345445242435aULL
 #define ZCBRD_DESC_VERSION 1
@@ -63,14 +64,35 @@ enum zcbrd_descriptor_mode {
 	ZCBRD_DESC_ADVERTISE = 1,
 };
 
+struct zcbrd_arena {
+	void *data;
+	u64 bytes;
+};
+
+struct zcbrd_backing {
+	struct zcbrd_arena *arenas;
+	u32 arena_count;
+	u32 block_size;
+	u64 capacity_bytes;
+	u64 arena_span_bytes;
+};
+
+enum zcbrd_data_mode {
+	ZCBRD_DATA_COPY,
+	ZCBRD_DATA_BYPASS,
+	ZCBRD_DATA_NT_WRITE,
+	ZCBRD_DATA_NT_READ,
+	ZCBRD_DATA_NT_RW,
+};
+
 struct zcbrd_cfg;
 
 struct zcbrd_disk {
 	struct zcbrd_cfg *cfg;
 	struct blk_mq_tag_set tag_set;
 	struct gendisk *disk;
-	u8 *backing;
-	size_t backing_len;
+	struct zcbrd_backing backing;
+	enum zcbrd_data_mode data_mode;
 	int index;
 };
 
@@ -84,6 +106,7 @@ struct zcbrd_cfg {
 	u32 queue_depth;
 	u32 shards;
 	enum zcbrd_descriptor_mode descriptor_mode;
+	enum zcbrd_data_mode data_mode;
 	struct zcbrd_disk *runtime;
 };
 
@@ -96,8 +119,129 @@ static inline struct zcbrd_cfg *to_zcbrd_cfg(struct config_item *item)
 	return item ? container_of(to_config_group(item), struct zcbrd_cfg, group) : NULL;
 }
 
-static blk_status_t zcbrd_transfer_request(struct request *rq, void *backing,
-					   size_t backing_len)
+static int zcbrd_alloc_backing(struct zcbrd_backing *backing, u64 capacity_bytes,
+			       u32 block_size, u32 requested_arenas)
+{
+	u64 logical_blocks;
+	u64 blocks_per_arena;
+	u32 arena_count;
+	u32 i;
+	int ret = 0;
+
+	if (!backing || !capacity_bytes || !block_size || !requested_arenas)
+		return -EINVAL;
+	if (!is_power_of_2(block_size) || !IS_ALIGNED(capacity_bytes, block_size))
+		return -EINVAL;
+
+	memset(backing, 0, sizeof(*backing));
+	logical_blocks = capacity_bytes / block_size;
+	if (!logical_blocks)
+		return -EINVAL;
+
+	arena_count = min_t(u64, requested_arenas, logical_blocks);
+	blocks_per_arena = DIV_ROUND_UP_ULL(logical_blocks, arena_count);
+	backing->arena_span_bytes = blocks_per_arena * block_size;
+	backing->arenas = kcalloc(arena_count, sizeof(*backing->arenas), GFP_KERNEL);
+	if (!backing->arenas)
+		return -ENOMEM;
+
+	backing->arena_count = arena_count;
+	backing->block_size = block_size;
+	backing->capacity_bytes = capacity_bytes;
+
+	for (i = 0; i < arena_count; i++) {
+		u64 arena_base = (u64)i * backing->arena_span_bytes;
+		u64 arena_bytes;
+
+		if (arena_base >= capacity_bytes)
+			break;
+		arena_bytes = min_t(u64, backing->arena_span_bytes,
+				    capacity_bytes - arena_base);
+		backing->arenas[i].bytes = arena_bytes;
+		backing->arenas[i].data = vzalloc(arena_bytes);
+		if (!backing->arenas[i].data) {
+			ret = -ENOMEM;
+			break;
+		}
+	}
+
+	if (ret) {
+		for (i = 0; i < backing->arena_count; i++)
+			vfree(backing->arenas[i].data);
+		kfree(backing->arenas);
+		memset(backing, 0, sizeof(*backing));
+	}
+	return ret;
+}
+
+static void zcbrd_free_backing(struct zcbrd_backing *backing)
+{
+	u32 i;
+
+	if (!backing)
+		return;
+	for (i = 0; i < backing->arena_count; i++)
+		vfree(backing->arenas[i].data);
+	kfree(backing->arenas);
+	memset(backing, 0, sizeof(*backing));
+}
+
+static blk_status_t zcbrd_backing_chunk(const struct zcbrd_backing *backing,
+					u64 pos, u64 bytes, void **ptr,
+					size_t *len)
+{
+	struct zcbrd_arena *arena;
+	u64 arena_index;
+	u64 arena_offset;
+	u64 chunk;
+
+	if (!backing || !backing->arenas || !ptr || !len || !bytes)
+		return BLK_STS_IOERR;
+	if (pos >= backing->capacity_bytes)
+		return BLK_STS_IOERR;
+
+	if (backing->arena_count == 1) {
+		arena = &backing->arenas[0];
+		chunk = min_t(u64, bytes, backing->capacity_bytes - pos);
+		*ptr = (u8 *)arena->data + pos;
+		*len = chunk;
+		return BLK_STS_OK;
+	}
+
+	arena_index = pos / backing->arena_span_bytes;
+	if (arena_index >= backing->arena_count)
+		return BLK_STS_IOERR;
+	arena = &backing->arenas[arena_index];
+	arena_offset = pos - arena_index * backing->arena_span_bytes;
+	if (arena_offset >= arena->bytes)
+		return BLK_STS_IOERR;
+
+	chunk = min_t(u64, bytes, arena->bytes - arena_offset);
+	*ptr = (u8 *)arena->data + arena_offset;
+	*len = chunk;
+	return BLK_STS_OK;
+}
+
+static blk_status_t zcbrd_zero_range(const struct zcbrd_backing *backing,
+				     u64 pos, u64 bytes)
+{
+	while (bytes) {
+		void *dst;
+		size_t len;
+		blk_status_t status = zcbrd_backing_chunk(backing, pos, bytes, &dst, &len);
+
+		if (status)
+			return status;
+		memset(dst, 0, len);
+		pos += len;
+		bytes -= len;
+	}
+	return BLK_STS_OK;
+}
+
+static blk_status_t zcbrd_transfer_request(struct request *rq,
+					   const struct zcbrd_backing *backing,
+					   enum zcbrd_data_mode data_mode)
 {
 	struct req_iterator iter;
 	struct bio_vec bvec;
@@ -105,24 +249,28 @@ static blk_status_t zcbrd_transfer_request(struct request *rq, void *backing,
 	u64 bytes = blk_rq_bytes(rq);
 	u64 transferred = 0;
 	enum req_op op = req_op(rq);
+	bool used_nt = false;
 
 	if (op == REQ_OP_FLUSH)
 		return BLK_STS_OK;
 
-	if (pos > backing_len || bytes > backing_len - pos)
+	if (!backing || pos > backing->capacity_bytes ||
+	    bytes > backing->capacity_bytes - pos)
 		return BLK_STS_IOERR;
 
-	if (op == REQ_OP_DISCARD || op == REQ_OP_WRITE_ZEROES) {
-		memset((u8 *)backing + pos, 0, bytes);
+	if (data_mode == ZCBRD_DATA_BYPASS)
 		return BLK_STS_OK;
-	}
+
+	if (op == REQ_OP_DISCARD || op == REQ_OP_WRITE_ZEROES)
+		return zcbrd_zero_range(backing, pos, bytes);
 
 	if (op != REQ_OP_READ && op != REQ_OP_WRITE)
 		return BLK_STS_NOTSUPP;
 
 	rq_for_each_segment(bvec, rq, iter) {
 		unsigned int len = bvec.bv_len;
-		void *mapped;
+		u64 segment_done = 0;
+		u8 *mapped;
 
 		if (transferred + len > bytes)
 			len = bytes - transferred;
@@ -130,19 +278,56 @@ static blk_status_t zcbrd_transfer_request(struct request *rq, void *backing,
 			break;
 
 		mapped = bvec_kmap_local(&bvec);
-		if (op == REQ_OP_WRITE) {
+		if (op == REQ_OP_WRITE)
 			flush_dcache_page(bvec.bv_page);
-			memcpy((u8 *)backing + pos + transferred, mapped, len);
-		} else {
-			memcpy(mapped, (u8 *)backing + pos + transferred, len);
-			flush_dcache_page(bvec.bv_page);
+
+		while (segment_done < len) {
+			void *arena_ptr;
+			size_t chunk;
+			blk_status_t status = zcbrd_backing_chunk(
+				backing, pos + transferred, len - segment_done,
+				&arena_ptr, &chunk);
+
+			if (status) {
+				kunmap_local(mapped);
+				return status;
+			}
+			if (op == REQ_OP_WRITE) {
+				if (data_mode == ZCBRD_DATA_NT_WRITE ||
+				    data_mode == ZCBRD_DATA_NT_RW) {
+					memcpy_flushcache(arena_ptr,
+							  mapped + segment_done,
+							  chunk);
+					used_nt = true;
+				} else {
+					memcpy(arena_ptr, mapped + segment_done,
+					       chunk);
+				}
+			} else {
+				if (data_mode == ZCBRD_DATA_NT_READ ||
+				    data_mode == ZCBRD_DATA_NT_RW) {
+					memcpy_flushcache(mapped + segment_done,
+							  arena_ptr, chunk);
+					used_nt = true;
+				} else {
+					memcpy(mapped + segment_done, arena_ptr,
+					       chunk);
+				}
+			}
+
+			segment_done += chunk;
+			transferred += chunk;
 		}
+		if (op == REQ_OP_READ)
+			flush_dcache_page(bvec.bv_page);
 		kunmap_local(mapped);
 
-		transferred += len;
 		if (transferred >= bytes)
 			break;
 	}
+
+	if (used_nt)
+		wmb();
 
 	return transferred == bytes ? BLK_STS_OK : BLK_STS_IOERR;
 }
@@ -155,7 +340,7 @@ static blk_status_t zcbrd_queue_rq(struct blk_mq_hw_ctx *hctx,
 	blk_status_t status;
 
 	blk_mq_start_request(rq);
-	status = zcbrd_transfer_request(rq, dev->backing, dev->backing_len);
+	status = zcbrd_transfer_request(rq, &dev->backing, dev->data_mode);
 	blk_mq_end_request(rq, status);
 	return BLK_STS_OK;
 }
@@ -173,7 +358,6 @@ static int zcbrd_create_disk(struct zcbrd_cfg *cfg)
 	struct queue_limits lim = { };
 	struct zcbrd_disk *dev;
 	u64 capacity_bytes;
-	size_t backing_len;
 	int ret;
 
 	if (cfg->powered)
@@ -186,18 +370,16 @@ static int zcbrd_create_disk(struct zcbrd_cfg *cfg)
 		return -EOVERFLOW;
 	if (capacity_bytes > SIZE_MAX)
 		return -EOVERFLOW;
-	backing_len = (size_t)capacity_bytes;
 
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 	dev->cfg = cfg;
-	dev->backing_len = backing_len;
-	dev->backing = vzalloc(backing_len);
-	if (!dev->backing) {
-		ret = -ENOMEM;
+	ret = zcbrd_alloc_backing(&dev->backing, capacity_bytes, cfg->block_size,
+				  cfg->shards);
+	if (ret)
 		goto out_free_dev;
-	}
+	dev->data_mode = cfg->data_mode;
 
 	dev->tag_set.ops = &zcbrd_mq_ops;
 	dev->tag_set.nr_hw_queues = cfg->queues;
@@ -247,8 +429,13 @@ static int zcbrd_create_disk(struct zcbrd_cfg *cfg)
 
 	cfg->runtime = dev;
 	cfg->powered = true;
-	pr_info("zcbrd: disk %s created bytes=%llu queues=%u depth=%u shards=%u\n",
-		cfg->name, capacity_bytes, cfg->queues, cfg->queue_depth, cfg->shards);
+	pr_info("zcbrd: disk %s created bytes=%llu queues=%u depth=%u arenas=%u arena_span_bytes=%llu layout=contiguous data_mode=%s\n",
+		cfg->name, capacity_bytes, cfg->queues, cfg->queue_depth,
+		dev->backing.arena_count, dev->backing.arena_span_bytes,
+		dev->data_mode == ZCBRD_DATA_BYPASS ? "bypass" :
+		dev->data_mode == ZCBRD_DATA_NT_WRITE ? "nt-write" :
+		dev->data_mode == ZCBRD_DATA_NT_READ ? "nt-read" :
+		dev->data_mode == ZCBRD_DATA_NT_RW ? "nt-rw" : "copy");
 	return 0;
 
 out_free_ida:
@@ -258,7 +445,7 @@ out_put_disk:
 out_free_tags:
 	blk_mq_free_tag_set(&dev->tag_set);
 out_free_backing:
-	vfree(dev->backing);
+	zcbrd_free_backing(&dev->backing);
 out_free_dev:
 	kfree(dev);
 	return ret;
@@ -277,7 +464,7 @@ static void zcbrd_destroy_disk(struct zcbrd_cfg *cfg)
 	ida_free(&zcbrd_indexes, dev->index);
 	put_disk(dev->disk);
 	blk_mq_free_tag_set(&dev->tag_set);
-	vfree(dev->backing);
+	zcbrd_free_backing(&dev->backing);
 	kfree(dev);
 	pr_info("zcbrd: disk %s removed\n", cfg->name);
 }
@@ -285,7 +472,7 @@ static void zcbrd_destroy_disk(struct zcbrd_cfg *cfg)
 static ssize_t zcbrd_features_show(struct config_item *item, char *page)
 {
 	return sysfs_emit(page,
-			  "power,blocksize,size_mib,queues,queue_depth,shards,descriptor_mode,descriptor_abi\n");
+			  "power,blocksize,size_mib,queues,queue_depth,shards,descriptor_mode,data_mode,descriptor_abi\n");
 }
 
 CONFIGFS_ATTR_RO(zcbrd_, features);
@@ -530,6 +717,60 @@ static ssize_t zcbrd_descriptor_mode_store(struct config_item *item,
 
 CONFIGFS_ATTR(zcbrd_, descriptor_mode);
 
+static ssize_t zcbrd_data_mode_show(struct config_item *item, char *page)
+{
+	struct zcbrd_cfg *cfg = to_zcbrd_cfg(item);
+
+	return sysfs_emit(page, "%s\n",
+			  cfg->data_mode == ZCBRD_DATA_BYPASS ? "bypass" :
+			  cfg->data_mode == ZCBRD_DATA_NT_WRITE ? "nt-write" :
+			  cfg->data_mode == ZCBRD_DATA_NT_READ ? "nt-read" :
+			  cfg->data_mode == ZCBRD_DATA_NT_RW ? "nt-rw" :
+			  "copy");
+}
+
+static ssize_t zcbrd_data_mode_store(struct config_item *item,
+				     const char *page, size_t count)
+{
+	struct zcbrd_cfg *cfg = to_zcbrd_cfg(item);
+	enum zcbrd_data_mode mode;
+	int ret = 0;
+
+	if (sysfs_streq(page, "copy") || sysfs_streq(page, "normal"))
+		mode = ZCBRD_DATA_COPY;
+	else if (sysfs_streq(page, "bypass") || sysfs_streq(page, "nocopy") ||
+		 sysfs_streq(page, "no-copy") ||
+		 sysfs_streq(page, "zero-copy-bench"))
+		mode = ZCBRD_DATA_BYPASS;
+	else if (sysfs_streq(page, "nt-write") ||
+		 sysfs_streq(page, "nontemporal-write") ||
+		 sysfs_streq(page, "non-temporal-write") ||
+		 sysfs_streq(page, "movnti-write"))
+		mode = ZCBRD_DATA_NT_WRITE;
+	else if (sysfs_streq(page, "nt-read") ||
+		 sysfs_streq(page, "nontemporal-read") ||
+		 sysfs_streq(page, "non-temporal-read") ||
+		 sysfs_streq(page, "movnti-read"))
+		mode = ZCBRD_DATA_NT_READ;
+	else if (sysfs_streq(page, "nt-rw") ||
+		 sysfs_streq(page, "nontemporal") ||
+		 sysfs_streq(page, "non-temporal") ||
+		 sysfs_streq(page, "movnti"))
+		mode = ZCBRD_DATA_NT_RW;
+	else
+		return -EINVAL;
+
+	mutex_lock(&zcbrd_lock);
+	if (cfg->powered)
+		ret = -EBUSY;
+	else
+		cfg->data_mode = mode;
+	mutex_unlock(&zcbrd_lock);
+	return ret ? ret : count;
+}
+
+CONFIGFS_ATTR(zcbrd_, data_mode);
+
 static ssize_t zcbrd_descriptor_abi_show(struct config_item *item, char *page)
 {
 	struct zcbrd_cfg *cfg = to_zcbrd_cfg(item);
@@ -557,6 +798,7 @@ static struct configfs_attribute *zcbrd_device_attrs[] = {
 	&zcbrd_attr_queue_depth,
 	&zcbrd_attr_shards,
 	&zcbrd_attr_descriptor_mode,
+	&zcbrd_attr_data_mode,
 	&zcbrd_attr_descriptor_abi,
 	NULL,
 };
@@ -595,6 +837,7 @@ static struct config_group *zcbrd_make_group(struct config_group *group,
 	cfg->queue_depth = 256;
 	cfg->shards = 4;
 	cfg->descriptor_mode = ZCBRD_DESC_DISABLED;
+	cfg->data_mode = ZCBRD_DATA_COPY;
 
 	config_group_init_type_name(&cfg->group, name, &zcbrd_device_type);
 	return &cfg->group;

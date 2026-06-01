@@ -94,7 +94,7 @@ paths:
       operationId: listSnapshotDevices
       responses:
         "200":
-          description: Native COW/WAL block devices representing point-in-time snapshots.
+          description: Userspace fabric snapshot exports representing point-in-time snapshots.
           content:
             application/json:
               schema:
@@ -102,9 +102,10 @@ paths:
     post:
       operationId: createSnapshotDevice
       description: >
-        Creates a read-only native block device for a ready snapshot. The mode
-        must be cow or wal; the controller does not fall back to loop devices or
-        copy-backed restores.
+        Registers a read-only PIT snapshot export for the single fabric block
+        device/gateway path. The mode must be cow or wal and is resolved by
+        userspace target policy; the controller does not create per-mode kernel
+        block providers, loop devices, or copy-backed restores.
       requestBody:
         required: true
         content:
@@ -166,7 +167,7 @@ paths:
               $ref: "#/components/schemas/StartSnapshotCompactionRequest"
       responses:
         "200":
-          description: Compaction job status after creating a stream-rewrite or in-place workflow.
+          description: Compaction job status after registering a userspace stream-rewrite or in-place workflow.
           content:
             application/json:
               schema:
@@ -176,7 +177,7 @@ paths:
       operationId: listSnapshotCompactions
       responses:
         "200":
-          description: Snapshot COW/WAL compaction jobs and their current tracked status.
+          description: Userspace snapshot COW/WAL compaction jobs and their current tracked status.
           content:
             application/json:
               schema:
@@ -202,7 +203,8 @@ paths:
       description: >
         Registers a small progress or checkpoint update from the worker running
         a stream-rewrite or in-place compaction. The bulk data path is still the
-        zccusan stream layer; this endpoint is only control-plane state.
+        zccusan stream layer, including any tier spill/rewrite path; this
+        endpoint is only control-plane state.
       parameters:
         - name: jobId
           in: path
@@ -551,6 +553,7 @@ components:
           type: string
         configfs_path:
           type: string
+          description: Legacy compatibility field; fabric snapshot exports use userspace:fabric.
         size_bytes:
           type: integer
           format: int64
@@ -559,7 +562,7 @@ components:
           const: true
         state:
           type: string
-          enum: [creating, ready, failed]
+          enum: [creating, registered, ready, failed]
         compaction_job_id:
           type: [string, "null"]
         created_at_millis:
@@ -643,6 +646,7 @@ components:
         strategy:
           type: string
           enum: [stream-rewrite, in-place]
+          description: Both strategies are userspace workflows; in-place never means kernel-owned compaction.
         phase:
           type: string
           enum: [queued, stream-out, stream-in, in-place, registered, done]

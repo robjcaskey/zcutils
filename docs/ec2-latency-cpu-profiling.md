@@ -136,10 +136,10 @@ Key knobs:
 Latency percentiles: not emitted today. The tree runner gives wall time and
 per-role CPU; compare gather versus scatter to identify fan-in stalls.
 
-### 4. Local WAL And RAID Device Path
+### 4. Local WAL And Zcbrd Device Path
 
-Purpose: isolate the io-slot WAL path on local `zcbrd` or `zcstripe` devices
-without network traffic.
+Purpose: isolate the io-slot WAL path on local `zcbrd` devices without network
+traffic.
 
 Dry-run command:
 
@@ -160,9 +160,10 @@ Key knobs:
 - `PIPELINE=128`
 - `RING=1024`
 
-Latency percentiles: `slot-wal-bench` does not emit p99/p99.9. For block-device
-latency percentiles, use `fio` against `/dev/zcnblk0`, `/dev/zcbrdN`, or
-`/dev/zcstripeN` with `--bs=4k --ioengine=io_uring --direct=1 --group_reporting=1`.
+Latency percentiles: `slot-wal-bench` does not emit p99/p99.9. For SAN fabric
+block-device latency percentiles, use `fio` against `/dev/zcnblk0`. For
+backing-media lab checks, use `/dev/zcbrdN`; do not treat backing-media smokes
+as SAN target results.
 
 ## Tail Latency Runs
 

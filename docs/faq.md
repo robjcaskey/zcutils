@@ -7,7 +7,8 @@ No. In zcutils, a lane is a software data-plane stripe, not a PCIe lane.
 A lane is the stable identity for one parallel flow of work through the system.
 Depending on the transport or storage path, that identity can map to a TCP
 destination port, TCP 5-tuple, RDMA queue pair or endpoint, io_uring worker,
-WAL shard, block target shard, or CPU/NUMA placement hint.
+WAL shard, userspace target shard, last-hop block media shard, or CPU/NUMA
+placement hint.
 
 PCIe lanes are physical hardware links. zcutils lanes are logical scheduling
 and ordering lanes. A zcutils lane may eventually be placed on hardware that is
@@ -88,8 +89,8 @@ right shape for descriptor-native snapshots:
 
 Those primitives describe a logical descriptor/WAL cut. They should not freeze
 block devices, grow volume-clone semantics, manage RAID membership, or turn
-`zcbrd`, `zcstripe`, `zcnblk`, or `zcraid-*` into a snapshot subsystem. If
-snapshots come up in the block-device or RAID context, the answer is: not here.
+`zcbrd`, `zcnblk`, or `zcraid-*` into a snapshot subsystem. If snapshots come
+up in the block-device or RAID context, the answer is: not here.
 
 ## When is it OK to remap lanes?
 

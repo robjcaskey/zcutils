@@ -29,8 +29,9 @@ usage() {
 	cat <<'EOF'
 usage: scripts/zcbrd-fanout-fanin-bench.sh
 
-Runs real io-slot WAL fanout and fanin phases against RAM block devices. The
-default shape is 1 -> 1, 1 -> 2, and 1 -> 4 over /dev/zcbrd0..3.
+Runs real io-slot WAL edge-device phases against RAM block devices. The default
+shape is 1 -> 1, 1 -> 2, and 1 -> 4 over /dev/zcbrd0..3, but the block devices
+are test edges; userspace should own fanout/fanin topology and RAID policy.
 
 Environment:
   COUNTS              fanout widths to test, default: "1 2 4"
@@ -128,7 +129,6 @@ setup_devices() {
 	fi
 	log "setup uniform zcbrd devices count=$count size_mib=$DEVICE_SIZE_MIB blocksize=$DEVICE_BLOCKSIZE queues=$DEVICE_QUEUES depth=$DEVICE_QUEUE_DEPTH shards=$DEVICE_SHARDS"
 	load_modules
-	destroy_configfs_family zcstripe
 	destroy_configfs_family zcbrd
 	for idx in $(seq 0 $((count - 1))); do
 		dir="/sys/kernel/config/zcbrd/zcbrd$idx"

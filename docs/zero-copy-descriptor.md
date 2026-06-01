@@ -109,7 +109,7 @@ device operation. The minimal descriptor-native shape is:
 The byte-compatible `zcsnap` command writes a `zcsnap-manifest-v1` cut manifest
 for smoke tests and pipeline planning. It deliberately does not freeze block
 devices, clone volumes, manage RAID membership, or add snapshot behavior to
-`zcbrd`, `zcstripe`, `zcnblk`, or `zcraid-*`.
+`zcbrd`, `zcnblk`, or `zcraid-*`.
 
 ## Soundness Contract
 
@@ -280,8 +280,8 @@ and offset. The second 32 bytes carry the placement contract:
 - `preferred_worker`: sender-side worker or hardware queue that owns the lane.
 - `queue_id`: the queue-local owner, currently the TCP port lane or blk-mq lane.
 - `request_id`: wider request identity for batched or acknowledged flows.
-- `tier_id`: intended target tier or shard; for current block targets this must
-  match `shard`.
+- `tier_id`: intended userspace tier or shard; for current block-backed
+  last-hop writes this must match `shard`.
 - `topology_flags`: marks the placement fields valid and records port-lane
   mapping.
 

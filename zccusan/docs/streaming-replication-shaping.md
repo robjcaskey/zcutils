@@ -159,6 +159,9 @@ ACK only after the extent is admitted to its durable path, or after it has been
 admitted to a bounded hot tier whose spill/backing policy is part of the SLA.
 That ACK returns credits to the gateway. If the target disk slows down, the
 tenant's replication tokens drain and source backpressure follows naturally.
+The hot tier, spill queue, cold backing path, and any rehydration behavior are
+userspace target/gateway responsibilities, even when the last hop is a block
+device such as `/dev/zcbrdN` or an allowlisted raw partition.
 
 ## Stream Types
 

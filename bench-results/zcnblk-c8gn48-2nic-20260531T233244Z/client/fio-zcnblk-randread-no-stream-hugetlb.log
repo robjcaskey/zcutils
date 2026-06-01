@@ -1,0 +1,32 @@
+zcnblk-randread-no-stream-hugetlb: (g=0): rw=randread, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=io_uring, iodepth=64
+...
+fio-3.36
+Starting 64 processes
+
+zcnblk-randread-no-stream-hugetlb: (groupid=0, jobs=64): err= 0: pid=106335: Sun May 31 23:50:58 2026
+  read: IOPS=2947k, BW=11.2GiB/s (12.1GB/s)(56.2GiB/5002msec)
+    slat (nsec): min=851, max=341555, avg=2361.35, stdev=2064.70
+    clat (usec): min=485, max=6578, avg=1386.68, stdev=293.17
+     lat (usec): min=498, max=6580, avg=1389.04, stdev=293.04
+    clat percentiles (usec):
+     |  1.00th=[  807],  5.00th=[  889], 10.00th=[  988], 20.00th=[ 1123],
+     | 30.00th=[ 1287], 40.00th=[ 1352], 50.00th=[ 1418], 60.00th=[ 1467],
+     | 70.00th=[ 1516], 80.00th=[ 1565], 90.00th=[ 1696], 95.00th=[ 1860],
+     | 99.00th=[ 2180], 99.50th=[ 2474], 99.90th=[ 2704], 99.95th=[ 2769],
+     | 99.99th=[ 3556]
+   bw (  MiB/s): min=10329, max=13297, per=99.95%, avg=11507.10, stdev=18.05, samples=588
+   iops        : min=2644416, max=3404081, avg=2945815.89, stdev=4622.07, samples=588
+  lat (usec)   : 500=0.01%, 750=0.32%, 1000=10.95%
+  lat (msec)   : 2=85.88%, 4=2.85%, 10=0.01%
+  cpu          : usr=3.28%, sys=15.04%, ctx=6244661, majf=0, minf=5223
+  IO depths    : 1=0.1%, 2=0.1%, 4=0.1%, 8=0.1%, 16=0.1%, 32=0.1%, >=64=100.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.1%, >=64=0.0%
+     issued rwts: total=14742042,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=64
+
+Run status group 0 (all jobs):
+   READ: bw=11.2GiB/s (12.1GB/s), 11.2GiB/s-11.2GiB/s (12.1GB/s-12.1GB/s), io=56.2GiB (60.4GB), run=5002-5002msec
+
+Disk stats (read/write):
+  zcnblk0: ios=14327616/0, sectors=114620968/0, merge=0/0, ticks=19823504/0, in_queue=19823504, util=97.38%

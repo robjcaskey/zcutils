@@ -52,6 +52,8 @@ const IORING_OP_WRITEV_FIXED: u32 = 61;
 const IORING_OP_PIPE: u32 = 62;
 const IORING_OP_NOP128: u32 = 63;
 const IORING_OP_URING_CMD128: u32 = 64;
+const IOCB_CMD_PREAD: u16 = 0;
+const IOCB_CMD_PWRITE: u16 = 1;
 const IORING_REGISTER_BUFFERS: u32 = 0;
 const IORING_UNREGISTER_BUFFERS: u32 = 1;
 const IORING_REGISTER_FILES: u32 = 2;
@@ -65,17 +67,24 @@ const IORING_REGISTER_MEM_REGION: u32 = 34;
 const IORING_REGISTER_ZCRX_CTRL: u32 = 36;
 const IORING_REGISTER_BPF_FILTER: u32 = 37;
 
+const IORING_SETUP_SQPOLL: u32 = 1 << 1;
+const IORING_SETUP_SQ_AFF: u32 = 1 << 2;
 const IORING_SETUP_CQSIZE: u32 = 1 << 3;
 const IORING_SETUP_SUBMIT_ALL: u32 = 1 << 7;
 const IORING_SETUP_COOP_TASKRUN: u32 = 1 << 8;
 const IORING_SETUP_CQE32: u32 = 1 << 11;
 const IORING_SETUP_SINGLE_ISSUER: u32 = 1 << 12;
 const IORING_SETUP_DEFER_TASKRUN_U32: u32 = 1 << 13;
+const IORING_SETUP_NO_SQARRAY_U32: u32 = 1 << 16;
+const IORING_SETUP_SQ_REWIND_U32: u32 = 1 << 20;
 
 const IORING_RECV_MULTISHOT: u16 = 1 << 1;
 const IORING_CQE_F_MORE: u32 = 1 << 1;
 const IORING_CQE_F_NOTIF: u32 = 1 << 3;
+const IORING_SQ_NEED_WAKEUP: u32 = 1 << 0;
 const IORING_ENTER_GETEVENTS: u32 = 1 << 0;
+const IORING_ENTER_SQ_WAKEUP: u32 = 1 << 1;
+const IORING_ENTER_REGISTERED_RING: u32 = 1 << 4;
 const IORING_ENTER_NO_IOWAIT: u32 = 1 << 7;
 const IORING_OFF_SQ_RING: u64 = 0;
 const IORING_OFF_CQ_RING: u64 = 0x8000000;
@@ -90,6 +99,8 @@ const IORING_SETUP_SQE_MIXED: u64 = 1 << 19;
 const IORING_SETUP_SQ_REWIND: u64 = 1 << 20;
 const IORING_FEAT_RECVSEND_BUNDLE: u64 = 1 << 14;
 const IORING_FEAT_NO_IOWAIT: u32 = 1 << 17;
+const IORING_REGISTER_RING_FDS: u32 = 20;
+const IORING_UNREGISTER_RING_FDS: u32 = 21;
 
 const IORING_MEM_REGION_TYPE_USER: u32 = 1;
 const ZCRX_REG_IMPORT: u64 = 1;
@@ -125,6 +136,13 @@ const ZC_TCPMUX_TOPOLOGY_DESC_BODY_LEN: u16 = 44;
 const ZC_TCPMUX_TOPOLOGY_F_AFFINITY_APPLIED: u32 = 1 << 0;
 const ZC_TCPMUX_TOPOLOGY_F_CPU_KNOWN: u32 = 1 << 1;
 const ZC_TCPMUX_TOPOLOGY_F_NUMA_KNOWN: u32 = 1 << 2;
+const ZC_WAL_EXTENT_MAGIC: &[u8; 8] = b"ZCWALX1\0";
+const ZC_WAL_ACK_MAGIC: &[u8; 8] = b"ZCWALA1\0";
+const ZC_WAL_EXTENT_VERSION: u16 = 1;
+const ZC_WAL_EXTENT_HEADER_LEN: usize = 128;
+const ZC_WAL_ACK_HEADER_LEN: usize = 64;
+const ZC_WAL_RECORD_SIZE: usize = 4096;
+const ZC_WAL_EXTENT_F_STREAM_FRAME: u32 = 1 << 0;
 const ZC_TCPMUX_PARALLEL_EOF: u32 = 0;
 const ZC_TCPMUX_DEFAULT_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 const ZC_TCPMUX_DEFAULT_MIN_LANES: usize = 32;
@@ -269,6 +287,14 @@ struct IoUringNapi {
 }
 
 #[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct IoUringRsrcUpdate {
+    offset: u32,
+    resv: u32,
+    data: u64,
+}
+
+#[repr(C)]
 struct IoUringZcrxRqe {
     off: u64,
     len: u32,
@@ -296,6 +322,14 @@ struct IoUringSqe {
 
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
+struct IoUringCqe16 {
+    user_data: u64,
+    res: i32,
+    flags: u32,
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
 struct IoUringCqe32 {
     user_data: u64,
     res: i32,
@@ -304,8 +338,106 @@ struct IoUringCqe32 {
     zcrx_pad: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RawRingCqeMode {
+    Cqe16,
+    Cqe32,
+}
+
+impl RawRingCqeMode {
+    fn cqe_size(self) -> usize {
+        match self {
+            Self::Cqe16 => size_of::<IoUringCqe16>(),
+            Self::Cqe32 => size_of::<IoUringCqe32>(),
+        }
+    }
+
+    fn setup_flags(self) -> u32 {
+        match self {
+            Self::Cqe16 => 0,
+            Self::Cqe32 => IORING_SETUP_CQE32,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RawRingSqMode {
+    Normal,
+    NoSqArray,
+    SqRewind,
+    SqPoll {
+        cpu: Option<usize>,
+        no_sqarray: bool,
+    },
+}
+
+impl RawRingSqMode {
+    fn setup_flags(self) -> io::Result<u32> {
+        let flags = match self {
+            Self::Normal => IORING_SETUP_COOP_TASKRUN | IORING_SETUP_DEFER_TASKRUN_U32,
+            Self::NoSqArray => {
+                IORING_SETUP_COOP_TASKRUN
+                    | IORING_SETUP_DEFER_TASKRUN_U32
+                    | IORING_SETUP_NO_SQARRAY_U32
+            }
+            Self::SqRewind => {
+                IORING_SETUP_COOP_TASKRUN
+                    | IORING_SETUP_DEFER_TASKRUN_U32
+                    | IORING_SETUP_NO_SQARRAY_U32
+                    | IORING_SETUP_SQ_REWIND_U32
+            }
+            Self::SqPoll { cpu, no_sqarray } => {
+                let mut flags = IORING_SETUP_SQPOLL;
+                if cpu.is_some() {
+                    flags |= IORING_SETUP_SQ_AFF;
+                }
+                if no_sqarray {
+                    flags |= IORING_SETUP_NO_SQARRAY_U32;
+                }
+                flags
+            }
+        };
+        Ok(flags)
+    }
+
+    fn uses_sq_array(self) -> bool {
+        matches!(self, Self::Normal)
+    }
+
+    fn is_sq_rewind(self) -> bool {
+        matches!(self, Self::SqRewind)
+    }
+
+    fn is_sqpoll(self) -> bool {
+        matches!(self, Self::SqPoll { .. })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RawRingOptions {
+    stats_enabled: bool,
+    cqe_mode: RawRingCqeMode,
+    sq_mode: RawRingSqMode,
+    registered_ring_fd: bool,
+    sq_thread_idle_ms: u32,
+}
+
+impl Default for RawRingOptions {
+    fn default() -> Self {
+        Self {
+            stats_enabled: false,
+            cqe_mode: RawRingCqeMode::Cqe32,
+            sq_mode: RawRingSqMode::Normal,
+            registered_ring_fd: false,
+            sq_thread_idle_ms: 1000,
+        }
+    }
+}
+
 struct RawRing {
     fd: i32,
+    enter_fd: i32,
+    registered_ring_index: Option<u32>,
     sq_ring_ptr: *mut u8,
     sq_ring_size: usize,
     cq_ring_ptr: *mut u8,
@@ -316,11 +448,14 @@ struct RawRing {
     sq_tail: *mut u32,
     sq_mask: *mut u32,
     sq_entries: *mut u32,
+    sq_flags: *mut u32,
     sq_array: *mut u32,
     cq_head: *mut u32,
     cq_tail: *mut u32,
     cq_mask: *mut u32,
-    cqes: *mut IoUringCqe32,
+    cqes: *mut u8,
+    cqe_stride: usize,
+    sq_mode: RawRingSqMode,
     pending_submit: u32,
     enter_flags: u32,
     cqe_spin: u32,
@@ -792,18 +927,51 @@ impl RawRing {
     }
 
     fn new_with_stats(entries: u32, cq_entries: u32, stats_enabled: bool) -> io::Result<Self> {
+        Self::new_with_options(
+            entries,
+            cq_entries,
+            RawRingOptions {
+                stats_enabled,
+                ..RawRingOptions::default()
+            },
+        )
+    }
+
+    fn new_with_options(
+        entries: u32,
+        cq_entries: u32,
+        options: RawRingOptions,
+    ) -> io::Result<Self> {
+        let mut flags = IORING_SETUP_SINGLE_ISSUER
+            | IORING_SETUP_SUBMIT_ALL
+            | IORING_SETUP_CQSIZE
+            | options.cqe_mode.setup_flags()
+            | options.sq_mode.setup_flags()?;
+        let mut sq_thread_cpu = 0;
+        if let RawRingSqMode::SqPoll { cpu: Some(cpu), .. } = options.sq_mode {
+            sq_thread_cpu = u32::try_from(cpu).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("sqpoll cpu {cpu} does not fit in u32"),
+                )
+            })?;
+        }
+        if options.sq_thread_idle_ms > 0 && options.sq_mode.is_sqpoll() {
+            flags |= IORING_SETUP_SQPOLL;
+        }
         let mut params = IoUringParams {
-            flags: IORING_SETUP_COOP_TASKRUN
-                | IORING_SETUP_SINGLE_ISSUER
-                | IORING_SETUP_DEFER_TASKRUN_U32
-                | IORING_SETUP_SUBMIT_ALL
-                | IORING_SETUP_CQE32
-                | IORING_SETUP_CQSIZE,
+            flags,
+            sq_thread_cpu,
+            sq_thread_idle: if options.sq_mode.is_sqpoll() {
+                options.sq_thread_idle_ms
+            } else {
+                0
+            },
             cq_entries,
             ..IoUringParams::default()
         };
         let fd = io_uring_setup(entries, &mut params)?;
-        let enter_flags = if env_truthy("URING_PLAY_ENTER_NO_IOWAIT")
+        let mut enter_flags = if env_truthy("URING_PLAY_ENTER_NO_IOWAIT")
             && (params.features & IORING_FEAT_NO_IOWAIT) != 0
         {
             IORING_ENTER_NO_IOWAIT
@@ -812,10 +980,23 @@ impl RawRing {
         };
         let cqe_spin = env_usize_or("URING_PLAY_CQE_SPIN", 0).min(u32::MAX as usize) as u32;
 
-        let sq_ring_size =
-            params.sq_off.array as usize + params.sq_entries as usize * size_of::<u32>();
-        let cq_ring_size =
-            params.cq_off.cqes as usize + params.cq_entries as usize * size_of::<IoUringCqe32>();
+        let cqe_stride = options.cqe_mode.cqe_size();
+        let cq_ring_end = params.cq_off.cqes as usize + params.cq_entries as usize * cqe_stride;
+        let cq_ring_size = if options.cqe_mode == RawRingCqeMode::Cqe32 {
+            cq_ring_end.max(
+                (params.cq_off.cqes as usize
+                    + params.cq_entries as usize * size_of::<IoUringCqe16>())
+                .saturating_mul(2),
+            )
+        } else {
+            cq_ring_end
+        };
+        let sq_ring_size = if options.sq_mode.uses_sq_array() {
+            (params.sq_off.array as usize + params.sq_entries as usize * size_of::<u32>())
+                .max(cq_ring_size)
+        } else {
+            cq_ring_size
+        };
         let sqes_size = params.sq_entries as usize * size_of::<IoUringSqe>();
 
         let sq_ring_ptr = match mmap_shared(fd, sq_ring_size, IORING_OFF_SQ_RING) {
@@ -851,8 +1032,52 @@ impl RawRing {
 
         let ptr_at = |base: *mut u8, offset: u32| unsafe { base.add(offset as usize) };
 
+        let mut enter_fd = fd;
+        let mut registered_ring_index = None;
+        if options.registered_ring_fd {
+            let mut update = IoUringRsrcUpdate {
+                offset: u32::MAX,
+                resv: 0,
+                data: fd as u64,
+            };
+            match io_uring_register(
+                fd,
+                IORING_REGISTER_RING_FDS,
+                &mut update as *mut IoUringRsrcUpdate as *mut libc::c_void,
+                1,
+            ) {
+                Ok(1) => {
+                    enter_fd = update.offset as i32;
+                    registered_ring_index = Some(update.offset);
+                    enter_flags |= IORING_ENTER_REGISTERED_RING;
+                }
+                Ok(ret) => {
+                    munmap_if_mapped(sq_ring_ptr as *mut libc::c_void, sq_ring_size);
+                    munmap_if_mapped(cq_ring_ptr as *mut libc::c_void, cq_ring_size);
+                    munmap_if_mapped(sqes as *mut libc::c_void, sqes_size);
+                    unsafe {
+                        libc::close(fd);
+                    }
+                    return Err(io::Error::other(format!(
+                        "IORING_REGISTER_RING_FDS registered {ret} rings, expected 1"
+                    )));
+                }
+                Err(err) => {
+                    munmap_if_mapped(sq_ring_ptr as *mut libc::c_void, sq_ring_size);
+                    munmap_if_mapped(cq_ring_ptr as *mut libc::c_void, cq_ring_size);
+                    munmap_if_mapped(sqes as *mut libc::c_void, sqes_size);
+                    unsafe {
+                        libc::close(fd);
+                    }
+                    return Err(err);
+                }
+            }
+        }
+
         Ok(Self {
             fd,
+            enter_fd,
+            registered_ring_index,
             sq_ring_ptr,
             sq_ring_size,
             cq_ring_ptr,
@@ -863,15 +1088,22 @@ impl RawRing {
             sq_tail: ptr_at(sq_ring_ptr, params.sq_off.tail) as *mut u32,
             sq_mask: ptr_at(sq_ring_ptr, params.sq_off.ring_mask) as *mut u32,
             sq_entries: ptr_at(sq_ring_ptr, params.sq_off.ring_entries) as *mut u32,
-            sq_array: ptr_at(sq_ring_ptr, params.sq_off.array) as *mut u32,
+            sq_flags: ptr_at(sq_ring_ptr, params.sq_off.flags) as *mut u32,
+            sq_array: if options.sq_mode.uses_sq_array() {
+                ptr_at(sq_ring_ptr, params.sq_off.array) as *mut u32
+            } else {
+                ptr::null_mut()
+            },
             cq_head: ptr_at(cq_ring_ptr, params.cq_off.head) as *mut u32,
             cq_tail: ptr_at(cq_ring_ptr, params.cq_off.tail) as *mut u32,
             cq_mask: ptr_at(cq_ring_ptr, params.cq_off.ring_mask) as *mut u32,
-            cqes: ptr_at(cq_ring_ptr, params.cq_off.cqes) as *mut IoUringCqe32,
+            cqes: ptr_at(cq_ring_ptr, params.cq_off.cqes),
+            cqe_stride,
+            sq_mode: options.sq_mode,
             pending_submit: 0,
             enter_flags,
             cqe_spin,
-            stats_enabled,
+            stats_enabled: options.stats_enabled,
             stats: RawRingStats::default(),
         })
     }
@@ -885,6 +1117,12 @@ impl RawRing {
     }
 
     fn sq_available(&self) -> usize {
+        if self.sq_mode.is_sq_rewind() {
+            return unsafe {
+                let entries = ptr::read_volatile(self.sq_entries);
+                entries.saturating_sub(self.pending_submit) as usize
+            };
+        }
         unsafe {
             let head = ptr::read_volatile(self.sq_head);
             let tail = ptr::read_volatile(self.sq_tail);
@@ -898,27 +1136,40 @@ impl RawRing {
         F: FnOnce(&mut IoUringSqe),
     {
         unsafe {
-            let head = ptr::read_volatile(self.sq_head);
-            let tail = ptr::read_volatile(self.sq_tail);
             let entries = ptr::read_volatile(self.sq_entries);
-
-            if tail.wrapping_sub(head) >= entries {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "io_uring SQ is full",
-                ));
-            }
-
-            let mask = ptr::read_volatile(self.sq_mask);
-            let idx = tail & mask;
+            let idx = if self.sq_mode.is_sq_rewind() {
+                if self.pending_submit >= entries {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "io_uring SQ_REWIND batch is full",
+                    ));
+                }
+                self.pending_submit
+            } else {
+                let head = ptr::read_volatile(self.sq_head);
+                let tail = ptr::read_volatile(self.sq_tail);
+                if tail.wrapping_sub(head) >= entries {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "io_uring SQ is full",
+                    ));
+                }
+                let mask = ptr::read_volatile(self.sq_mask);
+                tail & mask
+            };
             let sqe = self.sqes.add(idx as usize);
             ptr::write(sqe, IoUringSqe::default());
             (*sqe).user_data = user_data;
             fill(&mut *sqe);
 
-            ptr::write_volatile(self.sq_array.add(idx as usize), idx);
-            fence(Ordering::Release);
-            ptr::write_volatile(self.sq_tail, tail.wrapping_add(1));
+            if self.sq_mode.uses_sq_array() {
+                ptr::write_volatile(self.sq_array.add(idx as usize), idx);
+            }
+            if !self.sq_mode.is_sq_rewind() {
+                let tail = ptr::read_volatile(self.sq_tail);
+                fence(Ordering::Release);
+                ptr::write_volatile(self.sq_tail, tail.wrapping_add(1));
+            }
             self.pending_submit = self.pending_submit.saturating_add(1);
             if self.stats_enabled {
                 self.stats.sqes_queued = self.stats.sqes_queued.saturating_add(1);
@@ -1185,12 +1436,65 @@ impl RawRing {
     }
 
     fn submit_pending(&mut self) -> io::Result<()> {
+        if self.sq_mode.is_sqpoll() {
+            if self.pending_submit == 0 {
+                return Ok(());
+            }
+            let submitted = self.pending_submit;
+            fence(Ordering::SeqCst);
+            let needs_wakeup =
+                unsafe { ptr::read_volatile(self.sq_flags) & IORING_SQ_NEED_WAKEUP != 0 };
+            if needs_wakeup {
+                if self.stats_enabled {
+                    self.stats.submit_syscalls = self.stats.submit_syscalls.saturating_add(1);
+                }
+                io_uring_enter(
+                    self.enter_fd,
+                    0,
+                    0,
+                    IORING_ENTER_SQ_WAKEUP | self.enter_flags,
+                )?;
+            }
+            if self.stats_enabled {
+                self.stats.sqes_submitted =
+                    self.stats.sqes_submitted.saturating_add(submitted as u64);
+            }
+            self.pending_submit = 0;
+            return Ok(());
+        }
+
+        if self.sq_mode.is_sq_rewind() {
+            if self.pending_submit == 0 {
+                return Ok(());
+            }
+            let pending = self.pending_submit;
+            fence(Ordering::Release);
+            if self.stats_enabled {
+                self.stats.submit_syscalls = self.stats.submit_syscalls.saturating_add(1);
+            }
+            let ret = io_uring_enter(self.enter_fd, pending, 0, self.enter_flags)?;
+            if ret != pending as i64 {
+                if self.stats_enabled {
+                    self.stats.submit_short = self.stats.submit_short.saturating_add(1);
+                }
+                return Err(io::Error::other(format!(
+                    "io_uring SQ_REWIND submitted {ret} SQEs, expected {pending}; refusing to replay SQE slot zero"
+                )));
+            }
+            if self.stats_enabled {
+                self.stats.sqes_submitted =
+                    self.stats.sqes_submitted.saturating_add(pending as u64);
+            }
+            self.pending_submit = 0;
+            return Ok(());
+        }
+
         while self.pending_submit > 0 {
             let pending_before = self.pending_submit;
             if self.stats_enabled {
                 self.stats.submit_syscalls = self.stats.submit_syscalls.saturating_add(1);
             }
-            let ret = io_uring_enter(self.fd, self.pending_submit, 0, self.enter_flags)?;
+            let ret = io_uring_enter(self.enter_fd, self.pending_submit, 0, self.enter_flags)?;
             if ret == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
@@ -1321,7 +1625,12 @@ impl RawRing {
             if self.stats_enabled {
                 self.stats.wait_syscalls = self.stats.wait_syscalls.saturating_add(1);
             }
-            io_uring_enter(self.fd, 0, 1, IORING_ENTER_GETEVENTS | self.enter_flags)?;
+            io_uring_enter(
+                self.enter_fd,
+                0,
+                1,
+                IORING_ENTER_GETEVENTS | self.enter_flags,
+            )?;
         }
     }
 
@@ -1338,7 +1647,19 @@ impl RawRing {
             }
 
             let mask = ptr::read_volatile(self.cq_mask);
-            let cqe = ptr::read(self.cqes.add((head & mask) as usize));
+            let cqe_ptr = self.cqes.add((head & mask) as usize * self.cqe_stride);
+            let cqe = if self.cqe_stride == size_of::<IoUringCqe32>() {
+                ptr::read(cqe_ptr as *const IoUringCqe32)
+            } else {
+                let cqe16 = ptr::read(cqe_ptr as *const IoUringCqe16);
+                IoUringCqe32 {
+                    user_data: cqe16.user_data,
+                    res: cqe16.res,
+                    flags: cqe16.flags,
+                    zcrx_off: 0,
+                    zcrx_pad: 0,
+                }
+            };
             fence(Ordering::Release);
             ptr::write_volatile(self.cq_head, head.wrapping_add(1));
             if self.stats_enabled {
@@ -1370,6 +1691,19 @@ impl RawRing {
 
 impl Drop for RawRing {
     fn drop(&mut self) {
+        if let Some(offset) = self.registered_ring_index.take() {
+            let mut update = IoUringRsrcUpdate {
+                offset,
+                resv: 0,
+                data: 0,
+            };
+            let _ = io_uring_register(
+                self.fd,
+                IORING_UNREGISTER_RING_FDS,
+                &mut update as *mut IoUringRsrcUpdate as *mut libc::c_void,
+                1,
+            );
+        }
         munmap_if_mapped(self.sqes as *mut libc::c_void, self.sqes_size);
         munmap_if_mapped(self.sq_ring_ptr as *mut libc::c_void, self.sq_ring_size);
         munmap_if_mapped(self.cq_ring_ptr as *mut libc::c_void, self.cq_ring_size);
@@ -3629,8 +3963,17 @@ fn tcp_sink_server(
     Ok(())
 }
 
+fn socket_bench_buffer_bytes() -> libc::c_int {
+    let default = 16 * 1024 * 1024usize;
+    let bytes = env_size_opt("URING_PLAY_SOCKET_BUFFER_BYTES")
+        .ok()
+        .flatten()
+        .unwrap_or(default);
+    libc::c_int::try_from(bytes).unwrap_or(libc::c_int::MAX)
+}
+
 fn set_socket_bench_buffers(fd: i32) {
-    let value: libc::c_int = 16 * 1024 * 1024;
+    let value: libc::c_int = socket_bench_buffer_bytes();
     unsafe {
         let _ = libc::setsockopt(
             fd,
@@ -7077,6 +7420,1112 @@ struct UringSendStats {
     voluntary_switches: u64,
     involuntary_switches: u64,
     migrations: u64,
+}
+
+#[derive(Default)]
+struct ZcWalExtentStats {
+    worker: usize,
+    streams: usize,
+    payload_bytes: usize,
+    wire_bytes: usize,
+    extents: usize,
+    records: usize,
+    acks: usize,
+    wall: Duration,
+    cpu: Duration,
+    target_cpu: i32,
+    affinity_applied: bool,
+    start_cpu: i32,
+    end_cpu: i32,
+    voluntary_switches: u64,
+    involuntary_switches: u64,
+    migrations: u64,
+}
+
+#[derive(Clone, Copy)]
+struct ZcWalExtentHeader {
+    flags: u32,
+    lane_id: u32,
+    lane_count: u32,
+    shard_id: u32,
+    record_size: u32,
+    record_count: u32,
+    payload_len: u32,
+    table_len: u32,
+    base_logical_index: u64,
+    extent_sequence: u64,
+    base_wal_offset: u64,
+    wal_epoch: u64,
+    descriptor_id: u64,
+    payload_crc32c: u32,
+}
+
+#[derive(Clone, Copy)]
+struct ZcWalAckHeader {
+    lane_id: u32,
+    shard_id: u32,
+    status: u32,
+    record_size: u32,
+    first_logical_index: u64,
+    last_logical_index: u64,
+    extent_sequence: u64,
+    durable_wal_offset: u64,
+}
+
+struct ZcWalExtentAcceptedStream {
+    meta: TcpBenchStreamMeta,
+    stream: TcpStream,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ZcWalFramingMode {
+    Extent,
+    Stream,
+}
+
+impl ZcWalFramingMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "extent" | "extent-header" | "per-extent" => Ok(Self::Extent),
+            "stream" | "bulk" | "stream-header" | "per-stream" => Ok(Self::Stream),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown WAL framing mode {other:?}; use extent or stream"),
+            )),
+        }
+    }
+
+    fn from_env(default: Self) -> io::Result<Self> {
+        match env::var("URING_PLAY_ZCWAL_FRAMING") {
+            Ok(value) if !value.trim().is_empty() => Self::parse(&value),
+            _ => Ok(default),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Extent => "extent",
+            Self::Stream => "stream",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ZcWalDataPath {
+    Blocking,
+    Uring,
+}
+
+impl ZcWalDataPath {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "blocking" | "block" | "std" | "readwrite" | "read-write" => Ok(Self::Blocking),
+            "uring" | "io-uring" | "iouring" => Ok(Self::Uring),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown WAL data path {other:?}; use blocking or uring"),
+            )),
+        }
+    }
+
+    fn from_env(default: Self) -> io::Result<Self> {
+        match env::var("URING_PLAY_ZCWAL_DATA_PATH") {
+            Ok(value) if !value.trim().is_empty() => Self::parse(&value),
+            _ => Ok(default),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Blocking => "blocking",
+            Self::Uring => "uring",
+        }
+    }
+}
+
+fn zcwal_put_u16(out: &mut [u8], offset: usize, value: u16) {
+    out[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+fn zcwal_put_u32(out: &mut [u8], offset: usize, value: u32) {
+    out[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn zcwal_put_u64(out: &mut [u8], offset: usize, value: u64) {
+    out[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+fn zcwal_read_u16(input: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([input[offset], input[offset + 1]])
+}
+
+fn zcwal_read_u32(input: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        input[offset],
+        input[offset + 1],
+        input[offset + 2],
+        input[offset + 3],
+    ])
+}
+
+fn zcwal_read_u64(input: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes([
+        input[offset],
+        input[offset + 1],
+        input[offset + 2],
+        input[offset + 3],
+        input[offset + 4],
+        input[offset + 5],
+        input[offset + 6],
+        input[offset + 7],
+    ])
+}
+
+impl ZcWalExtentHeader {
+    fn encode(self) -> [u8; ZC_WAL_EXTENT_HEADER_LEN] {
+        let mut out = [0u8; ZC_WAL_EXTENT_HEADER_LEN];
+        out[0..8].copy_from_slice(ZC_WAL_EXTENT_MAGIC);
+        zcwal_put_u16(&mut out, 0x08, ZC_WAL_EXTENT_VERSION);
+        zcwal_put_u16(&mut out, 0x0a, ZC_WAL_EXTENT_HEADER_LEN as u16);
+        zcwal_put_u32(&mut out, 0x0c, self.flags);
+        zcwal_put_u32(&mut out, 0x10, self.lane_id);
+        zcwal_put_u32(&mut out, 0x14, self.lane_count);
+        zcwal_put_u32(&mut out, 0x18, self.shard_id);
+        zcwal_put_u32(&mut out, 0x1c, self.record_size);
+        zcwal_put_u32(&mut out, 0x20, self.record_count);
+        zcwal_put_u32(&mut out, 0x24, self.payload_len);
+        zcwal_put_u32(&mut out, 0x28, self.table_len);
+        zcwal_put_u64(&mut out, 0x30, self.base_logical_index);
+        zcwal_put_u64(&mut out, 0x38, self.extent_sequence);
+        zcwal_put_u64(&mut out, 0x40, self.base_wal_offset);
+        zcwal_put_u64(&mut out, 0x48, self.wal_epoch);
+        zcwal_put_u64(&mut out, 0x50, self.descriptor_id);
+        zcwal_put_u32(&mut out, 0x58, self.payload_crc32c);
+        out
+    }
+
+    fn decode(input: &[u8; ZC_WAL_EXTENT_HEADER_LEN]) -> io::Result<Self> {
+        if &input[0..8] != ZC_WAL_EXTENT_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing ZCWALX1 extent magic",
+            ));
+        }
+        let version = zcwal_read_u16(input, 0x08);
+        let header_len = zcwal_read_u16(input, 0x0a) as usize;
+        if version != ZC_WAL_EXTENT_VERSION || header_len != ZC_WAL_EXTENT_HEADER_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported WAL extent header version={version} len={header_len}"),
+            ));
+        }
+        Ok(Self {
+            flags: zcwal_read_u32(input, 0x0c),
+            lane_id: zcwal_read_u32(input, 0x10),
+            lane_count: zcwal_read_u32(input, 0x14),
+            shard_id: zcwal_read_u32(input, 0x18),
+            record_size: zcwal_read_u32(input, 0x1c),
+            record_count: zcwal_read_u32(input, 0x20),
+            payload_len: zcwal_read_u32(input, 0x24),
+            table_len: zcwal_read_u32(input, 0x28),
+            base_logical_index: zcwal_read_u64(input, 0x30),
+            extent_sequence: zcwal_read_u64(input, 0x38),
+            base_wal_offset: zcwal_read_u64(input, 0x40),
+            wal_epoch: zcwal_read_u64(input, 0x48),
+            descriptor_id: zcwal_read_u64(input, 0x50),
+            payload_crc32c: zcwal_read_u32(input, 0x58),
+        })
+    }
+}
+
+impl ZcWalAckHeader {
+    fn encode(self) -> [u8; ZC_WAL_ACK_HEADER_LEN] {
+        let mut out = [0u8; ZC_WAL_ACK_HEADER_LEN];
+        out[0..8].copy_from_slice(ZC_WAL_ACK_MAGIC);
+        zcwal_put_u16(&mut out, 0x08, ZC_WAL_EXTENT_VERSION);
+        zcwal_put_u16(&mut out, 0x0a, ZC_WAL_ACK_HEADER_LEN as u16);
+        zcwal_put_u32(&mut out, 0x10, self.lane_id);
+        zcwal_put_u32(&mut out, 0x14, self.shard_id);
+        zcwal_put_u32(&mut out, 0x18, self.status);
+        zcwal_put_u32(&mut out, 0x1c, self.record_size);
+        zcwal_put_u64(&mut out, 0x20, self.first_logical_index);
+        zcwal_put_u64(&mut out, 0x28, self.last_logical_index);
+        zcwal_put_u64(&mut out, 0x30, self.extent_sequence);
+        zcwal_put_u64(&mut out, 0x38, self.durable_wal_offset);
+        out
+    }
+
+    fn decode(input: &[u8; ZC_WAL_ACK_HEADER_LEN]) -> io::Result<Self> {
+        if &input[0..8] != ZC_WAL_ACK_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing ZCWALA1 ack magic",
+            ));
+        }
+        let version = zcwal_read_u16(input, 0x08);
+        let header_len = zcwal_read_u16(input, 0x0a) as usize;
+        if version != ZC_WAL_EXTENT_VERSION || header_len != ZC_WAL_ACK_HEADER_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported WAL ack header version={version} len={header_len}"),
+            ));
+        }
+        Ok(Self {
+            lane_id: zcwal_read_u32(input, 0x10),
+            shard_id: zcwal_read_u32(input, 0x14),
+            status: zcwal_read_u32(input, 0x18),
+            record_size: zcwal_read_u32(input, 0x1c),
+            first_logical_index: zcwal_read_u64(input, 0x20),
+            last_logical_index: zcwal_read_u64(input, 0x28),
+            extent_sequence: zcwal_read_u64(input, 0x30),
+            durable_wal_offset: zcwal_read_u64(input, 0x38),
+        })
+    }
+}
+
+fn zcwal_validate_extent_shape(bytes_per_connection: usize, extent_bytes: usize) -> io::Result<()> {
+    if bytes_per_connection == 0 || extent_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "WAL extent bytes-per-connection and extent-bytes must be non-zero",
+        ));
+    }
+    if extent_bytes % ZC_WAL_RECORD_SIZE != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "WAL extent bytes must be a multiple of 4096",
+        ));
+    }
+    if bytes_per_connection % extent_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "WAL extent bytes-per-connection must be a multiple of extent-bytes",
+        ));
+    }
+    if extent_bytes / ZC_WAL_RECORD_SIZE > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "WAL extent record count must fit in u32",
+        ));
+    }
+    if extent_bytes > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "WAL extent payload length must fit in u32",
+        ));
+    }
+    Ok(())
+}
+
+fn zcwal_validate_framing_shape(
+    framing_mode: ZcWalFramingMode,
+    bytes_per_connection: usize,
+    extent_bytes: usize,
+) -> io::Result<()> {
+    zcwal_validate_extent_shape(bytes_per_connection, extent_bytes)?;
+    if framing_mode == ZcWalFramingMode::Stream && bytes_per_connection > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "stream-framed WAL payload length must fit in u32",
+        ));
+    }
+    Ok(())
+}
+
+fn zcwal_uring_pipeline() -> usize {
+    env_usize_or("URING_PLAY_ZCWAL_URING_PIPELINE", 32).max(1)
+}
+
+fn zcwal_uring_entries() -> u32 {
+    u32::try_from(env_usize_or("URING_PLAY_ZCWAL_URING_ENTRIES", 64).max(64)).unwrap_or(u32::MAX)
+}
+
+fn zcwal_uring_recv_bytes(extent_bytes: usize) -> io::Result<usize> {
+    env_size_opt("URING_PLAY_ZCWAL_RECV_BYTES")
+        .map(|value| value.unwrap_or_else(|| extent_bytes.min(4 * 1024 * 1024).max(4096)))
+}
+
+fn zcwal_extent_partition_accepted_streams(
+    streams: Vec<TcpBenchAcceptedStream>,
+    workers: usize,
+    policy: TcpMuxShardPolicy,
+    label: &str,
+) -> Vec<Vec<ZcWalExtentAcceptedStream>> {
+    let mut shards = (0..workers).map(|_| Vec::new()).collect::<Vec<_>>();
+    let mut counts = vec![0usize; workers];
+    for (idx, accepted) in streams.into_iter().enumerate() {
+        let worker = policy.choose_worker(&accepted, idx, workers);
+        println!(
+            "{label}-mux-assignment: worker={worker} policy={} peer={} listener_lane={} \
+             listener_port={} conn={} {}",
+            policy.label(),
+            accepted.peer_addr,
+            accepted.lane,
+            accepted.port,
+            accepted.conn_index,
+            socket_locality_label(accepted.locality)
+        );
+        counts[worker] += 1;
+        shards[worker].push(ZcWalExtentAcceptedStream {
+            meta: accepted.meta(),
+            stream: accepted.stream,
+        });
+    }
+    println!(
+        "{label}-mux-assignment-summary: policy={} workers={workers} streams_by_worker={}",
+        policy.label(),
+        tcp_mux_counts_label(&counts)
+    );
+    shards
+}
+
+fn zcwal_extent_sender_worker(
+    worker: usize,
+    addr: Arc<String>,
+    specs: Vec<TcpBenchConnectSpec>,
+    lane_count: usize,
+    bytes_per_connection: usize,
+    extent_bytes: usize,
+    framing_mode: ZcWalFramingMode,
+    data_path: ZcWalDataPath,
+    ack_enabled: bool,
+    ready_barrier: Arc<Barrier>,
+    start_barrier: Arc<Barrier>,
+) -> io::Result<ZcWalExtentStats> {
+    let affinity = maybe_pin_current_thread("zcwal-extent-send-worker", worker);
+    let tid = current_tid();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_cpu = current_cpu();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
+    let mut streams = Vec::with_capacity(specs.len());
+    for spec in &specs {
+        let stream =
+            tcp_bench_connect(addr.as_str(), spec.port, spec.source_port).map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!(
+                        "zcwal extent connect {}:{} lane={} conn={}: {err}",
+                        addr.as_str(),
+                        spec.port,
+                        spec.lane,
+                        spec.conn_index
+                    ),
+                )
+            })?;
+        set_tcp_nodelay_from_env(&stream)?;
+        set_tcp_bench_buffers(&stream);
+        println!(
+            "zcwal-extent-send-stream: worker={worker} lane={} port={} conn={}",
+            spec.lane, spec.port, spec.conn_index
+        );
+        streams.push((*spec, stream));
+    }
+
+    let mut payload = vec![0u8; extent_bytes];
+    SendPayloadPattern::from_env(extent_bytes)?.fill(&mut payload);
+    let record_count = u32::try_from(extent_bytes / ZC_WAL_RECORD_SIZE).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "WAL extent record count overflow",
+        )
+    })?;
+    let extents_per_stream = bytes_per_connection / extent_bytes;
+
+    ready_barrier.wait();
+    start_barrier.wait();
+    let started = Instant::now();
+    let mut payload_bytes = 0usize;
+    let mut wire_bytes = 0usize;
+    let mut extents = 0usize;
+    let mut records = 0usize;
+    let mut acks = 0usize;
+
+    for (spec, mut stream) in streams {
+        match framing_mode {
+            ZcWalFramingMode::Extent => {
+                for seq in 0..extents_per_stream {
+                    let base_logical_index = (seq * record_count as usize) as u64;
+                    let header = ZcWalExtentHeader {
+                        flags: 0,
+                        lane_id: spec.lane as u32,
+                        lane_count: lane_count as u32,
+                        shard_id: spec.lane as u32,
+                        record_size: ZC_WAL_RECORD_SIZE as u32,
+                        record_count,
+                        payload_len: extent_bytes as u32,
+                        table_len: 0,
+                        base_logical_index,
+                        extent_sequence: seq as u64,
+                        base_wal_offset: (seq * extent_bytes) as u64,
+                        wal_epoch: 0,
+                        descriptor_id: ((spec.lane as u64) << 32) | seq as u64,
+                        payload_crc32c: 0,
+                    }
+                    .encode();
+                    stream.write_all(&header)?;
+                    stream.write_all(&payload)?;
+                    payload_bytes += extent_bytes;
+                    wire_bytes += ZC_WAL_EXTENT_HEADER_LEN + extent_bytes;
+                    extents += 1;
+                    records += record_count as usize;
+                }
+                stream.shutdown(Shutdown::Write)?;
+
+                if ack_enabled {
+                    for seq in 0..extents_per_stream {
+                        let mut ack_buf = [0u8; ZC_WAL_ACK_HEADER_LEN];
+                        stream.read_exact(&mut ack_buf)?;
+                        let ack = ZcWalAckHeader::decode(&ack_buf)?;
+                        if ack.status != 0
+                            || ack.lane_id as usize != spec.lane
+                            || ack.extent_sequence != seq as u64
+                            || ack.record_size != ZC_WAL_RECORD_SIZE as u32
+                        {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "WAL extent ack mismatch lane={} seq={} got lane={} seq={} status={}",
+                                    spec.lane, seq, ack.lane_id, ack.extent_sequence, ack.status
+                                ),
+                            ));
+                        }
+                        acks += 1;
+                    }
+                }
+            }
+            ZcWalFramingMode::Stream => {
+                let total_records = u32::try_from(bytes_per_connection / ZC_WAL_RECORD_SIZE)
+                    .map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "stream-framed WAL record count overflow",
+                        )
+                    })?;
+                let header = ZcWalExtentHeader {
+                    flags: ZC_WAL_EXTENT_F_STREAM_FRAME,
+                    lane_id: spec.lane as u32,
+                    lane_count: lane_count as u32,
+                    shard_id: spec.lane as u32,
+                    record_size: ZC_WAL_RECORD_SIZE as u32,
+                    record_count: total_records,
+                    payload_len: bytes_per_connection as u32,
+                    table_len: 0,
+                    base_logical_index: 0,
+                    extent_sequence: 0,
+                    base_wal_offset: 0,
+                    wal_epoch: 0,
+                    descriptor_id: (spec.lane as u64) << 32,
+                    payload_crc32c: 0,
+                }
+                .encode();
+                stream.write_all(&header)?;
+                match data_path {
+                    ZcWalDataPath::Blocking => {
+                        let mut remaining = bytes_per_connection;
+                        while remaining != 0 {
+                            let len = remaining.min(payload.len());
+                            stream.write_all(&payload[..len])?;
+                            remaining -= len;
+                        }
+                        stream.shutdown(Shutdown::Write)?;
+                        if ack_enabled {
+                            let mut ack_buf = [0u8; ZC_WAL_ACK_HEADER_LEN];
+                            stream.read_exact(&mut ack_buf)?;
+                            let ack = ZcWalAckHeader::decode(&ack_buf)?;
+                            if ack.status != 0
+                                || ack.lane_id as usize != spec.lane
+                                || ack.extent_sequence != 0
+                                || ack.record_size != ZC_WAL_RECORD_SIZE as u32
+                            {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "stream-framed WAL ack mismatch lane={} got lane={} seq={} status={}",
+                                        spec.lane, ack.lane_id, ack.extent_sequence, ack.status
+                                    ),
+                                ));
+                            }
+                            acks += 1;
+                        }
+                    }
+                    ZcWalDataPath::Uring => {
+                        let mut ack_stream = if ack_enabled {
+                            Some(stream.try_clone()?)
+                        } else {
+                            None
+                        };
+                        let uring_stats = uring_send_worker(
+                            worker,
+                            affinity,
+                            vec![stream],
+                            bytes_per_connection,
+                            extent_bytes,
+                            zcwal_uring_pipeline(),
+                            zcwal_uring_entries(),
+                            UringSendMode::Send,
+                            SendPayloadPattern::from_env(extent_bytes)?,
+                            false,
+                        )?;
+                        if uring_stats.bytes != bytes_per_connection {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "stream-framed WAL uring sender wrote {} bytes, expected {bytes_per_connection}",
+                                    uring_stats.bytes
+                                ),
+                            ));
+                        }
+                        if let Some(ack_stream) = ack_stream.as_mut() {
+                            let mut ack_buf = [0u8; ZC_WAL_ACK_HEADER_LEN];
+                            ack_stream.read_exact(&mut ack_buf)?;
+                            let ack = ZcWalAckHeader::decode(&ack_buf)?;
+                            if ack.status != 0
+                                || ack.lane_id as usize != spec.lane
+                                || ack.extent_sequence != 0
+                                || ack.record_size != ZC_WAL_RECORD_SIZE as u32
+                            {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "stream-framed WAL ack mismatch lane={} got lane={} seq={} status={}",
+                                        spec.lane, ack.lane_id, ack.extent_sequence, ack.status
+                                    ),
+                                ));
+                            }
+                            acks += 1;
+                        }
+                    }
+                }
+                payload_bytes += bytes_per_connection;
+                wire_bytes += ZC_WAL_EXTENT_HEADER_LEN + bytes_per_connection;
+                extents += extents_per_stream;
+                records += total_records as usize;
+            }
+        }
+    }
+
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_cpu = current_cpu();
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    Ok(ZcWalExtentStats {
+        worker,
+        streams: specs.len(),
+        payload_bytes,
+        wire_bytes,
+        extents,
+        records,
+        acks,
+        wall: started.elapsed(),
+        cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+        start_cpu,
+        end_cpu,
+        voluntary_switches: end_switches
+            .voluntary
+            .saturating_sub(start_switches.voluntary),
+        involuntary_switches: end_switches
+            .involuntary
+            .saturating_sub(start_switches.involuntary),
+        migrations: end_switches
+            .migrations
+            .saturating_sub(start_switches.migrations),
+    })
+}
+
+fn zcwal_extent_recv_worker(
+    worker: usize,
+    streams: Vec<ZcWalExtentAcceptedStream>,
+    lane_count: usize,
+    bytes_per_connection: usize,
+    extent_bytes: usize,
+    framing_mode: ZcWalFramingMode,
+    data_path: ZcWalDataPath,
+    ack_enabled: bool,
+) -> io::Result<ZcWalExtentStats> {
+    let affinity = maybe_pin_current_thread("zcwal-extent-recv-worker", worker);
+    let tid = current_tid();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_cpu = current_cpu();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
+    let stream_count = streams.len();
+    let mut payload = vec![0u8; extent_bytes];
+    let extents_per_stream = bytes_per_connection / extent_bytes;
+    let mut payload_bytes = 0usize;
+    let mut wire_bytes = 0usize;
+    let mut extents = 0usize;
+    let mut records = 0usize;
+    let mut acks = 0usize;
+    let started = Instant::now();
+
+    for accepted in streams {
+        let meta = accepted.meta;
+        let mut stream = accepted.stream;
+        match framing_mode {
+            ZcWalFramingMode::Extent => {
+                let mut expected_logical = 0u64;
+                for expected_seq in 0..extents_per_stream {
+                    let mut header_buf = [0u8; ZC_WAL_EXTENT_HEADER_LEN];
+                    stream.read_exact(&mut header_buf)?;
+                    let header = ZcWalExtentHeader::decode(&header_buf)?;
+                    if header.flags & ZC_WAL_EXTENT_F_STREAM_FRAME != 0
+                        || header.lane_id as usize != meta.lane
+                        || header.lane_count as usize != lane_count
+                        || header.shard_id != header.lane_id
+                        || header.record_size != ZC_WAL_RECORD_SIZE as u32
+                        || header.payload_len as usize != extent_bytes
+                        || header.record_count as usize != extent_bytes / ZC_WAL_RECORD_SIZE
+                        || header.table_len != 0
+                        || header.extent_sequence != expected_seq as u64
+                        || header.base_logical_index != expected_logical
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "WAL extent header mismatch stream_lane={} seq={} got flags=0x{:x} lane={} lane_count={} shard={} records={} payload={} table={} base={} seq={}",
+                                meta.lane,
+                                expected_seq,
+                                header.flags,
+                                header.lane_id,
+                                header.lane_count,
+                                header.shard_id,
+                                header.record_count,
+                                header.payload_len,
+                                header.table_len,
+                                header.base_logical_index,
+                                header.extent_sequence
+                            ),
+                        ));
+                    }
+                    stream.read_exact(&mut payload)?;
+                    payload_bytes += extent_bytes;
+                    wire_bytes += ZC_WAL_EXTENT_HEADER_LEN + extent_bytes;
+                    extents += 1;
+                    records += header.record_count as usize;
+                    expected_logical += header.record_count as u64;
+
+                    if ack_enabled {
+                        let first = header.base_logical_index;
+                        let last = first + header.record_count as u64 - 1;
+                        let ack = ZcWalAckHeader {
+                            lane_id: header.lane_id,
+                            shard_id: header.shard_id,
+                            status: 0,
+                            record_size: header.record_size,
+                            first_logical_index: first,
+                            last_logical_index: last,
+                            extent_sequence: header.extent_sequence,
+                            durable_wal_offset: header.base_wal_offset,
+                        }
+                        .encode();
+                        stream.write_all(&ack)?;
+                        acks += 1;
+                    }
+                }
+            }
+            ZcWalFramingMode::Stream => {
+                let mut header_buf = [0u8; ZC_WAL_EXTENT_HEADER_LEN];
+                stream.read_exact(&mut header_buf)?;
+                let header = ZcWalExtentHeader::decode(&header_buf)?;
+                let expected_records = bytes_per_connection / ZC_WAL_RECORD_SIZE;
+                if header.flags & ZC_WAL_EXTENT_F_STREAM_FRAME == 0
+                    || header.lane_id as usize != meta.lane
+                    || header.lane_count as usize != lane_count
+                    || header.shard_id != header.lane_id
+                    || header.record_size != ZC_WAL_RECORD_SIZE as u32
+                    || header.payload_len as usize != bytes_per_connection
+                    || header.record_count as usize != expected_records
+                    || header.table_len != 0
+                    || header.extent_sequence != 0
+                    || header.base_logical_index != 0
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "stream-framed WAL header mismatch stream_lane={} got flags=0x{:x} lane={} lane_count={} shard={} records={} payload={} table={} base={} seq={}",
+                            meta.lane,
+                            header.flags,
+                            header.lane_id,
+                            header.lane_count,
+                            header.shard_id,
+                            header.record_count,
+                            header.payload_len,
+                            header.table_len,
+                            header.base_logical_index,
+                            header.extent_sequence
+                        ),
+                    ));
+                }
+                match data_path {
+                    ZcWalDataPath::Blocking => {
+                        let mut remaining = bytes_per_connection;
+                        while remaining != 0 {
+                            let len = remaining.min(payload.len());
+                            stream.read_exact(&mut payload[..len])?;
+                            remaining -= len;
+                        }
+                        if ack_enabled {
+                            let ack = ZcWalAckHeader {
+                                lane_id: header.lane_id,
+                                shard_id: header.shard_id,
+                                status: 0,
+                                record_size: header.record_size,
+                                first_logical_index: 0,
+                                last_logical_index: header.record_count as u64 - 1,
+                                extent_sequence: 0,
+                                durable_wal_offset: 0,
+                            }
+                            .encode();
+                            stream.write_all(&ack)?;
+                            acks += 1;
+                        }
+                    }
+                    ZcWalDataPath::Uring => {
+                        let mut ack_stream = if ack_enabled {
+                            Some(stream.try_clone()?)
+                        } else {
+                            None
+                        };
+                        let received = uring_recv_worker(
+                            vec![stream],
+                            bytes_per_connection,
+                            zcwal_uring_recv_bytes(extent_bytes)?,
+                            zcwal_uring_entries(),
+                        )?;
+                        if received != bytes_per_connection {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "stream-framed WAL uring receiver read {received} bytes, expected {bytes_per_connection}",
+                                ),
+                            ));
+                        }
+                        if let Some(ack_stream) = ack_stream.as_mut() {
+                            let ack = ZcWalAckHeader {
+                                lane_id: header.lane_id,
+                                shard_id: header.shard_id,
+                                status: 0,
+                                record_size: header.record_size,
+                                first_logical_index: 0,
+                                last_logical_index: header.record_count as u64 - 1,
+                                extent_sequence: 0,
+                                durable_wal_offset: 0,
+                            }
+                            .encode();
+                            ack_stream.write_all(&ack)?;
+                            acks += 1;
+                        }
+                    }
+                }
+                payload_bytes += bytes_per_connection;
+                wire_bytes += ZC_WAL_EXTENT_HEADER_LEN + bytes_per_connection;
+                extents += extents_per_stream;
+                records += expected_records;
+            }
+        }
+    }
+
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_cpu = current_cpu();
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    Ok(ZcWalExtentStats {
+        worker,
+        streams: stream_count,
+        payload_bytes,
+        wire_bytes,
+        extents,
+        records,
+        acks,
+        wall: started.elapsed(),
+        cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+        start_cpu,
+        end_cpu,
+        voluntary_switches: end_switches
+            .voluntary
+            .saturating_sub(start_switches.voluntary),
+        involuntary_switches: end_switches
+            .involuntary
+            .saturating_sub(start_switches.involuntary),
+        migrations: end_switches
+            .migrations
+            .saturating_sub(start_switches.migrations),
+    })
+}
+
+fn zcwal_extent_print_worker(label: &str, stats: &ZcWalExtentStats) {
+    let secs = stats.wall.as_secs_f64().max(f64::MIN_POSITIVE);
+    let cpu_secs = stats.cpu.as_secs_f64();
+    println!(
+        "{label}-worker: worker={} streams={} payload_bytes={} wire_bytes={} extents={} \
+         logical_records={} acks={} seconds={secs:.6} payload_Gbitps={:.3} \
+         logical_iops={:.0} thread_cpu_seconds={cpu_secs:.6} cpu_wall_pct={:.1} \
+         target_cpu={} affinity_applied={} start_cpu={} end_cpu={} \
+         voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
+        stats.worker,
+        stats.streams,
+        stats.payload_bytes,
+        stats.wire_bytes,
+        stats.extents,
+        stats.records,
+        stats.acks,
+        stats.payload_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+        stats.records as f64 / secs,
+        cpu_secs / secs * 100.0,
+        stats.target_cpu,
+        stats.affinity_applied,
+        stats.start_cpu,
+        stats.end_cpu,
+        stats.voluntary_switches,
+        stats.involuntary_switches,
+        stats.migrations,
+    );
+}
+
+fn zcwal_extent_sum(results: &[ZcWalExtentStats]) -> ZcWalExtentStats {
+    let mut total = ZcWalExtentStats::default();
+    for stats in results {
+        total.streams += stats.streams;
+        total.payload_bytes += stats.payload_bytes;
+        total.wire_bytes += stats.wire_bytes;
+        total.extents += stats.extents;
+        total.records += stats.records;
+        total.acks += stats.acks;
+        total.wall = total.wall.max(stats.wall);
+        total.cpu += stats.cpu;
+        total.voluntary_switches += stats.voluntary_switches;
+        total.involuntary_switches += stats.involuntary_switches;
+        total.migrations += stats.migrations;
+    }
+    total
+}
+
+fn zcwal_extent_perf_warnings(
+    label: &str,
+    lanes: usize,
+    connections_per_lane: usize,
+    workers: usize,
+) {
+    if !env_truthy("URING_PLAY_PIN_CPUS") {
+        eprintln!(
+            "PERF WARNING: {label} running without URING_PLAY_PIN_CPUS=1; lane/CPU topology is not pinned"
+        );
+    }
+    if env::var("URING_PLAY_PIN_CPU_LIST")
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        eprintln!(
+            "PERF WARNING: {label} running without URING_PLAY_PIN_CPU_LIST; state the lane-to-CPU map for real IOPS numbers"
+        );
+    }
+    if workers < lanes {
+        eprintln!(
+            "PERF WARNING: {label} workers={workers} lanes={lanes}; at least one worker will own multiple lanes"
+        );
+    }
+    if connections_per_lane != 1 {
+        eprintln!(
+            "PERF WARNING: {label} connections_per_lane={connections_per_lane}; lane-locality is easiest to interpret with one connection per lane"
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcwal_extent_send(
+    addr: &str,
+    base_port: u16,
+    lanes: usize,
+    connections_per_lane: usize,
+    bytes_per_connection: usize,
+    extent_bytes: usize,
+    workers: usize,
+    framing_mode: ZcWalFramingMode,
+    data_path: ZcWalDataPath,
+    ack_enabled: bool,
+) -> io::Result<()> {
+    zcwal_validate_framing_shape(framing_mode, bytes_per_connection, extent_bytes)?;
+    let data_path = if framing_mode == ZcWalFramingMode::Extent {
+        ZcWalDataPath::Blocking
+    } else {
+        data_path
+    };
+    let total_connections = tcp_bench_total_connections(lanes, connections_per_lane)?;
+    let workers = tcp_bench_auto_workers(workers, total_connections);
+    zcwal_extent_perf_warnings("zcwal-extent-send", lanes, connections_per_lane, workers);
+    let source_ports = TcpSourcePortPlan::from_env()?;
+    println!(
+        "zcwal-extent-send: addr={addr} base_port={base_port} lanes={lanes} \
+         connections_per_lane={connections_per_lane} total_connections={total_connections} \
+         bytes_per_connection={bytes_per_connection} extent_bytes={extent_bytes} \
+         record_size={ZC_WAL_RECORD_SIZE} records_per_extent={} workers={workers} \
+         framing={} data_path={} ack_enabled={} tcp_nodelay={} socket_buffer_bytes={} \
+         uring_pipeline={} uring_entries={} source_ports={}",
+        extent_bytes / ZC_WAL_RECORD_SIZE,
+        framing_mode.label(),
+        data_path.label(),
+        yes(ack_enabled),
+        yes(tcp_nodelay_enabled()),
+        socket_bench_buffer_bytes(),
+        zcwal_uring_pipeline(),
+        zcwal_uring_entries(),
+        source_ports.label()
+    );
+    let specs = tcp_bench_mux_connect_specs(base_port, lanes, connections_per_lane, source_ports)?;
+    let shards = tcp_bench_partition_connect_specs(specs, workers);
+    let active_workers = shards.iter().filter(|shard| !shard.is_empty()).count();
+    let ready_barrier = Arc::new(Barrier::new(active_workers + 1));
+    let start_barrier = Arc::new(Barrier::new(active_workers + 1));
+    let addr = Arc::new(addr.to_string());
+    let mut handles = Vec::with_capacity(active_workers);
+    for (worker, shard) in shards.into_iter().enumerate() {
+        if shard.is_empty() {
+            continue;
+        }
+        let addr = Arc::clone(&addr);
+        let ready_barrier = Arc::clone(&ready_barrier);
+        let start_barrier = Arc::clone(&start_barrier);
+        handles.push(thread::spawn(move || {
+            zcwal_extent_sender_worker(
+                worker,
+                addr,
+                shard,
+                lanes,
+                bytes_per_connection,
+                extent_bytes,
+                framing_mode,
+                data_path,
+                ack_enabled,
+                ready_barrier,
+                start_barrier,
+            )
+        }));
+    }
+    ready_barrier.wait();
+    let started = Instant::now();
+    start_barrier.wait();
+    let mut results = Vec::with_capacity(handles.len());
+    for handle in handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other("zcwal extent send worker panicked"))??;
+        zcwal_extent_print_worker("zcwal-extent-send", &stats);
+        results.push(stats);
+    }
+    let mut total = zcwal_extent_sum(&results);
+    total.wall = total.wall.max(started.elapsed());
+    let secs = total.wall.as_secs_f64().max(f64::MIN_POSITIVE);
+    println!(
+        "zcwal-extent-send-summary: payload_bytes={} wire_bytes={} extents={} \
+         logical_records={} acks={} seconds={secs:.6} payload_Gbitps={:.3} \
+         logical_iops={:.0}",
+        total.payload_bytes,
+        total.wire_bytes,
+        total.extents,
+        total.records,
+        total.acks,
+        total.payload_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+        total.records as f64 / secs
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcwal_extent_recv(
+    bind: &str,
+    base_port: u16,
+    lanes: usize,
+    connections_per_lane: usize,
+    bytes_per_connection: usize,
+    extent_bytes: usize,
+    workers: usize,
+    framing_mode: ZcWalFramingMode,
+    data_path: ZcWalDataPath,
+    ack_enabled: bool,
+) -> io::Result<()> {
+    zcwal_validate_framing_shape(framing_mode, bytes_per_connection, extent_bytes)?;
+    let data_path = if framing_mode == ZcWalFramingMode::Extent {
+        ZcWalDataPath::Blocking
+    } else {
+        data_path
+    };
+    let total_connections = tcp_bench_total_connections(lanes, connections_per_lane)?;
+    let workers = tcp_bench_auto_workers(workers, total_connections);
+    zcwal_extent_perf_warnings("zcwal-extent-recv", lanes, connections_per_lane, workers);
+    println!(
+        "zcwal-extent-recv: bind={bind} base_port={base_port} lanes={lanes} \
+         connections_per_lane={connections_per_lane} total_connections={total_connections} \
+         bytes_per_connection={bytes_per_connection} extent_bytes={extent_bytes} \
+         record_size={ZC_WAL_RECORD_SIZE} records_per_extent={} workers={workers} \
+         framing={} data_path={} ack_enabled={} socket_buffer_bytes={} \
+         uring_recv_bytes={} uring_entries={}",
+        extent_bytes / ZC_WAL_RECORD_SIZE,
+        framing_mode.label(),
+        data_path.label(),
+        yes(ack_enabled),
+        socket_bench_buffer_bytes(),
+        zcwal_uring_recv_bytes(extent_bytes)?,
+        zcwal_uring_entries()
+    );
+    let listeners = tcp_bench_mux_bind_listeners(bind, base_port, lanes)?;
+    let streams = tcp_bench_mux_accept_tagged_listeners(listeners, lanes, connections_per_lane)?;
+    let shard_policy = TcpMuxShardPolicy::from_env_or(
+        "URING_PLAY_ZCWAL_EXTENT_SHARD",
+        TcpMuxShardPolicy::PortLane,
+    )?;
+    let shards = zcwal_extent_partition_accepted_streams(
+        streams,
+        workers,
+        shard_policy,
+        "zcwal-extent-recv",
+    );
+    let started = Instant::now();
+    let mut handles = Vec::new();
+    for (worker, shard) in shards.into_iter().enumerate() {
+        if shard.is_empty() {
+            continue;
+        }
+        handles.push(thread::spawn(move || {
+            zcwal_extent_recv_worker(
+                worker,
+                shard,
+                lanes,
+                bytes_per_connection,
+                extent_bytes,
+                framing_mode,
+                data_path,
+                ack_enabled,
+            )
+        }));
+    }
+    let mut results = Vec::with_capacity(handles.len());
+    for handle in handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other("zcwal extent recv worker panicked"))??;
+        zcwal_extent_print_worker("zcwal-extent-recv", &stats);
+        results.push(stats);
+    }
+    let mut total = zcwal_extent_sum(&results);
+    total.wall = total.wall.max(started.elapsed());
+    let secs = total.wall.as_secs_f64().max(f64::MIN_POSITIVE);
+    println!(
+        "zcwal-extent-recv-summary: payload_bytes={} wire_bytes={} extents={} \
+         logical_records={} acks={} seconds={secs:.6} payload_Gbitps={:.3} \
+         logical_iops={:.0} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
+        total.payload_bytes,
+        total.wire_bytes,
+        total.extents,
+        total.records,
+        total.acks,
+        total.payload_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+        total.records as f64 / secs,
+        total.voluntary_switches,
+        total.involuntary_switches,
+        total.migrations
+    );
+    Ok(())
 }
 
 const TCP_WAL_RECV_USER_DATA: u64 = 1u64 << 63;
@@ -10946,7 +12395,9 @@ fn zcnblk_payload_aes256_cipher(token: &str) -> io::Result<ZcAes256Cipher> {
 #[derive(Clone)]
 enum ZcnblkTargetBackend {
     Block(SlotWalTarget),
+    Raid0(ZcnblkRaid0Target),
     Tier(ZcnblkTierTarget),
+    Wal(ZcnblkWalTarget),
     DevNull,
 }
 
@@ -10954,7 +12405,9 @@ impl ZcnblkTargetBackend {
     fn label(&self) -> &str {
         match self {
             Self::Block(target) => target.label(),
+            Self::Raid0(_) => "zcraid0",
             Self::Tier(_) => "zctier",
+            Self::Wal(_) => "zcwal",
             Self::DevNull => "zcdevnull",
         }
     }
@@ -10962,7 +12415,9 @@ impl ZcnblkTargetBackend {
     fn open_path(&self) -> Option<&Path> {
         match self {
             Self::Block(target) => Some(target.open_path()),
+            Self::Raid0(_) => None,
             Self::Tier(_) => None,
+            Self::Wal(_) => None,
             Self::DevNull => None,
         }
     }
@@ -10970,6 +12425,40 @@ impl ZcnblkTargetBackend {
     fn is_devnull(&self) -> bool {
         matches!(self, Self::DevNull)
     }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ZcnblkWalTarget {
+    addr: String,
+    base_port: u16,
+    extent_bytes: usize,
+    ack_enabled: bool,
+}
+
+#[derive(Clone)]
+struct ZcnblkRaid0Member {
+    target: SlotWalTarget,
+    device_bytes: u64,
+    required_alignment: usize,
+}
+
+#[derive(Clone)]
+struct ZcnblkRaid0Target {
+    members: Vec<ZcnblkRaid0Member>,
+    stripe_bytes: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ZcnblkRaid0MemberRuntime {
+    fd: i32,
+    fixed_file: Option<u32>,
+    device_bytes: u64,
+    required_alignment: usize,
+}
+
+struct ZcnblkRaid0Runtime {
+    members: Vec<ZcnblkRaid0MemberRuntime>,
+    stripe_bytes: usize,
 }
 
 #[derive(Clone)]
@@ -11018,7 +12507,11 @@ struct ZcnblkWorkerStats {
     written_bytes: usize,
     read_bytes: usize,
     response_bytes: usize,
+    wal_wire_bytes: usize,
+    wal_extents: usize,
+    wal_acks: usize,
     frames: usize,
+    batches: usize,
     read_frames: usize,
     write_frames: usize,
     elapsed: Duration,
@@ -11194,6 +12687,197 @@ fn zcnblk_is_devnull_target(token: &str) -> bool {
         || token.strip_prefix("zcdevnull").is_some_and(|suffix| {
             !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
         })
+}
+
+fn zcnblk_parse_wal_target(token: &str) -> io::Result<Option<ZcnblkTargetPlan>> {
+    let Some(spec) = token
+        .strip_prefix("zcwal:")
+        .or_else(|| token.strip_prefix("zcwal="))
+    else {
+        return Ok(None);
+    };
+    let parts = spec.split(':').collect::<Vec<_>>();
+    if parts.len() > 6 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk zcwal target requires zcwal:ADDR[:BASE_PORT[:EXTENT_BYTES[:ACK[:BYTES[:ALIGN]]]]]",
+        ));
+    }
+    let addr = parts.first().copied().unwrap_or_default();
+    if addr.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk zcwal target requires a WAL receiver address",
+        ));
+    }
+    let base_port = match parts.get(1).filter(|value| !value.is_empty()) {
+        Some(value) => value.parse::<u16>().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("zcwal base port {value:?} is invalid: {err}"),
+            )
+        })?,
+        None => optional_u16_env("URING_PLAY_ZCNBLK_WAL_BASE_PORT")?.unwrap_or(26400),
+    };
+    let extent_bytes = match parts.get(2).filter(|value| !value.is_empty()) {
+        Some(value) => parse_size_arg(value, "zcwal extent bytes")?,
+        None => env_size_opt("URING_PLAY_ZCNBLK_WAL_EXTENT_BYTES")?.unwrap_or(4usize * 1024 * 1024),
+    };
+    let ack_enabled = match parts.get(3).filter(|value| !value.is_empty()) {
+        Some(value) => parse_bool_arg(value, "zcwal ack")?,
+        None => env_enabled_or("URING_PLAY_ZCNBLK_WAL_ACKS", true),
+    };
+    let device_bytes = match parts.get(4).filter(|value| !value.is_empty()) {
+        Some(value) => parse_size_arg(value, "zcwal bytes")? as u64,
+        None => env_size_opt("URING_PLAY_ZCNBLK_WAL_BYTES")?
+            .unwrap_or(1024usize * 1024 * 1024 * 1024) as u64,
+    };
+    let required_alignment = match parts.get(5).filter(|value| !value.is_empty()) {
+        Some(value) => parse_size_arg(value, "zcwal alignment")?,
+        None => env_size_opt("URING_PLAY_ZCNBLK_WAL_ALIGNMENT")?.unwrap_or(ZC_WAL_RECORD_SIZE),
+    };
+    if device_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcwal bytes must be non-zero",
+        ));
+    }
+    if required_alignment == 0 || required_alignment % ZC_WAL_RECORD_SIZE != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcwal alignment must be a non-zero multiple of 4096",
+        ));
+    }
+    zcwal_validate_extent_shape(extent_bytes, extent_bytes)?;
+    Ok(Some(ZcnblkTargetPlan {
+        backend: ZcnblkTargetBackend::Wal(ZcnblkWalTarget {
+            addr: addr.to_string(),
+            base_port,
+            extent_bytes,
+            ack_enabled,
+        }),
+        device_bytes,
+        required_alignment,
+    }))
+}
+
+fn zcnblk_parse_raid0_target(
+    token: &str,
+    chunk_bytes: usize,
+    buffer_mode: SlotWalBufferMode,
+) -> io::Result<Option<ZcnblkTargetPlan>> {
+    let Some(spec) = token
+        .strip_prefix("zcraid0:")
+        .or_else(|| token.strip_prefix("zcraid0="))
+    else {
+        return Ok(None);
+    };
+    let (members_spec, stripe_spec) =
+        spec.rsplit_once(':').map_or((spec, None), |(left, right)| {
+            if right.bytes().any(|byte| byte.is_ascii_digit()) {
+                (left, Some(right))
+            } else {
+                (spec, None)
+            }
+        });
+    if members_spec.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraid0 target requires zcraid0:/dev/zcbrdSTART..END[:STRIPE_BYTES]",
+        ));
+    }
+    let stripe_bytes = match stripe_spec {
+        Some(value) => parse_size_arg(value, "zcraid0 stripe bytes")?,
+        None => env_size_opt("URING_PLAY_ZCNBLK_RAID0_STRIPE_BYTES")?.unwrap_or(chunk_bytes),
+    };
+    if stripe_bytes == 0 || stripe_bytes % chunk_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraid0 stripe bytes must be non-zero and a multiple of chunk_bytes",
+        ));
+    }
+
+    let segment_bytes = buffer_mode.segment_bytes()?;
+    let mut members = Vec::new();
+    for expanded in zcnblk_expand_target_token(members_spec)? {
+        let target = parse_slot_wal_target(&expanded)?;
+        if !matches!(
+            target.kind,
+            SlotWalTargetKind::NullBlock
+                | SlotWalTargetKind::RamBlockDisk
+                | SlotWalTargetKind::ZcBlockRamDisk
+                | SlotWalTargetKind::PartUuid(_)
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "zcraid0 members must be terminal leaf block devices, not RAID block devices",
+            ));
+        }
+        let metadata = fs::metadata(target.open_path())?;
+        if !metadata.file_type().is_block_device() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} is not a block device", target.label()),
+            ));
+        }
+        validate_slot_wal_write_target_safety(&target, &metadata)?;
+        let required_alignment =
+            validate_slot_wal_geometry_alignment(&metadata, chunk_bytes, chunk_bytes)?;
+        validate_slot_wal_queue_limits(&metadata, chunk_bytes, segment_bytes, buffer_mode)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC)
+            .open(target.open_path())?;
+        let device_bytes = block_device_size(file.as_raw_fd())?;
+        if device_bytes < stripe_bytes as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{} is smaller than zcraid0 stripe bytes {stripe_bytes}",
+                    target.label()
+                ),
+            ));
+        }
+        members.push(ZcnblkRaid0Member {
+            target,
+            device_bytes,
+            required_alignment,
+        });
+    }
+    if members.len() < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraid0 requires at least two leaf members",
+        ));
+    }
+    let min_member_bytes = members
+        .iter()
+        .map(|member| member.device_bytes)
+        .min()
+        .expect("members checked non-empty");
+    let usable_member_bytes = min_member_bytes - (min_member_bytes % stripe_bytes as u64);
+    if usable_member_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraid0 members have no stripe-aligned usable bytes",
+        ));
+    }
+    let device_bytes = usable_member_bytes
+        .checked_mul(members.len() as u64)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zcraid0 size overflow"))?;
+    let required_alignment = members
+        .iter()
+        .map(|member| member.required_alignment)
+        .max()
+        .unwrap_or(chunk_bytes);
+    Ok(Some(ZcnblkTargetPlan {
+        backend: ZcnblkTargetBackend::Raid0(ZcnblkRaid0Target {
+            members,
+            stripe_bytes,
+        }),
+        device_bytes,
+        required_alignment,
+    }))
 }
 
 fn zcnblk_parse_tier_target(token: &str) -> io::Result<Option<ZcnblkTargetPlan>> {
@@ -11597,6 +13281,14 @@ fn parse_zcnblk_target_plans(
         if token.is_empty() {
             continue;
         }
+        if let Some(plan) = zcnblk_parse_wal_target(token)? {
+            targets.push(plan);
+            continue;
+        }
+        if let Some(plan) = zcnblk_parse_raid0_target(token, chunk_bytes, buffer_mode)? {
+            targets.push(plan);
+            continue;
+        }
         for expanded in zcnblk_expand_target_token(token)? {
             if let Some(plan) = zcnblk_parse_tier_target(&expanded)? {
                 targets.push(plan);
@@ -11611,10 +13303,16 @@ fn parse_zcnblk_target_plans(
                 continue;
             }
             let target = parse_slot_wal_target(&expanded)?;
-            if !target.is_synthetic_block() {
+            if !matches!(
+                target.kind,
+                SlotWalTargetKind::NullBlock
+                    | SlotWalTargetKind::RamBlockDisk
+                    | SlotWalTargetKind::ZcBlockRamDisk
+                    | SlotWalTargetKind::PartUuid(_)
+            ) {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    "zcnblk-target currently accepts only synthetic block targets such as /dev/zcbrdN or /dev/zcstripeN, plus zcdevnullN pseudo targets",
+                    "zcnblk-target accepts zcdevnullN, zctier:..., /dev/zcbrdN backing, Linux test block devices, or an allowlisted PARTUUID real device",
                 ));
             }
             let metadata = fs::metadata(target.open_path())?;
@@ -11648,6 +13346,56 @@ fn parse_zcnblk_target_plans(
         ));
     }
     Ok(targets)
+}
+
+fn zcnblk_wal_backend(targets: &[ZcnblkTargetPlan]) -> io::Result<Option<ZcnblkWalTarget>> {
+    let mut wal_target: Option<ZcnblkWalTarget> = None;
+    let mut saw_non_wal = false;
+    for target in targets {
+        match &target.backend {
+            ZcnblkTargetBackend::Wal(wal) => {
+                if let Some(existing) = wal_target.as_ref() {
+                    if existing != wal {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "zcnblk-target zcwal mode requires all zcwal target shards to use the same WAL receiver",
+                        ));
+                    }
+                } else {
+                    wal_target = Some(wal.clone());
+                }
+            }
+            _ => saw_non_wal = true,
+        }
+    }
+    if wal_target.is_some() && saw_non_wal {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-target cannot mix zcwal with block, tier, RAID, or devnull targets",
+        ));
+    }
+    Ok(wal_target)
+}
+
+fn zcnblk_validate_wal_target_shape(
+    wal: &ZcnblkWalTarget,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+) -> io::Result<()> {
+    zcwal_validate_extent_shape(bytes_per_connection, wal.extent_bytes)?;
+    if chunk_bytes % ZC_WAL_RECORD_SIZE != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-target zcwal chunk-bytes must be a multiple of 4096",
+        ));
+    }
+    if wal.extent_bytes % chunk_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-target zcwal extent-bytes must be a multiple of chunk-bytes",
+        ));
+    }
+    Ok(())
 }
 
 fn zcnblk_partition_accepted_streams(
@@ -11824,6 +13572,152 @@ fn zcnblk_queue_block_io(
                 other => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("zcnblk block queue got unsupported op {other}"),
+                )),
+            }
+        }
+    }
+}
+
+fn zcnblk_raid0_map(
+    runtime: &ZcnblkRaid0Runtime,
+    offset: u64,
+    len: usize,
+) -> io::Result<(usize, u64, ZcnblkRaid0MemberRuntime)> {
+    if runtime.members.is_empty() || runtime.stripe_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "zcraid0 runtime has no members or zero stripe bytes",
+        ));
+    }
+    let stripe_bytes = runtime.stripe_bytes as u64;
+    let stripe_off = offset % stripe_bytes;
+    if stripe_off
+        .checked_add(len as u64)
+        .is_none_or(|end| end > stripe_bytes)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraid0 request crosses a stripe boundary; use smaller frames or larger stripe bytes",
+        ));
+    }
+    let stripe_no = offset / stripe_bytes;
+    let member_idx = (stripe_no % runtime.members.len() as u64) as usize;
+    let row = stripe_no / runtime.members.len() as u64;
+    let member_offset = row
+        .checked_mul(stripe_bytes)
+        .and_then(|base| base.checked_add(stripe_off))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zcraid0 offset overflow"))?;
+    let member = runtime.members[member_idx];
+    if len % member.required_alignment != 0 || member_offset % member.required_alignment as u64 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcraid0 member={member_idx} offset={member_offset} len={len} not aligned to {}",
+                member.required_alignment
+            ),
+        ));
+    }
+    let member_end = member_offset.checked_add(len as u64).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "zcraid0 member range overflow")
+    })?;
+    if member_end > member.device_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcraid0 member={member_idx} range [{member_offset}..{member_end}) exceeds device bytes {}",
+                member.device_bytes
+            ),
+        ));
+    }
+    Ok((member_idx, member_offset, member))
+}
+
+fn zcnblk_queue_raid0_io(
+    ring: &mut RawRing,
+    runtime: &ZcnblkRaid0Runtime,
+    buffers: &FixedSendBuffers,
+    slot: usize,
+    frame: ZcnblkFrameHeader,
+    io_mode: TcpWalWriteMode,
+) -> io::Result<()> {
+    let (_member_idx, member_offset, member) =
+        zcnblk_raid0_map(runtime, frame.offset, frame.len as usize)?;
+    match io_mode {
+        TcpWalWriteMode::Null => Ok(()),
+        TcpWalWriteMode::Slot => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-target does not support io-slot write mode yet; use fixed-file, fixed, write, or null",
+        )),
+        TcpWalWriteMode::Write => match frame.op {
+            ZCNBLK_OP_WRITE => ring.queue_write(
+                member.fd,
+                buffers.ptr(slot).cast_const(),
+                frame.len,
+                member_offset,
+                slot as u64,
+            ),
+            ZCNBLK_OP_READ => ring.queue_read(
+                member.fd,
+                buffers.ptr(slot),
+                frame.len,
+                member_offset,
+                slot as u64,
+            ),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("zcnblk raid0 queue got unsupported op {other}"),
+            )),
+        },
+        TcpWalWriteMode::WriteFixed => match frame.op {
+            ZCNBLK_OP_WRITE => ring.queue_write_fixed(
+                member.fd,
+                buffers.ptr(slot).cast_const(),
+                frame.len,
+                member_offset,
+                slot as u16,
+                slot as u64,
+            ),
+            ZCNBLK_OP_READ => ring.queue_read_fixed(
+                member.fd,
+                buffers.ptr(slot),
+                frame.len,
+                member_offset,
+                slot as u16,
+                slot as u64,
+            ),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("zcnblk raid0 queue got unsupported op {other}"),
+            )),
+        },
+        TcpWalWriteMode::WriteFixedFile => {
+            let fixed_file = member.fixed_file.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk raid0 member has no registered file index",
+                )
+            })?;
+            match frame.op {
+                ZCNBLK_OP_WRITE => ring.queue_write_fixed_file(
+                    fixed_file,
+                    buffers.ptr(slot).cast_const(),
+                    frame.len,
+                    member_offset,
+                    slot as u16,
+                    slot as u64,
+                ),
+                ZCNBLK_OP_READ => ring.queue_read_fixed_file(
+                    fixed_file,
+                    buffers.ptr(slot),
+                    frame.len,
+                    member_offset,
+                    slot as u16,
+                    slot as u64,
+                ),
+                other => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("zcnblk raid0 queue got unsupported op {other}"),
                 )),
             }
         }
@@ -12104,6 +13998,7 @@ fn zcnblk_target_process_request_frame(
     ring: &mut RawRing,
     fds_by_shard: &[Option<i32>],
     fixed_file_by_shard: &[Option<u32>],
+    raid0_by_shard: &[Option<ZcnblkRaid0Runtime>],
     tier_by_shard: &mut [Option<ZcnblkTierRuntime>],
     tier_queue_depth: usize,
     buffers: &FixedSendBuffers,
@@ -12317,6 +14212,29 @@ fn zcnblk_target_process_request_frame(
         return Ok(false);
     }
 
+    if matches!(target.backend, ZcnblkTargetBackend::Raid0(_)) {
+        let runtime = raid0_by_shard
+            .get(shard)
+            .and_then(|runtime| runtime.as_ref())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("zcnblk raid0 shard {shard} has no runtime"),
+                )
+            })?;
+        slots[slot] = ZcnblkWriteSlot {
+            op: frame.op,
+            flags: frame.flags,
+            stream_idx,
+            shard,
+            len: frame.len,
+            offset: frame.offset,
+            topology: frame.topology,
+        };
+        zcnblk_queue_raid0_io(ring, runtime, buffers, slot, frame, io_mode)?;
+        return Ok(true);
+    }
+
     slots[slot] = ZcnblkWriteSlot {
         op: frame.op,
         flags: frame.flags,
@@ -12413,6 +14331,912 @@ fn zcnblk_target_complete_cqe(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct ZcnblkWalPendingAck {
+    flags: u16,
+    shard: usize,
+    len: usize,
+    offset: u64,
+    topology: ZcnblkFrameTopology,
+}
+
+struct ZcnblkWalSplicePipe {
+    read_fd: i32,
+    write_fd: i32,
+}
+
+impl ZcnblkWalSplicePipe {
+    fn new() -> io::Result<Self> {
+        let mut fds = [0i32; 2];
+        let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let pipe = Self {
+            read_fd: fds[0],
+            write_fd: fds[1],
+        };
+        let pipe_bytes =
+            env_size_opt("URING_PLAY_ZCNBLK_WAL_SPLICE_PIPE_BYTES")?.unwrap_or(1024 * 1024);
+        if pipe_bytes != 0 {
+            let _ = unsafe { libc::fcntl(pipe.read_fd, libc::F_SETPIPE_SZ, pipe_bytes) };
+        }
+        Ok(pipe)
+    }
+}
+
+impl Drop for ZcnblkWalSplicePipe {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.read_fd);
+            libc::close(self.write_fd);
+        }
+    }
+}
+
+fn zcnblk_wal_splice_enabled() -> bool {
+    env_enabled_or("URING_PLAY_ZCNBLK_WAL_SPLICE", true)
+}
+
+fn zcnblk_wal_splice_exact(
+    pipe: &ZcnblkWalSplicePipe,
+    src_fd: i32,
+    dst_fd: i32,
+    mut len: usize,
+) -> io::Result<()> {
+    while len != 0 {
+        let request = len.min(1024 * 1024);
+        let moved = loop {
+            let ret = unsafe {
+                libc::splice(
+                    src_fd,
+                    std::ptr::null_mut(),
+                    pipe.write_fd,
+                    std::ptr::null_mut(),
+                    request,
+                    libc::SPLICE_F_MOVE | libc::SPLICE_F_MORE,
+                )
+            };
+            if ret < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(err);
+            }
+            if ret == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "zcnblk-target zcwal splice read EOF",
+                ));
+            }
+            break ret as usize;
+        };
+        let mut drained = 0usize;
+        while drained < moved {
+            let ret = unsafe {
+                libc::splice(
+                    pipe.read_fd,
+                    std::ptr::null_mut(),
+                    dst_fd,
+                    std::ptr::null_mut(),
+                    moved - drained,
+                    libc::SPLICE_F_MOVE | libc::SPLICE_F_MORE,
+                )
+            };
+            if ret < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(err);
+            }
+            if ret == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "zcnblk-target zcwal splice wrote zero bytes",
+                ));
+            }
+            drained += ret as usize;
+        }
+        len -= moved;
+    }
+    Ok(())
+}
+
+struct ZcnblkWalStreamState {
+    meta: TcpBenchStreamMeta,
+    wal_stream: TcpStream,
+    payload: Vec<u8>,
+    splice_pipe: Option<ZcnblkWalSplicePipe>,
+    filled: usize,
+    pending_acks: Vec<ZcnblkWalPendingAck>,
+    extent_sequence: u64,
+    next_logical_index: u64,
+    wal_payload_bytes: usize,
+    wal_wire_bytes: usize,
+    wal_extents: usize,
+    wal_acks: usize,
+}
+
+impl ZcnblkWalStreamState {
+    fn connect(meta: TcpBenchStreamMeta, wal: &ZcnblkWalTarget) -> io::Result<Self> {
+        let port = tcp_bench_port(wal.base_port, meta.lane)?;
+        let stream = tcp_bench_connect(&wal.addr, port, None).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "zcnblk-target zcwal connect {}:{} lane={} conn={}: {err}",
+                    wal.addr, port, meta.lane, meta.conn_index
+                ),
+            )
+        })?;
+        set_tcp_nodelay_from_env(&stream)?;
+        set_tcp_bench_buffers(&stream);
+        let splice_pipe = if zcnblk_wal_splice_enabled() {
+            Some(ZcnblkWalSplicePipe::new()?)
+        } else {
+            None
+        };
+        println!(
+            "zcnblk-target-zcwal-stream: listener_lane={} listener_port={} conn={} \
+             wal_addr={} wal_port={} wal_extent_bytes={} splice_payload={}",
+            meta.lane,
+            meta.port,
+            meta.conn_index,
+            wal.addr,
+            port,
+            wal.extent_bytes,
+            yes(splice_pipe.is_some())
+        );
+        Ok(Self {
+            meta,
+            wal_stream: stream,
+            payload: vec![0u8; wal.extent_bytes],
+            splice_pipe,
+            filled: 0,
+            pending_acks: Vec::with_capacity(wal.extent_bytes / ZC_WAL_RECORD_SIZE),
+            extent_sequence: 0,
+            next_logical_index: 0,
+            wal_payload_bytes: 0,
+            wal_wire_bytes: 0,
+            wal_extents: 0,
+            wal_acks: 0,
+        })
+    }
+
+    fn extent_record_count(&self) -> io::Result<u32> {
+        u32::try_from(self.payload.len() / ZC_WAL_RECORD_SIZE).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcnblk-target zcwal record count overflow",
+            )
+        })
+    }
+
+    fn extent_header(&self, lane_count: usize) -> io::Result<[u8; ZC_WAL_EXTENT_HEADER_LEN]> {
+        let record_count = self.extent_record_count()?;
+        let base_wal_offset = self
+            .extent_sequence
+            .checked_mul(self.payload.len() as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal offset overflow"))?;
+        let descriptor_id = ((self.meta.lane as u64) << 48)
+            | ((self.meta.conn_index as u64) << 32)
+            | (self.extent_sequence & 0xffff_ffff);
+        Ok(ZcWalExtentHeader {
+            flags: 0,
+            lane_id: self.meta.lane as u32,
+            lane_count: lane_count as u32,
+            shard_id: self.meta.lane as u32,
+            record_size: ZC_WAL_RECORD_SIZE as u32,
+            record_count,
+            payload_len: self.payload.len() as u32,
+            table_len: 0,
+            base_logical_index: self.next_logical_index,
+            extent_sequence: self.extent_sequence,
+            base_wal_offset,
+            wal_epoch: 0,
+            descriptor_id,
+            payload_crc32c: 0,
+        }
+        .encode())
+    }
+
+    fn begin_splice_extent(&mut self, lane_count: usize) -> io::Result<()> {
+        if self.filled != 0 {
+            return Ok(());
+        }
+        let header = self.extent_header(lane_count)?;
+        self.wal_stream.write_all(&header)?;
+        self.wal_wire_bytes = self
+            .wal_wire_bytes
+            .checked_add(ZC_WAL_EXTENT_HEADER_LEN)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal wire overflow"))?;
+        Ok(())
+    }
+
+    fn flush_full_extent(
+        &mut self,
+        zcnblk_streams: &mut [ZcnblkTransport],
+        stream_idx: usize,
+        lane_count: usize,
+        ack_wal: bool,
+        ack_zcnblk: bool,
+        payload_already_sent: bool,
+    ) -> io::Result<usize> {
+        if self.filled == 0 {
+            return Ok(0);
+        }
+        if self.filled != self.payload.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcnblk-target zcwal stream lane={} conn={} has partial extent {} of {} bytes",
+                    self.meta.lane,
+                    self.meta.conn_index,
+                    self.filled,
+                    self.payload.len()
+                ),
+            ));
+        }
+        let record_count = self.extent_record_count()?;
+        if !payload_already_sent {
+            let header = self.extent_header(lane_count)?;
+            self.wal_stream.write_all(&header)?;
+            self.wal_stream.write_all(&self.payload)?;
+            self.wal_payload_bytes =
+                self.wal_payload_bytes
+                    .checked_add(self.filled)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "zcwal payload overflow")
+                    })?;
+            self.wal_wire_bytes = self
+                .wal_wire_bytes
+                .checked_add(ZC_WAL_EXTENT_HEADER_LEN + self.filled)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal wire overflow"))?;
+        }
+        self.wal_extents = self
+            .wal_extents
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal extent overflow"))?;
+        if ack_wal {
+            let mut ack_buf = [0u8; ZC_WAL_ACK_HEADER_LEN];
+            self.wal_stream.read_exact(&mut ack_buf)?;
+            let ack = ZcWalAckHeader::decode(&ack_buf)?;
+            if ack.status != 0
+                || ack.lane_id as usize != self.meta.lane
+                || ack.shard_id != ack.lane_id
+                || ack.extent_sequence != self.extent_sequence
+                || ack.record_size != ZC_WAL_RECORD_SIZE as u32
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk-target zcwal ack mismatch lane={} conn={} seq={} got lane={} shard={} seq={} status={}",
+                        self.meta.lane,
+                        self.meta.conn_index,
+                        self.extent_sequence,
+                        ack.lane_id,
+                        ack.shard_id,
+                        ack.extent_sequence,
+                        ack.status
+                    ),
+                ));
+            }
+            self.wal_acks = self
+                .wal_acks
+                .checked_add(1)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal ack overflow"))?;
+        }
+        let mut response_bytes = 0usize;
+        if ack_zcnblk {
+            for pending in self.pending_acks.drain(..) {
+                response_bytes = response_bytes
+                    .checked_add(zcnblk_send_write_ack(
+                        zcnblk_streams,
+                        stream_idx,
+                        pending.flags,
+                        pending.shard,
+                        pending.len,
+                        pending.offset,
+                        pending.topology,
+                    )?)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "zcnblk response overflow")
+                    })?;
+            }
+        } else {
+            self.pending_acks.clear();
+        }
+        self.filled = 0;
+        self.extent_sequence = self
+            .extent_sequence
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal sequence overflow"))?;
+        self.next_logical_index = self
+            .next_logical_index
+            .checked_add(record_count as u64)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcwal logical index overflow")
+            })?;
+        Ok(response_bytes)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_target_process_wal_frame(
+    targets: &[ZcnblkTargetPlan],
+    wal: &ZcnblkWalTarget,
+    zcnblk_streams: &mut [ZcnblkTransport],
+    stream_idx: usize,
+    wal_state: &mut ZcnblkWalStreamState,
+    frame: ZcnblkFrameHeader,
+    lane_count: usize,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    write_acks: bool,
+    logical_started: &mut [usize],
+    issue_complete_streams: &mut usize,
+    total_received: &mut usize,
+    total_response: &mut usize,
+    frames: &mut usize,
+    write_frames: &mut usize,
+) -> io::Result<()> {
+    if frame.op != ZCNBLK_OP_WRITE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-target zcwal is a write onramp; op {} is not supported",
+                frame.op
+            ),
+        ));
+    }
+    let len = frame.len as usize;
+    if len == 0 || len > chunk_bytes || len % ZC_WAL_RECORD_SIZE != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-target zcwal frame length {len} invalid for chunk_bytes={chunk_bytes} record_size={ZC_WAL_RECORD_SIZE}",
+            ),
+        ));
+    }
+    let shard = frame.shard as usize;
+    let Some(target) = targets.get(shard) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcnblk frame shard {shard} out of range {}", targets.len()),
+        ));
+    };
+    if !matches!(target.backend, ZcnblkTargetBackend::Wal(_)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcnblk-target zcwal received non-wal shard {shard}"),
+        ));
+    }
+    if len % target.required_alignment != 0 || frame.offset % target.required_alignment as u64 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-target zcwal shard={shard} offset={} len={len} not aligned to {}",
+                frame.offset, target.required_alignment
+            ),
+        ));
+    }
+    let frame_end = frame.offset.checked_add(len as u64).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "zcnblk frame offset overflow")
+    })?;
+    if frame_end > target.device_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-target zcwal shard={shard} range [{}..{}) exceeds device bytes {}",
+                frame.offset, frame_end, target.device_bytes
+            ),
+        ));
+    }
+    let next_started = logical_started[stream_idx]
+        .checked_add(len)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcnblk logical byte overflow")
+        })?;
+    if next_started > bytes_per_connection {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-target zcwal stream {stream_idx} requested {next_started}/{bytes_per_connection} logical bytes"
+            ),
+        ));
+    }
+    if len > wal.extent_bytes - wal_state.filled {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "zcnblk-target zcwal frame would cross an extent boundary; use extent-bytes as a multiple of chunk-bytes",
+        ));
+    }
+
+    let header = frame.encode();
+    let payload_spliced =
+        wal_state.splice_pipe.is_some() && !zcnblk_streams[stream_idx].is_encrypted();
+    if payload_spliced {
+        wal_state.begin_splice_extent(lane_count)?;
+        zcnblk_wal_splice_exact(
+            wal_state.splice_pipe.as_ref().expect("checked splice pipe"),
+            zcnblk_streams[stream_idx].as_raw_fd(),
+            wal_state.wal_stream.as_raw_fd(),
+            len,
+        )?;
+        wal_state.wal_payload_bytes = wal_state
+            .wal_payload_bytes
+            .checked_add(len)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal payload overflow"))?;
+        wal_state.wal_wire_bytes = wal_state
+            .wal_wire_bytes
+            .checked_add(len)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal wire overflow"))?;
+    } else {
+        let start = wal_state.filled;
+        let end = start + len;
+        zcnblk_streams[stream_idx].read_frame_payload(
+            &header,
+            &mut wal_state.payload[start..end],
+            false,
+        )?;
+    }
+    wal_state.pending_acks.push(ZcnblkWalPendingAck {
+        flags: frame.flags,
+        shard,
+        len,
+        offset: frame.offset,
+        topology: frame.topology,
+    });
+    wal_state.filled = wal_state
+        .filled
+        .checked_add(len)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal extent fill overflow"))?;
+    *total_received = (*total_received).checked_add(len).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "zcnblk total receive overflow")
+    })?;
+    logical_started[stream_idx] = next_started;
+    if next_started == bytes_per_connection {
+        *issue_complete_streams += 1;
+    }
+    *frames += 1;
+    *write_frames += 1;
+
+    if wal_state.filled == wal.extent_bytes {
+        *total_response = (*total_response)
+            .checked_add(wal_state.flush_full_extent(
+                zcnblk_streams,
+                stream_idx,
+                lane_count,
+                wal.ack_enabled,
+                write_acks,
+                payload_spliced,
+            )?)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk total response overflow")
+            })?;
+    }
+    Ok(())
+}
+
+fn zcnblk_read_batch_headers(
+    stream: &mut ZcnblkTransport,
+    count: usize,
+    label: &str,
+) -> io::Result<Vec<ZcnblkFrameHeader>> {
+    let header_bytes_len = count.checked_mul(ZCNBLK_FRAME_HEADER_LEN).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{label} batch header byte count overflow"),
+        )
+    })?;
+    let mut header_bytes = vec![0u8; header_bytes_len];
+    stream.read_exact(&mut header_bytes)?;
+    let mut batch_frames = Vec::with_capacity(count);
+    for batch_buf in header_bytes.chunks_exact(ZCNBLK_FRAME_HEADER_LEN) {
+        let batch_buf: &[u8; ZCNBLK_FRAME_HEADER_LEN] = batch_buf.try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{label} batch header chunk length mismatch"),
+            )
+        })?;
+        batch_frames.push(ZcnblkFrameHeader::decode(batch_buf)?);
+    }
+    Ok(batch_frames)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_target_process_wal_batch(
+    targets: &[ZcnblkTargetPlan],
+    wal: &ZcnblkWalTarget,
+    zcnblk_streams: &mut [ZcnblkTransport],
+    stream_idx: usize,
+    wal_state: &mut ZcnblkWalStreamState,
+    batch_frames: &[ZcnblkFrameHeader],
+    lane_count: usize,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    write_acks: bool,
+    logical_started: &mut [usize],
+    issue_complete_streams: &mut usize,
+    total_received: &mut usize,
+    total_response: &mut usize,
+    frames: &mut usize,
+    write_frames: &mut usize,
+) -> io::Result<()> {
+    let payload_spliced =
+        wal_state.splice_pipe.is_some() && !zcnblk_streams[stream_idx].is_encrypted();
+    let mut idx = 0usize;
+    while idx < batch_frames.len() {
+        let group_start = wal_state.filled;
+        let mut group_bytes = 0usize;
+        if payload_spliced {
+            wal_state.begin_splice_extent(lane_count)?;
+        }
+
+        while idx < batch_frames.len() {
+            let frame = batch_frames[idx];
+            if frame.op != ZCNBLK_OP_WRITE {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk-target zcwal batch is a write onramp; op {} is not supported",
+                        frame.op
+                    ),
+                ));
+            }
+            let len = frame.len as usize;
+            if len == 0 || len > chunk_bytes || len % ZC_WAL_RECORD_SIZE != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk-target zcwal batch frame length {len} invalid for chunk_bytes={chunk_bytes} record_size={ZC_WAL_RECORD_SIZE}",
+                    ),
+                ));
+            }
+            let shard = frame.shard as usize;
+            let Some(target) = targets.get(shard) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk batch frame shard {shard} out of range {}",
+                        targets.len()
+                    ),
+                ));
+            };
+            if !matches!(target.backend, ZcnblkTargetBackend::Wal(_)) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("zcnblk-target zcwal batch received non-wal shard {shard}"),
+                ));
+            }
+            if len % target.required_alignment != 0
+                || frame.offset % target.required_alignment as u64 != 0
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk-target zcwal batch shard={shard} offset={} len={len} not aligned to {}",
+                        frame.offset, target.required_alignment
+                    ),
+                ));
+            }
+            let frame_end = frame.offset.checked_add(len as u64).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk frame offset overflow")
+            })?;
+            if frame_end > target.device_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk-target zcwal batch shard={shard} range [{}..{}) exceeds device bytes {}",
+                        frame.offset, frame_end, target.device_bytes
+                    ),
+                ));
+            }
+            let next_started = logical_started[stream_idx]
+                .checked_add(len)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk logical byte overflow")
+                })?;
+            if next_started > bytes_per_connection {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk-target zcwal batch stream {stream_idx} requested {next_started}/{bytes_per_connection} logical bytes"
+                    ),
+                ));
+            }
+            if len > wal.extent_bytes - wal_state.filled {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-target zcwal batch frame would cross an extent boundary; use extent-bytes as a multiple of chunk-bytes",
+                ));
+            }
+
+            wal_state.pending_acks.push(ZcnblkWalPendingAck {
+                flags: frame.flags,
+                shard,
+                len,
+                offset: frame.offset,
+                topology: frame.topology,
+            });
+            wal_state.filled = wal_state.filled.checked_add(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcwal extent fill overflow")
+            })?;
+            logical_started[stream_idx] = next_started;
+            if next_started == bytes_per_connection {
+                *issue_complete_streams += 1;
+            }
+            *total_received = (*total_received).checked_add(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk total receive overflow")
+            })?;
+            *frames += 1;
+            *write_frames += 1;
+            group_bytes = group_bytes.checked_add(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk batch payload overflow")
+            })?;
+            idx += 1;
+
+            if wal_state.filled == wal.extent_bytes {
+                break;
+            }
+        }
+
+        if group_bytes == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-target zcwal batch made no payload progress",
+            ));
+        }
+        if payload_spliced {
+            zcnblk_wal_splice_exact(
+                wal_state.splice_pipe.as_ref().expect("checked splice pipe"),
+                zcnblk_streams[stream_idx].as_raw_fd(),
+                wal_state.wal_stream.as_raw_fd(),
+                group_bytes,
+            )?;
+            wal_state.wal_payload_bytes = wal_state
+                .wal_payload_bytes
+                .checked_add(group_bytes)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcwal payload overflow")
+                })?;
+            wal_state.wal_wire_bytes = wal_state
+                .wal_wire_bytes
+                .checked_add(group_bytes)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal wire overflow"))?;
+        } else {
+            zcnblk_streams[stream_idx]
+                .read_exact(&mut wal_state.payload[group_start..group_start + group_bytes])?;
+        }
+
+        if wal_state.filled == wal.extent_bytes {
+            *total_response = (*total_response)
+                .checked_add(wal_state.flush_full_extent(
+                    zcnblk_streams,
+                    stream_idx,
+                    lane_count,
+                    wal.ack_enabled,
+                    write_acks,
+                    payload_spliced,
+                )?)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk total response overflow")
+                })?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_target_wal_worker(
+    targets: Arc<Vec<ZcnblkTargetPlan>>,
+    wal: ZcnblkWalTarget,
+    worker: usize,
+    mut streams: Vec<ZcnblkTransport>,
+    stream_meta: Vec<TcpBenchStreamMeta>,
+    lane_count: usize,
+    topology_lane_base: usize,
+    topology_lane_count: usize,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    pipeline: usize,
+    write_acks: bool,
+    affinity: ThreadAffinity,
+) -> io::Result<ZcnblkWorkerStats> {
+    zcnblk_validate_wal_target_shape(&wal, bytes_per_connection, chunk_bytes)?;
+    let stream_count = streams.len();
+    let mut wal_states = stream_meta
+        .into_iter()
+        .map(|meta| ZcnblkWalStreamState::connect(meta, &wal))
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut logical_started = vec![0usize; stream_count];
+    let mut next_stream = 0usize;
+    let mut issue_complete_streams = 0usize;
+    let mut total_received = 0usize;
+    let mut total_response = 0usize;
+    let mut frames = 0usize;
+    let mut batches = 0usize;
+    let mut write_frames = 0usize;
+    let mut completed_streams = vec![false; stream_count];
+    let mut complete = 0usize;
+    let batch_limit = pipeline.max(1);
+    let started = Instant::now();
+
+    while complete < stream_count {
+        let mut progressed = false;
+        for _ in 0..stream_count {
+            let stream_idx = next_stream;
+            next_stream = (next_stream + 1) % stream_count;
+            if completed_streams[stream_idx] {
+                continue;
+            }
+            if logical_started[stream_idx] == bytes_per_connection {
+                if wal_states[stream_idx].filled != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcnblk-target zcwal finished stream with a partial WAL extent",
+                    ));
+                }
+                wal_states[stream_idx]
+                    .wal_stream
+                    .shutdown(Shutdown::Write)?;
+                let _ = streams[stream_idx].shutdown(Shutdown::Both);
+                completed_streams[stream_idx] = true;
+                complete += 1;
+                progressed = true;
+                continue;
+            }
+
+            let mut header_buf = [0u8; ZCNBLK_FRAME_HEADER_LEN];
+            streams[stream_idx].read_exact(&mut header_buf)?;
+            let frame = ZcnblkFrameHeader::decode(&header_buf)?;
+
+            if frame.op == ZCNBLK_OP_BATCH {
+                batches = batches.checked_add(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk batch count overflow")
+                })?;
+                if streams[stream_idx].uses_payload_crypto() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "zcnblk-target zcwal payload AES mode does not support request batches",
+                    ));
+                }
+                let count = frame.len as usize;
+                if count == 0 || count > batch_limit {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "zcnblk-target zcwal batch count {count} invalid for pipeline={batch_limit}"
+                        ),
+                    ));
+                }
+                let batch_frames = zcnblk_read_batch_headers(
+                    &mut streams[stream_idx],
+                    count,
+                    "zcnblk-target zcwal",
+                )?;
+                for batch_frame in &batch_frames {
+                    zcnblk_validate_frame_topology(
+                        *batch_frame,
+                        wal_states[stream_idx].meta.lane,
+                        topology_lane_base,
+                        topology_lane_count,
+                    )?;
+                }
+                zcnblk_target_process_wal_batch(
+                    targets.as_ref(),
+                    &wal,
+                    &mut streams,
+                    stream_idx,
+                    &mut wal_states[stream_idx],
+                    &batch_frames,
+                    lane_count,
+                    bytes_per_connection,
+                    chunk_bytes,
+                    write_acks,
+                    &mut logical_started,
+                    &mut issue_complete_streams,
+                    &mut total_received,
+                    &mut total_response,
+                    &mut frames,
+                    &mut write_frames,
+                )?;
+            } else {
+                zcnblk_validate_frame_topology(
+                    frame,
+                    wal_states[stream_idx].meta.lane,
+                    topology_lane_base,
+                    topology_lane_count,
+                )?;
+                zcnblk_target_process_wal_frame(
+                    targets.as_ref(),
+                    &wal,
+                    &mut streams,
+                    stream_idx,
+                    &mut wal_states[stream_idx],
+                    frame,
+                    lane_count,
+                    bytes_per_connection,
+                    chunk_bytes,
+                    write_acks,
+                    &mut logical_started,
+                    &mut issue_complete_streams,
+                    &mut total_received,
+                    &mut total_response,
+                    &mut frames,
+                    &mut write_frames,
+                )?;
+            }
+            progressed = true;
+            break;
+        }
+        if !progressed {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "zcnblk-target zcwal made no progress",
+            ));
+        }
+        if issue_complete_streams == stream_count {
+            for idx in 0..stream_count {
+                if completed_streams[idx] {
+                    continue;
+                }
+                if wal_states[idx].filled != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcnblk-target zcwal final stream has a partial WAL extent",
+                    ));
+                }
+                wal_states[idx].wal_stream.shutdown(Shutdown::Write)?;
+                let _ = streams[idx].shutdown(Shutdown::Both);
+                completed_streams[idx] = true;
+                complete += 1;
+            }
+        }
+    }
+
+    let mut wal_payload_bytes = 0usize;
+    let mut wal_wire_bytes = 0usize;
+    let mut wal_extents = 0usize;
+    let mut wal_acks = 0usize;
+    for state in &wal_states {
+        wal_payload_bytes = wal_payload_bytes
+            .checked_add(state.wal_payload_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal payload overflow"))?;
+        wal_wire_bytes = wal_wire_bytes
+            .checked_add(state.wal_wire_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal wire overflow"))?;
+        wal_extents = wal_extents
+            .checked_add(state.wal_extents)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal extent overflow"))?;
+        wal_acks = wal_acks
+            .checked_add(state.wal_acks)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zcwal ack overflow"))?;
+    }
+
+    Ok(ZcnblkWorkerStats {
+        worker,
+        streams: stream_count,
+        received_bytes: total_received,
+        written_bytes: wal_payload_bytes,
+        read_bytes: 0,
+        response_bytes: total_response,
+        wal_wire_bytes,
+        wal_extents,
+        wal_acks,
+        frames,
+        batches,
+        read_frames: 0,
+        write_frames,
+        elapsed: started.elapsed(),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn zcnblk_target_worker(
     targets: Arc<Vec<ZcnblkTargetPlan>>,
@@ -12452,7 +15276,10 @@ fn zcnblk_target_worker(
             "zcnblk-target pipeline must fit in u16 for fixed buffer indexes",
         ));
     }
-    if write_mode == TcpWalWriteMode::Slot || read_mode == TcpWalWriteMode::Slot {
+    let wal_backend = zcnblk_wal_backend(targets.as_ref())?;
+    if wal_backend.is_none()
+        && (write_mode == TcpWalWriteMode::Slot || read_mode == TcpWalWriteMode::Slot)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "zcnblk-target does not support io-slot mode yet; use fixed-file, fixed, write, or null",
@@ -12461,9 +15288,11 @@ fn zcnblk_target_worker(
     let write_acks = env_enabled_or("URING_PLAY_ZCNBLK_WRITE_ACKS", false);
 
     let mut stream_lanes = Vec::with_capacity(stream_count);
+    let mut stream_meta = Vec::with_capacity(stream_count);
     let mut streams = streams
         .into_iter()
         .map(|accepted| {
+            let meta = accepted.meta();
             let lane = accepted.lane;
             let conn_index = accepted.conn_index;
             println!(
@@ -12475,10 +15304,29 @@ fn zcnblk_target_worker(
                 socket_locality_label(accepted.locality)
             );
             stream_lanes.push(lane);
+            stream_meta.push(meta);
             let conn_id = zcnblk_transport_conn_id(lane, conn_index, connections_per_port)?;
             ZcnblkTransport::accept_target(accepted, conn_id, &crypto_config)
         })
         .collect::<io::Result<Vec<_>>>()?;
+
+    if let Some(wal) = wal_backend {
+        return zcnblk_target_wal_worker(
+            targets,
+            wal,
+            worker,
+            streams,
+            stream_meta,
+            _lane_count,
+            topology_lane_base,
+            topology_lane_count,
+            bytes_per_connection,
+            chunk_bytes,
+            pipeline,
+            write_acks,
+            affinity,
+        );
+    }
 
     let mut open_shards = vec![true; targets.len()];
     if targets.len() == topology_lane_count && topology_lane_count != 0 {
@@ -12506,9 +15354,38 @@ fn zcnblk_target_worker(
     let mut files = Vec::new();
     let mut fds_by_shard = vec![None; targets.len()];
     let mut fixed_file_by_shard = vec![None; targets.len()];
+    let mut raid0_by_shard = (0..targets.len()).map(|_| None).collect::<Vec<_>>();
     let mut tier_by_shard = (0..targets.len()).map(|_| None).collect::<Vec<_>>();
     for (shard, target) in targets.iter().enumerate() {
         if !open_shards[shard] {
+            continue;
+        }
+        if let ZcnblkTargetBackend::Raid0(raid0) = &target.backend {
+            let mut members = Vec::with_capacity(raid0.members.len());
+            for member in &raid0.members {
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .custom_flags(libc::O_DIRECT | libc::O_CLOEXEC)
+                    .open(member.target.open_path())?;
+                let fixed_file = u32::try_from(files.len()).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "zcnblk fixed file index does not fit in u32",
+                    )
+                })?;
+                members.push(ZcnblkRaid0MemberRuntime {
+                    fd: file.as_raw_fd(),
+                    fixed_file: Some(fixed_file),
+                    device_bytes: member.device_bytes,
+                    required_alignment: member.required_alignment,
+                });
+                files.push(file);
+            }
+            raid0_by_shard[shard] = Some(ZcnblkRaid0Runtime {
+                members,
+                stripe_bytes: raid0.stripe_bytes,
+            });
             continue;
         }
         if matches!(target.backend, ZcnblkTargetBackend::Tier(_)) {
@@ -12549,12 +15426,27 @@ fn zcnblk_target_worker(
         .filter_map(|(shard, fd)| fd.map(|_| shard.to_string()))
         .collect::<Vec<_>>()
         .join(",");
+    let raid0_shards = raid0_by_shard
+        .iter()
+        .enumerate()
+        .filter_map(|(shard, runtime)| {
+            runtime.as_ref().map(|runtime| {
+                format!("{shard}:{}x{}", runtime.members.len(), runtime.stripe_bytes)
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     println!(
-        "zcnblk-target-worker-files: worker={worker} opened_shards={} registered_files={registered_files}",
+        "zcnblk-target-worker-files: worker={worker} opened_shards={} raid0_shards={} registered_files={registered_files}",
         if opened_shards.is_empty() {
             "-"
         } else {
             opened_shards.as_str()
+        },
+        if raid0_shards.is_empty() {
+            "-"
+        } else {
+            raid0_shards.as_str()
         }
     );
     let buffers = buffer_mode.allocate(pipeline, chunk_bytes)?;
@@ -12578,6 +15470,7 @@ fn zcnblk_target_worker(
     let mut total_read = 0usize;
     let mut total_response = 0usize;
     let mut frames = 0usize;
+    let mut batches = 0usize;
     let mut read_frames = 0usize;
     let mut write_frames = 0usize;
     let mut outstanding = 0usize;
@@ -12613,6 +15506,9 @@ fn zcnblk_target_worker(
             let frame = ZcnblkFrameHeader::decode(&header_buf)?;
 
             if frame.op == ZCNBLK_OP_BATCH {
+                batches = batches.checked_add(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk batch count overflow")
+                })?;
                 if streams[stream_idx].uses_payload_crypto() {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -12635,19 +15531,16 @@ fn zcnblk_target_worker(
                         ),
                     ));
                 }
-                let mut batch_bufs = vec![[0u8; ZCNBLK_FRAME_HEADER_LEN]; count];
-                let mut batch_frames = Vec::with_capacity(count);
+                let batch_frames =
+                    zcnblk_read_batch_headers(&mut streams[stream_idx], count, "zcnblk-target")?;
                 let mut batch_queued = 0usize;
-                for batch_buf in &mut batch_bufs {
-                    streams[stream_idx].read_exact(batch_buf)?;
-                    let batch_frame = ZcnblkFrameHeader::decode(batch_buf)?;
+                for batch_frame in &batch_frames {
                     zcnblk_validate_frame_topology(
-                        batch_frame,
+                        *batch_frame,
                         stream_lanes[stream_idx],
                         topology_lane_base,
                         topology_lane_count,
                     )?;
-                    batch_frames.push(batch_frame);
                 }
                 for batch_frame in batch_frames {
                     let slot = free_slots.pop().expect("batch free slot");
@@ -12664,6 +15557,7 @@ fn zcnblk_target_worker(
                         &mut ring,
                         &fds_by_shard,
                         &fixed_file_by_shard,
+                        &raid0_by_shard,
                         &mut tier_by_shard,
                         pipeline,
                         &buffers,
@@ -12710,6 +15604,7 @@ fn zcnblk_target_worker(
                     &mut ring,
                     &fds_by_shard,
                     &fixed_file_by_shard,
+                    &raid0_by_shard,
                     &mut tier_by_shard,
                     pipeline,
                     &buffers,
@@ -12839,7 +15734,11 @@ fn zcnblk_target_worker(
         written_bytes: total_written,
         read_bytes: total_read,
         response_bytes: total_response,
+        wal_wire_bytes: 0,
+        wal_extents: 0,
+        wal_acks: 0,
         frames,
+        batches,
         read_frames,
         write_frames,
         elapsed: started.elapsed(),
@@ -12881,13 +15780,19 @@ fn zcnblk_target(
         chunk_bytes,
         buffer_mode,
     )?);
+    let wal_target = zcnblk_wal_backend(targets.as_ref())?;
+    if let Some(wal) = wal_target.as_ref() {
+        zcnblk_validate_wal_target_shape(wal, bytes_per_connection, chunk_bytes)?;
+    }
     let crypto_config = ZcnblkCryptoConfig::from_env()?;
     let total_connections = tcp_bench_total_connections(ports, connections_per_port)?;
     let write_mode = TcpWalWriteMode::from_env()?;
     let read_mode = zcnblk_read_mode_from_env(write_mode)?;
     let write_acks = env_enabled_or("URING_PLAY_ZCNBLK_WRITE_ACKS", false);
     let tier_write_extent_bytes = zcnblk_tier_write_extent_bytes()?;
-    if write_mode == TcpWalWriteMode::Slot || read_mode == TcpWalWriteMode::Slot {
+    if wal_target.is_none()
+        && (write_mode == TcpWalWriteMode::Slot || read_mode == TcpWalWriteMode::Slot)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "zcnblk-target does not support io-slot mode yet; set URING_PLAY_TCP_WAL_WRITE_MODE and URING_PLAY_ZCNBLK_READ_MODE to fixed-file, fixed, write, or null",
@@ -12899,6 +15804,24 @@ fn zcnblk_target(
     let topology_lane_count = env_usize_or("URING_PLAY_ZCNBLK_TOTAL_LANES", ports);
     let workers = tcp_bench_auto_workers(workers, total_connections);
     let submit_batch = env_usize_or("URING_PLAY_ZCNBLK_SUBMIT_BATCH", pipeline.min(64)).max(1);
+    zcnblk_warn_target_perf_contract(
+        &targets,
+        bind,
+        ports,
+        connections_per_port,
+        total_connections,
+        chunk_bytes,
+        pipeline,
+        ring_entries,
+        buffer_mode,
+        write_mode,
+        read_mode,
+        write_acks,
+        shard_policy,
+        workers,
+        submit_batch,
+        pin_workers,
+    )?;
     let target_labels = targets
         .iter()
         .enumerate()
@@ -12913,6 +15836,15 @@ fn zcnblk_target(
         })
         .collect::<Vec<_>>()
         .join(",");
+    let wal_label = wal_target
+        .as_ref()
+        .map(|wal| {
+            format!(
+                "{}:{}:extent{}:ack{}",
+                wal.addr, wal.base_port, wal.extent_bytes, wal.ack_enabled
+            )
+        })
+        .unwrap_or_else(|| "-".to_string());
 
     println!(
         "zcnblk-target: targets={} bind={bind} base_port={base_port} ports={ports} \
@@ -12923,7 +15855,7 @@ fn zcnblk_target(
          write_acks={write_acks} tier_write_extent_bytes={tier_write_extent_bytes} \
          shard_policy={} topology_lane_base={topology_lane_base} \
          topology_lane_count={topology_lane_count} encryption={} aes_frame_bytes={} \
-         pin_workers={pin_workers}",
+         pin_workers={pin_workers} wal_target={}",
         target_labels,
         buffer_mode.as_str(),
         write_mode.label(),
@@ -12931,6 +15863,7 @@ fn zcnblk_target(
         shard_policy.label(),
         crypto_config.label(),
         crypto_config.max_frame_bytes,
+        wal_label,
     );
 
     let listeners = tcp_bench_mux_bind_listeners(bind, base_port, ports)?;
@@ -12951,7 +15884,7 @@ fn zcnblk_target(
         let targets = Arc::clone(&targets);
         let crypto_config = crypto_config.clone();
         handles.push(thread::spawn(move || {
-            zcnblk_target_worker(
+            let result = zcnblk_target_worker(
                 targets,
                 worker_idx,
                 shard,
@@ -12968,7 +15901,11 @@ fn zcnblk_target(
                 read_mode,
                 crypto_config,
                 pin_workers,
-            )
+            );
+            if let Err(err) = &result {
+                eprintln!("zcnblk-target-worker-error: worker={worker_idx} error={err}");
+            }
+            result
         }));
     }
 
@@ -12976,7 +15913,11 @@ fn zcnblk_target(
     let mut total_written = 0usize;
     let mut total_read = 0usize;
     let mut total_response = 0usize;
+    let mut total_wal_wire = 0usize;
+    let mut total_wal_extents = 0usize;
+    let mut total_wal_acks = 0usize;
     let mut total_frames = 0usize;
+    let mut total_batches = 0usize;
     let mut total_read_frames = 0usize;
     let mut total_write_frames = 0usize;
     for handle in handles {
@@ -12986,8 +15927,9 @@ fn zcnblk_target(
         let secs = stats.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
         println!(
             "zcnblk-target-worker: worker={} streams={} received_bytes={} written_bytes={} \
-             read_bytes={} response_bytes={} frames={} read_frames={} write_frames={} \
-             frames_per_sec={:.0} seconds={secs:.6} logical_MiBps={:.2} \
+             read_bytes={} response_bytes={} wal_wire_bytes={} wal_extents={} wal_acks={} \
+             frames={} batches={} read_frames={} write_frames={} frames_per_sec={:.0} \
+             seconds={secs:.6} logical_MiBps={:.2} \
              target_cpu={} affinity_applied={}",
             stats.worker,
             stats.streams,
@@ -12995,7 +15937,11 @@ fn zcnblk_target(
             stats.written_bytes,
             stats.read_bytes,
             stats.response_bytes,
+            stats.wal_wire_bytes,
+            stats.wal_extents,
+            stats.wal_acks,
             stats.frames,
+            stats.batches,
             stats.read_frames,
             stats.write_frames,
             stats.frames as f64 / secs,
@@ -13007,14 +15953,20 @@ fn zcnblk_target(
         total_written += stats.written_bytes;
         total_read += stats.read_bytes;
         total_response += stats.response_bytes;
+        total_wal_wire += stats.wal_wire_bytes;
+        total_wal_extents += stats.wal_extents;
+        total_wal_acks += stats.wal_acks;
         total_frames += stats.frames;
+        total_batches += stats.batches;
         total_read_frames += stats.read_frames;
         total_write_frames += stats.write_frames;
     }
     println!(
         "zcnblk-target-summary: received_bytes={total_received} written_bytes={total_written} \
-         read_bytes={total_read} response_bytes={total_response} frames={total_frames} \
-         read_frames={total_read_frames} write_frames={total_write_frames} frames_per_sec={:.0}",
+         read_bytes={total_read} response_bytes={total_response} wal_wire_bytes={total_wal_wire} \
+         wal_extents={total_wal_extents} wal_acks={total_wal_acks} frames={total_frames} \
+         batches={total_batches} read_frames={total_read_frames} write_frames={total_write_frames} \
+         frames_per_sec={:.0}",
         total_frames as f64 / started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE)
     );
     print_tcp_bench_result(
@@ -13145,9 +16097,12 @@ fn zcnblk_send_worker(
         Vec::new()
     };
     let read_window = env_usize_or("URING_PLAY_ZCNBLK_READ_WINDOW", 64).max(1);
+    let wait_write_acks = env_enabled_or("URING_PLAY_ZCNBLK_WAIT_WRITE_ACKS", false);
+    let batch_depth = env_usize_or("URING_PLAY_ZCNBLK_BATCH_DEPTH", 1).max(1);
     let mut issued = vec![0usize; streams.len()];
     let mut completed = vec![0usize; streams.len()];
     let mut in_flight_reads = vec![0usize; streams.len()];
+    let mut in_flight_writes = vec![0usize; streams.len()];
     let mut done = vec![false; streams.len()];
     let mut complete = 0usize;
     let mut write_bytes = 0usize;
@@ -13171,6 +16126,157 @@ fn zcnblk_send_worker(
                 let op = op_mode.op_for_frame(frame_index);
                 if op == ZCNBLK_OP_READ && in_flight_reads[idx] >= read_window {
                     break;
+                }
+                if op == ZCNBLK_OP_WRITE && op_mode == ZcnblkOperationMode::Write && batch_depth > 1
+                {
+                    if streams[idx].uses_payload_crypto() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "zcnblk-send payload AES mode does not support request batches",
+                        ));
+                    }
+                    let mut header_bytes =
+                        Vec::with_capacity(batch_depth.saturating_mul(ZCNBLK_FRAME_HEADER_LEN));
+                    let mut payload_bytes =
+                        Vec::with_capacity(batch_depth.saturating_mul(chunk_bytes));
+                    let mut batch_count = 0usize;
+                    let mut batch_payload_len = 0usize;
+                    while issued[idx] < bytes_per_connection && batch_count < batch_depth {
+                        let frame_index = issued[idx] / chunk_bytes;
+                        let len = (bytes_per_connection - issued[idx]).min(chunk_bytes);
+                        let offset = specs[idx]
+                            .base_offset
+                            .checked_add(issued[idx] as u64)
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk offset overflow",
+                                )
+                            })?;
+                        let request_id = ((idx as u64) << 32) | frame_index as u64;
+                        let topology = ZcnblkFrameTopology {
+                            lane_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk lane exceeds u32",
+                                )
+                            })?,
+                            lane_count: u32::try_from(lane_count).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk lane count exceeds u32",
+                                )
+                            })?,
+                            preferred_worker: u32::try_from(worker).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk worker exceeds u32",
+                                )
+                            })?,
+                            queue_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk queue exceeds u32",
+                                )
+                            })?,
+                            request_id,
+                            tier_id: u32::try_from(specs[idx].shard).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk tier exceeds u32",
+                                )
+                            })?,
+                            topology_flags: ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE,
+                        };
+                        let frame = ZcnblkFrameHeader::with_topology(
+                            ZCNBLK_OP_WRITE,
+                            0,
+                            specs[idx].shard,
+                            len,
+                            offset,
+                            topology,
+                        )?;
+                        header_bytes.extend_from_slice(&frame.encode());
+                        if payload_pattern.is_offset_dependent() {
+                            payload_pattern.fill_for_zcnblk(
+                                &mut payload[..len],
+                                specs[idx].shard,
+                                offset,
+                            );
+                        }
+                        payload_bytes.extend_from_slice(&payload[..len]);
+                        issued[idx] += len;
+                        frames += 1;
+                        write_frames += 1;
+                        write_bytes += len;
+                        batch_count += 1;
+                        batch_payload_len =
+                            batch_payload_len.checked_add(len).ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcnblk batch payload overflow",
+                                )
+                            })?;
+                        if wait_write_acks {
+                            in_flight_writes[idx] += 1;
+                        } else {
+                            completed[idx] = completed[idx].checked_add(len).ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcnblk completion overflow",
+                                )
+                            })?;
+                        }
+                    }
+                    let outer = ZcnblkFrameHeader::with_topology(
+                        ZCNBLK_OP_BATCH,
+                        0,
+                        0,
+                        batch_count,
+                        batch_payload_len as u64,
+                        ZcnblkFrameTopology {
+                            lane_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk lane exceeds u32",
+                                )
+                            })?,
+                            lane_count: u32::try_from(lane_count).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk lane count exceeds u32",
+                                )
+                            })?,
+                            preferred_worker: u32::try_from(worker).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk worker exceeds u32",
+                                )
+                            })?,
+                            queue_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk queue exceeds u32",
+                                )
+                            })?,
+                            request_id: 0,
+                            tier_id: 0,
+                            topology_flags: ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE,
+                        },
+                    )?
+                    .encode();
+                    streams[idx].write_all(&outer)?;
+                    streams[idx].write_all(&header_bytes)?;
+                    streams[idx].write_all(&payload_bytes)?;
+                    wire_bytes = wire_bytes
+                        .checked_add(
+                            ZCNBLK_FRAME_HEADER_LEN + header_bytes.len() + payload_bytes.len(),
+                        )
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "zcnblk wire overflow")
+                        })?;
+                    progressed = true;
+                    continue;
                 }
                 let len = (bytes_per_connection - issued[idx]).min(chunk_bytes);
                 let offset = specs[idx]
@@ -13223,9 +16329,13 @@ fn zcnblk_send_worker(
                         streams[idx].write_frame_payload(&header, &payload[..len], false)?;
                     write_bytes += len;
                     write_frames += 1;
-                    completed[idx] = completed[idx].checked_add(len).ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::InvalidData, "zcnblk completion overflow")
-                    })?;
+                    if wait_write_acks {
+                        in_flight_writes[idx] += 1;
+                    } else {
+                        completed[idx] = completed[idx].checked_add(len).ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "zcnblk completion overflow")
+                        })?;
+                    }
                 } else {
                     wire_bytes += streams[idx].write_frame_payload(&header, &[], false)?;
                     in_flight_reads[idx] += 1;
@@ -13235,7 +16345,7 @@ fn zcnblk_send_worker(
         }
 
         for idx in 0..streams.len() {
-            if in_flight_reads[idx] == 0 {
+            if in_flight_reads[idx] == 0 && in_flight_writes[idx] == 0 {
                 continue;
             }
             let mut response_header = [0u8; ZCNBLK_FRAME_HEADER_LEN];
@@ -13258,62 +16368,91 @@ fn zcnblk_send_worker(
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "zcnblk expected range overflow")
                 })?;
-            if response.op != ZCNBLK_OP_READ_RESP
-                || response.shard as usize != specs[idx].shard
-                || len == 0
-                || len > chunk_bytes
-                || response.offset < expected_start
-                || response_end > expected_end
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "zcnblk read response mismatch op={} shard={} len={} offset={}",
-                        response.op, response.shard, response.len, response.offset
-                    ),
-                ));
-            }
             let response_header = response.encode();
-            wire_bytes +=
-                streams[idx].read_frame_payload(&response_header, &mut read_buf[..len], true)?
-                    + ZCNBLK_FRAME_HEADER_LEN;
-            if verify_reads {
-                payload_pattern.fill_for_zcnblk(
-                    &mut expected_buf[..len],
-                    specs[idx].shard,
-                    response.offset,
-                );
-                let got_checksum = checksum_bytes_scalar(&read_buf[..len]);
-                let want_checksum = checksum_bytes_scalar(&expected_buf[..len]);
-                read_checksum = read_checksum.wrapping_add(got_checksum);
-                expected_checksum = expected_checksum.wrapping_add(want_checksum);
-                if read_buf[..len] != expected_buf[..len] {
-                    let mismatch = read_buf[..len]
-                        .iter()
-                        .zip(&expected_buf[..len])
-                        .position(|(got, want)| got != want)
-                        .unwrap_or(0);
+            if response.op == ZCNBLK_OP_WRITE_ACK {
+                if !wait_write_acks
+                    || response.shard as usize != specs[idx].shard
+                    || len == 0
+                    || len > chunk_bytes
+                    || response.offset < expected_start
+                    || response_end > expected_end
+                {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "zcnblk read verify mismatch stream={idx} shard={} offset={} len={len} mismatch_at={} got=0x{:02x} expected=0x{:02x} got_checksum=0x{got_checksum:016x} expected_checksum=0x{want_checksum:016x}",
-                            response.shard,
-                            response.offset,
-                            mismatch,
-                            read_buf[mismatch],
-                            expected_buf[mismatch],
+                            "zcnblk write ack mismatch op={} shard={} len={} offset={}",
+                            response.op, response.shard, response.len, response.offset
                         ),
                     ));
                 }
-                verified_read_bytes = verified_read_bytes.checked_add(len).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk verified bytes overflow")
-                })?;
+                let mut empty = [];
+                wire_bytes +=
+                    streams[idx].read_frame_payload(&response_header, &mut empty, true)?
+                        + ZCNBLK_FRAME_HEADER_LEN;
+                in_flight_writes[idx] -= 1;
+            } else {
+                if response.op != ZCNBLK_OP_READ_RESP
+                    || response.shard as usize != specs[idx].shard
+                    || len == 0
+                    || len > chunk_bytes
+                    || response.offset < expected_start
+                    || response_end > expected_end
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "zcnblk read response mismatch op={} shard={} len={} offset={}",
+                            response.op, response.shard, response.len, response.offset
+                        ),
+                    ));
+                }
+                wire_bytes += streams[idx].read_frame_payload(
+                    &response_header,
+                    &mut read_buf[..len],
+                    true,
+                )? + ZCNBLK_FRAME_HEADER_LEN;
+                if verify_reads {
+                    payload_pattern.fill_for_zcnblk(
+                        &mut expected_buf[..len],
+                        specs[idx].shard,
+                        response.offset,
+                    );
+                    let got_checksum = checksum_bytes_scalar(&read_buf[..len]);
+                    let want_checksum = checksum_bytes_scalar(&expected_buf[..len]);
+                    read_checksum = read_checksum.wrapping_add(got_checksum);
+                    expected_checksum = expected_checksum.wrapping_add(want_checksum);
+                    if read_buf[..len] != expected_buf[..len] {
+                        let mismatch = read_buf[..len]
+                            .iter()
+                            .zip(&expected_buf[..len])
+                            .position(|(got, want)| got != want)
+                            .unwrap_or(0);
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "zcnblk read verify mismatch stream={idx} shard={} offset={} len={len} mismatch_at={} got=0x{:02x} expected=0x{:02x} got_checksum=0x{got_checksum:016x} expected_checksum=0x{want_checksum:016x}",
+                                response.shard,
+                                response.offset,
+                                mismatch,
+                                read_buf[mismatch],
+                                expected_buf[mismatch],
+                            ),
+                        ));
+                    }
+                    verified_read_bytes =
+                        verified_read_bytes.checked_add(len).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "zcnblk verified bytes overflow",
+                            )
+                        })?;
+                }
+                in_flight_reads[idx] -= 1;
+                read_bytes += len;
             }
-            in_flight_reads[idx] -= 1;
             completed[idx] = completed[idx].checked_add(len).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "zcnblk completion overflow")
             })?;
-            read_bytes += len;
             progressed = true;
         }
 
@@ -13322,6 +16461,7 @@ fn zcnblk_send_worker(
                 && issued[idx] == bytes_per_connection
                 && completed[idx] == bytes_per_connection
                 && in_flight_reads[idx] == 0
+                && in_flight_writes[idx] == 0
             {
                 done[idx] = true;
                 complete += 1;
@@ -13384,6 +16524,8 @@ fn zcnblk_send(
     let op_mode = ZcnblkOperationMode::from_env()?;
     let verify_reads = env_enabled_or("URING_PLAY_ZCNBLK_VERIFY_READS", false);
     let read_window = env_usize_or("URING_PLAY_ZCNBLK_READ_WINDOW", 64).max(1);
+    let wait_write_acks = env_enabled_or("URING_PLAY_ZCNBLK_WAIT_WRITE_ACKS", false);
+    let batch_depth = env_usize_or("URING_PLAY_ZCNBLK_BATCH_DEPTH", 1).max(1);
     let source_ports = TcpSourcePortPlan::from_env()?;
     let source_ip = tcp_bench_source_ip_from_env()?;
     let crypto_config = ZcnblkCryptoConfig::from_env()?;
@@ -13408,10 +16550,12 @@ fn zcnblk_send(
          connections_per_port={connections_per_port} total_connections={total_connections} \
          bytes_per_connection={bytes_per_connection} chunk_bytes={chunk_bytes} \
          workers={workers} op_mode={} read_window={read_window} verify_reads={} \
-         payload_pattern={} source_ip={} source_ports={} encryption={} aes_frame_bytes={}",
+         wait_write_acks={} batch_depth={batch_depth} payload_pattern={} source_ip={} \
+         source_ports={} encryption={} aes_frame_bytes={}",
         addr,
         op_mode.label(),
         yes(verify_reads),
+        yes(wait_write_acks),
         payload_pattern.label(),
         source_ip
             .map(|ip| ip.to_string())
@@ -18902,6 +22046,171 @@ fn warn_small_page_buffer_mode(context: &str, reason: &str) {
     );
 }
 
+fn zcnblk_perf_warnings_enabled() -> bool {
+    env_enabled_or("URING_PLAY_ZCNBLK_PERF_WARN", true)
+}
+
+fn zcnblk_perf_warning(message: &str) {
+    if zcnblk_perf_warnings_enabled() {
+        eprintln!("PERF WARNING: zcnblk-target: {message}");
+    }
+}
+
+fn memlock_rlimit_bytes() -> io::Result<Option<u64>> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    let ret = unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut limit) };
+    if ret != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if limit.rlim_cur == libc::RLIM_INFINITY {
+        Ok(None)
+    } else {
+        Ok(Some(limit.rlim_cur as u64))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_warn_target_perf_contract(
+    targets: &[ZcnblkTargetPlan],
+    bind: &str,
+    ports: usize,
+    connections_per_port: usize,
+    total_connections: usize,
+    chunk_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    buffer_mode: SlotWalBufferMode,
+    write_mode: TcpWalWriteMode,
+    read_mode: TcpWalWriteMode,
+    write_acks: bool,
+    shard_policy: TcpMuxShardPolicy,
+    workers: usize,
+    submit_batch: usize,
+    pin_workers: bool,
+) -> io::Result<()> {
+    if !zcnblk_perf_warnings_enabled() {
+        return Ok(());
+    }
+    let wal_backend = zcnblk_wal_backend(targets)?.is_some();
+
+    if !pin_workers {
+        zcnblk_perf_warning(
+            "target workers are not pinned; pass the final zcnblk-target argument as true and set URING_PLAY_PIN_CPU_LIST or URING_PLAY_PIN_BASE_CPU/COUNT/STRIDE for repeatable lane locality",
+        );
+    } else if env::var_os("URING_PLAY_PIN_CPU_LIST").is_none()
+        && env::var_os("URING_PLAY_PIN_BASE_CPU").is_none()
+    {
+        zcnblk_perf_warning(
+            "target worker pinning is using the implicit CPU map; set URING_PLAY_PIN_CPU_LIST or URING_PLAY_PIN_BASE_CPU/COUNT/STRIDE so benchmark topology is explicit",
+        );
+    }
+
+    if workers < ports {
+        zcnblk_perf_warning(&format!(
+            "workers={workers} is less than mux lanes/ports={ports}; use at least one target worker per lane for high-IOPS runs"
+        ));
+    }
+    if connections_per_port == 1 && workers != total_connections {
+        zcnblk_perf_warning(&format!(
+            "workers={workers} does not match total_connections={total_connections}; one worker per lane/connection is the expected high-locality baseline"
+        ));
+    }
+    if shard_policy == TcpMuxShardPolicy::RoundRobin {
+        zcnblk_perf_warning(
+            "URING_PLAY_ZCNBLK_SHARD=round-robin discards lane locality; use port-lane for local smoke tests or an incoming-NAPI policy for NIC-aligned tests",
+        );
+    }
+
+    if wal_backend {
+        if chunk_bytes <= ZC_WAL_RECORD_SIZE {
+            zcnblk_perf_warning(
+                "zcwal backend is still ingesting 4K zcnblk frames before coalescing WAL extents; this is a topology smoke path, not the bulk descriptor/WAL fast path",
+            );
+        }
+    } else {
+        if buffer_mode == SlotWalBufferMode::SmallPages {
+            zcnblk_perf_warning(
+                "buffer_mode=small-pages is not a high-throughput setting; reserve huge pages and use hugetlb unless this is only a functional smoke test",
+            );
+        }
+
+        if !env_truthy("URING_PLAY_ENTER_NO_IOWAIT") {
+            zcnblk_perf_warning(
+                "URING_PLAY_ENTER_NO_IOWAIT is not enabled; set URING_PLAY_ENTER_NO_IOWAIT=1 on kernels that support it to reduce io_uring wait overhead",
+            );
+        }
+        if env_usize_or("URING_PLAY_CQE_SPIN", 0) == 0 {
+            zcnblk_perf_warning(
+                "URING_PLAY_CQE_SPIN is zero/unset; set a small CQE spin window for high-IOPS loopback or low-latency fabric runs",
+            );
+        }
+        if submit_batch < pipeline.min(64) {
+            zcnblk_perf_warning(&format!(
+                "URING_PLAY_ZCNBLK_SUBMIT_BATCH={submit_batch} is below the usual min(pipeline,64) target; small submit batches increase syscall and wakeup pressure"
+            ));
+        }
+    }
+
+    let storage_backend = targets.iter().any(|target| !target.backend.is_devnull());
+    if storage_backend && !wal_backend {
+        if write_mode == TcpWalWriteMode::Write {
+            zcnblk_perf_warning(
+                "URING_PLAY_TCP_WAL_WRITE_MODE=write uses the plain write path; use fixed-file for leaf media benchmarks or null for transport-only smoke tests",
+            );
+        }
+        if read_mode == TcpWalWriteMode::Write {
+            zcnblk_perf_warning(
+                "URING_PLAY_ZCNBLK_READ_MODE=write uses the plain read path; use fixed-file for leaf media benchmarks or null for transport-only smoke tests",
+            );
+        }
+        if write_mode == TcpWalWriteMode::Null || read_mode == TcpWalWriteMode::Null {
+            zcnblk_perf_warning(
+                "a storage backend is configured with null read/write mode; this measures transport plumbing, not backing media IOPS",
+            );
+        }
+    }
+
+    if !write_acks {
+        zcnblk_perf_warning(
+            "URING_PLAY_ZCNBLK_WRITE_ACKS is disabled; write IOPS will complete before target acknowledgement and should not be compared with acknowledged-write runs",
+        );
+    }
+
+    if !wal_backend {
+        match memlock_rlimit_bytes()? {
+            Some(limit) if limit < 64 * 1024 * 1024 => {
+                zcnblk_perf_warning(&format!(
+                    "RLIMIT_MEMLOCK is only {}; use prlimit --memlock=unlimited:unlimited or an equivalent limit before creating many per-lane io_uring rings",
+                    format_mib(limit as usize)
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if chunk_bytes <= 4096 && pipeline <= 1 {
+        zcnblk_perf_warning(
+            "4K frames with pipeline<=1 are dominated by round-trip wakeups; raise pipeline/batching before treating the run as a throughput result",
+        );
+    }
+    if bind == "127.0.0.1" || bind == "localhost" {
+        zcnblk_perf_warning(
+            "loopback TCP is useful for topology smoke tests but can be context-switch bound; isolate CPUs and pin both target workers and zcnblk client kthreads for IOPS claims",
+        );
+    }
+
+    if !wal_backend && ring_entries < (pipeline as u32).saturating_mul(2).max(64) {
+        zcnblk_perf_warning(&format!(
+            "ring_entries={ring_entries} is below the target ring size for pipeline={pipeline}; increase ring entries to avoid SQ/CQ pressure"
+        ));
+    }
+
+    Ok(())
+}
+
 fn warn_hugetlb_pressure(context: &str, needed_bytes: usize) -> io::Result<()> {
     let (total_pages, free_pages, hugepage_size) = hugepage_meminfo()?;
     let needed_pages = needed_bytes.div_ceil(hugepage_size);
@@ -20458,9 +23767,9 @@ EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_grou
         assert_eq!(zcbrd.kind, SlotWalTargetKind::ZcBlockRamDisk);
         assert_eq!(zcbrd.open_path(), Path::new("/dev/zcbrd12"));
 
-        let zcstripe = parse_slot_wal_target("/dev/zcstripe3").unwrap();
-        assert_eq!(zcstripe.kind, SlotWalTargetKind::ZcStripe);
-        assert_eq!(zcstripe.open_path(), Path::new("/dev/zcstripe3"));
+        let zcnblk = parse_slot_wal_target("/dev/zcnblk0").unwrap();
+        assert_eq!(zcnblk.kind, SlotWalTargetKind::ZcNetworkBlockClient);
+        assert_eq!(zcnblk.open_path(), Path::new("/dev/zcnblk0"));
     }
 
     #[test]
@@ -20476,11 +23785,10 @@ EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_grou
             "/dev/ramdisk0",
             "/dev/zcbrd",
             "/dev/zcbrd0p1",
-            "/dev/zcstripe",
-            "/dev/zcstripe0p1",
+            "/dev/zcnblk",
+            "/dev/zcnblk0p1",
             "/tmp/ram0",
             "/tmp/zcbrd0",
-            "/tmp/zcstripe0",
         ] {
             assert!(
                 parse_slot_wal_target(target).is_err(),
@@ -21206,7 +24514,7 @@ enum SlotWalTargetKind {
     NullBlock,
     RamBlockDisk,
     ZcBlockRamDisk,
-    ZcStripe,
+    ZcNetworkBlockClient,
     PartUuid(String),
 }
 
@@ -21242,11 +24550,11 @@ impl SlotWalTarget {
         }
     }
 
-    fn zc_stripe(path: &str) -> Self {
+    fn zc_network_block_client(path: &str) -> Self {
         Self {
             open_path: PathBuf::from(path),
             label: path.to_owned(),
-            kind: SlotWalTargetKind::ZcStripe,
+            kind: SlotWalTargetKind::ZcNetworkBlockClient,
         }
     }
 
@@ -21273,7 +24581,7 @@ impl SlotWalTarget {
             SlotWalTargetKind::NullBlock
                 | SlotWalTargetKind::RamBlockDisk
                 | SlotWalTargetKind::ZcBlockRamDisk
-                | SlotWalTargetKind::ZcStripe
+                | SlotWalTargetKind::ZcNetworkBlockClient
         )
     }
 
@@ -21283,7 +24591,7 @@ impl SlotWalTarget {
             SlotWalTargetKind::NullBlock
             | SlotWalTargetKind::RamBlockDisk
             | SlotWalTargetKind::ZcBlockRamDisk
-            | SlotWalTargetKind::ZcStripe => None,
+            | SlotWalTargetKind::ZcNetworkBlockClient => None,
         }
     }
 }
@@ -21337,8 +24645,8 @@ fn parse_slot_wal_target(arg: &str) -> io::Result<SlotWalTarget> {
     if is_numbered_dev_block(arg, "zcbrd") {
         return Ok(SlotWalTarget::zc_block_ramdisk(arg));
     }
-    if is_numbered_dev_block(arg, "zcstripe") {
-        return Ok(SlotWalTarget::zc_stripe(arg));
+    if is_numbered_dev_block(arg, "zcnblk") {
+        return Ok(SlotWalTarget::zc_network_block_client(arg));
     }
 
     if let Some(uuid) =
@@ -21362,8 +24670,8 @@ fn parse_slot_wal_target(arg: &str) -> io::Result<SlotWalTarget> {
 
     Err(io::Error::new(
         io::ErrorKind::InvalidInput,
-        "slot WAL bench targets must be /dev/nullbN, /dev/ramN, /dev/zcbrdN, or /dev/zcstripeN for synthetic tests, \
-         or PARTUUID=<uuid> for explicitly allowlisted real raw block devices",
+        "slot WAL bench targets must be /dev/nullbN, /dev/ramN, or /dev/zcbrdN for synthetic tests, \
+         /dev/zcnblkN for the zcnblk client edge, or PARTUUID=<uuid> for explicitly allowlisted real raw block devices",
     ))
 }
 
@@ -23702,6 +27010,131 @@ fn splitmix64_next(state: &mut u64) -> u64 {
     value ^ (value >> 31)
 }
 
+const LATENCY_FINE_STEP_NS: u64 = 100;
+const LATENCY_FINE_BUCKETS: usize = 10;
+const LATENCY_MID_START_NS: u64 = 1_000;
+const LATENCY_MID_STEP_NS: u64 = 1_000;
+const LATENCY_MID_BUCKETS: usize = 999;
+const LATENCY_HIGH_START_NS: u64 = 1_000_000;
+const LATENCY_HIGH_STEP_NS: u64 = 1_000_000;
+const LATENCY_HIGH_BUCKETS: usize = 1_000;
+const LATENCY_BUCKETS: usize =
+    LATENCY_FINE_BUCKETS + LATENCY_MID_BUCKETS + LATENCY_HIGH_BUCKETS + 1;
+
+#[derive(Clone)]
+struct LatencyHistogram {
+    buckets: Box<[u64; LATENCY_BUCKETS]>,
+    count: u64,
+    total_ns: u128,
+    min_ns: u64,
+    max_ns: u64,
+}
+
+impl LatencyHistogram {
+    fn new() -> Self {
+        Self {
+            buckets: Box::new([0; LATENCY_BUCKETS]),
+            count: 0,
+            total_ns: 0,
+            min_ns: u64::MAX,
+            max_ns: 0,
+        }
+    }
+
+    fn record_duration(&mut self, duration: Duration) {
+        let ns = duration.as_nanos().min(u128::from(u64::MAX)) as u64;
+        self.record_ns(ns);
+    }
+
+    fn record_ns(&mut self, ns: u64) {
+        let index = latency_bucket_index(ns);
+        self.buckets[index] = self.buckets[index].saturating_add(1);
+        self.count = self.count.saturating_add(1);
+        self.total_ns = self.total_ns.saturating_add(u128::from(ns));
+        self.min_ns = self.min_ns.min(ns);
+        self.max_ns = self.max_ns.max(ns);
+    }
+
+    fn merge(&mut self, other: &Self) {
+        for (dst, src) in self.buckets.iter_mut().zip(other.buckets.iter()) {
+            *dst = dst.saturating_add(*src);
+        }
+        self.count = self.count.saturating_add(other.count);
+        self.total_ns = self.total_ns.saturating_add(other.total_ns);
+        self.min_ns = self.min_ns.min(other.min_ns);
+        self.max_ns = self.max_ns.max(other.max_ns);
+    }
+
+    fn avg_ns(&self) -> u64 {
+        if self.count == 0 {
+            0
+        } else {
+            (self.total_ns / u128::from(self.count)).min(u128::from(u64::MAX)) as u64
+        }
+    }
+
+    fn min_ns(&self) -> u64 {
+        if self.count == 0 { 0 } else { self.min_ns }
+    }
+
+    fn percentile_ns(&self, numerator: u64, denominator: u64) -> u64 {
+        if self.count == 0 || denominator == 0 {
+            return 0;
+        }
+        let rank = self
+            .count
+            .saturating_mul(numerator)
+            .saturating_add(denominator - 1)
+            / denominator;
+        let mut seen = 0u64;
+        for (index, value) in self.buckets.iter().enumerate() {
+            seen = seen.saturating_add(*value);
+            if seen >= rank.max(1) {
+                return latency_bucket_upper_ns(index);
+            }
+        }
+        self.max_ns
+    }
+}
+
+impl Default for LatencyHistogram {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn latency_bucket_index(ns: u64) -> usize {
+    if ns < LATENCY_MID_START_NS {
+        return (ns / LATENCY_FINE_STEP_NS).min((LATENCY_FINE_BUCKETS - 1) as u64) as usize;
+    }
+    if ns < LATENCY_HIGH_START_NS {
+        return LATENCY_FINE_BUCKETS
+            + ((ns - LATENCY_MID_START_NS) / LATENCY_MID_STEP_NS)
+                .min((LATENCY_MID_BUCKETS - 1) as u64) as usize;
+    }
+    let high_index =
+        ((ns - LATENCY_HIGH_START_NS) / LATENCY_HIGH_STEP_NS).min(LATENCY_HIGH_BUCKETS as u64);
+    LATENCY_FINE_BUCKETS + LATENCY_MID_BUCKETS + high_index as usize
+}
+
+fn latency_bucket_upper_ns(index: usize) -> u64 {
+    if index < LATENCY_FINE_BUCKETS {
+        return ((index as u64) + 1).saturating_mul(LATENCY_FINE_STEP_NS);
+    }
+    let mid_end = LATENCY_FINE_BUCKETS + LATENCY_MID_BUCKETS;
+    if index < mid_end {
+        let mid_index = index - LATENCY_FINE_BUCKETS;
+        return LATENCY_MID_START_NS
+            .saturating_add(((mid_index as u64) + 1).saturating_mul(LATENCY_MID_STEP_NS));
+    }
+    let high_index = index - mid_end;
+    if high_index >= LATENCY_HIGH_BUCKETS {
+        return u64::MAX;
+    }
+    LATENCY_HIGH_START_NS
+        .saturating_add(((high_index as u64) + 1).saturating_mul(LATENCY_HIGH_STEP_NS))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn slot_rand_worker(
     target: SlotWalTarget,
@@ -23717,6 +27150,7 @@ fn slot_rand_worker(
     buffer_mode: SlotWalBufferMode,
     pin: bool,
     planned_cpu: Option<usize>,
+    start_barrier: Option<Arc<Barrier>>,
 ) -> io::Result<SlotRandWorkerResult> {
     let region_blocks = region_bytes / chunk_bytes;
     if region_blocks == 0 {
@@ -23780,6 +27214,9 @@ fn slot_rand_worker(
     let mut completed = 0usize;
     let mut reads = 0usize;
     let mut writes = 0usize;
+    if let Some(start_barrier) = start_barrier.as_ref() {
+        start_barrier.wait();
+    }
     let local_cpu = current_cpu();
     let start_thread_cpu = thread_cpu_time().unwrap_or_default();
     let started = Instant::now();
@@ -23982,6 +27419,7 @@ fn slot_rand_bench(
         buffer_mode,
         pin,
         None,
+        None,
     )?;
     let seconds = result.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
     let bytes = ops.checked_mul(chunk_bytes).ok_or_else(|| {
@@ -24118,9 +27556,11 @@ fn slot_rand_sharded_bench(
 
     let started = Instant::now();
     let mut handles = Vec::with_capacity(workers);
+    let start_barrier = Arc::new(Barrier::new(workers));
     for region in regions {
         let target = target.clone();
         let planned_cpu = planned_cpus.get(region.worker).copied();
+        let start_barrier = Arc::clone(&start_barrier);
         handles.push(thread::spawn(move || {
             slot_rand_worker(
                 target,
@@ -24136,6 +27576,7 @@ fn slot_rand_sharded_bench(
                 buffer_mode,
                 pin_workers,
                 planned_cpu,
+                Some(start_barrier),
             )
         }));
     }
@@ -24168,6 +27609,7 @@ fn slot_rand_sharded_bench(
         .unwrap_or_default()
         .as_secs_f64()
         .max(f64::MIN_POSITIVE);
+    let io_seconds = slowest_worker_seconds;
 
     for result in &results {
         let seconds = result.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
@@ -24214,9 +27656,10 @@ fn slot_rand_sharded_bench(
          pipeline_per_worker={pipeline} total_pipeline={} ring_entries={ring_entries} \
          completion_batch={} buffers={} slot_buffer_layout={} segment_bytes={segment_bytes} \
          required_alignment={required_alignment} slot_backend={} pin_workers={pin_workers} \
-         wall_seconds={wall_seconds:.6} slowest_worker_seconds={slowest_worker_seconds:.6} \
-         total_cpu_seconds={total_cpu_seconds:.6} aggregate_cpu_percent={:.2} \
-         cpu_ns_per_op={:.1} MiBps={:.2} ops_per_sec={:.0}",
+	         wall_seconds={wall_seconds:.6} io_seconds={io_seconds:.6} \
+	         slowest_worker_seconds={slowest_worker_seconds:.6} \
+	         total_cpu_seconds={total_cpu_seconds:.6} aggregate_cpu_percent={:.2} \
+	         cpu_ns_per_op={:.1} MiBps={:.2} ops_per_sec={:.0}",
         target.label(),
         mode.as_str(),
         pipeline * workers,
@@ -24230,12 +27673,1560 @@ fn slot_rand_sharded_bench(
             .map(|result| result.slot_buffer_layout.as_str())
             .unwrap_or(SlotBufferLayout::PerSlot.as_str()),
         io_slots::submission_backend_label(),
-        total_cpu_seconds / wall_seconds * 100.0,
+        total_cpu_seconds / io_seconds * 100.0,
         total_cpu_seconds * 1_000_000_000.0 / total_ops as f64,
-        total_bytes as f64 / (1024.0 * 1024.0) / wall_seconds,
-        total_ops as f64 / wall_seconds
+        total_bytes as f64 / (1024.0 * 1024.0) / io_seconds,
+        total_ops as f64 / io_seconds
     );
     Ok(())
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct LinuxAioIocb {
+    aio_data: u64,
+    aio_key: u32,
+    aio_rw_flags: u32,
+    aio_lio_opcode: u16,
+    aio_reqprio: i16,
+    aio_fildes: u32,
+    aio_buf: u64,
+    aio_nbytes: u64,
+    aio_offset: i64,
+    aio_reserved2: u64,
+    aio_flags: u32,
+    aio_resfd: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct LinuxAioEvent {
+    data: u64,
+    obj: u64,
+    res: i64,
+    res2: i64,
+}
+
+struct LinuxAioContext {
+    ctx: u64,
+}
+
+impl LinuxAioContext {
+    fn setup(nr_events: usize) -> io::Result<Self> {
+        let mut ctx = 0u64;
+        let nr_events = u32::try_from(nr_events).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "native AIO event count does not fit in u32",
+            )
+        })?;
+        let ret = unsafe { libc::syscall(libc::SYS_io_setup, nr_events, &mut ctx) };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { ctx })
+    }
+
+    fn submit_all(&self, iocbs: &mut [*mut LinuxAioIocb]) -> io::Result<()> {
+        let mut submitted = 0usize;
+        while submitted < iocbs.len() {
+            let remaining = iocbs.len() - submitted;
+            let ret = unsafe {
+                libc::syscall(
+                    libc::SYS_io_submit,
+                    self.ctx,
+                    remaining as libc::c_long,
+                    iocbs[submitted..].as_mut_ptr(),
+                )
+            };
+            if ret < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if ret == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "native AIO submitted zero iocbs",
+                ));
+            }
+            submitted += ret as usize;
+        }
+        Ok(())
+    }
+
+    fn getevents(&self, min: usize, events: &mut [LinuxAioEvent]) -> io::Result<usize> {
+        let ret = unsafe {
+            libc::syscall(
+                libc::SYS_io_getevents,
+                self.ctx,
+                min as libc::c_long,
+                events.len() as libc::c_long,
+                events.as_mut_ptr(),
+                ptr::null::<libc::timespec>(),
+            )
+        };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(ret as usize)
+    }
+}
+
+impl Drop for LinuxAioContext {
+    fn drop(&mut self) {
+        if self.ctx != 0 {
+            unsafe {
+                libc::syscall(libc::SYS_io_destroy, self.ctx);
+            }
+            self.ctx = 0;
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockBenchEngine {
+    UringPlain,
+    UringFixed,
+    UringSlot,
+    Aio,
+    Sync,
+    Suite,
+}
+
+impl BlockBenchEngine {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "suite" | "all" => Ok(Self::Suite),
+            "uring-plain" | "plain" | "nonfixed" | "non-fixed" | "not-fixed" | "without-fixed"
+            | "unregistered" | "uring-unregistered" => Ok(Self::UringPlain),
+            "uring" | "uring-fixed" | "io-uring" | "io_uring" | "fixed" | "fixed-file"
+            | "liburing" | "liburing-fixed" | "no-slot" | "without-slot" => Ok(Self::UringFixed),
+            "slot" | "uring-slot" | "io-slot" | "io_slots" | "slot-aligned" | "with-slot"
+            | "liburing-slot" => Ok(Self::UringSlot),
+            "aio" | "linux-aio" | "native-aio" | "conventional-aio" | "conventional" => {
+                Ok(Self::Aio)
+            }
+            "sync" | "blocking" | "syscall" | "readwrite" | "read-write" => Ok(Self::Sync),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown zcblockbench engine {other:?}; use suite, uring-plain, uring-fixed, uring-slot, aio, or sync"
+                ),
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::UringPlain => "uring-plain",
+            Self::UringFixed => "uring-fixed",
+            Self::UringSlot => "uring-slot",
+            Self::Aio => "aio",
+            Self::Sync => "sync",
+            Self::Suite => "suite",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockBenchRingMode {
+    Normal,
+    NoSqArray,
+    SqRewind,
+    SqPoll,
+    SqPollNoSqArray,
+}
+
+impl BlockBenchRingMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "normal" | "default" => Ok(Self::Normal),
+            "no-sqarray" | "nosqarray" | "no_sqarray" => Ok(Self::NoSqArray),
+            "sq-rewind" | "sq_rewind" | "rewind" => Ok(Self::SqRewind),
+            "sqpoll" | "sq-poll" | "sq_poll" => Ok(Self::SqPoll),
+            "sqpoll-no-sqarray" | "sqpoll-nosqarray" | "sq-poll-no-sqarray" => {
+                Ok(Self::SqPollNoSqArray)
+            }
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown zcblockbench ring mode {other:?}; use normal, no-sqarray, sq-rewind, sqpoll, or sqpoll-no-sqarray"
+                ),
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::NoSqArray => "no-sqarray",
+            Self::SqRewind => "sq-rewind",
+            Self::SqPoll => "sqpoll",
+            Self::SqPollNoSqArray => "sqpoll-no-sqarray",
+        }
+    }
+
+    fn uses_sqpoll(self) -> bool {
+        matches!(self, Self::SqPoll | Self::SqPollNoSqArray)
+    }
+
+    fn raw_mode(self, sqpoll_cpu: Option<usize>) -> RawRingSqMode {
+        match self {
+            Self::Normal => RawRingSqMode::Normal,
+            Self::NoSqArray => RawRingSqMode::NoSqArray,
+            Self::SqRewind => RawRingSqMode::SqRewind,
+            Self::SqPoll => RawRingSqMode::SqPoll {
+                cpu: sqpoll_cpu,
+                no_sqarray: false,
+            },
+            Self::SqPollNoSqArray => RawRingSqMode::SqPoll {
+                cpu: sqpoll_cpu,
+                no_sqarray: true,
+            },
+        }
+    }
+}
+
+fn parse_blockbench_cqe_mode(value: &str) -> io::Result<RawRingCqeMode> {
+    match value {
+        "16" | "cqe16" | "cqe-16" => Ok(RawRingCqeMode::Cqe16),
+        "32" | "cqe32" | "cqe-32" => Ok(RawRingCqeMode::Cqe32),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unknown zcblockbench CQE mode {other:?}; use 16 or 32"),
+        )),
+    }
+}
+
+fn blockbench_cqe_mode_label(mode: RawRingCqeMode) -> &'static str {
+    match mode {
+        RawRingCqeMode::Cqe16 => "16",
+        RawRingCqeMode::Cqe32 => "32",
+    }
+}
+
+#[derive(Clone, Debug)]
+enum BlockBenchTarget {
+    NullChar,
+    ZeroChar,
+    Block(SlotWalTarget),
+}
+
+impl BlockBenchTarget {
+    fn parse(arg: &str) -> io::Result<Self> {
+        match arg {
+            "/dev/null" | "null" | "char-null" => Ok(Self::NullChar),
+            "/dev/zero" | "zero" | "char-zero" => Ok(Self::ZeroChar),
+            other => parse_slot_wal_target(other).map(Self::Block),
+        }
+    }
+
+    fn label(&self) -> &str {
+        match self {
+            Self::NullChar => "/dev/null",
+            Self::ZeroChar => "/dev/zero",
+            Self::Block(target) => target.label(),
+        }
+    }
+
+    fn is_block(&self) -> bool {
+        matches!(self, Self::Block(_))
+    }
+}
+
+#[derive(Clone)]
+struct BlockBenchConfig {
+    target: String,
+    workers: usize,
+    ops_per_worker: usize,
+    chunk_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    mode: SlotRandMode,
+    read_percent: u8,
+    region_bytes_per_worker: usize,
+    buffer_mode: SlotWalBufferMode,
+    pin_workers: bool,
+    engine: BlockBenchEngine,
+    ring_mode: BlockBenchRingMode,
+    cqe_mode: RawRingCqeMode,
+    registered_ring_fd: bool,
+    sqpoll_cpu_list: Option<Vec<usize>>,
+    sqpoll_idle_ms: u32,
+}
+
+impl Default for BlockBenchConfig {
+    fn default() -> Self {
+        Self {
+            target: "/dev/null".to_string(),
+            workers: 8,
+            ops_per_worker: 1_000_000,
+            chunk_bytes: 4096,
+            pipeline: 64,
+            ring_entries: 256,
+            mode: SlotRandMode::Write,
+            read_percent: 80,
+            region_bytes_per_worker: 1024 * 1024 * 1024,
+            buffer_mode: SlotWalBufferMode::SmallPages,
+            pin_workers: true,
+            engine: BlockBenchEngine::Suite,
+            ring_mode: BlockBenchRingMode::Normal,
+            cqe_mode: RawRingCqeMode::Cqe16,
+            registered_ring_fd: false,
+            sqpoll_cpu_list: None,
+            sqpoll_idle_ms: 1000,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct BlockBenchWorkerResult {
+    worker: usize,
+    ops: usize,
+    reads: usize,
+    writes: usize,
+    elapsed: Duration,
+    cpu: Duration,
+    base_offset: u64,
+    region_bytes: usize,
+    slot_count: usize,
+    target_cpu: i32,
+    affinity_applied: bool,
+    local_cpu: i32,
+    worker_numa_node: Option<i32>,
+    completion_batch: usize,
+    buffer_base: usize,
+    buffer_alignment: usize,
+    buffer_stride: usize,
+    buffer_map_len: usize,
+    buffer_mode: SlotWalBufferMode,
+    memory_policy: &'static str,
+    sqpoll_cpu: i32,
+}
+
+fn blockbench_perf_warning(message: &str) {
+    if env_enabled_or("URING_PLAY_BLOCKBENCH_PERF_WARN", true) {
+        eprintln!("PERF WARNING: zcblockbench: {message}");
+    }
+}
+
+fn zcblockbench_help() {
+    println!(
+        "zcblockbench - purpose-built multithreaded 4K random block IOPS bench\n\
+         \n\
+         zcblockbench [TARGET] [--engine suite|uring-plain|uring-fixed|uring-slot|aio|sync]\n\
+           [--mode read|write|rw] [--workers N] [--ops-per-worker N]\n\
+           [--bs BYTES] [--iodepth N] [--region-bytes-per-worker BYTES]\n\
+           [--read-percent N] [--ring-entries N] [--buffer-mode small-pages|hugetlb]\n\
+           [--pin true|false] [--ring-mode normal|no-sqarray|sq-rewind|sqpoll|sqpoll-no-sqarray]\n\
+           [--cqe 16|32] [--registered-ring true|false] [--sqpoll-cpus CPU-LIST]\n\
+         \n\
+         Defaults run a short multithreaded write suite against /dev/null.\n\
+         Reads against /dev/null use /dev/zero because /dev/null reads EOF.\n\
+         Raw real devices must be allowlisted PARTUUID targets; destructive writes\n\
+         still require URING_PLAY_ALLOW_RAW_BLOCK_WRITE=1 and matching\n\
+         URING_PLAY_RAW_TARGET_PARTUUID."
+    );
+}
+
+fn parse_zcblockbench_args(args: impl Iterator<Item = String>) -> io::Result<BlockBenchConfig> {
+    let mut cfg = BlockBenchConfig::default();
+    let mut positional = Vec::new();
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "help" | "--help" | "-h" => {
+                zcblockbench_help();
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "help printed"));
+            }
+            "--target" => cfg.target = next_flag_value(&mut args, "--target")?,
+            "--engine" => {
+                cfg.engine = BlockBenchEngine::parse(&next_flag_value(&mut args, "--engine")?)?
+            }
+            "--mode" | "--rw" => {
+                cfg.mode = SlotRandMode::parse(&next_flag_value(&mut args, &arg)?)?
+            }
+            "--workers" | "--threads" | "-j" => {
+                cfg.workers = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--ops" | "--ops-per-worker" => {
+                cfg.ops_per_worker = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--bs" | "--block-size" | "--chunk-bytes" => {
+                cfg.chunk_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--iodepth" | "--depth" | "--pipeline" => {
+                cfg.pipeline = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--ring-entries" => {
+                cfg.ring_entries = parse_u32_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--read-percent" => {
+                cfg.read_percent = parse_u8_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--region-bytes-per-worker" | "--region" => {
+                cfg.region_bytes_per_worker =
+                    parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--buffer-mode" | "--buffers" => {
+                cfg.buffer_mode = SlotWalBufferMode::parse(&next_flag_value(&mut args, &arg)?)?
+            }
+            "--pin" | "--pin-workers" => {
+                cfg.pin_workers = parse_bool_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--ring-mode" | "--uring-mode" => {
+                cfg.ring_mode = BlockBenchRingMode::parse(&next_flag_value(&mut args, &arg)?)?
+            }
+            "--cqe" | "--cqe-mode" => {
+                cfg.cqe_mode = parse_blockbench_cqe_mode(&next_flag_value(&mut args, &arg)?)?
+            }
+            "--registered-ring" | "--registered-ring-fd" => {
+                cfg.registered_ring_fd = parse_bool_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--sqpoll-cpus" | "--sq-poll-cpus" => {
+                let value = next_flag_value(&mut args, &arg)?;
+                let cpus = parse_cpu_list(&value).map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{arg}={value:?}: {err}"),
+                    )
+                })?;
+                if cpus.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{arg} must contain at least one CPU"),
+                    ));
+                }
+                cfg.sqpoll_cpu_list = Some(cpus);
+            }
+            "--sqpoll-idle-ms" | "--sq-poll-idle-ms" => {
+                cfg.sqpoll_idle_ms = parse_u32_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--suite" => cfg.engine = BlockBenchEngine::Suite,
+            "--uring-plain" => cfg.engine = BlockBenchEngine::UringPlain,
+            "--uring-fixed" => cfg.engine = BlockBenchEngine::UringFixed,
+            "--uring-slot" => cfg.engine = BlockBenchEngine::UringSlot,
+            "--aio" => cfg.engine = BlockBenchEngine::Aio,
+            "--sync" => cfg.engine = BlockBenchEngine::Sync,
+            other if other.starts_with('-') => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcblockbench option {other:?}"),
+                ));
+            }
+            other => positional.push(other.to_string()),
+        }
+    }
+
+    if let Some(first) = positional.first() {
+        if first == "suite" {
+            cfg.engine = BlockBenchEngine::Suite;
+        } else if let Ok(engine) = BlockBenchEngine::parse(first) {
+            cfg.engine = engine;
+        } else {
+            cfg.target = first.clone();
+        }
+    }
+    if positional.len() > 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcblockbench accepts at most one positional argument: TARGET or ENGINE",
+        ));
+    }
+    Ok(cfg)
+}
+
+fn parse_u8_value(value: &str, name: &str) -> io::Result<u8> {
+    value
+        .parse::<u8>()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, format!("{name}: {err}")))
+}
+
+fn blockbench_sqpoll_cpu_list(cfg: &BlockBenchConfig) -> io::Result<Option<Vec<usize>>> {
+    if let Some(cpus) = cfg.sqpoll_cpu_list.clone() {
+        return Ok(Some(cpus));
+    }
+    let Ok(value) = env::var("URING_PLAY_SQPOLL_CPU_LIST") else {
+        return Ok(None);
+    };
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    let cpus = parse_cpu_list(&value).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("URING_PLAY_SQPOLL_CPU_LIST={value:?}: {err}"),
+        )
+    })?;
+    if cpus.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(cpus))
+}
+
+fn zcblockbench_validate_config(cfg: &BlockBenchConfig) -> io::Result<()> {
+    if cfg.workers == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workers must be non-zero",
+        ));
+    }
+    if cfg.ops_per_worker == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ops-per-worker must be non-zero",
+        ));
+    }
+    if cfg.pipeline == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "iodepth/pipeline must be non-zero",
+        ));
+    }
+    validate_slot_wal_pipeline(cfg.pipeline, cfg.ring_entries)?;
+    if matches!(cfg.mode, SlotRandMode::Mixed) && cfg.read_percent > 100 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "read-percent must be 0..=100",
+        ));
+    }
+    ensure_sector_aligned(cfg.chunk_bytes, "bs/chunk-bytes")?;
+    ensure_sector_aligned(cfg.region_bytes_per_worker, "region-bytes-per-worker")?;
+    if cfg.region_bytes_per_worker % cfg.chunk_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "region-bytes-per-worker must be an exact multiple of bs",
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct BlockBenchTargetValidation {
+    total_region_bytes: usize,
+    device_bytes: u64,
+    required_alignment: usize,
+    segment_bytes: usize,
+}
+
+fn zcblockbench_prepare_target(
+    cfg: &BlockBenchConfig,
+) -> io::Result<(BlockBenchTarget, Option<BlockBenchTargetValidation>)> {
+    let target = BlockBenchTarget::parse(&cfg.target)?;
+    let BlockBenchTarget::Block(_) = target else {
+        return Ok((target, None));
+    };
+    let total_region_bytes = cfg
+        .region_bytes_per_worker
+        .checked_mul(cfg.workers)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "aggregate region overflow"))?;
+    let safety_mode = if cfg.mode.needs_write() {
+        SlotWalMode::Write
+    } else {
+        SlotWalMode::Read
+    };
+    let (validated_target, device_bytes, required_alignment, segment_bytes) =
+        validate_slot_wal_common(
+            &cfg.target,
+            total_region_bytes,
+            cfg.chunk_bytes,
+            safety_mode,
+            cfg.buffer_mode,
+        )?;
+    Ok((
+        BlockBenchTarget::Block(validated_target),
+        Some(BlockBenchTargetValidation {
+            total_region_bytes,
+            device_bytes,
+            required_alignment,
+            segment_bytes,
+        }),
+    ))
+}
+
+fn zcblockbench_open_files(
+    target: &BlockBenchTarget,
+    mode: SlotRandMode,
+    direct: bool,
+) -> io::Result<(Vec<fs::File>, u32, u32)> {
+    match target {
+        BlockBenchTarget::NullChar => {
+            let mut files = Vec::new();
+            let mut read_idx = 0u32;
+            let mut write_idx = 0u32;
+            if !matches!(mode, SlotRandMode::Write) {
+                read_idx = files.len() as u32;
+                files.push(
+                    OpenOptions::new()
+                        .read(true)
+                        .custom_flags(libc::O_CLOEXEC)
+                        .open("/dev/zero")?,
+                );
+            }
+            if mode.needs_write() {
+                write_idx = files.len() as u32;
+                files.push(
+                    OpenOptions::new()
+                        .write(true)
+                        .custom_flags(libc::O_CLOEXEC)
+                        .open("/dev/null")?,
+                );
+            }
+            Ok((files, read_idx, write_idx))
+        }
+        BlockBenchTarget::ZeroChar => {
+            let mut files = Vec::new();
+            let mut read_idx = 0u32;
+            let mut write_idx = 0u32;
+            if !matches!(mode, SlotRandMode::Write) {
+                read_idx = files.len() as u32;
+                files.push(
+                    OpenOptions::new()
+                        .read(true)
+                        .custom_flags(libc::O_CLOEXEC)
+                        .open("/dev/zero")?,
+                );
+            }
+            if mode.needs_write() {
+                write_idx = files.len() as u32;
+                files.push(
+                    OpenOptions::new()
+                        .write(true)
+                        .custom_flags(libc::O_CLOEXEC)
+                        .open("/dev/zero")?,
+                );
+            }
+            Ok((files, read_idx, write_idx))
+        }
+        BlockBenchTarget::Block(target) => {
+            let mut open = OpenOptions::new();
+            open.read(true).write(mode.needs_write());
+            let flags = libc::O_CLOEXEC | if direct { libc::O_DIRECT } else { 0 };
+            let file = open.custom_flags(flags).open(target.open_path())?;
+            Ok((vec![file], 0, 0))
+        }
+    }
+}
+
+fn zcblockbench_direction(
+    mode: SlotRandMode,
+    read_percent: u8,
+    rng: &mut u64,
+    reads: &mut usize,
+    writes: &mut usize,
+) -> io_slots::SlotRw {
+    match mode {
+        SlotRandMode::Read => {
+            *reads += 1;
+            io_slots::SlotRw::Read
+        }
+        SlotRandMode::Write => {
+            *writes += 1;
+            io_slots::SlotRw::Write
+        }
+        SlotRandMode::Mixed => {
+            if (splitmix64_next(rng) % 100) < read_percent as u64 {
+                *reads += 1;
+                io_slots::SlotRw::Read
+            } else {
+                *writes += 1;
+                io_slots::SlotRw::Write
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcblockbench_uring_fixed_worker(
+    target: BlockBenchTarget,
+    worker: usize,
+    base_offset: u64,
+    region_bytes: usize,
+    ops: usize,
+    chunk_bytes: usize,
+    pipeline: usize,
+    ring_entries: u32,
+    mode: SlotRandMode,
+    read_percent: u8,
+    buffer_mode: SlotWalBufferMode,
+    pin: bool,
+    planned_cpu: Option<usize>,
+    ring_mode: BlockBenchRingMode,
+    cqe_mode: RawRingCqeMode,
+    registered_ring_fd: bool,
+    sqpoll_cpu: Option<usize>,
+    sqpoll_idle_ms: u32,
+    registered_io: bool,
+    start_barrier: Arc<Barrier>,
+) -> io::Result<BlockBenchWorkerResult> {
+    let region_blocks = region_bytes / chunk_bytes;
+    let affinity =
+        pin_current_thread_if_requested_to_cpu("zcblockbench-worker", worker, pin, planned_cpu);
+    let preferred_numa_node = if affinity.target_cpu >= 0 {
+        cpu_numa_node(affinity.target_cpu as usize)
+    } else {
+        None
+    };
+    let (files, read_file_index, write_file_index) = zcblockbench_open_files(&target, mode, true)?;
+    let mut fds: Vec<i32> = files.iter().map(AsRawFd::as_raw_fd).collect();
+    let buffers = buffer_mode.allocate_for_worker(pipeline, chunk_bytes, preferred_numa_node)?;
+    if mode.needs_write() {
+        fill_slot_wal_buffers(&buffers, chunk_bytes);
+    }
+    let buffer_base = buffers.base_addr();
+    let buffer_stride = buffers.stride();
+    let buffer_map_len = buffers.map_len();
+    let buffer_alignment = address_alignment(buffer_base);
+    let memory_policy = buffers.memory_policy();
+    let slot_buffer_layout = SlotBufferLayout::PerSlot;
+    let mut iovecs = buffers.iovecs(chunk_bytes);
+
+    let mut ring = RawRing::new_with_options(
+        ring_entries,
+        ring_entries.saturating_mul(2),
+        RawRingOptions {
+            stats_enabled: false,
+            cqe_mode,
+            sq_mode: ring_mode.raw_mode(sqpoll_cpu),
+            registered_ring_fd,
+            sq_thread_idle_ms: sqpoll_idle_ms,
+        },
+    )?;
+    if registered_io {
+        ring.register_files(&mut fds)?;
+        ring.register_buffers(&mut iovecs)?;
+    }
+
+    let completion_batch =
+        env_usize_or("URING_PLAY_BLOCKBENCH_COMPLETION_BATCH", 64).clamp(1, pipeline);
+    let chunk_bytes_u32 = u32::try_from(chunk_bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "bs/chunk-bytes must fit in u32",
+        )
+    })?;
+    let mut rng = 0x243f_6a88_85a3_08d3u64
+        ^ ((worker as u64) << 48)
+        ^ ((ops as u64) << 7)
+        ^ base_offset.rotate_left(11);
+    let mut free_slots: Vec<usize> = (0..pipeline).rev().collect();
+    let mut submitted = 0usize;
+    let mut completed = 0usize;
+    let mut reads = 0usize;
+    let mut writes = 0usize;
+    start_barrier.wait();
+    let local_cpu = current_cpu();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let started = Instant::now();
+
+    while completed < ops {
+        while submitted < ops && !free_slots.is_empty() {
+            let slot = free_slots.pop().expect("free slot");
+            let block = splitmix64_next(&mut rng) as usize % region_blocks;
+            let file_offset = (block as u64)
+                .checked_mul(chunk_bytes as u64)
+                .and_then(|offset| base_offset.checked_add(offset))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "offset overflow"))?;
+            let io_offset = if target.is_block() { file_offset } else { 0 };
+            let direction =
+                zcblockbench_direction(mode, read_percent, &mut rng, &mut reads, &mut writes);
+            let buf_index = slot_buffer_layout.fixed_buf_index(slot)?;
+            let ptr = buffers.ptr(slot);
+            match direction {
+                io_slots::SlotRw::Read => {
+                    if registered_io {
+                        ring.queue_read_fixed_file(
+                            read_file_index,
+                            ptr,
+                            chunk_bytes_u32,
+                            io_offset,
+                            buf_index,
+                            slot as u64,
+                        )?
+                    } else {
+                        ring.queue_read(
+                            fds[read_file_index as usize],
+                            ptr,
+                            chunk_bytes_u32,
+                            io_offset,
+                            slot as u64,
+                        )?
+                    }
+                }
+                io_slots::SlotRw::Write => {
+                    if registered_io {
+                        ring.queue_write_fixed_file(
+                            write_file_index,
+                            ptr.cast_const(),
+                            chunk_bytes_u32,
+                            io_offset,
+                            buf_index,
+                            slot as u64,
+                        )?
+                    } else {
+                        ring.queue_write(
+                            fds[write_file_index as usize],
+                            ptr.cast_const(),
+                            chunk_bytes_u32,
+                            io_offset,
+                            slot as u64,
+                        )?
+                    }
+                }
+            }
+            submitted += 1;
+        }
+
+        ring.submit_pending()?;
+        for batch_idx in 0..completion_batch {
+            let cqe = if batch_idx == 0 {
+                match ring.try_pop_cqe() {
+                    Some(cqe) => cqe,
+                    None => ring.wait_cqe()?,
+                }
+            } else {
+                match ring.try_pop_cqe() {
+                    Some(cqe) => cqe,
+                    None => break,
+                }
+            };
+            let slot = cqe.user_data as usize;
+            if slot >= pipeline {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("zcblockbench CQE returned invalid slot user_data={slot}"),
+                ));
+            }
+            if cqe.res < 0 {
+                return Err(io::Error::from_raw_os_error(-cqe.res));
+            }
+            if cqe.res != chunk_bytes_u32 as i32 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    format!(
+                        "short zcblockbench completion: res={} expected={chunk_bytes}",
+                        cqe.res
+                    ),
+                ));
+            }
+            completed += 1;
+            free_slots.push(slot);
+            if completed == ops {
+                break;
+            }
+        }
+    }
+
+    let elapsed = started.elapsed();
+    let cpu = thread_cpu_time()
+        .unwrap_or(start_thread_cpu)
+        .saturating_sub(start_thread_cpu);
+    if registered_io {
+        ring.unregister_buffers()?;
+        ring.unregister_files()?;
+    }
+
+    Ok(BlockBenchWorkerResult {
+        worker,
+        ops,
+        reads,
+        writes,
+        elapsed,
+        cpu,
+        base_offset,
+        region_bytes,
+        slot_count: pipeline,
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+        local_cpu,
+        worker_numa_node: preferred_numa_node.or_else(|| {
+            (local_cpu >= 0)
+                .then(|| cpu_numa_node(local_cpu as usize))
+                .flatten()
+        }),
+        completion_batch,
+        buffer_base,
+        buffer_alignment,
+        buffer_stride,
+        buffer_map_len,
+        buffer_mode,
+        memory_policy,
+        sqpoll_cpu: sqpoll_cpu.map(|cpu| cpu as i32).unwrap_or(-1),
+    })
+}
+
+fn zcblockbench_sync_transfer(
+    fd: i32,
+    ptr: *mut u8,
+    len: usize,
+    mut offset: u64,
+    positional: bool,
+    write: bool,
+) -> io::Result<()> {
+    let mut done = 0usize;
+    while done < len {
+        let remaining = len - done;
+        let current = unsafe { ptr.add(done) };
+        let ret = if positional {
+            let off = libc::off_t::try_from(offset).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "sync offset overflows off_t")
+            })?;
+            if write {
+                unsafe { libc::pwrite(fd, current.cast_const().cast(), remaining, off) }
+            } else {
+                unsafe { libc::pread(fd, current.cast(), remaining, off) }
+            }
+        } else if write {
+            unsafe { libc::write(fd, current.cast_const().cast(), remaining) }
+        } else {
+            unsafe { libc::read(fd, current.cast(), remaining) }
+        };
+        if ret < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        if ret == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "short sync transfer",
+            ));
+        }
+        let transferred = ret as usize;
+        done += transferred;
+        offset = offset.saturating_add(transferred as u64);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcblockbench_sync_worker(
+    target: BlockBenchTarget,
+    worker: usize,
+    base_offset: u64,
+    region_bytes: usize,
+    ops: usize,
+    chunk_bytes: usize,
+    pipeline: usize,
+    mode: SlotRandMode,
+    read_percent: u8,
+    buffer_mode: SlotWalBufferMode,
+    pin: bool,
+    planned_cpu: Option<usize>,
+    start_barrier: Arc<Barrier>,
+) -> io::Result<BlockBenchWorkerResult> {
+    let region_blocks = region_bytes / chunk_bytes;
+    let affinity =
+        pin_current_thread_if_requested_to_cpu("zcblockbench-worker", worker, pin, planned_cpu);
+    let preferred_numa_node = if affinity.target_cpu >= 0 {
+        cpu_numa_node(affinity.target_cpu as usize)
+    } else {
+        None
+    };
+    let (files, read_file_index, write_file_index) = zcblockbench_open_files(&target, mode, true)?;
+    let fds: Vec<i32> = files.iter().map(AsRawFd::as_raw_fd).collect();
+    let buffers = buffer_mode.allocate_for_worker(pipeline, chunk_bytes, preferred_numa_node)?;
+    if mode.needs_write() {
+        fill_slot_wal_buffers(&buffers, chunk_bytes);
+    }
+    let buffer_base = buffers.base_addr();
+    let buffer_stride = buffers.stride();
+    let buffer_map_len = buffers.map_len();
+    let buffer_alignment = address_alignment(buffer_base);
+    let memory_policy = buffers.memory_policy();
+    let mut rng = 0x243f_6a88_85a3_08d3u64
+        ^ ((worker as u64) << 48)
+        ^ ((ops as u64) << 7)
+        ^ base_offset.rotate_left(11);
+    let mut reads = 0usize;
+    let mut writes = 0usize;
+    start_barrier.wait();
+    let local_cpu = current_cpu();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let started = Instant::now();
+
+    for op_index in 0..ops {
+        let block = splitmix64_next(&mut rng) as usize % region_blocks;
+        let file_offset = (block as u64)
+            .checked_mul(chunk_bytes as u64)
+            .and_then(|offset| base_offset.checked_add(offset))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "offset overflow"))?;
+        let slot = op_index % pipeline;
+        let direction =
+            zcblockbench_direction(mode, read_percent, &mut rng, &mut reads, &mut writes);
+        match direction {
+            io_slots::SlotRw::Read => zcblockbench_sync_transfer(
+                fds[read_file_index as usize],
+                buffers.ptr(slot),
+                chunk_bytes,
+                file_offset,
+                target.is_block(),
+                false,
+            )?,
+            io_slots::SlotRw::Write => zcblockbench_sync_transfer(
+                fds[write_file_index as usize],
+                buffers.ptr(slot),
+                chunk_bytes,
+                file_offset,
+                target.is_block(),
+                true,
+            )?,
+        }
+    }
+
+    let elapsed = started.elapsed();
+    let cpu = thread_cpu_time()
+        .unwrap_or(start_thread_cpu)
+        .saturating_sub(start_thread_cpu);
+
+    Ok(BlockBenchWorkerResult {
+        worker,
+        ops,
+        reads,
+        writes,
+        elapsed,
+        cpu,
+        base_offset,
+        region_bytes,
+        slot_count: pipeline,
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+        local_cpu,
+        worker_numa_node: preferred_numa_node.or_else(|| {
+            (local_cpu >= 0)
+                .then(|| cpu_numa_node(local_cpu as usize))
+                .flatten()
+        }),
+        completion_batch: 1,
+        buffer_base,
+        buffer_alignment,
+        buffer_stride,
+        buffer_map_len,
+        buffer_mode,
+        memory_policy,
+        sqpoll_cpu: -1,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcblockbench_aio_worker(
+    target: BlockBenchTarget,
+    worker: usize,
+    base_offset: u64,
+    region_bytes: usize,
+    ops: usize,
+    chunk_bytes: usize,
+    pipeline: usize,
+    mode: SlotRandMode,
+    read_percent: u8,
+    buffer_mode: SlotWalBufferMode,
+    pin: bool,
+    planned_cpu: Option<usize>,
+    start_barrier: Arc<Barrier>,
+) -> io::Result<BlockBenchWorkerResult> {
+    let region_blocks = region_bytes / chunk_bytes;
+    let affinity =
+        pin_current_thread_if_requested_to_cpu("zcblockbench-aio-worker", worker, pin, planned_cpu);
+    let preferred_numa_node = if affinity.target_cpu >= 0 {
+        cpu_numa_node(affinity.target_cpu as usize)
+    } else {
+        None
+    };
+    let (files, read_file_index, write_file_index) = zcblockbench_open_files(&target, mode, true)?;
+    let buffers = buffer_mode.allocate_for_worker(pipeline, chunk_bytes, preferred_numa_node)?;
+    if mode.needs_write() {
+        fill_slot_wal_buffers(&buffers, chunk_bytes);
+    }
+    let buffer_base = buffers.base_addr();
+    let buffer_stride = buffers.stride();
+    let buffer_map_len = buffers.map_len();
+    let buffer_alignment = address_alignment(buffer_base);
+    let memory_policy = buffers.memory_policy();
+    let aio = LinuxAioContext::setup(pipeline)?;
+    let completion_batch =
+        env_usize_or("URING_PLAY_BLOCKBENCH_COMPLETION_BATCH", 64).clamp(1, pipeline);
+    let mut iocbs = vec![LinuxAioIocb::default(); pipeline];
+    let mut events = vec![LinuxAioEvent::default(); completion_batch];
+    let mut rng = 0x1319_8a2e_0370_7344u64
+        ^ ((worker as u64) << 48)
+        ^ ((ops as u64) << 9)
+        ^ base_offset.rotate_left(13);
+    let mut free_slots: Vec<usize> = (0..pipeline).rev().collect();
+    let mut submitted = 0usize;
+    let mut completed = 0usize;
+    let mut reads = 0usize;
+    let mut writes = 0usize;
+    start_barrier.wait();
+    let local_cpu = current_cpu();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let started = Instant::now();
+
+    while completed < ops {
+        let mut submit_ptrs = Vec::<*mut LinuxAioIocb>::new();
+        while submitted < ops && !free_slots.is_empty() {
+            let slot = free_slots.pop().expect("free slot");
+            let block = splitmix64_next(&mut rng) as usize % region_blocks;
+            let file_offset = (block as u64)
+                .checked_mul(chunk_bytes as u64)
+                .and_then(|offset| base_offset.checked_add(offset))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "offset overflow"))?;
+            let direction =
+                zcblockbench_direction(mode, read_percent, &mut rng, &mut reads, &mut writes);
+            let (opcode, file_index) = match direction {
+                io_slots::SlotRw::Read => (IOCB_CMD_PREAD, read_file_index),
+                io_slots::SlotRw::Write => (IOCB_CMD_PWRITE, write_file_index),
+            };
+            let fd = files
+                .get(file_index as usize)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "AIO fd index missing"))?
+                .as_raw_fd();
+            iocbs[slot] = LinuxAioIocb {
+                aio_data: slot as u64,
+                aio_lio_opcode: opcode,
+                aio_fildes: fd as u32,
+                aio_buf: buffers.ptr(slot) as u64,
+                aio_nbytes: chunk_bytes as u64,
+                aio_offset: file_offset as i64,
+                ..LinuxAioIocb::default()
+            };
+            submit_ptrs.push(&mut iocbs[slot] as *mut LinuxAioIocb);
+            submitted += 1;
+        }
+
+        if !submit_ptrs.is_empty() {
+            aio.submit_all(&mut submit_ptrs)?;
+        }
+        let min_complete = usize::from(completed < ops);
+        let got = aio.getevents(min_complete, &mut events)?;
+        for event in &events[..got] {
+            let slot = event.data as usize;
+            if slot >= pipeline {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("native AIO returned invalid slot data={slot}"),
+                ));
+            }
+            if event.res < 0 {
+                return Err(io::Error::from_raw_os_error((-event.res) as i32));
+            }
+            if event.res != chunk_bytes as i64 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    format!(
+                        "short native AIO completion: res={} expected={chunk_bytes}",
+                        event.res
+                    ),
+                ));
+            }
+            completed += 1;
+            free_slots.push(slot);
+            if completed == ops {
+                break;
+            }
+        }
+    }
+
+    let elapsed = started.elapsed();
+    let cpu = thread_cpu_time()
+        .unwrap_or(start_thread_cpu)
+        .saturating_sub(start_thread_cpu);
+
+    Ok(BlockBenchWorkerResult {
+        worker,
+        ops,
+        reads,
+        writes,
+        elapsed,
+        cpu,
+        base_offset,
+        region_bytes,
+        slot_count: pipeline,
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+        local_cpu,
+        worker_numa_node: preferred_numa_node.or_else(|| {
+            (local_cpu >= 0)
+                .then(|| cpu_numa_node(local_cpu as usize))
+                .flatten()
+        }),
+        completion_batch,
+        buffer_base,
+        buffer_alignment,
+        buffer_stride,
+        buffer_map_len,
+        buffer_mode,
+        memory_policy,
+        sqpoll_cpu: -1,
+    })
+}
+
+fn zcblockbench_print_results(
+    target: &BlockBenchTarget,
+    engine: BlockBenchEngine,
+    cfg: &BlockBenchConfig,
+    results: &mut [BlockBenchWorkerResult],
+    started: Instant,
+) -> io::Result<()> {
+    results.sort_by_key(|result| result.worker);
+    let wall_seconds = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    let total_ops: usize = results.iter().map(|result| result.ops).sum();
+    let total_reads: usize = results.iter().map(|result| result.reads).sum();
+    let total_writes: usize = results.iter().map(|result| result.writes).sum();
+    let total_bytes = total_ops.checked_mul(cfg.chunk_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcblockbench aggregate byte count overflow",
+        )
+    })?;
+    let total_cpu_seconds: f64 = results.iter().map(|result| result.cpu.as_secs_f64()).sum();
+    let slowest_worker_seconds = results
+        .iter()
+        .map(|result| result.elapsed)
+        .max()
+        .unwrap_or_default()
+        .as_secs_f64()
+        .max(f64::MIN_POSITIVE);
+    let io_seconds = slowest_worker_seconds;
+
+    for result in results.iter() {
+        let seconds = result.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        let cpu_seconds = result.cpu.as_secs_f64();
+        println!(
+            "zcblockbench-worker: engine={} worker={} ops={} reads={} writes={} \
+             seconds={seconds:.6} ops_per_sec={:.0} cpu_seconds={cpu_seconds:.6} \
+             cpu_percent={:.2} cpu_ns_per_op={:.1} base_offset={} region_bytes={} \
+             depth={} completion_batch={} target_cpu={} affinity_applied={} local_cpu={} \
+             worker_numa_node={} sqpoll_cpu={} buffers={} buffer_base=0x{:x} buffer_alignment={} \
+             buffer_stride={} buffer_map_len={} memory_policy={}",
+            engine.as_str(),
+            result.worker,
+            result.ops,
+            result.reads,
+            result.writes,
+            result.ops as f64 / seconds,
+            cpu_seconds / seconds * 100.0,
+            cpu_seconds * 1_000_000_000.0 / result.ops as f64,
+            result.base_offset,
+            result.region_bytes,
+            result.slot_count,
+            result.completion_batch,
+            result.target_cpu,
+            result.affinity_applied,
+            result.local_cpu,
+            option_i32_label(result.worker_numa_node),
+            result.sqpoll_cpu,
+            result.buffer_mode.as_str(),
+            result.buffer_base,
+            result.buffer_alignment,
+            result.buffer_stride,
+            result.buffer_map_len,
+            result.memory_policy
+        );
+    }
+
+    println!(
+        "zcblockbench-result: target={} engine={} mode={} workers={} \
+         ops_per_worker={} total_ops={} reads={} writes={} read_percent={} \
+         chunk_bytes={} region_bytes_per_worker={} pipeline_per_worker={} \
+         total_pipeline={} ring_entries={} ring_mode={} cqe={} registered_ring={} \
+         buffers={} pin_workers={} \
+	         wall_seconds={wall_seconds:.6} io_seconds={io_seconds:.6} \
+	         slowest_worker_seconds={slowest_worker_seconds:.6} \
+	         total_cpu_seconds={total_cpu_seconds:.6} aggregate_cpu_percent={:.2} \
+	         cpu_ns_per_op={:.1} MiBps={:.2} ops_per_sec={:.0}",
+        target.label(),
+        engine.as_str(),
+        cfg.mode.as_str(),
+        cfg.workers,
+        cfg.ops_per_worker,
+        total_ops,
+        total_reads,
+        total_writes,
+        cfg.read_percent,
+        cfg.chunk_bytes,
+        cfg.region_bytes_per_worker,
+        cfg.pipeline,
+        cfg.pipeline * cfg.workers,
+        cfg.ring_entries,
+        cfg.ring_mode.as_str(),
+        blockbench_cqe_mode_label(cfg.cqe_mode),
+        cfg.registered_ring_fd,
+        cfg.buffer_mode.as_str(),
+        cfg.pin_workers,
+        total_cpu_seconds / io_seconds * 100.0,
+        total_cpu_seconds * 1_000_000_000.0 / total_ops as f64,
+        total_bytes as f64 / (1024.0 * 1024.0) / io_seconds,
+        total_ops as f64 / io_seconds
+    );
+    Ok(())
+}
+
+fn zcblockbench_planned_cpus(
+    target: &BlockBenchTarget,
+    workers: usize,
+    pin_workers: bool,
+) -> io::Result<Vec<usize>> {
+    if !pin_workers {
+        return Ok(Vec::new());
+    }
+    if let Ok(cpu_list) = env::var("URING_PLAY_PIN_CPU_LIST")
+        && !cpu_list.trim().is_empty()
+    {
+        let cpus = parse_cpu_list(&cpu_list).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("URING_PLAY_PIN_CPU_LIST={cpu_list:?}: {err}"),
+            )
+        })?;
+        if cpus.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "URING_PLAY_PIN_CPU_LIST must contain at least one CPU",
+            ));
+        }
+        return Ok((0..workers).map(|index| cpus[index % cpus.len()]).collect());
+    }
+    match target {
+        BlockBenchTarget::Block(target) => {
+            let metadata = fs::metadata(target.open_path())?;
+            let topology = BlockDeviceTopology::from_metadata(&metadata)?;
+            Ok(topology.planned_cpus(workers, true))
+        }
+        BlockBenchTarget::NullChar | BlockBenchTarget::ZeroChar => {
+            Ok((0..workers).map(configured_affinity_target_cpu).collect())
+        }
+    }
+}
+
+fn zcblockbench_run_direct_engine(
+    target: BlockBenchTarget,
+    engine: BlockBenchEngine,
+    cfg: &BlockBenchConfig,
+) -> io::Result<()> {
+    let planned_cpus = zcblockbench_planned_cpus(&target, cfg.workers, cfg.pin_workers)?;
+    let sqpoll_cpu_list = blockbench_sqpoll_cpu_list(cfg)?;
+    let regions = make_linear_wal_regions(cfg.workers, cfg.region_bytes_per_worker)?;
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(cfg.workers);
+    let start_barrier = Arc::new(Barrier::new(cfg.workers));
+    for region in regions {
+        let target = target.clone();
+        let planned_cpu = planned_cpus.get(region.worker).copied();
+        let sqpoll_cpu = sqpoll_cpu_list
+            .as_ref()
+            .filter(|_| cfg.ring_mode.uses_sqpoll())
+            .map(|cpus| cpus[region.worker % cpus.len()]);
+        let cfg = cfg.clone();
+        let start_barrier = Arc::clone(&start_barrier);
+        handles.push(thread::spawn(move || match engine {
+            BlockBenchEngine::UringPlain | BlockBenchEngine::UringFixed => {
+                zcblockbench_uring_fixed_worker(
+                    target,
+                    region.worker,
+                    region.base_offset,
+                    region.len_bytes,
+                    cfg.ops_per_worker,
+                    cfg.chunk_bytes,
+                    cfg.pipeline,
+                    cfg.ring_entries,
+                    cfg.mode,
+                    cfg.read_percent,
+                    cfg.buffer_mode,
+                    cfg.pin_workers,
+                    planned_cpu,
+                    cfg.ring_mode,
+                    cfg.cqe_mode,
+                    cfg.registered_ring_fd,
+                    sqpoll_cpu,
+                    cfg.sqpoll_idle_ms,
+                    engine == BlockBenchEngine::UringFixed,
+                    start_barrier,
+                )
+            }
+            BlockBenchEngine::Aio => zcblockbench_aio_worker(
+                target,
+                region.worker,
+                region.base_offset,
+                region.len_bytes,
+                cfg.ops_per_worker,
+                cfg.chunk_bytes,
+                cfg.pipeline,
+                cfg.mode,
+                cfg.read_percent,
+                cfg.buffer_mode,
+                cfg.pin_workers,
+                planned_cpu,
+                start_barrier,
+            ),
+            BlockBenchEngine::Sync => zcblockbench_sync_worker(
+                target,
+                region.worker,
+                region.base_offset,
+                region.len_bytes,
+                cfg.ops_per_worker,
+                cfg.chunk_bytes,
+                cfg.pipeline,
+                cfg.mode,
+                cfg.read_percent,
+                cfg.buffer_mode,
+                cfg.pin_workers,
+                planned_cpu,
+                start_barrier,
+            ),
+            BlockBenchEngine::UringSlot | BlockBenchEngine::Suite => unreachable!(),
+        }));
+    }
+    let mut results = Vec::with_capacity(cfg.workers);
+    for handle in handles {
+        results.push(
+            handle
+                .join()
+                .map_err(|_| io::Error::other("zcblockbench worker thread panicked"))??,
+        );
+    }
+    zcblockbench_print_results(&target, engine, cfg, &mut results, started)
+}
+
+fn zcblockbench_run_slot_engine(
+    target: &BlockBenchTarget,
+    cfg: &BlockBenchConfig,
+) -> io::Result<()> {
+    let BlockBenchTarget::Block(target) = target else {
+        println!(
+            "zcblockbench-skip: target={} engine=uring-slot reason=requires-block-target",
+            target.label()
+        );
+        return Ok(());
+    };
+    slot_rand_sharded_bench(
+        target.label(),
+        cfg.workers,
+        cfg.ops_per_worker,
+        cfg.chunk_bytes,
+        cfg.pipeline,
+        cfg.ring_entries,
+        cfg.mode,
+        cfg.read_percent,
+        cfg.region_bytes_per_worker,
+        cfg.buffer_mode,
+        cfg.pin_workers,
+    )
+}
+
+fn zcblockbench(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let cfg = match parse_zcblockbench_args(args) {
+        Ok(cfg) => cfg,
+        Err(err) if err.kind() == io::ErrorKind::Interrupted => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    zcblockbench_validate_config(&cfg)?;
+    let (target, target_validation) = zcblockbench_prepare_target(&cfg)?;
+    if cfg.pin_workers
+        && env::var("URING_PLAY_PIN_CPU_LIST")
+            .ok()
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        blockbench_perf_warning(
+            "pinning is enabled but URING_PLAY_PIN_CPU_LIST is unset; set an explicit CPU list before treating IOPS as a topology result",
+        );
+    }
+    if cfg.buffer_mode == SlotWalBufferMode::SmallPages {
+        blockbench_perf_warning(
+            "small-page buffers are fine for smoke tests; use --buffer-mode hugetlb with enough huge pages for high-IOPS claims",
+        );
+    }
+    if cfg.pipeline < 32 {
+        blockbench_perf_warning("iodepth below 32 is a latency shape, not an IOPS ceiling run");
+    }
+    if cfg.ring_mode.uses_sqpoll() && blockbench_sqpoll_cpu_list(&cfg)?.is_none() {
+        blockbench_perf_warning(
+            "SQPOLL requested without --sqpoll-cpus or URING_PLAY_SQPOLL_CPU_LIST; the kernel poll thread is not topologically pinned",
+        );
+    }
+    if cfg.ring_mode.uses_sqpoll()
+        && !matches!(
+            cfg.engine,
+            BlockBenchEngine::UringPlain | BlockBenchEngine::UringFixed
+        )
+    {
+        blockbench_perf_warning(
+            "SQPOLL ring mode currently applies to uring engines; slot, AIO, and sync suite legs will not use it",
+        );
+    }
+    if (cfg.ring_mode != BlockBenchRingMode::Normal
+        || cfg.cqe_mode != RawRingCqeMode::Cqe16
+        || cfg.registered_ring_fd)
+        && cfg.engine == BlockBenchEngine::Aio
+    {
+        blockbench_perf_warning("io_uring ring knobs do not apply to --engine aio");
+    }
+    if (cfg.ring_mode != BlockBenchRingMode::Normal
+        || cfg.cqe_mode != RawRingCqeMode::Cqe16
+        || cfg.registered_ring_fd)
+        && cfg.engine == BlockBenchEngine::Sync
+    {
+        blockbench_perf_warning("io_uring ring knobs do not apply to --engine sync");
+    }
+    if cfg.engine == BlockBenchEngine::UringSlot && !target.is_block() {
+        blockbench_perf_warning(
+            "uring-slot needs a real block target; char devices are baseline-only targets",
+        );
+    }
+
+    println!(
+        "zcblockbench-plan: target={} engine={} mode={} workers={} ops_per_worker={} \
+         chunk_bytes={} iodepth={} ring_entries={} read_percent={} region_bytes_per_worker={} \
+         ring_mode={} cqe={} registered_ring={} sqpoll_idle_ms={} buffers={} pin_workers={} \
+         target_kind={}",
+        target.label(),
+        cfg.engine.as_str(),
+        cfg.mode.as_str(),
+        cfg.workers,
+        cfg.ops_per_worker,
+        cfg.chunk_bytes,
+        cfg.pipeline,
+        cfg.ring_entries,
+        cfg.read_percent,
+        cfg.region_bytes_per_worker,
+        cfg.ring_mode.as_str(),
+        blockbench_cqe_mode_label(cfg.cqe_mode),
+        cfg.registered_ring_fd,
+        cfg.sqpoll_idle_ms,
+        cfg.buffer_mode.as_str(),
+        cfg.pin_workers,
+        match &target {
+            BlockBenchTarget::Block(_) => "block",
+            BlockBenchTarget::NullChar => "char-null",
+            BlockBenchTarget::ZeroChar => "char-zero",
+        }
+    );
+    if let Some(validation) = target_validation {
+        println!(
+            "zcblockbench-target: target={} total_region_bytes={} device_bytes={} \
+             required_alignment={} segment_bytes={}",
+            target.label(),
+            validation.total_region_bytes,
+            validation.device_bytes,
+            validation.required_alignment,
+            validation.segment_bytes
+        );
+    }
+
+    match cfg.engine {
+        BlockBenchEngine::Suite => {
+            zcblockbench_run_direct_engine(target.clone(), BlockBenchEngine::UringPlain, &cfg)?;
+            zcblockbench_run_direct_engine(target.clone(), BlockBenchEngine::UringFixed, &cfg)?;
+            zcblockbench_run_slot_engine(&target, &cfg)?;
+            zcblockbench_run_direct_engine(target.clone(), BlockBenchEngine::Aio, &cfg)?;
+            zcblockbench_run_direct_engine(target, BlockBenchEngine::Sync, &cfg)
+        }
+        BlockBenchEngine::UringPlain
+        | BlockBenchEngine::UringFixed
+        | BlockBenchEngine::Aio
+        | BlockBenchEngine::Sync => zcblockbench_run_direct_engine(target, cfg.engine, &cfg),
+        BlockBenchEngine::UringSlot => zcblockbench_run_slot_engine(&target, &cfg),
+    }
 }
 
 fn zckv_key_hash(worker: usize, key: usize) -> u64 {
@@ -27483,11 +32474,38 @@ fn zctee(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut append = false;
     let mut write_stdout = true;
     let mut buffer_bytes = 1024 * 1024usize;
+    let mut wait_policy = "all".to_string();
     let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             _ if primitive.parse_common_flag(&mut args, &arg)? => {}
+            "--mirror" | "--raid1" => {
+                wait_policy = "all".to_string();
+            }
+            "--help" | "-h" => {
+                eprintln!(
+                    "usage: zctee [--output PATH ...] [--stdout true|false] [--append] [--buffer-bytes N]\n\
+                     \n\
+                     Userspace tee/mirror primitive. It duplicates each input chunk to every\n\
+                     branch and waits for all configured branches to accept the write. Use zctee\n\
+                     for Unix-shaped mirror/RAID1 fanout; use zcraid-split or zcfanplan for\n\
+                     stripe/RAID0 branch selection."
+                );
+                return Ok(());
+            }
+            "--wait" | "--ack-policy" => {
+                let policy = next_flag_value(&mut args, &arg)?;
+                match policy.as_str() {
+                    "all" | "each" => wait_policy = "all".to_string(),
+                    other => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("zctee currently supports only --wait all; got {other:?}"),
+                        ));
+                    }
+                }
+            }
             "--output" => outputs.push(PathBuf::from(next_flag_value(&mut args, "--output")?)),
             "--append" => append = true,
             "--stdout" => {
@@ -27525,14 +32543,23 @@ fn zctee(args: impl Iterator<Item = String>) -> io::Result<()> {
             })?;
         files.push(file);
     }
+    let started = Instant::now();
     let mut input = io::stdin().lock();
     let mut stdout = BufWriter::new(io::stdout().lock());
     let mut buf = vec![0u8; buffer_bytes.max(4096)];
+    let mut total = 0usize;
+    let mut chunks = 0usize;
     loop {
         let n = input.read(&mut buf)?;
         if n == 0 {
             break;
         }
+        total = total.checked_add(n).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zctee byte count overflow")
+        })?;
+        chunks = chunks.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zctee chunk count overflow")
+        })?;
         if write_stdout {
             stdout.write_all(&buf[..n])?;
         }
@@ -27546,6 +32573,17 @@ fn zctee(args: impl Iterator<Item = String>) -> io::Result<()> {
     for file in &mut files {
         file.flush()?;
     }
+    eprintln!(
+        "zctee-result: branches={} stdout={} wait={} bytes={} chunks={} seconds={:.6} MiBps={:.2} {}",
+        files.len() + usize::from(write_stdout),
+        yes(write_stdout),
+        wait_policy,
+        total,
+        chunks,
+        started.elapsed().as_secs_f64(),
+        total as f64 / (1024.0 * 1024.0) / started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE),
+        primitive.log_fields()
+    );
     Ok(())
 }
 
@@ -31410,6 +36448,17 @@ fn zcraid_spawn_stdout_branch(queue_depth: usize) -> ZcRaidBranch {
     ZcRaidBranch { label, tx, handle }
 }
 
+fn zcraid_split_usage() {
+    eprintln!(
+        "usage: zcraid-split [--mode stripe|mirror|raid10 | --shape EXPR] [--chunk-bytes N]\n\
+         \t[--to CMD ...] [--output PATH ...] [--checksum]\n\
+         \n\
+         Userspace RAID/fanout stand-in. Use block devices only as edge command\n\
+         endpoints; routing, mirroring, and striping stay in userspace.\n\
+         shape examples: stripe(4), mirror(4), raid10(4,2), stripe(4,mirror(2))"
+    );
+}
+
 fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut commands = Vec::<String>::new();
     let mut outputs = Vec::<PathBuf>::new();
@@ -31450,6 +36499,10 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
             "--checksum" => checksum = true,
             "--no-checksum" => checksum = false,
+            "--help" | "-h" => {
+                zcraid_split_usage();
+                return Ok(());
+            }
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -31849,6 +36902,16 @@ fn zcraid_write_merge_chunk<W: Write + ?Sized>(
     Ok(())
 }
 
+fn zcraid_merge_usage() {
+    eprintln!(
+        "usage: zcraid-merge [--from CMD ...] [--input PATH ...] [--output PATH]\n\
+         \t[--verify-checksum true|false]\n\
+         \n\
+         Userspace RAID/fanin stand-in. It reassembles framed branches and keeps\n\
+         block devices at the edge rather than in the fanin topology."
+    );
+}
+
 fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut commands = Vec::<String>::new();
     let mut inputs = Vec::<PathBuf>::new();
@@ -31872,6 +36935,10 @@ fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
             "--no-verify-checksum" => verify_checksum = false,
             "--queue-depth" => {
                 queue_depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--help" | "-h" => {
+                zcraid_merge_usage();
+                return Ok(());
             }
             other => {
                 return Err(io::Error::new(
@@ -39624,9 +44691,12 @@ fn print_zcutils_help() {
          zcgrep                  line-oriented byte-pattern filter\n\
 	         zcstat                  count stdin bytes/chunks and report throughput\n\
 	         zcmeter                 pass through bytes and print per-interval receive rate\n\
-	         zcwritebench            benchmark receive-side pwrite materialization\n\
-	         zcnblk-target           mux-aligned block/read target, including zcdevnullN\n\
+		         zcwritebench            benchmark receive-side pwrite materialization\n\
+		         zcblockbench            multithreaded 4K random read/write IOPS bench\n\
+		         zcnblk-target           mux-aligned block/read target, including zcdevnullN\n\
 	         zcnblk-send             zcnblk 4K write/read/mixed client generator\n\
+	         zcwal-extent-send       lane-local WAL extent sender smoke test\n\
+	         zcwal-extent-recv       lane-local WAL extent receiver smoke test\n\
 	         \n\
          Cargo builds both the umbrella `zcutils` binary and direct command\n\
          binaries, so `zcutils zcmux ...` and `zcmux ...` are equivalent."
@@ -39668,8 +44738,11 @@ fn zc_argv0_command(argv0: &str) -> Option<&'static str> {
         "zcstat" => Some("zcstat"),
         "zcmeter" => Some("zcmeter"),
         "zcwritebench" => Some("zcwritebench"),
+        "zcblockbench" | "block-iops-bench" | "zc-iops-bench" => Some("zcblockbench"),
         "zcnblk-target" => Some("zcnblk-target"),
         "zcnblk-send" => Some("zcnblk-send"),
+        "zcwal-extent-send" => Some("zcwal-extent-send"),
+        "zcwal-extent-recv" => Some("zcwal-extent-recv"),
         _ => None,
     }
 }
@@ -39714,17 +44787,20 @@ pub fn main_entry() -> io::Result<()> {
         Some("zcstat") => zcstat(args),
         Some("zcmeter") => zcmeter(args),
         Some("zcwritebench") => zcwritebench(args),
+        Some("zcblockbench") | Some("block-iops-bench") | Some("zc-iops-bench") => {
+            zcblockbench(args)
+        }
         Some("zcnblk-target") => {
             let target_spec = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: zcnblk-target <zcdevnullN|/dev/zcbrdN|/dev/zcstripeN>[,..|..N] <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                    "usage: zcnblk-target <zcwal:ADDR[:WAL_BASE[:EXTENT[:ACK[:BYTES[:ALIGN]]]]]|zcdevnullN|zctier:HOT[:SPILL[:BYTES[:ALIGN[:MEMORY]]]]|zcraid0:/dev/zcbrdSTART..END[:STRIPE]|/dev/zcbrdN|/dev/nullbN|/dev/ramN|PARTUUID=uuid>[,..|..N] <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
             let bind = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: zcnblk-target <zcdevnullN|/dev/zcbrdN|/dev/zcstripeN>[,..|..N] <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                    "usage: zcnblk-target <zcwal:ADDR[:WAL_BASE[:EXTENT[:ACK[:BYTES[:ALIGN]]]]]|zcdevnullN|zctier:HOT[:SPILL[:BYTES[:ALIGN[:MEMORY]]]]|zcraid0:/dev/zcbrdSTART..END[:STRIPE]|/dev/zcbrdN|/dev/nullbN|/dev/ramN|PARTUUID=uuid>[,..|..N] <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
             let base_port = args
@@ -39774,12 +44850,23 @@ pub fn main_entry() -> io::Result<()> {
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
                 .unwrap_or(1024);
             let estimated_workers = if workers == 0 { ports.max(1) } else { workers };
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "zcnblk-target",
-                checked_buffer_count(estimated_workers, pipeline, "zcnblk-target")?,
-                chunk_bytes,
-            )?;
+            let target_spec_is_wal = target_spec.split(',').all(|token| {
+                let token = token.trim();
+                token.starts_with("zcwal:") || token.starts_with("zcwal=")
+            });
+            let buffer_mode = if target_spec_is_wal {
+                args.next()
+                    .map(|value| SlotWalBufferMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(SlotWalBufferMode::SmallPages)
+            } else {
+                parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "zcnblk-target",
+                    checked_buffer_count(estimated_workers, pipeline, "zcnblk-target")?,
+                    chunk_bytes,
+                )?
+            };
             let pin_workers = args
                 .next()
                 .map(|value| parse_bool_arg(&value, "pin-workers"))
@@ -39856,6 +44943,144 @@ pub fn main_entry() -> io::Result<()> {
                 bytes_per_connection,
                 chunk_bytes,
                 workers,
+            )
+        }
+        Some("zcwal-extent-send") => {
+            let addr = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: zcwal-extent-send <addr> [base-port] [lanes] [connections-per-lane] [bytes-per-connection] [extent-bytes] [workers] [ack] [framing:stream|extent] [data-path:uring|blocking]",
+                )
+            })?;
+            let base_port = args
+                .next()
+                .map(|value| value.parse::<u16>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(26400);
+            let lanes = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1);
+            let connections_per_lane = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1);
+            let bytes_per_connection = args
+                .next()
+                .map(|value| parse_size_arg(&value, "bytes-per-connection"))
+                .transpose()?
+                .unwrap_or(384 * 1024 * 1024);
+            let extent_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "extent-bytes"))
+                .transpose()?
+                .unwrap_or(1024 * 1024);
+            let workers = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(0);
+            let ack_enabled = args
+                .next()
+                .map(|value| parse_bool_arg(&value, "ack"))
+                .transpose()?
+                .unwrap_or(true);
+            let framing_mode = args
+                .next()
+                .map(|value| ZcWalFramingMode::parse(&value))
+                .transpose()?
+                .unwrap_or(ZcWalFramingMode::from_env(ZcWalFramingMode::Stream)?);
+            let data_path = args
+                .next()
+                .map(|value| ZcWalDataPath::parse(&value))
+                .transpose()?
+                .unwrap_or(ZcWalDataPath::from_env(ZcWalDataPath::Uring)?);
+            zcwal_extent_send(
+                &addr,
+                base_port,
+                lanes,
+                connections_per_lane,
+                bytes_per_connection,
+                extent_bytes,
+                workers,
+                framing_mode,
+                data_path,
+                ack_enabled,
+            )
+        }
+        Some("zcwal-extent-recv") => {
+            let bind = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: zcwal-extent-recv <bind> [base-port] [lanes] [connections-per-lane] [bytes-per-connection] [extent-bytes] [workers] [ack] [framing:stream|extent] [data-path:uring|blocking]",
+                )
+            })?;
+            let base_port = args
+                .next()
+                .map(|value| value.parse::<u16>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(26400);
+            let lanes = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1);
+            let connections_per_lane = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1);
+            let bytes_per_connection = args
+                .next()
+                .map(|value| parse_size_arg(&value, "bytes-per-connection"))
+                .transpose()?
+                .unwrap_or(384 * 1024 * 1024);
+            let extent_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "extent-bytes"))
+                .transpose()?
+                .unwrap_or(1024 * 1024);
+            let workers = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(0);
+            let ack_enabled = args
+                .next()
+                .map(|value| parse_bool_arg(&value, "ack"))
+                .transpose()?
+                .unwrap_or(true);
+            let framing_mode = args
+                .next()
+                .map(|value| ZcWalFramingMode::parse(&value))
+                .transpose()?
+                .unwrap_or(ZcWalFramingMode::from_env(ZcWalFramingMode::Stream)?);
+            let data_path = args
+                .next()
+                .map(|value| ZcWalDataPath::parse(&value))
+                .transpose()?
+                .unwrap_or(ZcWalDataPath::from_env(ZcWalDataPath::Uring)?);
+            zcwal_extent_recv(
+                &bind,
+                base_port,
+                lanes,
+                connections_per_lane,
+                bytes_per_connection,
+                extent_bytes,
+                workers,
+                framing_mode,
+                data_path,
+                ack_enabled,
             )
         }
         None | Some("probe") => probe(),
@@ -40355,13 +45580,13 @@ pub fn main_entry() -> io::Result<()> {
             let target = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: tcp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                    "usage: tcp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
             let bind = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: tcp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                    "usage: tcp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
             let base_port = args
@@ -40440,13 +45665,13 @@ pub fn main_entry() -> io::Result<()> {
             let target = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: udp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> <bind> [base-port] [ports] [flows-per-port] [bytes-per-flow] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                    "usage: udp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> <bind> [base-port] [ports] [flows-per-port] [bytes-per-flow] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
             let bind = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: udp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> <bind> [base-port] [ports] [flows-per-port] [bytes-per-flow] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                    "usage: udp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> <bind> [base-port] [ports] [flows-per-port] [bytes-per-flow] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
             let base_port = args
@@ -40742,7 +45967,7 @@ pub fn main_entry() -> io::Result<()> {
             let target = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: uring-baton-bench <null|PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [workers] \
+                    "usage: uring-baton-bench <null|PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [workers] \
                      [bytes-per-worker] [chunk-bytes] [pipeline-per-worker] [ring-entries] \
                      [buffer-mode] [pin-mode:true|false|hctx] [baton-mode:roundtrip|credit:N]",
                 )
@@ -40807,7 +46032,7 @@ pub fn main_entry() -> io::Result<()> {
             let target = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: uring-write-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [workers] \
+                    "usage: uring-write-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [workers] \
                      [bytes-per-worker] [chunk-bytes] [pipeline-per-worker] [ring-entries] \
                      [buffer-mode] [write-mode:write|fixed|fixed-file] [pin-workers]",
                 )
@@ -40871,7 +46096,7 @@ pub fn main_entry() -> io::Result<()> {
             let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: slot-wal-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [total-bytes] \
+                    "usage: slot-wal-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [total-bytes] \
                      [chunk-bytes] [pipeline] [ring-entries] [mode] [buffer-mode]",
                 )
             })?;
@@ -40922,7 +46147,7 @@ pub fn main_entry() -> io::Result<()> {
             let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: slot-rand-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [ops] \
+                    "usage: slot-rand-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [ops] \
                      [chunk-bytes] [pipeline] [ring-entries] [mode:read|write|rw] \
                      [read-percent] [region-bytes] [buffer-mode] [pin]",
                 )
@@ -40993,7 +46218,7 @@ pub fn main_entry() -> io::Result<()> {
             let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: slot-rand-sharded-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [workers] \
+                    "usage: slot-rand-sharded-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [workers] \
                      [ops-per-worker] [chunk-bytes] [pipeline-per-worker] [ring-entries] \
                      [mode:read|write|rw] [read-percent] [region-bytes-per-worker] \
                      [buffer-mode] [pin-workers]",
@@ -41072,7 +46297,7 @@ pub fn main_entry() -> io::Result<()> {
             let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: zckv-page-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [backend:fixed-file|slot] \
+                    "usage: zckv-page-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [backend:fixed-file|slot] \
                      [workers] [ops-per-worker] [page-bytes] [pipeline-per-worker] \
                      [ring-entries] [read-percent] [region-bytes-per-worker] [buffer-mode] \
                      [pin-workers]",
@@ -41151,7 +46376,7 @@ pub fn main_entry() -> io::Result<()> {
             let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: zckv-compact-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> \
+                    "usage: zckv-compact-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> \
                      [backend:fixed-file|slot] [workers] [ops-per-worker] [page-bytes] \
                      [pipeline-lanes-per-worker] [ring-entries] [region-bytes-per-worker] \
                      [buffer-mode] [pin-workers]",
@@ -41224,7 +46449,7 @@ pub fn main_entry() -> io::Result<()> {
             let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: slot-rw-same-slot-test <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [ops] \
+                    "usage: slot-rw-same-slot-test <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [ops] \
                      [chunk-bytes] [inflight] [ring-entries] [buffer-mode]",
                 )
             })?;
@@ -41263,7 +46488,7 @@ pub fn main_entry() -> io::Result<()> {
             let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: slot-wal-sharded-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [workers] \
+                    "usage: slot-wal-sharded-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [workers] \
                      [bytes-per-worker] [chunk-bytes] [pipeline-per-worker] [ring-entries] \
                      [mode] [buffer-mode] [pin-workers]",
                 )
@@ -41327,7 +46552,7 @@ pub fn main_entry() -> io::Result<()> {
             let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: slot-topology-plan <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> [workers] \
+                    "usage: slot-topology-plan <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [workers] \
                      [bytes-per-worker] [chunk-bytes] [pipeline-per-worker] [buffer-mode]",
                 )
             })?;
@@ -41372,7 +46597,7 @@ pub fn main_entry() -> io::Result<()> {
             let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "usage: raft-wal-follower <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN|/dev/zcstripeN> <bind> [port] \
+                    "usage: raft-wal-follower <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> <bind> [port] \
                      [entries] [payload-bytes] [pipeline] [ring-entries] \
                      [backend:fixed-file|slot|auto] [buffer-mode] \
                      [path:direct-tcp|tcp-mux|ebpf-cilium|local|rdma]",
@@ -41583,7 +46808,7 @@ pub fn main_entry() -> io::Result<()> {
                  tcp-bench-server, tcp-bench-mux-send, tcp-bench-mux-server, \
                  tcp-bench-uring-mux-send, tcp-bench-uring-mux-server, \
                  tcp-wal-mux-server, udp-wal-mux-server, udp-bench-mux-send, \
-                 zcraidd, zcnblk-target, zcnblk-send, \
+	                 zcraidd, zcblockbench, zcnblk-target, zcnblk-send, zcwal-extent-send, zcwal-extent-recv, \
                  zcjournal, zcjournal-join, zcsnap, \
                  uring-baton-bench, uring-write-bench, \
                  cache-copy-microbench, cache-smt-microbench, \

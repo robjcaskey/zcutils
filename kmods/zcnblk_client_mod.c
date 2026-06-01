@@ -5,6 +5,7 @@
 #include <linux/blkdev.h>
 #include <linux/bvec.h>
 #include <linux/atomic.h>
+#include <linux/cpu.h>
 #include <linux/crypto.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
@@ -31,6 +32,7 @@
 #include <net/tcp.h>
 
 #define ZCNBLK_NAME "zcnblk"
+#define ZCNBLK_DISK_NAME "zcnblk0"
 #define ZCNBLK_FRAME_MAGIC "ZCNBLK01"
 #define ZCNBLK_FRAME_VERSION 2
 #define ZCNBLK_FRAME_HEADER_LEN 64
@@ -50,7 +52,6 @@
 #define ZCNBLK_AES256_HANDSHAKE_LEN \
 	(ZCNBLK_AES256_MAGIC_LEN + ZCNBLK_AES256_GCM_IV_LEN * 2)
 #define ZCNBLK_AES256_DEFAULT_FRAME_BYTES (64U * 1024U)
-#define ZCNBLK_INLINE_BOUNCE_BYTES 4096
 #define ZCNBLK_MAX_REMOTE_IPS 256
 
 static char *remote_ip = "127.0.0.1";
@@ -75,7 +76,7 @@ MODULE_PARM_DESC(connections_per_lane, "TCP connections opened to each target la
 
 static uint shard_count = 1;
 module_param(shard_count, uint, 0444);
-MODULE_PARM_DESC(shard_count, "Number of remote target shards");
+MODULE_PARM_DESC(shard_count, "Must be 1; shard, mirror, stripe, and tier policy lives in userspace targets");
 
 static ulong size_mib = 1024;
 module_param(size_mib, ulong, 0444);
@@ -84,10 +85,6 @@ MODULE_PARM_DESC(size_mib, "Client block device size in MiB");
 static uint logical_block_size = 4096;
 module_param(logical_block_size, uint, 0444);
 MODULE_PARM_DESC(logical_block_size, "Logical block size");
-
-static uint stripe_unit = 393216;
-module_param(stripe_unit, uint, 0444);
-MODULE_PARM_DESC(stripe_unit, "Logical stripe unit across remote shards");
 
 static uint max_frame_bytes = 393216;
 module_param(max_frame_bytes, uint, 0444);
@@ -121,13 +118,33 @@ static uint batch_depth = 1;
 module_param(batch_depth, uint, 0444);
 MODULE_PARM_DESC(batch_depth, "Maximum same-op requests to pack into one ZCNBLK batch frame");
 
+static uint batch_fill_timeout_us;
+module_param(batch_fill_timeout_us, uint, 0444);
+MODULE_PARM_DESC(batch_fill_timeout_us, "Microseconds to wait for more queued same-lane requests before sending a partial ZCNBLK batch, 0 means send immediately");
+
 static bool hctx_affinity = true;
 module_param(hctx_affinity, bool, 0444);
 MODULE_PARM_DESC(hctx_affinity, "Map blk-mq hardware queues directly to target connections when possible");
 
+static bool pin_threads;
+module_param(pin_threads, bool, 0444);
+MODULE_PARM_DESC(pin_threads, "Pin zcnblk connection kthreads to CPUs selected by pin_base_cpu/pin_cpu_count/pin_stride");
+
+static uint pin_base_cpu;
+module_param(pin_base_cpu, uint, 0444);
+MODULE_PARM_DESC(pin_base_cpu, "Base CPU for pin_threads");
+
+static uint pin_cpu_count;
+module_param(pin_cpu_count, uint, 0444);
+MODULE_PARM_DESC(pin_cpu_count, "CPU span for pin_threads, 0 means online CPU count");
+
+static uint pin_stride = 1;
+module_param(pin_stride, uint, 0444);
+MODULE_PARM_DESC(pin_stride, "CPU stride for pin_threads");
+
 static bool shard_affinity;
 module_param(shard_affinity, bool, 0444);
-MODULE_PARM_DESC(shard_affinity, "Route single-frame requests to the lane matching their mapped shard");
+MODULE_PARM_DESC(shard_affinity, "Unsupported; shard affinity belongs in the userspace fabric target");
 
 static char *aes256_gcm_token;
 module_param(aes256_gcm_token, charp, 0400);
@@ -142,14 +159,11 @@ struct zcnblk_dev;
 struct zcnblk_pdu {
 	struct list_head entry;
 	struct request *rq;
-	void *bounce;
 	u32 shard;
 	u32 len;
 	u16 request_id;
 	u64 remote_off;
 	enum req_op op;
-	bool bounce_inline;
-	u8 inline_bounce[ZCNBLK_INLINE_BOUNCE_BYTES];
 };
 
 struct zcnblk_frame_header {
@@ -779,37 +793,29 @@ static int zcnblk_validate_resp(const struct zcnblk_frame_header *hdr, u16 op,
 	return 0;
 }
 
-static int zcnblk_map(u64 logical, u32 *shard, u64 *remote_off,
-		      u32 *stripe_remaining)
+static int zcnblk_map(u64 logical, u32 *shard, u64 *remote_off)
 {
-	u64 stripe_no;
-	u64 row;
-	u32 stripe_off;
-	u32 shard_idx;
-
-	if (!stripe_unit || !shard_count)
+	if (!shard_count)
 		return -EINVAL;
-	stripe_no = div_u64_rem(logical, stripe_unit, &stripe_off);
-	row = div_u64_rem(stripe_no, shard_count, &shard_idx);
-	*shard = shard_idx;
-	*remote_off = row * (u64)stripe_unit + stripe_off;
-	*stripe_remaining = stripe_unit - stripe_off;
+	*shard = 0;
+	*remote_off = logical;
 	return 0;
 }
 
-static int zcnblk_copy_rq_to_buf(struct request *rq, size_t rq_off,
-				 void *buf, size_t len)
+static int zcnblk_send_rq_payload(struct zcnblk_conn *conn, struct request *rq,
+				  size_t rq_off, size_t len)
 {
 	struct req_iterator iter;
 	struct bio_vec bvec;
 	size_t skipped = 0;
-	size_t copied = 0;
+	size_t sent = 0;
 
 	rq_for_each_segment(bvec, rq, iter) {
 		size_t seg_len = bvec.bv_len;
 		size_t seg_off = 0;
 		size_t take;
 		void *mapped;
+		int ret;
 
 		if (skipped + seg_len <= rq_off) {
 			skipped += seg_len;
@@ -819,35 +825,38 @@ static int zcnblk_copy_rq_to_buf(struct request *rq, size_t rq_off,
 			seg_off = rq_off - skipped;
 			seg_len -= seg_off;
 		}
-		take = min(seg_len, len - copied);
+		take = min(seg_len, len - sent);
 		if (!take)
 			break;
 
 		mapped = bvec_kmap_local(&bvec);
-		memcpy(buf + copied, mapped + seg_off, take);
+		ret = zcnblk_conn_send_all(conn, mapped + seg_off, take);
 		kunmap_local(mapped);
-		copied += take;
+		if (ret)
+			return ret;
+		sent += take;
 		skipped += bvec.bv_len;
-		if (copied == len)
+		if (sent == len)
 			return 0;
 	}
 
 	return -EIO;
 }
 
-static int zcnblk_copy_buf_to_rq(struct request *rq, size_t rq_off,
-				 const void *buf, size_t len)
+static int zcnblk_recv_rq_payload(struct zcnblk_conn *conn, struct request *rq,
+				  size_t rq_off, size_t len)
 {
 	struct req_iterator iter;
 	struct bio_vec bvec;
 	size_t skipped = 0;
-	size_t copied = 0;
+	size_t received = 0;
 
 	rq_for_each_segment(bvec, rq, iter) {
 		size_t seg_len = bvec.bv_len;
 		size_t seg_off = 0;
 		size_t take;
 		void *mapped;
+		int ret;
 
 		if (skipped + seg_len <= rq_off) {
 			skipped += seg_len;
@@ -857,17 +866,19 @@ static int zcnblk_copy_buf_to_rq(struct request *rq, size_t rq_off,
 			seg_off = rq_off - skipped;
 			seg_len -= seg_off;
 		}
-		take = min(seg_len, len - copied);
+		take = min(seg_len, len - received);
 		if (!take)
 			break;
 
 		mapped = bvec_kmap_local(&bvec);
-		memcpy(mapped + seg_off, buf + copied, take);
+		ret = zcnblk_conn_recv_all(conn, mapped + seg_off, take);
 		flush_dcache_page(bvec.bv_page);
 		kunmap_local(mapped);
-		copied += take;
+		if (ret)
+			return ret;
+		received += take;
 		skipped += bvec.bv_len;
-		if (copied == len)
+		if (received == len)
 			return 0;
 	}
 
@@ -876,25 +887,23 @@ static int zcnblk_copy_buf_to_rq(struct request *rq, size_t rq_off,
 
 static int zcnblk_do_frame(struct zcnblk_conn *conn, struct request *rq,
 			   enum req_op op, size_t rq_off, u64 logical,
-			   u32 len, void *bounce)
+			   u32 len)
 {
 	struct zcnblk_frame_header hdr;
 	u32 shard;
-	u32 stripe_rem;
 	u64 remote_off;
 	int ret;
 
-	ret = zcnblk_map(logical, &shard, &remote_off, &stripe_rem);
+	ret = zcnblk_map(logical, &shard, &remote_off);
 	if (ret)
 		return ret;
 
 	if (op == REQ_OP_WRITE) {
-		ret = zcnblk_copy_rq_to_buf(rq, rq_off, bounce, len);
-		if (ret)
-			return ret;
 		zcnblk_make_header(conn, &hdr, ZCNBLK_OP_WRITE, 0, shard, len,
 				   remote_off);
-		ret = zcnblk_send_frame_payload(conn, &hdr, bounce, len);
+		ret = zcnblk_conn_send_all(conn, &hdr, sizeof(hdr));
+		if (!ret)
+			ret = zcnblk_send_rq_payload(conn, rq, rq_off, len);
 		if (!ret && write_acks) {
 			ret = zcnblk_conn_recv_all(conn, &hdr, sizeof(hdr));
 			if (!ret)
@@ -918,10 +927,7 @@ static int zcnblk_do_frame(struct zcnblk_conn *conn, struct request *rq,
 				   remote_off);
 	if (ret)
 		return ret;
-	ret = zcnblk_recv_frame_payload(conn, &hdr, bounce, len);
-	if (ret)
-		return ret;
-	return zcnblk_copy_buf_to_rq(rq, rq_off, bounce, len);
+	return zcnblk_recv_rq_payload(conn, rq, rq_off, len);
 }
 
 static blk_status_t zcnblk_transfer_request_on_conn(struct zcnblk_dev *dev,
@@ -932,8 +938,6 @@ static blk_status_t zcnblk_transfer_request_on_conn(struct zcnblk_dev *dev,
 	u64 logical = (u64)blk_rq_pos(rq) << SECTOR_SHIFT;
 	u64 bytes = blk_rq_bytes(rq);
 	u64 done = 0;
-	void *bounce;
-	u32 bounce_bytes;
 	int ret = 0;
 
 	if (op == REQ_OP_FLUSH)
@@ -943,30 +947,17 @@ static blk_status_t zcnblk_transfer_request_on_conn(struct zcnblk_dev *dev,
 	if (logical > dev->capacity_bytes || bytes > dev->capacity_bytes - logical)
 		return BLK_STS_IOERR;
 
-	bounce_bytes = min_t(u64, bytes, max_frame_bytes);
-	bounce = kmalloc(bounce_bytes, GFP_NOIO);
-	if (!bounce)
-		return BLK_STS_RESOURCE;
-
 	while (done < bytes) {
-		u32 shard;
-		u32 stripe_rem;
-		u64 remote_off;
 		u32 frame_len;
 
-		ret = zcnblk_map(logical + done, &shard, &remote_off, &stripe_rem);
-		if (ret)
-			break;
 		frame_len = min_t(u64, bytes - done, max_frame_bytes);
-		frame_len = min(frame_len, stripe_rem);
 		ret = zcnblk_do_frame(conn, rq, op, done, logical + done,
-				      frame_len, bounce);
+				      frame_len);
 		if (ret)
 			break;
 		done += frame_len;
 	}
 
-	kfree(bounce);
 	return ret ? BLK_STS_IOERR : BLK_STS_OK;
 }
 
@@ -976,7 +967,6 @@ static bool zcnblk_request_is_single_frame(struct zcnblk_dev *dev,
 {
 	u64 logical = (u64)blk_rq_pos(rq) << SECTOR_SHIFT;
 	u64 bytes = blk_rq_bytes(rq);
-	u32 stripe_rem;
 
 	if (req_op(rq) != REQ_OP_READ && req_op(rq) != REQ_OP_WRITE)
 		return false;
@@ -984,9 +974,7 @@ static bool zcnblk_request_is_single_frame(struct zcnblk_dev *dev,
 		return false;
 	if (!bytes || bytes > max_frame_bytes || bytes > U32_MAX)
 		return false;
-	if (zcnblk_map(logical, shard, remote_off, &stripe_rem))
-		return false;
-	if (bytes > stripe_rem)
+	if (zcnblk_map(logical, shard, remote_off))
 		return false;
 	*len = bytes;
 	return true;
@@ -1005,50 +993,52 @@ static struct zcnblk_pdu *zcnblk_pop_pending(struct zcnblk_conn *conn)
 	return pdu;
 }
 
+static u32 zcnblk_pending_count(struct zcnblk_conn *conn, u32 limit)
+{
+	struct zcnblk_pdu *pdu;
+	u32 count = 0;
+
+	spin_lock(&conn->queue_lock);
+	list_for_each_entry(pdu, &conn->pending, entry) {
+		count++;
+		if (count >= limit)
+			break;
+	}
+	spin_unlock(&conn->queue_lock);
+	return count;
+}
+
+static void zcnblk_wait_for_batch_fill(struct zcnblk_conn *conn, u32 depth)
+{
+	unsigned int max_us;
+	u32 want;
+
+	if (!batch_fill_timeout_us || depth < 2)
+		return;
+
+	want = depth - 1;
+	if (zcnblk_pending_count(conn, want) >= want)
+		return;
+
+	max_us = batch_fill_timeout_us > UINT_MAX / 2 ? UINT_MAX :
+						 batch_fill_timeout_us * 2;
+	usleep_range(batch_fill_timeout_us, max_us);
+}
+
 static void zcnblk_complete_pdu(struct zcnblk_pdu *pdu, blk_status_t status)
 {
 	struct request *rq = pdu->rq;
 
-	if (pdu->bounce && !pdu->bounce_inline)
-		kfree(pdu->bounce);
-	pdu->bounce = NULL;
-	pdu->bounce_inline = false;
 	pdu->rq = NULL;
 	blk_mq_end_request(rq, status);
 }
 
-static void zcnblk_free_pdu_bounce(struct zcnblk_pdu *pdu)
-{
-	if (pdu->bounce && !pdu->bounce_inline)
-		kfree(pdu->bounce);
-	pdu->bounce = NULL;
-	pdu->bounce_inline = false;
-}
-
 static int zcnblk_prepare_pdu(struct zcnblk_conn *conn, struct zcnblk_pdu *pdu)
 {
-	int ret;
-
 	pdu->op = req_op(pdu->rq);
 	if (!zcnblk_request_is_single_frame(conn->dev, pdu->rq, &pdu->shard,
 					    &pdu->remote_off, &pdu->len))
 		return -EOPNOTSUPP;
-
-	if (pdu->len <= ZCNBLK_INLINE_BOUNCE_BYTES) {
-		pdu->bounce = pdu->inline_bounce;
-		pdu->bounce_inline = true;
-	} else {
-		pdu->bounce = kmalloc(pdu->len, GFP_NOIO);
-		pdu->bounce_inline = false;
-		if (!pdu->bounce)
-			return -ENOMEM;
-	}
-
-	if (pdu->op == REQ_OP_WRITE) {
-		ret = zcnblk_copy_rq_to_buf(pdu->rq, 0, pdu->bounce, pdu->len);
-		if (ret)
-			return ret;
-	}
 
 	pdu->request_id = conn->next_request_id++;
 	return 0;
@@ -1064,10 +1054,9 @@ static int zcnblk_send_prepared_pdu(struct zcnblk_conn *conn,
 		zcnblk_make_header(conn, &hdr, ZCNBLK_OP_WRITE,
 				   pdu->request_id, pdu->shard, pdu->len,
 				   pdu->remote_off);
-		ret = zcnblk_send_frame_payload(conn, &hdr, pdu->bounce,
-						pdu->len);
-		if (!write_acks)
-			zcnblk_free_pdu_bounce(pdu);
+		ret = zcnblk_conn_send_all(conn, &hdr, sizeof(hdr));
+		if (!ret)
+			ret = zcnblk_send_rq_payload(conn, pdu->rq, 0, pdu->len);
 		return ret;
 	}
 
@@ -1138,10 +1127,11 @@ static int zcnblk_send_batch(struct zcnblk_conn *conn, struct zcnblk_pdu *first)
 		zcnblk_add_inflight_or_complete(conn, first);
 		return 0;
 	}
+	zcnblk_wait_for_batch_fill(conn, depth);
 
 	pdus = kcalloc(depth, sizeof(*pdus), GFP_NOIO);
 	hdrs = kcalloc(depth, sizeof(*hdrs), GFP_NOIO);
-	iov = kcalloc(depth + 2, sizeof(*iov), GFP_NOIO);
+	iov = kcalloc(2, sizeof(*iov), GFP_NOIO);
 	if (!pdus || !hdrs || !iov) {
 		kfree(iov);
 		kfree(hdrs);
@@ -1210,18 +1200,15 @@ static int zcnblk_send_batch(struct zcnblk_conn *conn, struct zcnblk_pdu *first)
 	iov[iov_count++].iov_len = sizeof(outer);
 	iov[iov_count].iov_base = hdrs;
 	iov[iov_count++].iov_len = count * sizeof(*hdrs);
-	if (batch_op == REQ_OP_WRITE) {
-		for (i = 0; i < count; i++) {
-			iov[iov_count].iov_base = pdus[i]->bounce;
-			iov[iov_count++].iov_len = pdus[i]->len;
-			total_len += pdus[i]->len;
-		}
-	}
 
 	ret = zcnblk_conn_send_iov_all(conn, iov, iov_count, total_len);
-	if (batch_op == REQ_OP_WRITE && !write_acks) {
-		for (i = 0; i < count; i++)
-			zcnblk_free_pdu_bounce(pdus[i]);
+	if (!ret && batch_op == REQ_OP_WRITE) {
+		for (i = 0; i < count; i++) {
+			ret = zcnblk_send_rq_payload(conn, pdus[i]->rq, 0,
+						     pdus[i]->len);
+			if (ret)
+				break;
+		}
 	}
 	if (ret) {
 		for (i = 0; i < count; i++)
@@ -1310,13 +1297,7 @@ static int zcnblk_complete_response_header(struct zcnblk_conn *conn,
 	conn->inflight_count--;
 
 	if (response_op == ZCNBLK_OP_READ_RESP) {
-		ret = zcnblk_recv_frame_payload(conn, hdr, pdu->bounce,
-						pdu->len);
-		if (ret) {
-			zcnblk_complete_pdu(pdu, BLK_STS_IOERR);
-			return ret;
-		}
-		ret = zcnblk_copy_buf_to_rq(pdu->rq, 0, pdu->bounce, pdu->len);
+		ret = zcnblk_recv_rq_payload(conn, pdu->rq, 0, pdu->len);
 		zcnblk_complete_pdu(pdu, ret ? BLK_STS_IOERR : BLK_STS_OK);
 	} else {
 		ret = zcnblk_recv_frame_payload(conn, hdr, NULL, 0);
@@ -1554,8 +1535,6 @@ static blk_status_t zcnblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 
 	INIT_LIST_HEAD(&pdu->entry);
 	pdu->rq = rq;
-	pdu->bounce = NULL;
-	pdu->bounce_inline = false;
 
 	if (shard_affinity) {
 		u32 shard;
@@ -1626,6 +1605,23 @@ static void zcnblk_disconnect_all(struct zcnblk_dev *dev)
 	dev->active_conns = 0;
 }
 
+static int zcnblk_thread_pin_cpu(u32 conn_id, unsigned int *cpu)
+{
+	unsigned int count = pin_cpu_count ? pin_cpu_count : num_online_cpus();
+	unsigned int stride = pin_stride ? pin_stride : 1;
+	unsigned int target;
+	u64 offset;
+
+	if (!count)
+		return -EINVAL;
+	offset = (u64)conn_id * stride;
+	target = pin_base_cpu + (unsigned int)(offset % count);
+	if (target >= nr_cpu_ids || !cpu_online(target))
+		return -EINVAL;
+	*cpu = target;
+	return 0;
+}
+
 static int zcnblk_connect_one(struct zcnblk_dev *dev, struct zcnblk_conn *conn,
 			      u32 lane, u32 stream, u32 conn_id, __be32 addr)
 {
@@ -1664,8 +1660,8 @@ static int zcnblk_connect_one(struct zcnblk_dev *dev, struct zcnblk_conn *conn,
 		conn->sock = NULL;
 		return ret;
 	}
-	conn->thread = kthread_run(zcnblk_conn_thread, conn, "zcnblk-%u-%u",
-				   lane, stream);
+	conn->thread = kthread_create(zcnblk_conn_thread, conn, "zcnblk-%u-%u",
+				      lane, stream);
 	if (IS_ERR(conn->thread)) {
 		ret = PTR_ERR(conn->thread);
 		conn->thread = NULL;
@@ -1675,6 +1671,19 @@ static int zcnblk_connect_one(struct zcnblk_dev *dev, struct zcnblk_conn *conn,
 		zcnblk_crypto_free_conn(conn);
 		return ret;
 	}
+	if (pin_threads) {
+		unsigned int cpu;
+
+		ret = zcnblk_thread_pin_cpu(conn_id, &cpu);
+		if (ret) {
+			pr_warn("zcnblk: PERF WARNING: pin_threads requested but conn_id=%u lane=%u stream=%u maps to invalid/offline CPU base=%u count=%u stride=%u; leaving thread unpinned\n",
+				conn_id, lane, stream, pin_base_cpu, pin_cpu_count,
+				pin_stride);
+		} else {
+			kthread_bind(conn->thread, cpu);
+		}
+	}
+	wake_up_process(conn->thread);
 	return 0;
 }
 
@@ -1779,19 +1788,38 @@ static int __init zcnblk_init(void)
 	u32 nr_queues;
 	int ret;
 
-	if (!lanes || !connections_per_lane || !shard_count || !size_mib || !stripe_unit ||
+	if (!lanes || !connections_per_lane || !shard_count || !size_mib ||
 	    !max_frame_bytes || !queue_depth || !batch_depth)
 		return -EINVAL;
+	if (shard_count != 1) {
+		pr_err("zcnblk: shard_count=%u rejected; kernel client is only the fabric block edge, userspace owns striping and mirroring\n",
+		       shard_count);
+		return -EINVAL;
+	}
+	if (shard_affinity) {
+		pr_err("zcnblk: shard_affinity rejected; userspace target/gateway owns shard placement\n");
+		return -EINVAL;
+	}
 	if (remote_port_base > U16_MAX - lanes)
 		return -EINVAL;
 	if (blk_validate_block_size(logical_block_size))
 		return -EINVAL;
-	if (stripe_unit % logical_block_size || max_frame_bytes % logical_block_size)
+	if (max_frame_bytes % logical_block_size)
 		return -EINVAL;
 	if (check_mul_overflow((u64)size_mib, (u64)SZ_1M, &capacity_bytes))
 		return -EOVERFLOW;
 	if (check_mul_overflow(lanes, connections_per_lane, &total_conns))
 		return -EOVERFLOW;
+	if (!pin_threads)
+		pr_warn("zcnblk: PERF WARNING: connection kthreads are not module-pinned; set pin_threads=1 pin_base_cpu=<cpu> pin_cpu_count=<n> pin_stride=<n>, or bind [zcnblk-L-S] kthreads with taskset before benchmarking\n");
+	if (!hctx_affinity)
+		pr_warn("zcnblk: PERF WARNING: hctx_affinity=0; blk-mq queues will not map directly to target connections\n");
+	if (batch_depth <= 1 && pipeline_depth > 1)
+		pr_warn("zcnblk: PERF WARNING: batch_depth=1 with pipeline_depth=%u; 4K IOPS runs will pay more per-request wakeup/header overhead\n",
+			pipeline_depth);
+	if (batch_depth > 1 && !batch_fill_timeout_us)
+		pr_warn("zcnblk: PERF WARNING: batch_depth=%u but batch_fill_timeout_us=0; connection kthreads may send underfilled batches before fio has filled the lane queue\n",
+			batch_depth);
 	zcnblk_dev = kzalloc(sizeof(*zcnblk_dev), GFP_KERNEL);
 	if (!zcnblk_dev)
 		return -ENOMEM;
@@ -1830,7 +1858,6 @@ static int __init zcnblk_init(void)
 	lim.logical_block_size = logical_block_size;
 	lim.physical_block_size = logical_block_size;
 	lim.io_min = logical_block_size;
-	lim.io_opt = stripe_unit;
 	lim.max_segments = USHRT_MAX;
 	lim.max_segment_size = UINT_MAX;
 	lim.max_hw_sectors = max_frame_bytes >> SECTOR_SHIFT;
@@ -1847,19 +1874,20 @@ static int __init zcnblk_init(void)
 	zcnblk_dev->disk->minors = 1;
 	zcnblk_dev->disk->fops = &zcnblk_fops;
 	zcnblk_dev->disk->private_data = zcnblk_dev;
-	strscpy(zcnblk_dev->disk->disk_name, "zcnblk0", DISK_NAME_LEN);
+	strscpy(zcnblk_dev->disk->disk_name, ZCNBLK_DISK_NAME, DISK_NAME_LEN);
 	set_capacity(zcnblk_dev->disk, capacity_bytes >> SECTOR_SHIFT);
 
 	ret = add_disk(zcnblk_dev->disk);
 	if (ret)
 		goto out_put_disk;
 
-	pr_info("zcnblk: /dev/zcnblk0 remote=%s remote_ips=%s remote_count=%u port_base=%u lanes=%u connections_per_lane=%u total_conns=%u shards=%u bytes=%llu stripe=%u frame=%u queues=%u depth=%u pipeline_depth=%u batch_depth=%u fill_timeout_ms=%u write_acks=%d hctx_affinity=%d shard_affinity=%d encryption=%s aes_frame=%u publish_delay_ms=%u\n",
-		remote_ip, remote_ips ? remote_ips : "-", zcnblk_remote_addr_count,
+	pr_info("zcnblk: /dev/%s remote=%s remote_ips=%s remote_count=%u port_base=%u lanes=%u connections_per_lane=%u total_conns=%u shards=%u bytes=%llu frame=%u queues=%u depth=%u pipeline_depth=%u batch_depth=%u batch_fill_timeout_us=%u fill_timeout_ms=%u write_acks=%d hctx_affinity=%d pin_threads=%d pin_base_cpu=%u pin_cpu_count=%u pin_stride=%u shard_affinity=%d encryption=%s aes_frame=%u publish_delay_ms=%u\n",
+		ZCNBLK_DISK_NAME, remote_ip, remote_ips ? remote_ips : "-", zcnblk_remote_addr_count,
 		remote_port_base, lanes, connections_per_lane,
-		total_conns, shard_count, capacity_bytes, stripe_unit,
-		max_frame_bytes, nr_queues, queue_depth, pipeline_depth,
-		batch_depth, fill_timeout_ms, write_acks, hctx_affinity,
+		total_conns, shard_count, capacity_bytes, max_frame_bytes,
+		nr_queues, queue_depth, pipeline_depth,
+		batch_depth, batch_fill_timeout_us, fill_timeout_ms, write_acks,
+		hctx_affinity, pin_threads, pin_base_cpu, pin_cpu_count, pin_stride,
 		shard_affinity,
 		zcnblk_crypto_enabled(zcnblk_dev) ? "aes-256-gcm" : "none",
 		aes256_gcm_frame_bytes, publish_delay_ms);
@@ -1901,5 +1929,5 @@ module_init(zcnblk_init);
 module_exit(zcnblk_exit);
 
 MODULE_AUTHOR("zcutils");
-MODULE_DESCRIPTION("zcnblk client-side TCP block device");
+MODULE_DESCRIPTION("zcnblk SAN fabric client block device");
 MODULE_LICENSE("GPL");

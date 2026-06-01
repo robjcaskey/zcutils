@@ -47,6 +47,13 @@ zc-tcpmux-xfer ./file nodeB:/tmp/file
   network experiments.
 - `zcraid-split`, `zcraid-merge`, and `zctier`: userspace RAID/fanout,
   reassembly, hot-tier, and bounded spill building blocks.
+- `/dev/zcnblk0`: the client-side block onramp to the SAN fabric. It is backed
+  by the `zcnblk` wire protocol today, but the block device users point fio,
+  databases, and filesystems at is `/dev/zcnblk0`.
+- `zcbrd`: optional RAM-backed block media for targets and tests. Mid-tree
+  fanout, fanin, forwarding, RAID0/RAID1 policy, tier routing, tier spill
+  decisions, and backpressure stay in userspace. Block is only the client
+  onramp or the last hop where a userspace target finally lands bytes.
 - `zcwritebench` and the umbrella-only benchmark subcommands such as
   `slot-wal-bench`, `slot-rand-bench`, `slot-rand-sharded-bench`,
   `zckv-page-bench`, and `zckv-compact-bench`: low-level io_uring and storage
@@ -104,11 +111,16 @@ without dragging in the SAN stack.
   means by lanes.
 - `docs/wal-extent-framing.md`: lane-preserving WAL extent framing for logical
   4K records over coalesced physical appends.
+- `docs/zccu-target-architecture.html`: rendered single-page topology for the
+  concrete `/dev/zcnblk0 -> tcpmux -> zctee -> split tree -> zcbrd` layout.
+- `scripts/render-zccu-volume-layout.py`: `uv` Python renderer for that HTML
+  topology artifact.
 - `docs/zcutils-commands.md`: command design and examples.
 - `src/bin/zc-tcpmux-send.rs` and `src/bin/zc-tcpmux-receive.rs`: the golden
   child sample app pair for stream transport behavior.
 - `docs/block-vs-userspace-bench-plan.md`: benchmark plan and short recipes
-  for comparing kernel block, zcnblk, TCP userspace, and zcraid logical paths.
+  for comparing `/dev/zcnblk0`, the zcnblk wire path, TCP userspace, and zcraid
+  logical paths.
 - `docs/man/zcutils.1.md`: man-page style command reference.
 - `docs/nvme-slot-topology-todo.md`: storage topology notes.
 

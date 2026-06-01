@@ -1,0 +1,35 @@
+zcnblk-randread-q192-under-trimmed-stream: (g=0): rw=randread, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=io_uring, iodepth=64
+...
+fio-3.36
+Starting 64 processes
+
+zcnblk-randread-q192-under-trimmed-stream: (groupid=0, jobs=64): err= 0: pid=171247: Sun May 31 23:57:16 2026
+  read: IOPS=3146k, BW=12.0GiB/s (12.9GB/s)(120GiB/10004msec)
+    slat (nsec): min=792, max=40667k, avg=3387.72, stdev=21500.13
+    clat (usec): min=37, max=3978.9k, avg=1297.57, stdev=11074.86
+     lat (usec): min=386, max=3978.9k, avg=1300.95, stdev=11074.97
+    clat percentiles (usec):
+     |  1.00th=[  586],  5.00th=[  652], 10.00th=[  693], 20.00th=[  766],
+     | 30.00th=[  824], 40.00th=[  881], 50.00th=[  955], 60.00th=[ 1045],
+     | 70.00th=[ 1172], 80.00th=[ 1401], 90.00th=[ 2114], 95.00th=[ 2900],
+     | 99.00th=[ 4228], 99.50th=[ 5669], 99.90th=[13566], 99.95th=[21365],
+     | 99.99th=[43779]
+   bw (  MiB/s): min= 8912, max=17051, per=99.15%, avg=12185.49, stdev=42.03, samples=1216
+   iops        : min=2281516, max=4365136, avg=3119484.84, stdev=10759.85, samples=1216
+  lat (usec)   : 50=0.01%, 100=0.01%, 250=0.01%, 500=0.08%, 750=17.41%
+  lat (usec)   : 1000=37.85%
+  lat (msec)   : 2=33.71%, 4=9.76%, 10=1.03%, 20=0.12%, 50=0.05%
+  lat (msec)   : 100=0.01%, 250=0.01%, 500=0.01%, 750=0.01%, 1000=0.01%
+  lat (msec)   : 2000=0.01%, >=2000=0.01%
+  cpu          : usr=3.75%, sys=19.18%, ctx=4560761, majf=0, minf=7612
+  IO depths    : 1=0.1%, 2=0.1%, 4=0.1%, 8=0.1%, 16=0.1%, 32=0.1%, >=64=100.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.1%, >=64=0.0%
+     issued rwts: total=31476284,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=64
+
+Run status group 0 (all jobs):
+   READ: bw=12.0GiB/s (12.9GB/s), 12.0GiB/s-12.0GiB/s (12.9GB/s-12.9GB/s), io=120GiB (129GB), run=10004-10004msec
+
+Disk stats (read/write):
+  zcnblk0: ios=30813668/0, sectors=246509376/0, merge=0/0, ticks=38594266/0, in_queue=38594266, util=98.37%

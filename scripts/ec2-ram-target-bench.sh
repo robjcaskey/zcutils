@@ -12,7 +12,6 @@ ZCBRD_BLOCKSIZE="${ZCBRD_BLOCKSIZE:-4096}"
 ZCBRD_QUEUES="${ZCBRD_QUEUES:-$CPUS}"
 ZCBRD_QUEUE_DEPTH="${ZCBRD_QUEUE_DEPTH:-2048}"
 ZCBRD_SHARDS="${ZCBRD_SHARDS:-$CPUS}"
-ZCSTRIPE_UNIT="${ZCSTRIPE_UNIT:-1048576}"
 
 LOCAL_WORKERS="${LOCAL_WORKERS:-$CPUS}"
 LOCAL_BYTES_PER_WORKER="${LOCAL_BYTES_PER_WORKER:-268435456}"
@@ -41,8 +40,8 @@ usage: scripts/ec2-ram-target-bench.sh <command> [target-ip]
 
 commands:
   bootstrap       install build dependencies and rustup
-  build           build zcutils and the zcbrd/zcstripe modules
-  target-setup    load modules and create /dev/zcbrd[0..] plus /dev/zcstripe0
+  build           build zcutils and the zcbrd lab module
+  target-setup    load modules and create /dev/zcbrd[0..]
   target-local    run local RAM-device write benchmarks on the target node
   target-server   start tcp-wal-mux-server in tmux on the target node
   target-stop     stop the target tmux server if it is still running
@@ -108,7 +107,7 @@ cmd_build() {
 	ensure_rust
 	log "building zcutils release binary"
 	(cd "$REPO_DIR" && cargo build --release --bin zcutils --bin zcprobe)
-	log "building RAM block target modules"
+	log "building zcbrd RAM backing module"
 	(cd "$REPO_DIR" && make -C kmods)
 }
 
@@ -140,9 +139,6 @@ load_modules() {
 	if ! lsmod | awk '{print $1}' | grep -qx zcbrd_mod; then
 		sudo insmod "$REPO_DIR/kmods/zcbrd_mod.ko"
 	fi
-	if ! lsmod | awk '{print $1}' | grep -qx zcstripe_mod; then
-		sudo insmod "$REPO_DIR/kmods/zcstripe_mod.ko"
-	fi
 }
 
 create_zcbrd() {
@@ -167,26 +163,8 @@ cmd_target_setup() {
 		create_zcbrd "zcbrd$idx"
 	done
 
-	local targets=()
-	for idx in $(seq 0 $((ZCBRD_DEVS - 1))); do
-		targets+=("/dev/zcbrd$idx")
-	done
-	local target_csv
-	target_csv="$(IFS=,; printf '%s' "${targets[*]}")"
-	local dir="/sys/kernel/config/zcstripe/zcstripe0"
-	reset_configfs_dir "$dir"
-	sudo mkdir "$dir"
-	tee_attr "$dir/targets" "$target_csv"
-	tee_attr "$dir/stripe_unit" "$ZCSTRIPE_UNIT"
-	tee_attr "$dir/blocksize" "$ZCBRD_BLOCKSIZE"
-	tee_attr "$dir/queues" "$ZCBRD_QUEUES"
-	tee_attr "$dir/queue_depth" "$ZCBRD_QUEUE_DEPTH"
-	tee_attr "$dir/descriptor_mode" advertise
-	tee_attr "$dir/power" 1
-	wait_for_path /dev/zcstripe0
-
 	mkdir -p "$LOG_DIR"
-	lsblk -b -o NAME,SIZE,LOG-SEC,PHY-SEC,ROTA,TYPE /dev/zcbrd* /dev/zcstripe0 |
+	lsblk -b -o NAME,SIZE,LOG-SEC,PHY-SEC,ROTA,TYPE /dev/zcbrd* |
 		tee "$LOG_DIR/target-block-devices.log"
 }
 
@@ -206,7 +184,8 @@ cmd_probe() {
 cmd_target_local() {
 	mkdir -p "$LOG_DIR"
 	cmd_probe
-	for dev in /dev/zcbrd0 /dev/zcstripe0; do
+	for dev in /dev/zcbrd*; do
+		[ -b "$dev" ] || continue
 		log "local uring write bench $dev"
 		URING_PLAY_URING_WRITE_COMPLETION_BATCH="${URING_PLAY_URING_WRITE_COMPLETION_BATCH:-64}" \
 			"$BIN" uring-write-bench "$dev" "$LOCAL_WORKERS" "$LOCAL_BYTES_PER_WORKER" \
@@ -225,7 +204,7 @@ cmd_target_server() {
 	fi
 	local cmd
 	printf -v cmd \
-		'cd %q && mkdir -p %q && URING_PLAY_TCP_WAL_MODE=%q URING_PLAY_TCP_WAL_WRITE_MODE=%q URING_PLAY_WAL_BASE_OFFSET_BYTES=%q %s %q tcp-wal-mux-server /dev/zcstripe0 0.0.0.0 %q %q %q %q %q %q %q %q small-pages true 2>&1 | tee %q' \
+		'cd %q && mkdir -p %q && URING_PLAY_TCP_WAL_MODE=%q URING_PLAY_TCP_WAL_WRITE_MODE=%q URING_PLAY_WAL_BASE_OFFSET_BYTES=%q %s %q tcp-wal-mux-server /dev/zcbrd0 0.0.0.0 %q %q %q %q %q %q %q %q small-pages true 2>&1 | tee %q' \
 		"$REPO_DIR" "$LOG_DIR" "$SERVER_PIPELINE_MODE" "$SERVER_WRITE_MODE" \
 		"$WAL_BASE_OFFSET_BYTES" "$wal_region_env" "$BIN" "$BASE_PORT" "$PORTS" \
 		"$CONNS_PER_PORT" "$BYTES_PER_CONN" "$NET_CHUNK" "$NET_PIPELINE" \

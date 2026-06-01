@@ -558,6 +558,9 @@ fn fanout_source_len(source: &fs::File, path: &str, requested_bytes: u64) -> io:
                 ),
             ));
         }
+        eprintln!(
+            "zcfanplan-source: kind=block-edge-adapter path={path} bytes={requested_bytes} device_bytes={device_bytes} topology=userspace"
+        );
         return Ok(requested_bytes);
     }
 
@@ -708,7 +711,9 @@ fn print_usage() {
          The output is JSON. Each lane owns a deterministic sparse extent stream:\n\
          chunk = first_chunk + k * chunk_stride. That is the structure needed for\n\
          fast RAID0 fanout without a single stdin splitter. The send subcommand\n\
-         expects matching zc-tcpmux-receive processes to already be listening."
+         expects matching zc-tcpmux-receive processes to already be listening.\n\
+         Block devices are accepted only as edge adapters for ingress/testing;\n\
+         fanout, lane scheduling, and remux topology remain userspace concerns."
     );
 }
 

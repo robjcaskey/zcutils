@@ -1,0 +1,32 @@
+zcbrd-nt-write-randwrite-q192-j96-d128-10s: (g=0): rw=randwrite, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=io_uring, iodepth=128
+...
+fio-3.36
+Starting 96 processes
+
+zcbrd-nt-write-randwrite-q192-j96-d128-10s: (groupid=0, jobs=96): err= 0: pid=184310: Mon Jun  1 00:10:04 2026
+  write: IOPS=5692k, BW=21.7GiB/s (23.3GB/s)(217GiB/10005msec); 0 zone resets
+    slat (nsec): min=879, max=573791, avg=3143.50, stdev=1927.06
+    clat (usec): min=387, max=11630, avg=2154.80, stdev=872.51
+     lat (usec): min=408, max=11640, avg=2157.94, stdev=872.73
+    clat percentiles (usec):
+     |  1.00th=[  898],  5.00th=[ 1037], 10.00th=[ 1139], 20.00th=[ 1303],
+     | 30.00th=[ 1467], 40.00th=[ 1762], 50.00th=[ 2180], 60.00th=[ 2409],
+     | 70.00th=[ 2606], 80.00th=[ 2868], 90.00th=[ 3326], 95.00th=[ 3621],
+     | 99.00th=[ 4228], 99.50th=[ 5014], 99.90th=[ 6980], 99.95th=[ 8029],
+     | 99.99th=[ 9372]
+   bw (  MiB/s): min=14700, max=32112, per=99.96%, avg=22226.82, stdev=65.05, samples=1824
+   iops        : min=3763341, max=8220692, avg=5690066.47, stdev=16652.66, samples=1824
+  lat (usec)   : 500=0.01%, 750=0.05%, 1000=3.67%
+  lat (msec)   : 2=42.48%, 4=52.37%, 10=1.42%, 20=0.01%
+  cpu          : usr=4.23%, sys=22.45%, ctx=18914468, majf=0, minf=7245
+  IO depths    : 1=0.1%, 2=0.1%, 4=0.1%, 8=0.1%, 16=0.1%, 32=0.1%, >=64=100.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.1%
+     issued rwts: total=0,56949123,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=128
+
+Run status group 0 (all jobs):
+  WRITE: bw=21.7GiB/s (23.3GB/s), 21.7GiB/s-21.7GiB/s (23.3GB/s-23.3GB/s), io=217GiB (233GB), run=10005-10005msec
+
+Disk stats (read/write):
+  zcnblk0: ios=0/55980216, sectors=0/447841832, merge=0/0, ticks=0/120432978, in_queue=120432979, util=100.00%

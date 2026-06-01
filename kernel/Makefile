@@ -1,7 +1,6 @@
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
 obj-m += zcbrd_mod.o
-obj-m += zcstripe_mod.o
 
 ccflags-y += -Wno-declaration-after-statement
 

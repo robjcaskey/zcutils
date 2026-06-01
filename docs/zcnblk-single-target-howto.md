@@ -1,8 +1,9 @@
 # Single Unencrypted zcnblk Target Howto
 
-This is the basic block-device howto for a single unencrypted `zcnblk` target.
+This is the basic block-device howto for a single unencrypted `/dev/zcnblk0`
+client onramp talking to a `zcnblk-target` userspace service.
 It is intentionally not yet as pipeliney, code-sharing, or decomposed as it
-should be for its proper place in the zc cinmeatic uniuverse. Treat it as the
+should be for its proper place in the zc cinematic universe. Treat it as the
 current reproducible block harness: good for conventional `/dev/zcnblk0` fio
 comparisons and transport hot-path work, not yet the final shape for WAL,
 RAID, descriptor lanes, or Raft integration.
@@ -32,6 +33,14 @@ The recorded benchmark used:
 by the target, so the numbers below validate the client, network, framing,
 target dispatch, and block submission path. They do not prove persistent media
 speed, read-after-write correctness, or checksum durability.
+
+The architectural boundary is strict: `/dev/zcnblk0` is the client block device
+for the SAN fabric. Target hosts run userspace services. They may use
+`zcdevnullN`, `zctier:...`, files, real allowlisted devices, or optional
+`/dev/zcbrdN` RAM media as backing. Tier spill, backpressure, RAID0/RAID1
+policy, forwarding, fanout/fanin, and descriptor lane scheduling stay in
+userspace. If hot or spill bytes land on a block device, that device is only
+the last hop. Custom stripe block devices are not `zcnblk` target backends.
 
 ## Point-To-Point Config
 
@@ -129,7 +138,6 @@ sudo insmod kmods/zcnblk_client_mod.ko \
   shard_count=1 \
   size_mib=8192 \
   logical_block_size=4096 \
-  stripe_unit=4096 \
   max_frame_bytes=4096 \
   queues=64 \
   queue_depth=256 \
@@ -143,7 +151,15 @@ sudo insmod kmods/zcnblk_client_mod.ko \
 The fast 4K path depends on `hctx_affinity=1`, which maps blk-mq hardware
 queues directly onto target connections and avoids the old global connection
 picker. Keep `batch_depth=1` for this shape; request batching was slower in the
-single-target 4K fio run.
+single-target 4K fio run. Keep `shard_count=1`: the kernel client is the fabric
+block edge only, so shard placement, striping, mirroring, and tier spill remain
+in the userspace target/gateway.
+
+For the `zcnblk-target zcwal:...` onramp, `batch_depth` has a different job:
+it coalesces adjacent device-edge write requests before the userspace WAL
+write. Use a target `pipeline` at least as large as `batch_depth`; the target
+still validates each inner request's lane, shard, offset, and length, then moves
+the contiguous batch payload into the WAL as one splice/copy group.
 
 After loading, verify that the device exists:
 

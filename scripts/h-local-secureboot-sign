@@ -10,7 +10,7 @@ expected_signer="${LOCAL_KERNEL_SIGNER:-NVIDIA Driver Signing Key}"
 backup_dir="${LOCAL_KERNEL_UNSIGNED_DIR:-/var/lib/local-kernel-signing/unsigned}"
 
 case "${version}" in
-	*-io-slots|*-local|*-p2pdma|*-netdevsim|*-uring) ;;
+	*-io-slots|*-io-slots-*|*-zcslots|*-local|*-p2pdma|*-netdevsim|*-uring) ;;
 	*) exit 0 ;;
 esac
 

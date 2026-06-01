@@ -25,9 +25,8 @@ const DEFAULT_STATE_DIR: &str = "/var/lib/zcblock-csi";
 const DEFAULT_FREEZE_MAX_TTL_MS: u64 = 5_000;
 const FREEZE_COMMAND_TIMEOUT_MS: u64 = 250;
 const DEFAULT_CONFIGFS_ROOT: &str = "/sys/kernel/config/zcbrd";
-const DEFAULT_COW_SNAPSHOT_CONFIGFS_ROOT: &str = "/sys/kernel/config/zccowsnap";
-const DEFAULT_WAL_SNAPSHOT_CONFIGFS_ROOT: &str = "/sys/kernel/config/zcwalsnap";
 const DEFAULT_DEV_ROOT: &str = "/dev";
+const DEFAULT_FABRIC_DEVICE_NAME: &str = "zcnblk0";
 const DEFAULT_RAW_ALLOWLIST: &str = "/etc/zcblock-csi/allowed-raw-partitions.txt";
 const DEFAULT_SNAPSHOT_MODE: &str = "auto";
 const DEFAULT_REPLICATION_BUFFER_BYTES: usize = 1024 * 1024;
@@ -43,9 +42,8 @@ struct Config {
     state_dir: PathBuf,
     freeze_max_ttl_ms: u64,
     configfs_root: PathBuf,
-    cow_snapshot_configfs_root: PathBuf,
-    wal_snapshot_configfs_root: PathBuf,
     dev_root: PathBuf,
+    fabric_device_name: String,
     raw_allowlist: PathBuf,
     snapshot_mode: String,
     logstream_path: PathBuf,
@@ -170,12 +168,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = TcpListener::bind(&cfg.listen)?;
     eprintln!(
-        "zcblock-control {} listening on {} state_dir={} logstream={} snapshot_mode={} max_freeze_ttl_ms={}",
+        "zcblock-control {} listening on {} state_dir={} logstream={} snapshot_mode={} fabric_device={} max_freeze_ttl_ms={}",
         env!("CARGO_PKG_VERSION"),
         cfg.listen,
         cfg.state_dir.display(),
         cfg.logstream_path.display(),
         cfg.snapshot_mode,
+        cfg.fabric_device_name,
         cfg.freeze_max_ttl_ms
     );
 
@@ -217,16 +216,11 @@ impl Config {
         let mut configfs_root = PathBuf::from(
             env::var("ZCBLOCK_CONFIGFS_ROOT").unwrap_or_else(|_| DEFAULT_CONFIGFS_ROOT.into()),
         );
-        let mut cow_snapshot_configfs_root = PathBuf::from(
-            env::var("ZCBLOCK_COW_SNAPSHOT_CONFIGFS_ROOT")
-                .unwrap_or_else(|_| DEFAULT_COW_SNAPSHOT_CONFIGFS_ROOT.into()),
-        );
-        let mut wal_snapshot_configfs_root = PathBuf::from(
-            env::var("ZCBLOCK_WAL_SNAPSHOT_CONFIGFS_ROOT")
-                .unwrap_or_else(|_| DEFAULT_WAL_SNAPSHOT_CONFIGFS_ROOT.into()),
-        );
         let mut dev_root =
             PathBuf::from(env::var("ZCBLOCK_DEV_ROOT").unwrap_or_else(|_| DEFAULT_DEV_ROOT.into()));
+        let mut fabric_device_name = env::var("ZCCUSAN_FABRIC_DEVICE_NAME")
+            .or_else(|_| env::var("ZCBLOCK_FABRIC_DEVICE_NAME"))
+            .unwrap_or_else(|_| DEFAULT_FABRIC_DEVICE_NAME.to_string());
         let mut raw_allowlist = PathBuf::from(
             env::var("ZCBLOCK_RAW_ALLOWLIST").unwrap_or_else(|_| DEFAULT_RAW_ALLOWLIST.into()),
         );
@@ -254,12 +248,10 @@ impl Config {
                     .map_err(|_| "--freeze-max-ttl-ms must be an integer".to_string())?;
             } else if let Some(value) = arg.strip_prefix("--configfs-root=") {
                 configfs_root = PathBuf::from(value);
-            } else if let Some(value) = arg.strip_prefix("--cow-snapshot-configfs-root=") {
-                cow_snapshot_configfs_root = PathBuf::from(value);
-            } else if let Some(value) = arg.strip_prefix("--wal-snapshot-configfs-root=") {
-                wal_snapshot_configfs_root = PathBuf::from(value);
             } else if let Some(value) = arg.strip_prefix("--dev-root=") {
                 dev_root = PathBuf::from(value);
+            } else if let Some(value) = arg.strip_prefix("--fabric-device-name=") {
+                fabric_device_name = value.to_string();
             } else if let Some(value) = arg.strip_prefix("--raw-allowlist=") {
                 raw_allowlist = PathBuf::from(value);
             } else if let Some(value) = arg.strip_prefix("--snapshot-mode=") {
@@ -280,17 +272,12 @@ impl Config {
             } else if arg == "--configfs-root" {
                 i += 1;
                 configfs_root = PathBuf::from(value(&args, i, "--configfs-root")?);
-            } else if arg == "--cow-snapshot-configfs-root" {
-                i += 1;
-                cow_snapshot_configfs_root =
-                    PathBuf::from(value(&args, i, "--cow-snapshot-configfs-root")?);
-            } else if arg == "--wal-snapshot-configfs-root" {
-                i += 1;
-                wal_snapshot_configfs_root =
-                    PathBuf::from(value(&args, i, "--wal-snapshot-configfs-root")?);
             } else if arg == "--dev-root" {
                 i += 1;
                 dev_root = PathBuf::from(value(&args, i, "--dev-root")?);
+            } else if arg == "--fabric-device-name" {
+                i += 1;
+                fabric_device_name = value(&args, i, "--fabric-device-name")?.to_string();
             } else if arg == "--raw-allowlist" {
                 i += 1;
                 raw_allowlist = PathBuf::from(value(&args, i, "--raw-allowlist")?);
@@ -309,6 +296,7 @@ impl Config {
         if freeze_max_ttl_ms == 0 {
             return Err("freeze max ttl must be greater than zero".to_string());
         }
+        validate_device_name(&fabric_device_name, "fabric_device_name")?;
         let logstream_path =
             logstream_path.unwrap_or_else(|| state_dir.join(DEFAULT_LOGSTREAM_RELATIVE_PATH));
         Ok(Self {
@@ -316,9 +304,8 @@ impl Config {
             state_dir,
             freeze_max_ttl_ms,
             configfs_root,
-            cow_snapshot_configfs_root,
-            wal_snapshot_configfs_root,
             dev_root,
+            fabric_device_name,
             raw_allowlist,
             snapshot_mode,
             logstream_path,
@@ -360,14 +347,6 @@ impl Config {
 
     fn compaction_state_path(&self, job_id: &str) -> PathBuf {
         self.compactions_dir().join(format!("{job_id}.conf"))
-    }
-
-    fn snapshot_device_configfs_root(&self, mode: &str) -> Result<&Path, String> {
-        match mode {
-            "cow" => Ok(&self.cow_snapshot_configfs_root),
-            "wal" => Ok(&self.wal_snapshot_configfs_root),
-            other => Err(format!("unsupported snapshot device mode {other:?}")),
-        }
     }
 }
 
@@ -469,9 +448,7 @@ impl ControlApp {
         }
 
         let now = unix_now_millis();
-        let device_name = native_snapshot_device_name(&device_id);
-        let configfs_root = self.cfg.snapshot_device_configfs_root(&mode)?;
-        let configfs_path = configfs_root.join(&device_name);
+        let device_name = self.cfg.fabric_device_name.clone();
         let device_path = self.cfg.dev_root.join(&device_name);
         let mut device = api::SnapshotDeviceSpec {
             device_id: device_id.clone(),
@@ -480,17 +457,16 @@ impl ControlApp {
             mode,
             device_name,
             device_path: device_path.display().to_string(),
-            configfs_path: configfs_path.display().to_string(),
+            configfs_path: "userspace:fabric".to_string(),
             size_bytes: snapshot.size_bytes,
             readonly,
-            state: "creating".to_string(),
+            state: "registered".to_string(),
             compaction_job_id: None,
             created_at_millis: now,
             updated_at_millis: now,
         };
 
-        self.ensure_native_snapshot_device(&snapshot, &mut device)?;
-        device.state = "ready".to_string();
+        self.register_userspace_snapshot_export(&snapshot, &device)?;
         device.updated_at_millis = unix_now_millis();
         self.append_state_log("snapshot.device.created", &device.device_id, &device)?;
         self.save_snapshot_device(&device)?;
@@ -538,7 +514,7 @@ impl ControlApp {
 
         let mut deleted = false;
         if let Some(device) = existing.as_ref() {
-            self.destroy_native_snapshot_device(device)?;
+            self.unregister_userspace_snapshot_export(device)?;
             deleted = true;
         }
         match fs::remove_file(state_path) {
@@ -1148,60 +1124,28 @@ impl ControlApp {
         Ok(jobs)
     }
 
-    fn ensure_native_snapshot_device(
+    fn register_userspace_snapshot_export(
         &self,
         snapshot: &api::SnapshotSpec,
-        device: &mut api::SnapshotDeviceSpec,
-    ) -> Result<(), String> {
-        let root = self.cfg.snapshot_device_configfs_root(&device.mode)?;
-        if !root.is_dir() {
-            return Err(format!(
-                "native {} snapshot device provider {} is not available; no loop or copy fallback is used",
-                device.mode,
-                root.display()
-            ));
-        }
-
-        let dir = Path::new(&device.configfs_path);
-        if !dir.exists() {
-            fs::create_dir(dir)
-                .map_err(|e| format!("create snapshot device configfs item: {e}"))?;
-        }
-        write_configfs_attr(dir, "snapshot_id", &snapshot.snapshot_id)?;
-        write_configfs_attr(dir, "source_volume_id", &snapshot.source_volume_id)?;
-        write_configfs_attr(dir, "source_backend", &snapshot.source_backend)?;
-        write_configfs_attr(dir, "snapshot_path", &snapshot.snapshot_path)?;
-        write_configfs_attr(dir, "snapshot_mode", &snapshot.snapshot_mode)?;
-        write_configfs_attr(dir, "mode", &device.mode)?;
-        write_configfs_attr(dir, "readonly", if device.readonly { 1 } else { 0 })?;
-        write_configfs_attr(dir, "size_bytes", device.size_bytes)?;
-        write_configfs_attr(dir, "power", 1)?;
-
-        let dev = Path::new(&device.device_path);
-        for _ in 0..50 {
-            if dev.exists() {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-        Err(format!(
-            "{} did not appear after powering native {} snapshot device {}",
-            dev.display(),
-            device.mode,
-            device.device_id
-        ))
-    }
-
-    fn destroy_native_snapshot_device(
-        &self,
         device: &api::SnapshotDeviceSpec,
     ) -> Result<(), String> {
-        let dir = Path::new(&device.configfs_path);
-        if !dir.exists() {
-            return Ok(());
+        if snapshot.snapshot_id != device.snapshot_id {
+            return Err("snapshot export does not match source snapshot".to_string());
         }
-        let _ = write_configfs_attr(dir, "power", 0);
-        fs::remove_dir(dir).map_err(|e| format!("remove snapshot device configfs item: {e}"))
+        if snapshot.source_volume_id != device.source_volume_id {
+            return Err("snapshot export does not match source volume".to_string());
+        }
+        if !device.readonly {
+            return Err("snapshot exports must be read-only".to_string());
+        }
+        Ok(())
+    }
+
+    fn unregister_userspace_snapshot_export(
+        &self,
+        _device: &api::SnapshotDeviceSpec,
+    ) -> Result<(), String> {
+        Ok(())
     }
 
     fn start_snapshot_compaction_for_device(
@@ -1212,7 +1156,7 @@ impl ControlApp {
         let strategy = normalize_compaction_strategy(request.strategy.as_deref())?;
         let phase = initial_compaction_phase(&strategy).to_string();
         let now = unix_now_millis();
-        let mut job = api::SnapshotCompactionJob {
+        let job = api::SnapshotCompactionJob {
             job_id: new_compaction_job_id(&device.device_id),
             device_id: device.device_id.clone(),
             snapshot_id: device.snapshot_id.clone(),
@@ -1247,43 +1191,7 @@ impl ControlApp {
         };
         self.append_state_log("snapshot.compaction.started", &job.job_id, &job)?;
         self.save_snapshot_compaction(&job)?;
-
-        if job.strategy == "in-place" {
-            match self.request_in_place_compaction(device, &job.job_id) {
-                Ok(()) => {
-                    job.state = "running".to_string();
-                    job.updated_at_millis = unix_now_millis();
-                }
-                Err(e) => {
-                    let finished = unix_now_millis();
-                    job.state = "failed".to_string();
-                    job.error = Some(e);
-                    job.updated_at_millis = finished;
-                    job.finished_at_millis = Some(finished);
-                }
-            }
-            self.append_state_log("snapshot.compaction.updated", &job.job_id, &job)?;
-            self.save_snapshot_compaction(&job)?;
-        }
         Ok(job)
-    }
-
-    fn request_in_place_compaction(
-        &self,
-        device: &api::SnapshotDeviceSpec,
-        job_id: &str,
-    ) -> Result<(), String> {
-        let dir = Path::new(&device.configfs_path);
-        if !dir.is_dir() {
-            return Err(format!(
-                "native {} snapshot device {} has no configfs item at {}",
-                device.mode,
-                device.device_id,
-                dir.display()
-            ));
-        }
-        write_configfs_attr(dir, "compaction_job_id", job_id)?;
-        write_configfs_attr(dir, "compact", 1)
     }
 
     fn snapshot_volume(
@@ -3493,10 +3401,6 @@ fn default_snapshot_device_id(snapshot_id: &str, mode: &str) -> String {
     format!("snapdev-{mode}-{}", short_hash(snapshot_id, 12))
 }
 
-fn native_snapshot_device_name(device_id: &str) -> String {
-    format!("zcsnap-{}", short_hash(device_id, 16))
-}
-
 fn short_hash(input: &str, bytes: usize) -> String {
     let digest = Sha256::digest(input.as_bytes());
     digest
@@ -3602,6 +3506,16 @@ fn validate_state_id(value: &str, name: &str) -> Result<(), String> {
     {
         return Err(format!(
             "{name} may contain only ASCII letters, digits, dot, underscore, and dash"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_device_name(value: &str, name: &str) -> Result<(), String> {
+    validate_state_id(value, name)?;
+    if value.contains('.') || value.contains('_') {
+        return Err(format!(
+            "{name} may contain only ASCII letters, digits, and dash"
         ));
     }
     Ok(())
@@ -3756,7 +3670,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_device_modes_are_native_cow_or_wal_only() {
+    fn snapshot_device_modes_are_userspace_cow_or_wal_only() {
         assert_eq!(normalize_snapshot_device_mode("cow").unwrap(), "cow");
         assert_eq!(
             normalize_snapshot_device_mode("copy-on-write").unwrap(),

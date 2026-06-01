@@ -1,0 +1,34 @@
+zcbrd-nt-read-randread-q192-j96-d128: (g=0): rw=randread, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=io_uring, iodepth=128
+...
+fio-3.36
+Starting 96 processes
+
+zcbrd-nt-read-randread-q192-j96-d128: (groupid=0, jobs=96): err= 0: pid=181071: Mon Jun  1 00:07:58 2026
+  read: IOPS=6777k, BW=25.9GiB/s (27.8GB/s)(129GiB/5008msec)
+    slat (nsec): min=811, max=1963.0k, avg=3324.49, stdev=3622.67
+    clat (usec): min=514, max=2502.2k, avg=1807.52, stdev=8975.27
+     lat (usec): min=519, max=2502.2k, avg=1810.84, stdev=8975.28
+    clat percentiles (usec):
+     |  1.00th=[  807],  5.00th=[  848], 10.00th=[  873], 20.00th=[  963],
+     | 30.00th=[ 1074], 40.00th=[ 1418], 50.00th=[ 1696], 60.00th=[ 1844],
+     | 70.00th=[ 1991], 80.00th=[ 2147], 90.00th=[ 2507], 95.00th=[ 3359],
+     | 99.00th=[ 5669], 99.50th=[ 7767], 99.90th=[13829], 99.95th=[19530],
+     | 99.99th=[43254]
+   bw (  MiB/s): min=17214, max=35815, per=100.00%, avg=26548.92, stdev=75.25, samples=875
+   iops        : min=4406982, max=9168648, avg=6796522.51, stdev=19264.12, samples=875
+  lat (usec)   : 750=0.13%, 1000=23.27%
+  lat (msec)   : 2=47.72%, 4=26.56%, 10=2.07%, 20=0.19%, 50=0.04%
+  lat (msec)   : 100=0.01%, 250=0.01%, 500=0.01%, 750=0.01%, 1000=0.01%
+  lat (msec)   : 2000=0.01%, >=2000=0.01%
+  cpu          : usr=3.28%, sys=28.43%, ctx=9366811, majf=0, minf=14462
+  IO depths    : 1=0.1%, 2=0.1%, 4=0.1%, 8=0.1%, 16=0.1%, 32=0.1%, >=64=100.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.1%
+     issued rwts: total=33938275,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=128
+
+Run status group 0 (all jobs):
+   READ: bw=25.9GiB/s (27.8GB/s), 25.9GiB/s-25.9GiB/s (27.8GB/s-27.8GB/s), io=129GiB (139GB), run=5008-5008msec
+
+Disk stats (read/write):
+  zcnblk0: ios=32868082/0, sectors=262944752/0, merge=0/0, ticks=58434484/0, in_queue=58434484, util=100.00%

@@ -4,6 +4,25 @@ This plan compares the conventional block path against the userspace and
 descriptor-shaped paths without mixing incompatible counters. The key rule is:
 always report both physical operation rate and logical 4K record rate.
 
+`/dev/zcnblk0` is the client-side block onramp to the SAN fabric. It is the
+single block device family that fio, databases, filesystems, and block-speaking
+applications should use on the client side. It uses the `zcnblk` wire protocol
+and the userspace `zcnblk-target` service.
+
+Target hosts should be userspace services. They may use `zcdevnullN`,
+`zctier:...`, ordinary files, real allowlisted block devices, or optional
+`/dev/zcbrdN` RAM media as backing. They should not use custom target-side zc
+block topology; userspace owns RAID, fanout, fanin, tiering, and spill policy.
+
+Block devices are edge adapters in this plan. They are useful for fio, database
+compatibility, RAM-backed media, real backing devices, and final exposure to
+block-speaking clients, but the fanout/fanin topology should be modeled in
+userspace. A benchmark may read from or write to `/dev/zcbrdN` as a convenient
+edge, but mux/demux routing, forwarding, RAID0/RAID1 policy, tiering, tier
+spill decisions, backpressure, and descriptor lane scheduling must be accounted
+for as userspace work. A tier may land hot or spill bytes on block media, but
+that block device is only the last hop.
+
 For a 4K block fio run, one physical block operation is one logical 4K record.
 For a 384K WAL extent, one physical append contains 96 logical 4K records. A
 run can therefore show high logical IOPS while issuing far fewer kernel block
@@ -50,13 +69,13 @@ Current private node inventory:
 | Case | Path | Primary Question | Main Counter |
 | --- | --- | --- | --- |
 | Local null block | `fio -> /dev/nullb0` | What does the Linux block layer cost when the device does almost nothing? | fio IOPS and clat |
-| Local RAM block | `fio -> /dev/ram0` or `fio -> /dev/zcbrd0` | What is the local block ceiling with memory-backed media? | fio IOPS and sys CPU |
-| Local io-slot block | `slot-* -> /dev/zcbrd0` or `/dev/zcstripe0` | What does the project block/WAL path do below fio? | `ops_per_sec`, `MiBps` |
+| Local RAM block edge | `fio -> /dev/ram0` or `fio -> /dev/zcbrd0` | What is the local block ceiling with memory-backed media? | fio IOPS and sys CPU |
+| Local io-slot block lab | `slot-* -> /dev/zcbrd0`  | What does the low-level block/WAL lab path do below fio? | `ops_per_sec`, `MiBps` |
 | Local zcnblk loopback | `fio -> /dev/zcnblk0 -> zcnblk-target -> zcdevnull0` | What does the zcnblk block protocol cost without real fabric distance? | fio plus target summaries |
 | Remote userspace transport | `zcnc` or `tcp-bench-uring-mux-*` | What can TCP lanes move without block requests? | sender/server Gbit/s |
 | Remote zcnblk generator | `zcnblk-send -> zcnblk-target -> zcdevnull0` | What is the remote zcnblk frame path before the kernel block client? | `zcnblk-send-summary` |
 | Remote kernel block client | `fio -> /dev/zcnblk0 -> target` | What does the full client-side block surface cost? | fio IOPS, clat, sys CPU |
-| Non-block RAID/WAL | `zcraidd wal-bench`, `zcraid-*` | How fast is logical record fanout/fanin when records are batched into extents? | `record_iops` and `segment_iops` |
+| Userspace RAID/WAL | `zcraidd wal-bench`, `zcraid-*`, `zctier` | How fast is logical record fanout/fanin/tiering when records are batched into extents? | `record_iops`, `segment_iops`, and spill queue high-water |
 
 ## Local Block Recipes
 
@@ -98,7 +117,7 @@ echo 1 | sudo tee /sys/kernel/config/zcbrd/zcbrd0/power
 lsblk /dev/zcbrd0
 ```
 
-Run the same fio shape against each block target:
+Run the same fio shape against each block device:
 
 ```bash
 DEV=/dev/zcbrd0
@@ -187,7 +206,6 @@ sudo insmod kmods/zcnblk_client_mod.ko \
   shard_count=1 \
   size_mib=8192 \
   logical_block_size=4096 \
-  stripe_unit=4096 \
   max_frame_bytes=4096 \
   queues=64 \
   queue_depth=256 \
@@ -258,8 +276,8 @@ TARGET=172.31.12.58
 BASE=23600
 sudo insmod kmods/zcnblk_client_mod.ko \
   remote_ip="$TARGET" remote_port_base="$BASE" lanes=64 connections_per_lane=1 \
-  shard_count=1 size_mib=8192 logical_block_size=4096 stripe_unit=4096 \
-  max_frame_bytes=4096 queues=64 queue_depth=256 pipeline_depth=128 \
+  shard_count=1 size_mib=8192 logical_block_size=4096 max_frame_bytes=4096 \
+  queues=64 queue_depth=256 pipeline_depth=128 \
   fill_timeout_ms=0 batch_depth=1 write_acks=1 hctx_affinity=1
 ```
 
@@ -354,6 +372,9 @@ Expect block and userspace paths to diverge for structural reasons:
 - `zcraidd wal-bench` reports logical record IOPS and segment IOPS. The record
   IOPS number is the right application-level WAL comparison, while segment IOPS
   is closer to the physical scheduling pressure.
+- If a block device appears in a fanout/tiering test, label it as `edge=source`
+  or `edge=sink`. Do not describe it as a mid-tree fanout node unless the code
+  is deliberately testing block-layer overhead.
 
 The clean conclusion line for each run should be:
 

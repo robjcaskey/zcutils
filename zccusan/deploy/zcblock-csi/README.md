@@ -163,16 +163,17 @@ the driver uses a reflink/COW PIT snapshot when the state directory filesystem
 supports Linux `FICLONE`; `--snapshot-mode=reflink` makes that mandatory, while
 the default `--snapshot-mode=auto` falls back to a full copy if reflink is not
 available. `backend=zcbrd` and `backend=raw-block` still use full byte copies
-until there is a native block-layer COW snapshot path. Restoring to
-`backend=raw-block` writes the snapshot image back to the allowlisted raw block
-device during `CreateVolume`.
+until the userspace fabric target can serve COW/WAL PIT views directly.
+Restoring to `backend=raw-block` writes the snapshot image back to the
+allowlisted raw block device during `CreateVolume`.
 
-The zccusan control API separately defines native snapshot devices:
-`POST /v1/snapshot-devices` creates a read-only `cow` or `wal` device only when
-the matching native provider is installed. It does not fall back to loop devices
-or writable restores. Compaction is tracked through `/v1/compactions`: the
-normal strategy is `stream-rewrite`, where a worker streams the old placement
-off-machine and streams the compacted representation back to the new location.
-Workers occasionally register small progress state with
-`PUT /v1/compactions/{jobId}`; `strategy=in-place` is reserved for local native
-provider compaction.
+The zccusan control API separately defines fabric snapshot exports:
+`POST /v1/snapshot-devices` registers a read-only `cow` or `wal` PIT view for
+the userspace fabric target/gateway. There are no separate COW/WAL snapshot
+kernel providers, and it does not fall back to loop devices or writable
+restores. Compaction is tracked through `/v1/compactions`: the normal strategy
+is `stream-rewrite`, where a worker streams the old placement off-machine and
+streams the compacted representation back to the new location. Workers
+occasionally register small progress state with `PUT /v1/compactions/{jobId}`;
+`strategy=in-place` means a userspace worker compacts the current placement
+locally while reporting the same control-plane state.
