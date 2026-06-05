@@ -1,0 +1,61 @@
+zcfanout-logtcp-bench: mode=mirror-write bind=127.0.0.1 connect_addr=127.0.0.1 ports=25128..25135 lanes=4 branches=2 records_per_lane=200000 payload_bytes=4096 batch_records=128 window=128 receiver_workers=4 sender_streams=8 pin_workers=true transport=tcp result_record_bytes=32 sort=no global_queue=no payload_copy=no deep_payload_inspection=no block_devices=no
+zcfanout-logtcp-topology: lane=0 recv_worker=0 sender_affinity_indices=0..1 ports=25128..25129
+zcfanout-logtcp-topology: lane=1 recv_worker=1 sender_affinity_indices=2..3 ports=25130..25131
+zcfanout-logtcp-topology: lane=2 recv_worker=2 sender_affinity_indices=4..5 ports=25132..25133
+zcfanout-logtcp-topology: lane=3 recv_worker=3 sender_affinity_indices=6..7 ports=25134..25135
+zcfanout-logtcp-send: affinity_index=4 target_cpu=4 status=ok
+zcfanout-logtcp-send: affinity_index=2 target_cpu=2 status=ok
+zcfanout-logtcp-send: affinity_index=6 target_cpu=6 status=ok
+zcfanout-logtcp-send: affinity_index=5 target_cpu=5 status=ok
+zcfanout-logtcp-send: affinity_index=7 target_cpu=7 status=ok
+zcfanout-logtcp-send: affinity_index=1 target_cpu=1 status=ok
+zcfanout-logtcp-send: affinity_index=3 target_cpu=3 status=ok
+zcfanout-logtcp-send: affinity_index=0 target_cpu=0 status=ok
+zcfanout-logtcp-accept: lane=0 branch=0 port=25128 peer=127.0.0.1:41398
+zcfanout-logtcp-accept: lane=0 branch=1 port=25129 peer=127.0.0.1:37662
+zcfanout-logtcp-accept: lane=1 branch=0 port=25130 peer=127.0.0.1:35060
+zcfanout-logtcp-accept: lane=1 branch=1 port=25131 peer=127.0.0.1:54816
+zcfanout-logtcp-accept: lane=2 branch=0 port=25132 peer=127.0.0.1:45996
+zcfanout-logtcp-accept: lane=2 branch=1 port=25133 peer=127.0.0.1:43336
+zcfanout-logtcp-accept: lane=3 branch=0 port=25134 peer=127.0.0.1:37388
+zcfanout-logtcp-accept: lane=3 branch=1 port=25135 peer=127.0.0.1:53506
+zcfanout-logtcp-recv: affinity_index=8 target_cpu=8 status=ok
+zcfanout-logtcp-recv: affinity_index=11 target_cpu=11 status=ok
+zcfanout-logtcp-recv: affinity_index=9 target_cpu=9 status=ok
+zcfanout-logtcp-recv: affinity_index=10 target_cpu=10 status=ok
+zcfanout-logtcp-sender: lane=0 branch=0 port=25128 records=200000 wire_bytes=6400000 checksum=0x00000009510082c0 seconds=0.006741 cpu_seconds=0.006714 records_per_sec=29667877 wire_Gbitps=7.595 voluntary_ctxt_switches=1 involuntary_ctxt_switches=1 migrations=0 start_cpu=0 end_cpu=0 target_cpu=0 affinity_applied=true
+zcfanout-logtcp-sender: lane=0 branch=1 port=25129 records=200000 wire_bytes=6400000 checksum=0x030d400951039000 seconds=0.010119 cpu_seconds=0.010077 records_per_sec=19765674 wire_Gbitps=5.060 voluntary_ctxt_switches=0 involuntary_ctxt_switches=0 migrations=0 start_cpu=1 end_cpu=1 target_cpu=1 affinity_applied=true
+zcfanout-logtcp-sender: lane=1 branch=0 port=25130 records=200000 wire_bytes=6400000 checksum=0x0d400009510082c0 seconds=0.006741 cpu_seconds=0.006712 records_per_sec=29667393 wire_Gbitps=7.595 voluntary_ctxt_switches=0 involuntary_ctxt_switches=1 migrations=0 start_cpu=2 end_cpu=2 target_cpu=2 affinity_applied=true
+zcfanout-logtcp-sender: lane=1 branch=1 port=25131 records=200000 wire_bytes=6400000 checksum=0x104d400951039000 seconds=0.007087 cpu_seconds=0.007059 records_per_sec=28219575 wire_Gbitps=7.224 voluntary_ctxt_switches=0 involuntary_ctxt_switches=1 migrations=0 start_cpu=3 end_cpu=3 target_cpu=3 affinity_applied=true
+zcfanout-logtcp-sender: lane=2 branch=0 port=25132 records=200000 wire_bytes=6400000 checksum=0x1a800009510082c0 seconds=0.006802 cpu_seconds=0.006771 records_per_sec=29403471 wire_Gbitps=7.527 voluntary_ctxt_switches=0 involuntary_ctxt_switches=2 migrations=0 start_cpu=4 end_cpu=4 target_cpu=4 affinity_applied=true
+zcfanout-logtcp-sender: lane=2 branch=1 port=25133 records=200000 wire_bytes=6400000 checksum=0x1d8d400951039000 seconds=0.010081 cpu_seconds=0.010045 records_per_sec=19838865 wire_Gbitps=5.079 voluntary_ctxt_switches=0 involuntary_ctxt_switches=1 migrations=0 start_cpu=5 end_cpu=5 target_cpu=5 affinity_applied=true
+zcfanout-logtcp-sender: lane=3 branch=0 port=25134 records=200000 wire_bytes=6400000 checksum=0x27c00009510082c0 seconds=0.007040 cpu_seconds=0.007007 records_per_sec=28410511 wire_Gbitps=7.273 voluntary_ctxt_switches=1 involuntary_ctxt_switches=0 migrations=0 start_cpu=6 end_cpu=6 target_cpu=6 affinity_applied=true
+zcfanout-logtcp-sender: lane=3 branch=1 port=25135 records=200000 wire_bytes=6400000 checksum=0x2acd400951039000 seconds=0.006799 cpu_seconds=0.006767 records_per_sec=29415147 wire_Gbitps=7.530 voluntary_ctxt_switches=1 involuntary_ctxt_switches=1 migrations=0 start_cpu=7 end_cpu=7 target_cpu=7 affinity_applied=true
+zcfanout-logtcp-receiver: worker=0 lanes=1 result_records=400000 emitted=200000 duplicate_results=0 wire_bytes=12800000 logical_bytes=819200000 branch_bytes=1638400000 checksum=0x0000001bf310ca80 seconds=0.010124 cpu_seconds=0.009163 result_records_per_sec=39510419 emitted_per_sec=19755209 logical_4k_iops=19755209 wire_Gbitps=10.115 branch_Gibitps=1294.677 voluntary_ctxt_switches=279 involuntary_ctxt_switches=0 migrations=0 start_cpu=8 end_cpu=8 target_cpu=8 affinity_applied=true
+zcfanout-logtcp-receiver: worker=1 lanes=1 result_records=400000 emitted=200000 duplicate_results=0 wire_bytes=12800000 logical_bytes=819200000 branch_bytes=1638400000 checksum=0x27c0001bf310ca80 seconds=0.007934 cpu_seconds=0.007652 result_records_per_sec=50415360 emitted_per_sec=25207680 logical_4k_iops=25207680 wire_Gbitps=12.906 branch_Gibitps=1652.011 voluntary_ctxt_switches=98 involuntary_ctxt_switches=0 migrations=0 start_cpu=9 end_cpu=9 target_cpu=9 affinity_applied=true
+zcfanout-logtcp-receiver: worker=2 lanes=1 result_records=400000 emitted=200000 duplicate_results=0 wire_bytes=12800000 logical_bytes=819200000 branch_bytes=1638400000 checksum=0x4f80001bf310ca80 seconds=0.010094 cpu_seconds=0.009165 result_records_per_sec=39628161 emitted_per_sec=19814081 logical_4k_iops=19814081 wire_Gbitps=10.145 branch_Gibitps=1298.536 voluntary_ctxt_switches=257 involuntary_ctxt_switches=0 migrations=0 start_cpu=10 end_cpu=10 target_cpu=10 affinity_applied=true
+zcfanout-logtcp-receiver: worker=3 lanes=1 result_records=400000 emitted=200000 duplicate_results=0 wire_bytes=12800000 logical_bytes=819200000 branch_bytes=1638400000 checksum=0x7740001bf310ca80 seconds=0.008033 cpu_seconds=0.007767 result_records_per_sec=49791560 emitted_per_sec=24895780 logical_4k_iops=24895780 wire_Gbitps=12.747 branch_Gibitps=1631.570 voluntary_ctxt_switches=98 involuntary_ctxt_switches=0 migrations=0 start_cpu=11 end_cpu=11 target_cpu=11 affinity_applied=true
+zcfanout-logtcp-summary: mode=mirror-write lanes=4 branches=2 receiver_workers=4 sender_streams=8 send_records=1600000 result_records=1600000 emitted=800000 duplicate_results=0 send_wire_bytes=51200000 recv_wire_bytes=51200000 logical_bytes=3276800000 branch_bytes=6553600000 send_checksum=0xab35004a88104b00 recv_checksum=0xee80006fcc432a00 seconds=0.011536 cpu_seconds=0.094900 send_cpu_seconds=0.061153 recv_cpu_seconds=0.033747 result_records_per_sec=138691158 emitted_per_sec=69345579 logical_4k_iops=69345579 wire_Gbitps=35.505 logical_GiBps=264.532 branch_Gibitps=4544.632 voluntary_ctxt_switches=735 involuntary_ctxt_switches=7 migrations=0 send_voluntary_ctxt_switches=3 send_involuntary_ctxt_switches=7 send_migrations=0 recv_voluntary_ctxt_switches=732 recv_involuntary_ctxt_switches=0 recv_migrations=0 transport=tcp sort=no global_queue=no payload_copy=no deep_payload_inspection=no block_devices=no
+	Command being timed: "env URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-11 ./target/release/zcutils zcfanout-logtcp-bench mirror-write 127.0.0.1 25128 4 2 200000 4K 128 4 true 128"
+	User time (seconds): 0.02
+	System time (seconds): 0.07
+	Percent of CPU this job got: 692%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.01
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 3908
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 335
+	Voluntary context switches: 782
+	Involuntary context switches: 21
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 16
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

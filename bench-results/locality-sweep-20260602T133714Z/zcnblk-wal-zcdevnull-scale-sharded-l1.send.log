@@ -1,0 +1,6 @@
+zcnblk-send: addr=127.0.0.1 shard_count=1 base_port=29900 ports=1 connections_per_port=1 total_connections=1 bytes_per_connection=67108864 chunk_bytes=4096 workers=1 op_mode=write read_window=64 verify_reads=no wait_write_acks=yes batch_depth=2048 payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral encryption=none aes_frame_bytes=65536
+zcnblk-send-worker: affinity_index=0 target_cpu=16 status=ok
+zcnblk-send-stream: worker=0 lane=0 port=29900 conn=0 shard=0 base_offset=0
+zcnblk-send-worker: worker=0 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=69207040 frames=16384 read_frames=0 write_frames=16384 frames_per_sec=395562 seconds=0.041420 logical_MiBps=1545.17 target_cpu=16 affinity_applied=true
+zcnblk-send-summary: write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=69207040 frames=16384 read_frames=0 write_frames=16384 frames_per_sec=395562
+zcnblk-send: bytes=67108864 seconds=0.041420 GiBps=1.509 Gbitps=12.962

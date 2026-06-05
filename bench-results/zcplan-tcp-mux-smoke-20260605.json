@@ -1,0 +1,467 @@
+{
+  "capabilities_snapshot": {
+    "cpus": {
+      "numa_groups": {
+        "0": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31
+        ]
+      },
+      "online": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31
+      ],
+      "online_count": 32,
+      "online_list": "0-31",
+      "smt_sibling_groups": [
+        {
+          "leader": 0,
+          "siblings": [
+            0,
+            16
+          ]
+        },
+        {
+          "leader": 1,
+          "siblings": [
+            1,
+            17
+          ]
+        },
+        {
+          "leader": 2,
+          "siblings": [
+            2,
+            18
+          ]
+        },
+        {
+          "leader": 3,
+          "siblings": [
+            3,
+            19
+          ]
+        },
+        {
+          "leader": 4,
+          "siblings": [
+            4,
+            20
+          ]
+        },
+        {
+          "leader": 5,
+          "siblings": [
+            5,
+            21
+          ]
+        },
+        {
+          "leader": 6,
+          "siblings": [
+            6,
+            22
+          ]
+        },
+        {
+          "leader": 7,
+          "siblings": [
+            7,
+            23
+          ]
+        },
+        {
+          "leader": 8,
+          "siblings": [
+            8,
+            24
+          ]
+        },
+        {
+          "leader": 9,
+          "siblings": [
+            9,
+            25
+          ]
+        },
+        {
+          "leader": 10,
+          "siblings": [
+            10,
+            26
+          ]
+        },
+        {
+          "leader": 11,
+          "siblings": [
+            11,
+            27
+          ]
+        },
+        {
+          "leader": 12,
+          "siblings": [
+            12,
+            28
+          ]
+        },
+        {
+          "leader": 13,
+          "siblings": [
+            13,
+            29
+          ]
+        },
+        {
+          "leader": 14,
+          "siblings": [
+            14,
+            30
+          ]
+        },
+        {
+          "leader": 15,
+          "siblings": [
+            15,
+            31
+          ]
+        }
+      ]
+    },
+    "nics": [
+      {
+        "address": "d8:b3:2f:5e:b3:51",
+        "card_id": "0000:0d:00.0",
+        "ifindex": 3,
+        "name": "wlp13s0",
+        "numa_node": null,
+        "operstate": "up",
+        "rx_queues": 1,
+        "speed_mbps": null,
+        "tx_queues": 1
+      }
+    ],
+    "node_id": "pr0t0n",
+    "participants": [],
+    "role": "planner"
+  },
+  "compiled": {
+    "backpressure": {
+      "branch_credit": 16,
+      "byte_credit": 25165824,
+      "descriptor_credit": 64,
+      "wal_credit": 64
+    },
+    "branch_count": 2,
+    "branch_map": [
+      {
+        "ack": "all-branches",
+        "branches": [
+          0,
+          1
+        ],
+        "lane": 0,
+        "payload": "same-descriptor-lease",
+        "policy": "mirror"
+      },
+      {
+        "ack": "all-branches",
+        "branches": [
+          0,
+          1
+        ],
+        "lane": 1,
+        "payload": "same-descriptor-lease",
+        "policy": "mirror"
+      },
+      {
+        "ack": "all-branches",
+        "branches": [
+          0,
+          1
+        ],
+        "lane": 2,
+        "payload": "same-descriptor-lease",
+        "policy": "mirror"
+      },
+      {
+        "ack": "all-branches",
+        "branches": [
+          0,
+          1
+        ],
+        "lane": 3,
+        "payload": "same-descriptor-lease",
+        "policy": "mirror"
+      }
+    ],
+    "coalescing": {
+      "age_budget_ns": 500000,
+      "batch_window": 16,
+      "extent_bytes": 393216,
+      "record_count": 96
+    },
+    "lane_count": 4,
+    "lane_map": [
+      {
+        "ack_lane": 0,
+        "completion_cq": null,
+        "cpu": 0,
+        "fabric_endpoint": null,
+        "lane": 0,
+        "leader_cpu": 0,
+        "mr_region": null,
+        "nic": "wlp13s0",
+        "nic_ifindex": 3,
+        "numa_node": 0,
+        "rx_queue": 0,
+        "tcp_port_lane": 0,
+        "transport": "tcp-mux",
+        "transport_object": "tcp_5tuple",
+        "tx_queue": 0,
+        "wal_shard": 0,
+        "worker": 0,
+        "zipper_owner": 0
+      },
+      {
+        "ack_lane": 1,
+        "completion_cq": null,
+        "cpu": 1,
+        "fabric_endpoint": null,
+        "lane": 1,
+        "leader_cpu": 1,
+        "mr_region": null,
+        "nic": "wlp13s0",
+        "nic_ifindex": 3,
+        "numa_node": 0,
+        "rx_queue": 0,
+        "tcp_port_lane": 1,
+        "transport": "tcp-mux",
+        "transport_object": "tcp_5tuple",
+        "tx_queue": 0,
+        "wal_shard": 1,
+        "worker": 1,
+        "zipper_owner": 1
+      },
+      {
+        "ack_lane": 2,
+        "completion_cq": null,
+        "cpu": 2,
+        "fabric_endpoint": null,
+        "lane": 2,
+        "leader_cpu": 2,
+        "mr_region": null,
+        "nic": "wlp13s0",
+        "nic_ifindex": 3,
+        "numa_node": 0,
+        "rx_queue": 0,
+        "tcp_port_lane": 2,
+        "transport": "tcp-mux",
+        "transport_object": "tcp_5tuple",
+        "tx_queue": 0,
+        "wal_shard": 2,
+        "worker": 2,
+        "zipper_owner": 2
+      },
+      {
+        "ack_lane": 3,
+        "completion_cq": null,
+        "cpu": 3,
+        "fabric_endpoint": null,
+        "lane": 3,
+        "leader_cpu": 3,
+        "mr_region": null,
+        "nic": "wlp13s0",
+        "nic_ifindex": 3,
+        "numa_node": 0,
+        "rx_queue": 0,
+        "tcp_port_lane": 3,
+        "transport": "tcp-mux",
+        "transport_object": "tcp_5tuple",
+        "tx_queue": 0,
+        "wal_shard": 3,
+        "worker": 3,
+        "zipper_owner": 3
+      }
+    ],
+    "transport": {
+      "completion_model": "io_uring_or_blocking_socket_completion",
+      "data_smoke_ok": true,
+      "domain": "auto",
+      "endpoint_type": "stream",
+      "fallback": "none",
+      "lane_object": "tcp_5tuple",
+      "name": "tcp-mux",
+      "provider": null,
+      "provider_probe_detail": "tcp-mux transport does not require fi_info",
+      "provider_probe_ok": true,
+      "registered_memory": "zcrx/send-zc-or-userspace-pool"
+    },
+    "worker_count": 4,
+    "zipper": {
+      "handoff": "shared-arena-or-socket-result-log",
+      "model": "lane-local-o1-window",
+      "primary_branch": 0,
+      "result_window": 4096
+    }
+  },
+  "descriptor_projection": {
+    "control_stream": {
+      "data_frames_carry": [
+        "plan_id",
+        "placement_epoch",
+        "lane_id",
+        "sequence"
+      ],
+      "required_frames": [
+        "ZC_CAPS_V1",
+        "ZC_INTENT_V1",
+        "ZC_PLAN_V1"
+      ],
+      "telemetry_frames": [
+        "ZC_STATS_V1",
+        "ZC_REPLAN_V1"
+      ]
+    },
+    "libfabric_endpoint": {
+      "active_when": "compiled.transport.name starts with libfabric",
+      "completion_cq": "compiled.lane_map[].completion_cq",
+      "domain": "auto",
+      "endpoint": "compiled.lane_map[].fabric_endpoint",
+      "endpoint_type": "stream",
+      "fabric": "tcp-mux",
+      "mr_region": "compiled.lane_map[].mr_region",
+      "payload": "registered descriptor lease; no placement decision in transport",
+      "poller_cpu": "compiled.lane_map[].leader_cpu",
+      "provider": null
+    },
+    "record_descriptor": {
+      "group_id": "sync_epoch or collection id",
+      "lane_id": "compiled.lane_map[].lane",
+      "placement_epoch": 1,
+      "plan_id": "zcp-mirror-max-iops-tcp-mux-4l-2b-393216e-4096r",
+      "preferred_worker": "compiled.lane_map[].worker",
+      "release_token": "owned by source pool authority",
+      "sequence": "per-lane monotonic"
+    },
+    "slice_descriptor": {
+      "numa_node": "compiled.lane_map[].numa_node",
+      "payload": "leased pool slice; mirror branches share the same lease",
+      "preferred_cpu": "compiled.lane_map[].cpu",
+      "queue_id": "compiled.lane_map[].rx_queue or tx_queue"
+    },
+    "tcpmux_topology_header": {
+      "active_when": "compiled.transport.name == tcp-mux",
+      "chunk_bytes": 393216,
+      "lane_count": 4,
+      "lane_id": "compiled.lane_map[].lane",
+      "preferred_cpu": "compiled.lane_map[].cpu",
+      "preferred_worker": "compiled.lane_map[].worker",
+      "queue_id": "compiled.lane_map[].tx_queue"
+    },
+    "wal_extent": {
+      "extent_sequence": "per-lane monotonic",
+      "lane_id": "compiled.lane_map[].lane",
+      "record_count": 96,
+      "record_size": 4096,
+      "shard_id": "compiled.lane_map[].wal_shard",
+      "zero_copy_descriptor": true
+    },
+    "zcnblk_topology_header": {
+      "lane_count": 4,
+      "lane_id": "compiled.lane_map[].lane",
+      "preferred_worker": "compiled.lane_map[].worker",
+      "queue_id": "compiled.lane_map[].wal_shard",
+      "tier_id": "userspace placement output; not a block RAID primitive"
+    }
+  },
+  "intent": {
+    "durability": "ack-on-leaf-commit",
+    "expected_qdepth": 0,
+    "mode": "mirror",
+    "objective": "max-iops",
+    "operation_mix": "write",
+    "record_bytes": 4096,
+    "sync_contract": "global-high-water",
+    "transport": "tcp-mux",
+    "zero_copy": "required"
+  },
+  "placement_epoch": 1,
+  "plan_id": "zcp-mirror-max-iops-tcp-mux-4l-2b-393216e-4096r",
+  "representative": false,
+  "required_features": {
+    "global_high_water_sync": true,
+    "preserve_lanes": true,
+    "provider_data_smoke_required": false,
+    "registered_memory_required": false,
+    "userspace_raid_only": true,
+    "zero_copy_required": true
+  },
+  "schema_version": 1,
+  "type": "ZC_PLAN_V1",
+  "warnings": [
+    "PERF WARNING: no explicit --cpu-list, --caps CPU map, or URING_PLAY_PIN_CPUS setting; representative high-IOPS runs must pin lane workers",
+    "PERF WARNING: HugePages_Total is zero; zcrx/registered-buffer plans may fall back or churn page mappings",
+    "PERF WARNING: memlock soft limit 8388608 bytes is below estimated hot-pool need 50331648 bytes"
+  ]
+}

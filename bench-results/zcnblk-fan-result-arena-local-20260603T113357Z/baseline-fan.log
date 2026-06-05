@@ -1,0 +1,12 @@
+zcnblk-fan-wal: leaves=127.0.0.1,127.0.0.2 bind=127.0.0.1 base_port=23600 ports=2 connections_per_port=1 total_connections=2 bytes_per_connection=536870912 chunk_bytes=4096 stripe_bytes=4096 leaf_base_port=24600 source_ip=kernel-route source_ports=kernel-ephemeral pin_handlers=true placement=stripe order=per-4k-record order_shards=128 write_acks=true batch_window=16 result_ranges=true result_arena=false result_arena_slots=64 protocol=fan-wal-v2
+zcnblk-fan-wal-leaf-note: start each edge with zcnblk-wal-leaf; leaf block devices are terminal media only after userspace placement
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:39406 lane=0 port=23600 conn=0 incoming_cpu=0 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:53450 lane=1 port=23601 conn=0 incoming_cpu=1 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=1 target_cpu=1 status=ok
+zcnblk-fan-wal-upstream: handler=1 peer=127.0.0.1:53450 lane=1 port=23601 conn=0 incoming_cpu=1 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=1 leaf=0 addr=127.0.0.1 port=24601 lane=1 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=1 leaf=1 addr=127.0.0.2 port=24601 lane=1 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-handler: affinity_index=0 target_cpu=0 status=ok
+zcnblk-fan-wal-upstream: handler=0 peer=127.0.0.1:39406 lane=0 port=23600 conn=0 incoming_cpu=0 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=0 leaf=0 addr=127.0.0.1 port=24600 lane=0 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=0 leaf=1 addr=127.0.0.2 port=24600 lane=0 conn=0 source_port=kernel-ephemeral

@@ -1,0 +1,6 @@
+zcnblk-send: addr=127.0.0.1 shard_count=1 base_port=23600 ports=2 connections_per_port=1 total_connections=2 bytes_per_connection=536870912 chunk_bytes=4096 workers=2 op_mode=write read_window=64 write_window=4096 verify_reads=no wait_write_acks=yes batch_depth=2048 payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral encryption=none aes_frame_bytes=65536
+zcnblk-send-worker: affinity_index=1 target_cpu=1 status=ok
+zcnblk-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcnblk-send-stream: worker=0 lane=0 port=23600 conn=0 shard=0 base_offset=0
+zcnblk-send-stream: worker=1 lane=1 port=23601 conn=0 shard=0 base_offset=536870912
+PERF WARNING: zcnblk-send write_window=4096 is below batch_depth(2048) * fan_batch_window(16); a pipelined fan WAL path can stall waiting for ACKs before the fan drains its outstanding batch window

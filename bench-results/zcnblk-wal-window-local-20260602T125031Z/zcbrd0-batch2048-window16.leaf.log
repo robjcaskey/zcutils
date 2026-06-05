@@ -1,0 +1,10 @@
+zcnblk-wal-leaf: target=/dev/zcbrd0 bind=127.0.0.1 base_port=26610 ports=1 connections_per_port=1 total_connections=1 chunk_bytes=4096 workers=1 pin_workers=true submit_mode=uring device_bytes=268435456 required_alignment=4096 protocol=fan-wal-v1
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:36156 lane=0 port=26610 conn=0 incoming_cpu=5 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=0 policy=port-lane peer=127.0.0.1:36156 listener_lane=0 listener_port=26610 conn=0 incoming_cpu=5 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment-summary: policy=port-lane workers=1 streams_by_worker=0:1
+zcnblk-wal-leaf-worker: affinity_index=0 target_cpu=4 status=ok
+zcnblk-wal-leaf-stream: affinity_index=0 target_cpu=4 status=ok
+zcnblk-wal-leaf-stream: worker=0 slot=0 peer=127.0.0.1:36156 lane=0 port=26610 conn=0 incoming_cpu=5 incoming_napi_id=unknown
+zcnblk-wal-leaf-worker: worker=0 streams=1 read_bytes=0 write_bytes=134217728 result_records=32768 frames=32768 blocking_io_frames=0 uring_io_frames=32768 frames_per_sec=368184 seconds=0.088999 logical_MiBps=1438.22 target_cpu=4 affinity_applied=true
+zcnblk-wal-leaf-summary: streams=1 read_bytes=0 write_bytes=134217728 result_records=32768 frames=32768 blocking_io_frames=0 uring_io_frames=32768 frames_per_sec=368184
+zcnblk-wal-leaf: bytes=134217728 seconds=0.088999 GiBps=1.405 Gbitps=12.065

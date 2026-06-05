@@ -1,0 +1,11 @@
+zcfanout-logtcp-bench: mode=mirror-write bind=127.0.0.1 connect_addr=127.0.0.1 ports=24200..24201 lanes=1 branches=2 records_per_lane=250000 payload_bytes=4096 batch_records=1024 window=4096 receiver_workers=1 sender_streams=2 pin_workers=true transport=tcp result_record_bytes=32 sort=no global_queue=no payload_copy=no deep_payload_inspection=no block_devices=no
+zcfanout-logtcp-topology: lane=0 recv_worker=0 sender_affinity_indices=0..1 ports=24200..24201
+zcfanout-logtcp-send: affinity_index=0 target_cpu=0 status=ok
+zcfanout-logtcp-send: affinity_index=1 target_cpu=1 status=ok
+zcfanout-logtcp-accept: lane=0 branch=0 port=24200 peer=127.0.0.1:40354
+zcfanout-logtcp-accept: lane=0 branch=1 port=24201 peer=127.0.0.1:36942
+zcfanout-logtcp-recv: affinity_index=2 target_cpu=2 status=ok
+zcfanout-logtcp-sender: lane=0 branch=0 port=24200 records=250000 wire_bytes=8000000 checksum=0x0000000e8e3d8070 seconds=0.001731 records_per_sec=144401163 wire_Gbitps=36.967 target_cpu=0 affinity_applied=true
+zcfanout-logtcp-sender: lane=0 branch=1 port=24201 records=250000 wire_bytes=8000000 checksum=0x03d0900e8e415100 seconds=0.001310 records_per_sec=190902940 wire_Gbitps=48.871 target_cpu=1 affinity_applied=true
+zcfanout-logtcp-receiver: worker=0 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x0000002baacb9420 seconds=0.004169 result_records_per_sec=119945813 emitted_per_sec=59972907 logical_4k_iops=59972907 wire_Gbitps=30.706 branch_Gibitps=3930.384 target_cpu=2 affinity_applied=true
+zcfanout-logtcp-summary: mode=mirror-write lanes=1 branches=2 receiver_workers=1 sender_streams=2 send_records=500000 result_records=500000 emitted=250000 duplicate_results=0 send_wire_bytes=16000000 recv_wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 send_checksum=0x03d0901d1c7ed170 recv_checksum=0x0000002baacb9420 seconds=0.004229 result_records_per_sec=118236600 emitted_per_sec=59118300 logical_4k_iops=59118300 wire_Gbitps=30.269 logical_GiBps=225.518 branch_Gibitps=3874.377 transport=tcp sort=no global_queue=no payload_copy=no deep_payload_inspection=no block_devices=no

@@ -1,0 +1,7 @@
+tcp-bench-uring-mux-send: mode=send addr=127.0.0.1 base_port=31000 ports=2 connections_per_port=1 total_connections=2 bytes_per_connection=67108864 chunk_bytes=1048576 pipeline=4 tcp_nodelay=yes payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral fixed_file=false
+uring-send-worker: affinity_index=0 target_cpu=0 status=ok
+uring-send-worker: affinity_index=1 target_cpu=1 status=ok
+tcp-bench-uring-mux-send-worker: worker=0 streams=1 bytes=67108864 wall_seconds=0.006985 thread_cpu_seconds=0.004761 cpu_wall_pct=68.2 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=1 involuntary_ctxt_switches=62 migrations=0
+tcp-bench-uring-mux-send-worker: worker=1 streams=1 bytes=67108864 wall_seconds=0.007179 thread_cpu_seconds=0.004787 cpu_wall_pct=66.7 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=1 involuntary_ctxt_switches=52 migrations=0
+tcp-bench-uring-mux-send-launcher: active_workers=2 launcher_seconds=0.007248 hot_seconds=0.007179
+tcp-bench-uring-mux-send: bytes=134217728 seconds=0.007179 GiBps=17.412 Gbitps=149.566

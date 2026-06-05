@@ -1,0 +1,66 @@
++ sudo sysctl -w net.core.rmem_max=134217728 net.core.wmem_max=134217728 'net.ipv4.tcp_rmem=4096 87380 134217728' 'net.ipv4.tcp_wmem=4096 65536 134217728'
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+net.ipv4.tcp_rmem = 4096 87380 134217728
+net.ipv4.tcp_wmem = 4096 65536 134217728
+ip-172-31-41-105
++ hostname
++ date -u
+Fri Jun  5 00:57:12 UTC 2026
++ nproc
+8
++ lscpu
+Architecture:                            aarch64
+CPU(s):                                  8
+On-line CPU(s) list:                     0-7
+Model name:                              Neoverse-V2
+Thread(s) per core:                      1
+Core(s) per socket:                      8
+Socket(s):                               1
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-7
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens34            UP             172.31.41.105/20 metric 100 fe80::8e2:60ff:fee6:c1b7/64 
+default via 172.31.32.1 dev ens34 proto dhcp src 172.31.41.105 metric 100 
+172.31.0.2 via 172.31.32.1 dev ens34 proto dhcp src 172.31.41.105 metric 100 
+172.31.32.0/20 dev ens34 proto kernel scope link src 172.31.41.105 metric 100 
+172.31.32.1 dev ens34 proto dhcp scope link src 172.31.41.105 metric 100 
+iface=ens34
+0
+driver: ena
+version: 6.17.0-1017-aws
+firmware-version: 
+expansion-rom-version: 
+bus-info: 0000:27:00.0
+supports-statistics: yes
+supports-test: no
+supports-eeprom-access: no
+supports-register-dump: no
+supports-priv-flags: no
+Channel parameters for ens34:
+Pre-set maximums:
+RX:		n/a
+TX:		n/a
+Other:		n/a
+Combined:	8
+Current hardware settings:
+RX:		n/a
+TX:		n/a
+Other:		n/a
+Combined:	8
++ grep -E 'Architecture|CPU\(s\)|Thread|Core|Socket|NUMA|Model name'
++ ip -br addr
++ ip route
++ for i in /sys/class/net/*
+++ basename /sys/class/net/ens34
++ b=ens34
++ '[' ens34 = lo ']'
++ echo iface=ens34
++ cat /sys/class/net/ens34/device/numa_node
++ ethtool -i ens34
++ ethtool -l ens34
++ for i in /sys/class/net/*
+++ basename /sys/class/net/lo
++ b=lo
++ '[' lo = lo ']'
++ continue

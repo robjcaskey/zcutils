@@ -1,0 +1,39 @@
+root=bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z
+
+case=w4-p128-j8d64 window=4 pipeline=128 jobs=8 iodepth=64
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fio.log:6:w4-p128-j8d64: (groupid=0, jobs=8): err= 0: pid=2986201: Thu Jun  4 14:50:09 2026
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fio.log:7:  write: IOPS=715k, BW=2792MiB/s (2928MB/s)(8379MiB/3001msec); 0 zone resets
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fio.log:9:    clat (usec): min=36, max=2787, avg=715.39, stdev=183.94
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fio.log:10:     lat (usec): min=91, max=2787, avg=716.01, stdev=183.90
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fio.log:18:   iops        : min=702732, max=724668, avg=714995.67, stdev=972.16, samples=48
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fio.log:19:  lat (usec)   : 50=0.01%, 100=0.01%, 250=0.07%, 500=6.09%, 750=63.76%
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fio.log:20:  lat (usec)   : 1000=24.18%
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fio.log:21:  lat (msec)   : 2=5.86%, 4=0.04%
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fio.log:30:  WRITE: bw=2792MiB/s (2928MB/s), 2792MiB/s-2792MiB/s (2928MB/s-2928MB/s), io=8379MiB (8786MB), run=3001-3001msec
+           1882.79 msec task-clock                       #    0.553 CPUs utilized             
+             99584      context-switches                 #   52.892 K/sec                     
+                58      cpu-migrations                   #   30.805 /sec                      
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fan.log:1:zcnblk-fan-wal: leaves=127.0.0.2:39100,127.0.0.3:39100 bind=127.0.0.1 base_port=38100 ports=8 connections_per_port=1 total_connections=8 bytes_per_connection=4294967296 chunk_bytes=4096 stripe_bytes=4096 leaf_base_port=39100 source_ip=127.0.0.1 source_ports=kernel-ephemeral pin_handlers=true placement=stripe order=per-4k-record order_shards=128 write_acks=true batch_window=4 result_ranges=true result_arena=false result_arena_slots=64 result_arena_spin=false result_arena_spin_budget=unbounded result_arena_inline_primary=false protocol=fan-wal-v2
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fan.log:11:zcnblk-fan-wal-handler: affinity_index=2 target_cpu=2 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fan.log:13:zcnblk-fan-wal-handler: affinity_index=3 target_cpu=3 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fan.log:14:zcnblk-fan-wal-handler: affinity_index=0 target_cpu=0 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fan.log:15:zcnblk-fan-wal-handler: affinity_index=7 target_cpu=7 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fan.log:16:zcnblk-fan-wal-handler: affinity_index=5 target_cpu=5 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fan.log:18:zcnblk-fan-wal-handler: affinity_index=6 target_cpu=6 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fan.log:20:zcnblk-fan-wal-handler: affinity_index=1 target_cpu=1 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/fan.log:22:zcnblk-fan-wal-handler: affinity_index=4 target_cpu=4 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/leaf1.log:43:zcnblk-wal-leaf-batch-topology: worker=1 slot=0 stream_lane=1 branch=1 records=31 batch_payload_bytes=130944 desc_lane=1 desc_queue=1 desc_preferred_worker=1 desc_preferred_cpu=1 desc_numa_node=0 leaf_target_cpu=1 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=1
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/leaf1.log:44:zcnblk-wal-leaf-batch-topology: worker=2 slot=0 stream_lane=2 branch=1 records=30 batch_payload_bytes=126720 desc_lane=2 desc_queue=2 desc_preferred_worker=2 desc_preferred_cpu=2 desc_numa_node=0 leaf_target_cpu=2 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=2
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/leaf1.log:45:zcnblk-wal-leaf-batch-topology: worker=3 slot=0 stream_lane=3 branch=1 records=31 batch_payload_bytes=130944 desc_lane=3 desc_queue=3 desc_preferred_worker=3 desc_preferred_cpu=3 desc_numa_node=0 leaf_target_cpu=3 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=3
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/leaf1.log:46:zcnblk-wal-leaf-batch-topology: worker=0 slot=0 stream_lane=0 branch=1 records=38 batch_payload_bytes=160512 desc_lane=0 desc_queue=0 desc_preferred_worker=0 desc_preferred_cpu=0 desc_numa_node=0 leaf_target_cpu=0 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=0
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/leaf0.log:43:zcnblk-wal-leaf-batch-topology: worker=3 slot=0 stream_lane=3 branch=0 records=33 batch_payload_bytes=139392 desc_lane=3 desc_queue=3 desc_preferred_worker=3 desc_preferred_cpu=3 desc_numa_node=0 leaf_target_cpu=3 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=3
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/leaf0.log:44:zcnblk-wal-leaf-batch-topology: worker=2 slot=0 stream_lane=2 branch=0 records=34 batch_payload_bytes=143616 desc_lane=2 desc_queue=2 desc_preferred_worker=2 desc_preferred_cpu=2 desc_numa_node=0 leaf_target_cpu=2 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=2
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/leaf0.log:45:zcnblk-wal-leaf-batch-topology: worker=1 slot=0 stream_lane=1 branch=0 records=33 batch_payload_bytes=139392 desc_lane=1 desc_queue=1 desc_preferred_worker=1 desc_preferred_cpu=1 desc_numa_node=0 leaf_target_cpu=1 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=1
+bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z/w4-p128-j8d64/leaf0.log:46:zcnblk-wal-leaf-batch-topology: worker=0 slot=0 stream_lane=0 branch=0 records=26 batch_payload_bytes=109824 desc_lane=0 desc_queue=0 desc_preferred_worker=0 desc_preferred_cpu=0 desc_numa_node=0 leaf_target_cpu=0 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=0
+
+case=w4-p512-j16d64 window=4 pipeline=512 jobs=16 iodepth=64
+insmod: ERROR: could not insert module kmods/zcnblk_client_mod.ko: File exists
+zcnblk_client_mod      40960  0
+zcbrd_mod              24576  4
+configfs               69632  2 zcbrd_mod
+done root=bench-results/zcnblk0-fan-zcbrd-orderdrain-w4-20260604T185003Z

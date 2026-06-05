@@ -1,0 +1,59 @@
+zcnblk-send: addr=127.0.0.1 shard_count=1 base_port=21100 ports=8 connections_per_port=1 total_connections=8 bytes_per_connection=67108864 chunk_bytes=4096 workers=8 op_mode=read read_window=4096 write_window=4096 access=linear verify_reads=yes wait_write_acks=no batch_depth=64 payload_pattern=offset:seed=0x0000000000003039 source_ip=127.0.0.1 source_ports=kernel-ephemeral latency=yes encryption=none aes_frame_bytes=65536
+zcnblk-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcnblk-send-stream: worker=0 lane=0 port=21100 conn=0 shard=0 base_offset=0
+zcnblk-send-worker: affinity_index=2 target_cpu=2 status=ok
+zcnblk-send-worker: affinity_index=3 target_cpu=3 status=ok
+zcnblk-send-worker: affinity_index=4 target_cpu=4 status=ok
+zcnblk-send-worker: affinity_index=1 target_cpu=1 status=ok
+zcnblk-send-worker: affinity_index=6 target_cpu=6 status=ok
+zcnblk-send-stream: worker=2 lane=2 port=21102 conn=0 shard=0 base_offset=134217728
+zcnblk-send-stream: worker=4 lane=4 port=21104 conn=0 shard=0 base_offset=268435456
+zcnblk-send-stream: worker=1 lane=1 port=21101 conn=0 shard=0 base_offset=67108864
+zcnblk-send-worker: affinity_index=5 target_cpu=5 status=ok
+zcnblk-send-stream: worker=3 lane=3 port=21103 conn=0 shard=0 base_offset=201326592
+zcnblk-send-stream: worker=6 lane=6 port=21106 conn=0 shard=0 base_offset=402653184
+zcnblk-send-stream: worker=5 lane=5 port=21105 conn=0 shard=0 base_offset=335544320
+zcnblk-send-worker: affinity_index=7 target_cpu=7 status=ok
+zcnblk-send-stream: worker=7 lane=7 port=21107 conn=0 shard=0 base_offset=469762048
+zcnblk-send-worker: worker=0 streams=1 write_bytes=0 read_bytes=67108864 verified_read_bytes=67108864 read_checksum=0x00000001fe0a1bf1 expected_checksum=0x00000001fe0a1bf1 wire_bytes=69238784 frames=16384 read_frames=16384 write_frames=0 frames_per_sec=109850 seconds=0.149148 logical_MiBps=429.10 target_cpu=0 affinity_applied=true
+zcnblk-send-worker-latency: worker=0 write_ack_count=0 write_ack_avg_ns=0 write_ack_min_ns=0 write_ack_p50_ns=0 write_ack_p95_ns=0 write_ack_p99_ns=0 write_ack_p999_ns=0 write_ack_max_ns=0 read_count=16384 read_avg_ns=32833739 read_min_ns=1834654 read_p50_ns=37000000 read_p95_ns=39000000 read_p99_ns=40000000 read_p999_ns=41000000 read_max_ns=40137426
+zcnblk-send-worker: worker=1 streams=1 write_bytes=0 read_bytes=67108864 verified_read_bytes=67108864 read_checksum=0x00000001fe03e5ee expected_checksum=0x00000001fe03e5ee wire_bytes=69238784 frames=16384 read_frames=16384 write_frames=0 frames_per_sec=111044 seconds=0.147546 logical_MiBps=433.76 target_cpu=1 affinity_applied=true
+zcnblk-send-worker-latency: worker=1 write_ack_count=0 write_ack_avg_ns=0 write_ack_min_ns=0 write_ack_p50_ns=0 write_ack_p95_ns=0 write_ack_p99_ns=0 write_ack_p999_ns=0 write_ack_max_ns=0 read_count=16384 read_avg_ns=32379734 read_min_ns=2265603 read_p50_ns=36000000 read_p95_ns=39000000 read_p99_ns=40000000 read_p999_ns=41000000 read_max_ns=40509824
+zcnblk-send-worker: worker=2 streams=1 write_bytes=0 read_bytes=67108864 verified_read_bytes=67108864 read_checksum=0x00000001fe0a13d1 expected_checksum=0x00000001fe0a13d1 wire_bytes=69238784 frames=16384 read_frames=16384 write_frames=0 frames_per_sec=111725 seconds=0.146646 logical_MiBps=436.43 target_cpu=2 affinity_applied=true
+zcnblk-send-worker-latency: worker=2 write_ack_count=0 write_ack_avg_ns=0 write_ack_min_ns=0 write_ack_p50_ns=0 write_ack_p95_ns=0 write_ack_p99_ns=0 write_ack_p999_ns=0 write_ack_max_ns=0 read_count=16384 read_avg_ns=32197635 read_min_ns=2401633 read_p50_ns=36000000 read_p95_ns=39000000 read_p99_ns=40000000 read_p999_ns=40000000 read_max_ns=39889926
+zcnblk-send-worker: worker=3 streams=1 write_bytes=0 read_bytes=67108864 verified_read_bytes=67108864 read_checksum=0x00000001fe08bca5 expected_checksum=0x00000001fe08bca5 wire_bytes=69238784 frames=16384 read_frames=16384 write_frames=0 frames_per_sec=112203 seconds=0.146020 logical_MiBps=438.29 target_cpu=3 affinity_applied=true
+zcnblk-send-worker-latency: worker=3 write_ack_count=0 write_ack_avg_ns=0 write_ack_min_ns=0 write_ack_p50_ns=0 write_ack_p95_ns=0 write_ack_p99_ns=0 write_ack_p999_ns=0 write_ack_max_ns=0 read_count=16384 read_avg_ns=31986825 read_min_ns=2054824 read_p50_ns=35000000 read_p95_ns=39000000 read_p99_ns=40000000 read_p999_ns=41000000 read_max_ns=40570524
+zcnblk-send-worker: worker=4 streams=1 write_bytes=0 read_bytes=67108864 verified_read_bytes=67108864 read_checksum=0x00000001fe023d86 expected_checksum=0x00000001fe023d86 wire_bytes=69238784 frames=16384 read_frames=16384 write_frames=0 frames_per_sec=111363 seconds=0.147123 logical_MiBps=435.01 target_cpu=4 affinity_applied=true
+zcnblk-send-worker-latency: worker=4 write_ack_count=0 write_ack_avg_ns=0 write_ack_min_ns=0 write_ack_p50_ns=0 write_ack_p95_ns=0 write_ack_p99_ns=0 write_ack_p999_ns=0 write_ack_max_ns=0 read_count=16384 read_avg_ns=32220915 read_min_ns=2139114 read_p50_ns=36000000 read_p95_ns=39000000 read_p99_ns=39000000 read_p999_ns=40000000 read_max_ns=39254207
+zcnblk-send-worker: worker=5 streams=1 write_bytes=0 read_bytes=67108864 verified_read_bytes=67108864 read_checksum=0x00000001fdefa210 expected_checksum=0x00000001fdefa210 wire_bytes=69238784 frames=16384 read_frames=16384 write_frames=0 frames_per_sec=110790 seconds=0.147884 logical_MiBps=432.77 target_cpu=5 affinity_applied=true
+zcnblk-send-worker-latency: worker=5 write_ack_count=0 write_ack_avg_ns=0 write_ack_min_ns=0 write_ack_p50_ns=0 write_ack_p95_ns=0 write_ack_p99_ns=0 write_ack_p999_ns=0 write_ack_max_ns=0 read_count=16384 read_avg_ns=32470624 read_min_ns=2274183 read_p50_ns=36000000 read_p95_ns=39000000 read_p99_ns=40000000 read_p999_ns=41000000 read_max_ns=40384264
+zcnblk-send-worker: worker=6 streams=1 write_bytes=0 read_bytes=67108864 verified_read_bytes=67108864 read_checksum=0x00000001fe014fff expected_checksum=0x00000001fe014fff wire_bytes=69238784 frames=16384 read_frames=16384 write_frames=0 frames_per_sec=111466 seconds=0.146987 logical_MiBps=435.41 target_cpu=6 affinity_applied=true
+zcnblk-send-worker-latency: worker=6 write_ack_count=0 write_ack_avg_ns=0 write_ack_min_ns=0 write_ack_p50_ns=0 write_ack_p95_ns=0 write_ack_p99_ns=0 write_ack_p999_ns=0 write_ack_max_ns=0 read_count=16384 read_avg_ns=32205201 read_min_ns=2329363 read_p50_ns=36000000 read_p95_ns=38000000 read_p99_ns=39000000 read_p999_ns=40000000 read_max_ns=39293427
+zcnblk-send-worker: worker=7 streams=1 write_bytes=0 read_bytes=67108864 verified_read_bytes=67108864 read_checksum=0x00000001fe0372fd expected_checksum=0x00000001fe0372fd wire_bytes=69238784 frames=16384 read_frames=16384 write_frames=0 frames_per_sec=112568 seconds=0.145548 logical_MiBps=439.72 target_cpu=7 affinity_applied=true
+zcnblk-send-worker-latency: worker=7 write_ack_count=0 write_ack_avg_ns=0 write_ack_min_ns=0 write_ack_p50_ns=0 write_ack_p95_ns=0 write_ack_p99_ns=0 write_ack_p999_ns=0 write_ack_max_ns=0 read_count=16384 read_avg_ns=32111670 read_min_ns=2444133 read_p50_ns=36000000 read_p95_ns=38000000 read_p99_ns=39000000 read_p999_ns=40000000 read_max_ns=39873846
+zcnblk-send-summary: write_bytes=0 read_bytes=536870912 verified_read_bytes=536870912 read_checksum=0x0000000ff01774e7 expected_checksum=0x0000000ff01774e7 wire_bytes=553910272 frames=131072 read_frames=131072 write_frames=0 frames_per_sec=878803
+zcnblk-send-latency-summary: write_ack_count=0 write_ack_avg_ns=0 write_ack_min_ns=0 write_ack_p50_ns=0 write_ack_p95_ns=0 write_ack_p99_ns=0 write_ack_p999_ns=0 write_ack_max_ns=0 read_count=131072 read_avg_ns=32300793 read_min_ns=1834654 read_p50_ns=36000000 read_p95_ns=39000000 read_p99_ns=40000000 read_p999_ns=41000000 read_max_ns=40570524
+zcnblk-send: bytes=536870912 seconds=0.149148 GiBps=3.352 Gbitps=28.797
+	Command being timed: "env URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0,1,2,3,4,5,6,7 URING_PLAY_SOURCE_IP=127.0.0.1 URING_PLAY_SOCKET_BUFFER_BYTES=67108864 URING_PLAY_TCP_NODELAY=1 URING_PLAY_ZCNBLK_OP=read URING_PLAY_ZCNBLK_ACCESS=linear URING_PLAY_ZCNBLK_VERIFY_READS=1 URING_PLAY_ZCNBLK_WAIT_WRITE_ACKS=0 URING_PLAY_ZCNBLK_BATCH_DEPTH=64 URING_PLAY_ZCNBLK_WAL_BATCH_WINDOW=64 URING_PLAY_ZCNBLK_READ_WINDOW=4096 URING_PLAY_ZCNBLK_WRITE_WINDOW=4096 URING_PLAY_ZCNBLK_LATENCY=1 URING_PLAY_SEND_PATTERN=offset URING_PLAY_SEND_PATTERN_SEED=12345 target/release/zcutils zcnblk-send 127.0.0.1 1 21100 8 1 64M 4096 8"
+	User time (seconds): 0.26
+	System time (seconds): 0.01
+	Percent of CPU this job got: 182%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.15
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 8360
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 1409
+	Voluntary context switches: 2394
+	Involuntary context switches: 56
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 16
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

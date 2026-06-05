@@ -1,0 +1,290 @@
+zcfanout-logtcp-bench: mode=mirror-write bind=127.0.0.1 connect_addr=127.0.0.1 ports=28500..28563 lanes=32 branches=2 records_per_lane=250000 payload_bytes=4096 batch_records=1024 window=4096 receiver_workers=32 sender_streams=64 pin_workers=true transport=tcp result_record_bytes=32 sort=no global_queue=no payload_copy=no deep_payload_inspection=no block_devices=no
+zcfanout-logtcp-topology: lane=0 recv_worker=0 sender_affinity_indices=0..1 ports=28500..28501
+zcfanout-logtcp-topology: lane=1 recv_worker=1 sender_affinity_indices=2..3 ports=28502..28503
+zcfanout-logtcp-topology: lane=2 recv_worker=2 sender_affinity_indices=4..5 ports=28504..28505
+zcfanout-logtcp-topology: lane=3 recv_worker=3 sender_affinity_indices=6..7 ports=28506..28507
+zcfanout-logtcp-topology: lane=4 recv_worker=4 sender_affinity_indices=8..9 ports=28508..28509
+zcfanout-logtcp-topology: lane=5 recv_worker=5 sender_affinity_indices=10..11 ports=28510..28511
+zcfanout-logtcp-topology: lane=6 recv_worker=6 sender_affinity_indices=12..13 ports=28512..28513
+zcfanout-logtcp-topology: lane=7 recv_worker=7 sender_affinity_indices=14..15 ports=28514..28515
+zcfanout-logtcp-topology: lane=8 recv_worker=8 sender_affinity_indices=16..17 ports=28516..28517
+zcfanout-logtcp-topology: lane=9 recv_worker=9 sender_affinity_indices=18..19 ports=28518..28519
+zcfanout-logtcp-topology: lane=10 recv_worker=10 sender_affinity_indices=20..21 ports=28520..28521
+zcfanout-logtcp-topology: lane=11 recv_worker=11 sender_affinity_indices=22..23 ports=28522..28523
+zcfanout-logtcp-topology: lane=12 recv_worker=12 sender_affinity_indices=24..25 ports=28524..28525
+zcfanout-logtcp-topology: lane=13 recv_worker=13 sender_affinity_indices=26..27 ports=28526..28527
+zcfanout-logtcp-topology: lane=14 recv_worker=14 sender_affinity_indices=28..29 ports=28528..28529
+zcfanout-logtcp-topology: lane=15 recv_worker=15 sender_affinity_indices=30..31 ports=28530..28531
+zcfanout-logtcp-topology: lane=16 recv_worker=16 sender_affinity_indices=32..33 ports=28532..28533
+zcfanout-logtcp-topology: lane=17 recv_worker=17 sender_affinity_indices=34..35 ports=28534..28535
+zcfanout-logtcp-topology: lane=18 recv_worker=18 sender_affinity_indices=36..37 ports=28536..28537
+zcfanout-logtcp-topology: lane=19 recv_worker=19 sender_affinity_indices=38..39 ports=28538..28539
+zcfanout-logtcp-topology: lane=20 recv_worker=20 sender_affinity_indices=40..41 ports=28540..28541
+zcfanout-logtcp-topology: lane=21 recv_worker=21 sender_affinity_indices=42..43 ports=28542..28543
+zcfanout-logtcp-topology: lane=22 recv_worker=22 sender_affinity_indices=44..45 ports=28544..28545
+zcfanout-logtcp-topology: lane=23 recv_worker=23 sender_affinity_indices=46..47 ports=28546..28547
+zcfanout-logtcp-topology: lane=24 recv_worker=24 sender_affinity_indices=48..49 ports=28548..28549
+zcfanout-logtcp-topology: lane=25 recv_worker=25 sender_affinity_indices=50..51 ports=28550..28551
+zcfanout-logtcp-topology: lane=26 recv_worker=26 sender_affinity_indices=52..53 ports=28552..28553
+zcfanout-logtcp-topology: lane=27 recv_worker=27 sender_affinity_indices=54..55 ports=28554..28555
+zcfanout-logtcp-topology: lane=28 recv_worker=28 sender_affinity_indices=56..57 ports=28556..28557
+zcfanout-logtcp-topology: lane=29 recv_worker=29 sender_affinity_indices=58..59 ports=28558..28559
+zcfanout-logtcp-topology: lane=30 recv_worker=30 sender_affinity_indices=60..61 ports=28560..28561
+zcfanout-logtcp-topology: lane=31 recv_worker=31 sender_affinity_indices=62..63 ports=28562..28563
+zcfanout-logtcp-send: affinity_index=0 target_cpu=0 status=ok
+zcfanout-logtcp-send: affinity_index=1 target_cpu=1 status=ok
+zcfanout-logtcp-send: affinity_index=2 target_cpu=2 status=ok
+zcfanout-logtcp-send: affinity_index=4 target_cpu=4 status=ok
+zcfanout-logtcp-send: affinity_index=3 target_cpu=3 status=ok
+zcfanout-logtcp-send: affinity_index=5 target_cpu=5 status=ok
+zcfanout-logtcp-send: affinity_index=6 target_cpu=6 status=ok
+zcfanout-logtcp-send: affinity_index=7 target_cpu=7 status=ok
+zcfanout-logtcp-send: affinity_index=10 target_cpu=10 status=ok
+zcfanout-logtcp-send: affinity_index=8 target_cpu=8 status=ok
+zcfanout-logtcp-send: affinity_index=9 target_cpu=9 status=ok
+zcfanout-logtcp-send: affinity_index=11 target_cpu=11 status=ok
+zcfanout-logtcp-send: affinity_index=12 target_cpu=12 status=ok
+zcfanout-logtcp-send: affinity_index=14 target_cpu=14 status=ok
+zcfanout-logtcp-send: affinity_index=13 target_cpu=13 status=ok
+zcfanout-logtcp-send: affinity_index=15 target_cpu=15 status=ok
+zcfanout-logtcp-send: affinity_index=16 target_cpu=16 status=ok
+zcfanout-logtcp-send: affinity_index=17 target_cpu=17 status=ok
+zcfanout-logtcp-send: affinity_index=18 target_cpu=18 status=ok
+zcfanout-logtcp-send: affinity_index=19 target_cpu=19 status=ok
+zcfanout-logtcp-send: affinity_index=20 target_cpu=20 status=ok
+zcfanout-logtcp-send: affinity_index=21 target_cpu=21 status=ok
+zcfanout-logtcp-send: affinity_index=22 target_cpu=22 status=ok
+zcfanout-logtcp-send: affinity_index=23 target_cpu=23 status=ok
+zcfanout-logtcp-send: affinity_index=24 target_cpu=24 status=ok
+zcfanout-logtcp-send: affinity_index=25 target_cpu=25 status=ok
+zcfanout-logtcp-send: affinity_index=26 target_cpu=26 status=ok
+zcfanout-logtcp-send: affinity_index=27 target_cpu=27 status=ok
+zcfanout-logtcp-send: affinity_index=30 target_cpu=30 status=ok
+zcfanout-logtcp-send: affinity_index=29 target_cpu=29 status=ok
+zcfanout-logtcp-send: affinity_index=32 target_cpu=0 status=ok
+zcfanout-logtcp-send: affinity_index=28 target_cpu=28 status=ok
+zcfanout-logtcp-send: affinity_index=31 target_cpu=31 status=ok
+zcfanout-logtcp-send: affinity_index=34 target_cpu=2 status=ok
+zcfanout-logtcp-send: affinity_index=33 target_cpu=1 status=ok
+zcfanout-logtcp-send: affinity_index=36 target_cpu=4 status=ok
+zcfanout-logtcp-send: affinity_index=35 target_cpu=3 status=ok
+zcfanout-logtcp-send: affinity_index=38 target_cpu=6 status=ok
+zcfanout-logtcp-send: affinity_index=37 target_cpu=5 status=ok
+zcfanout-logtcp-send: affinity_index=39 target_cpu=7 status=ok
+zcfanout-logtcp-send: affinity_index=40 target_cpu=8 status=ok
+zcfanout-logtcp-send: affinity_index=41 target_cpu=9 status=ok
+zcfanout-logtcp-send: affinity_index=42 target_cpu=10 status=ok
+zcfanout-logtcp-send: affinity_index=43 target_cpu=11 status=ok
+zcfanout-logtcp-send: affinity_index=44 target_cpu=12 status=ok
+zcfanout-logtcp-send: affinity_index=45 target_cpu=13 status=ok
+zcfanout-logtcp-send: affinity_index=46 target_cpu=14 status=ok
+zcfanout-logtcp-send: affinity_index=47 target_cpu=15 status=ok
+zcfanout-logtcp-send: affinity_index=48 target_cpu=16 status=ok
+zcfanout-logtcp-send: affinity_index=49 target_cpu=17 status=ok
+zcfanout-logtcp-send: affinity_index=50 target_cpu=18 status=ok
+zcfanout-logtcp-send: affinity_index=51 target_cpu=19 status=ok
+zcfanout-logtcp-send: affinity_index=53 target_cpu=21 status=ok
+zcfanout-logtcp-send: affinity_index=52 target_cpu=20 status=ok
+zcfanout-logtcp-send: affinity_index=54 target_cpu=22 status=ok
+zcfanout-logtcp-send: affinity_index=55 target_cpu=23 status=ok
+zcfanout-logtcp-send: affinity_index=56 target_cpu=24 status=ok
+zcfanout-logtcp-send: affinity_index=57 target_cpu=25 status=ok
+zcfanout-logtcp-send: affinity_index=58 target_cpu=26 status=ok
+zcfanout-logtcp-send: affinity_index=59 target_cpu=27 status=ok
+zcfanout-logtcp-send: affinity_index=60 target_cpu=28 status=ok
+zcfanout-logtcp-send: affinity_index=61 target_cpu=29 status=ok
+zcfanout-logtcp-send: affinity_index=62 target_cpu=30 status=ok
+zcfanout-logtcp-send: affinity_index=63 target_cpu=31 status=ok
+zcfanout-logtcp-accept: lane=0 branch=0 port=28500 peer=127.0.0.1:43982
+zcfanout-logtcp-accept: lane=0 branch=1 port=28501 peer=127.0.0.1:55802
+zcfanout-logtcp-accept: lane=1 branch=0 port=28502 peer=127.0.0.1:56474
+zcfanout-logtcp-accept: lane=1 branch=1 port=28503 peer=127.0.0.1:53438
+zcfanout-logtcp-accept: lane=2 branch=0 port=28504 peer=127.0.0.1:48914
+zcfanout-logtcp-accept: lane=2 branch=1 port=28505 peer=127.0.0.1:45856
+zcfanout-logtcp-accept: lane=3 branch=0 port=28506 peer=127.0.0.1:42662
+zcfanout-logtcp-accept: lane=3 branch=1 port=28507 peer=127.0.0.1:42582
+zcfanout-logtcp-accept: lane=4 branch=0 port=28508 peer=127.0.0.1:52250
+zcfanout-logtcp-accept: lane=4 branch=1 port=28509 peer=127.0.0.1:53076
+zcfanout-logtcp-accept: lane=5 branch=0 port=28510 peer=127.0.0.1:44956
+zcfanout-logtcp-accept: lane=5 branch=1 port=28511 peer=127.0.0.1:60194
+zcfanout-logtcp-accept: lane=6 branch=0 port=28512 peer=127.0.0.1:57080
+zcfanout-logtcp-accept: lane=6 branch=1 port=28513 peer=127.0.0.1:46100
+zcfanout-logtcp-accept: lane=7 branch=0 port=28514 peer=127.0.0.1:34124
+zcfanout-logtcp-accept: lane=7 branch=1 port=28515 peer=127.0.0.1:46750
+zcfanout-logtcp-accept: lane=8 branch=0 port=28516 peer=127.0.0.1:35382
+zcfanout-logtcp-accept: lane=8 branch=1 port=28517 peer=127.0.0.1:48978
+zcfanout-logtcp-accept: lane=9 branch=0 port=28518 peer=127.0.0.1:35312
+zcfanout-logtcp-accept: lane=9 branch=1 port=28519 peer=127.0.0.1:49870
+zcfanout-logtcp-accept: lane=10 branch=0 port=28520 peer=127.0.0.1:54326
+zcfanout-logtcp-accept: lane=10 branch=1 port=28521 peer=127.0.0.1:40678
+zcfanout-logtcp-accept: lane=11 branch=0 port=28522 peer=127.0.0.1:40344
+zcfanout-logtcp-accept: lane=11 branch=1 port=28523 peer=127.0.0.1:49706
+zcfanout-logtcp-accept: lane=12 branch=0 port=28524 peer=127.0.0.1:40014
+zcfanout-logtcp-accept: lane=12 branch=1 port=28525 peer=127.0.0.1:34462
+zcfanout-logtcp-accept: lane=13 branch=0 port=28526 peer=127.0.0.1:51200
+zcfanout-logtcp-accept: lane=13 branch=1 port=28527 peer=127.0.0.1:58268
+zcfanout-logtcp-accept: lane=14 branch=0 port=28528 peer=127.0.0.1:60072
+zcfanout-logtcp-accept: lane=14 branch=1 port=28529 peer=127.0.0.1:47180
+zcfanout-logtcp-accept: lane=15 branch=0 port=28530 peer=127.0.0.1:43004
+zcfanout-logtcp-accept: lane=15 branch=1 port=28531 peer=127.0.0.1:33116
+zcfanout-logtcp-accept: lane=16 branch=0 port=28532 peer=127.0.0.1:38448
+zcfanout-logtcp-accept: lane=16 branch=1 port=28533 peer=127.0.0.1:38790
+zcfanout-logtcp-accept: lane=17 branch=0 port=28534 peer=127.0.0.1:36312
+zcfanout-logtcp-accept: lane=17 branch=1 port=28535 peer=127.0.0.1:36880
+zcfanout-logtcp-accept: lane=18 branch=0 port=28536 peer=127.0.0.1:53128
+zcfanout-logtcp-accept: lane=18 branch=1 port=28537 peer=127.0.0.1:44814
+zcfanout-logtcp-accept: lane=19 branch=0 port=28538 peer=127.0.0.1:50190
+zcfanout-logtcp-accept: lane=19 branch=1 port=28539 peer=127.0.0.1:51384
+zcfanout-logtcp-accept: lane=20 branch=0 port=28540 peer=127.0.0.1:53020
+zcfanout-logtcp-accept: lane=20 branch=1 port=28541 peer=127.0.0.1:38372
+zcfanout-logtcp-accept: lane=21 branch=0 port=28542 peer=127.0.0.1:36246
+zcfanout-logtcp-accept: lane=21 branch=1 port=28543 peer=127.0.0.1:45620
+zcfanout-logtcp-accept: lane=22 branch=0 port=28544 peer=127.0.0.1:52962
+zcfanout-logtcp-accept: lane=22 branch=1 port=28545 peer=127.0.0.1:43796
+zcfanout-logtcp-accept: lane=23 branch=0 port=28546 peer=127.0.0.1:56356
+zcfanout-logtcp-accept: lane=23 branch=1 port=28547 peer=127.0.0.1:38298
+zcfanout-logtcp-accept: lane=24 branch=0 port=28548 peer=127.0.0.1:37234
+zcfanout-logtcp-accept: lane=24 branch=1 port=28549 peer=127.0.0.1:50448
+zcfanout-logtcp-accept: lane=25 branch=0 port=28550 peer=127.0.0.1:52030
+zcfanout-logtcp-accept: lane=25 branch=1 port=28551 peer=127.0.0.1:39250
+zcfanout-logtcp-accept: lane=26 branch=0 port=28552 peer=127.0.0.1:51690
+zcfanout-logtcp-accept: lane=26 branch=1 port=28553 peer=127.0.0.1:52586
+zcfanout-logtcp-accept: lane=27 branch=0 port=28554 peer=127.0.0.1:37810
+zcfanout-logtcp-accept: lane=27 branch=1 port=28555 peer=127.0.0.1:58558
+zcfanout-logtcp-accept: lane=28 branch=0 port=28556 peer=127.0.0.1:52338
+zcfanout-logtcp-accept: lane=28 branch=1 port=28557 peer=127.0.0.1:49394
+zcfanout-logtcp-accept: lane=29 branch=0 port=28558 peer=127.0.0.1:50704
+zcfanout-logtcp-accept: lane=29 branch=1 port=28559 peer=127.0.0.1:40438
+zcfanout-logtcp-accept: lane=30 branch=0 port=28560 peer=127.0.0.1:52926
+zcfanout-logtcp-accept: lane=30 branch=1 port=28561 peer=127.0.0.1:43732
+zcfanout-logtcp-accept: lane=31 branch=0 port=28562 peer=127.0.0.1:44986
+zcfanout-logtcp-accept: lane=31 branch=1 port=28563 peer=127.0.0.1:48966
+zcfanout-logtcp-recv: affinity_index=64 target_cpu=0 status=ok
+zcfanout-logtcp-recv: affinity_index=65 target_cpu=1 status=ok
+zcfanout-logtcp-recv: affinity_index=66 target_cpu=2 status=ok
+zcfanout-logtcp-recv: affinity_index=67 target_cpu=3 status=ok
+zcfanout-logtcp-recv: affinity_index=68 target_cpu=4 status=ok
+zcfanout-logtcp-recv: affinity_index=69 target_cpu=5 status=ok
+zcfanout-logtcp-recv: affinity_index=70 target_cpu=6 status=ok
+zcfanout-logtcp-recv: affinity_index=71 target_cpu=7 status=ok
+zcfanout-logtcp-recv: affinity_index=72 target_cpu=8 status=ok
+zcfanout-logtcp-recv: affinity_index=74 target_cpu=10 status=ok
+zcfanout-logtcp-recv: affinity_index=73 target_cpu=9 status=ok
+zcfanout-logtcp-recv: affinity_index=75 target_cpu=11 status=ok
+zcfanout-logtcp-recv: affinity_index=76 target_cpu=12 status=ok
+zcfanout-logtcp-recv: affinity_index=77 target_cpu=13 status=ok
+zcfanout-logtcp-recv: affinity_index=78 target_cpu=14 status=ok
+zcfanout-logtcp-recv: affinity_index=80 target_cpu=16 status=ok
+zcfanout-logtcp-recv: affinity_index=79 target_cpu=15 status=ok
+zcfanout-logtcp-recv: affinity_index=81 target_cpu=17 status=ok
+zcfanout-logtcp-recv: affinity_index=82 target_cpu=18 status=ok
+zcfanout-logtcp-recv: affinity_index=83 target_cpu=19 status=ok
+zcfanout-logtcp-recv: affinity_index=84 target_cpu=20 status=ok
+zcfanout-logtcp-recv: affinity_index=85 target_cpu=21 status=ok
+zcfanout-logtcp-recv: affinity_index=86 target_cpu=22 status=ok
+zcfanout-logtcp-recv: affinity_index=87 target_cpu=23 status=ok
+zcfanout-logtcp-recv: affinity_index=88 target_cpu=24 status=ok
+zcfanout-logtcp-recv: affinity_index=89 target_cpu=25 status=ok
+zcfanout-logtcp-recv: affinity_index=90 target_cpu=26 status=ok
+zcfanout-logtcp-recv: affinity_index=91 target_cpu=27 status=ok
+zcfanout-logtcp-recv: affinity_index=92 target_cpu=28 status=ok
+zcfanout-logtcp-recv: affinity_index=93 target_cpu=29 status=ok
+zcfanout-logtcp-recv: affinity_index=94 target_cpu=30 status=ok
+zcfanout-logtcp-recv: affinity_index=95 target_cpu=31 status=ok
+zcfanout-logtcp-sender: lane=0 branch=0 port=28500 records=250000 wire_bytes=8000000 checksum=0x0000000e8e3d8070 seconds=0.005821 records_per_sec=42944649 wire_Gbitps=10.994 target_cpu=0 affinity_applied=true
+zcfanout-logtcp-sender: lane=0 branch=1 port=28501 records=250000 wire_bytes=8000000 checksum=0x03d0900e8e415100 seconds=0.014065 records_per_sec=17774574 wire_Gbitps=4.550 target_cpu=1 affinity_applied=true
+zcfanout-logtcp-sender: lane=1 branch=0 port=28502 records=250000 wire_bytes=8000000 checksum=0xd090000e8e3d8070 seconds=0.006415 records_per_sec=38968191 wire_Gbitps=9.976 target_cpu=2 affinity_applied=true
+zcfanout-logtcp-sender: lane=1 branch=1 port=28503 records=250000 wire_bytes=8000000 checksum=0xd460900e8e415100 seconds=0.015614 records_per_sec=16011014 wire_Gbitps=4.099 target_cpu=3 affinity_applied=true
+zcfanout-logtcp-sender: lane=2 branch=0 port=28504 records=250000 wire_bytes=8000000 checksum=0xa120000e8e3d8070 seconds=0.010697 records_per_sec=23371369 wire_Gbitps=5.983 target_cpu=4 affinity_applied=true
+zcfanout-logtcp-sender: lane=2 branch=1 port=28505 records=250000 wire_bytes=8000000 checksum=0xa4f0900e8e415100 seconds=0.009716 records_per_sec=25730873 wire_Gbitps=6.587 target_cpu=5 affinity_applied=true
+zcfanout-logtcp-sender: lane=3 branch=0 port=28506 records=250000 wire_bytes=8000000 checksum=0x71b0000e8e3d8070 seconds=0.004905 records_per_sec=50963901 wire_Gbitps=13.047 target_cpu=6 affinity_applied=true
+zcfanout-logtcp-sender: lane=3 branch=1 port=28507 records=250000 wire_bytes=8000000 checksum=0x7580900e8e415100 seconds=0.003129 records_per_sec=79885629 wire_Gbitps=20.451 target_cpu=7 affinity_applied=true
+zcfanout-logtcp-sender: lane=4 branch=0 port=28508 records=250000 wire_bytes=8000000 checksum=0x4240000e8e3d8070 seconds=0.021951 records_per_sec=11389231 wire_Gbitps=2.916 target_cpu=8 affinity_applied=true
+zcfanout-logtcp-sender: lane=4 branch=1 port=28509 records=250000 wire_bytes=8000000 checksum=0x4610900e8e415100 seconds=0.018226 records_per_sec=13716492 wire_Gbitps=3.511 target_cpu=9 affinity_applied=true
+zcfanout-logtcp-sender: lane=5 branch=0 port=28510 records=250000 wire_bytes=8000000 checksum=0x12d0000e8e3d8070 seconds=0.013922 records_per_sec=17957043 wire_Gbitps=4.597 target_cpu=10 affinity_applied=true
+zcfanout-logtcp-sender: lane=5 branch=1 port=28511 records=250000 wire_bytes=8000000 checksum=0x16a0900e8e415100 seconds=0.016429 records_per_sec=15216823 wire_Gbitps=3.896 target_cpu=11 affinity_applied=true
+zcfanout-logtcp-sender: lane=6 branch=0 port=28512 records=250000 wire_bytes=8000000 checksum=0xe360000e8e3d8070 seconds=0.018931 records_per_sec=13206148 wire_Gbitps=3.381 target_cpu=12 affinity_applied=true
+zcfanout-logtcp-sender: lane=6 branch=1 port=28513 records=250000 wire_bytes=8000000 checksum=0xe730900e8e415100 seconds=0.018669 records_per_sec=13391266 wire_Gbitps=3.428 target_cpu=13 affinity_applied=true
+zcfanout-logtcp-sender: lane=7 branch=0 port=28514 records=250000 wire_bytes=8000000 checksum=0xb3f0000e8e3d8070 seconds=0.005862 records_per_sec=42649263 wire_Gbitps=10.918 target_cpu=14 affinity_applied=true
+zcfanout-logtcp-sender: lane=7 branch=1 port=28515 records=250000 wire_bytes=8000000 checksum=0xb7c0900e8e415100 seconds=0.019448 records_per_sec=12854601 wire_Gbitps=3.291 target_cpu=15 affinity_applied=true
+zcfanout-logtcp-sender: lane=8 branch=0 port=28516 records=250000 wire_bytes=8000000 checksum=0x8480000e8e3d8070 seconds=0.009389 records_per_sec=26625648 wire_Gbitps=6.816 target_cpu=16 affinity_applied=true
+zcfanout-logtcp-sender: lane=8 branch=1 port=28517 records=250000 wire_bytes=8000000 checksum=0x8850900e8e415100 seconds=0.014098 records_per_sec=17733372 wire_Gbitps=4.540 target_cpu=17 affinity_applied=true
+zcfanout-logtcp-sender: lane=9 branch=0 port=28518 records=250000 wire_bytes=8000000 checksum=0x5510000e8e3d8070 seconds=0.011212 records_per_sec=22297298 wire_Gbitps=5.708 target_cpu=18 affinity_applied=true
+zcfanout-logtcp-sender: lane=9 branch=1 port=28519 records=250000 wire_bytes=8000000 checksum=0x58e0900e8e415100 seconds=0.003278 records_per_sec=76267994 wire_Gbitps=19.525 target_cpu=19 affinity_applied=true
+zcfanout-logtcp-sender: lane=10 branch=0 port=28520 records=250000 wire_bytes=8000000 checksum=0x25a0000e8e3d8070 seconds=0.006208 records_per_sec=40271280 wire_Gbitps=10.309 target_cpu=20 affinity_applied=true
+zcfanout-logtcp-sender: lane=10 branch=1 port=28521 records=250000 wire_bytes=8000000 checksum=0x2970900e8e415100 seconds=0.006440 records_per_sec=38821690 wire_Gbitps=9.938 target_cpu=21 affinity_applied=true
+zcfanout-logtcp-sender: lane=11 branch=0 port=28522 records=250000 wire_bytes=8000000 checksum=0xf630000e8e3d8070 seconds=0.012301 records_per_sec=20322862 wire_Gbitps=5.203 target_cpu=22 affinity_applied=true
+zcfanout-logtcp-sender: lane=11 branch=1 port=28523 records=250000 wire_bytes=8000000 checksum=0xfa00900e8e415100 seconds=0.017242 records_per_sec=14499436 wire_Gbitps=3.712 target_cpu=23 affinity_applied=true
+zcfanout-logtcp-sender: lane=12 branch=0 port=28524 records=250000 wire_bytes=8000000 checksum=0xc6c0000e8e3d8070 seconds=0.013810 records_per_sec=18102846 wire_Gbitps=4.634 target_cpu=24 affinity_applied=true
+zcfanout-logtcp-sender: lane=12 branch=1 port=28525 records=250000 wire_bytes=8000000 checksum=0xca90900e8e415100 seconds=0.016820 records_per_sec=14863587 wire_Gbitps=3.805 target_cpu=25 affinity_applied=true
+zcfanout-logtcp-sender: lane=13 branch=0 port=28526 records=250000 wire_bytes=8000000 checksum=0x9750000e8e3d8070 seconds=0.010122 records_per_sec=24698857 wire_Gbitps=6.323 target_cpu=26 affinity_applied=true
+zcfanout-logtcp-sender: lane=13 branch=1 port=28527 records=250000 wire_bytes=8000000 checksum=0x9b20900e8e415100 seconds=0.013353 records_per_sec=18722509 wire_Gbitps=4.793 target_cpu=27 affinity_applied=true
+zcfanout-logtcp-sender: lane=14 branch=0 port=28528 records=250000 wire_bytes=8000000 checksum=0x67e0000e8e3d8070 seconds=0.007322 records_per_sec=34142306 wire_Gbitps=8.740 target_cpu=28 affinity_applied=true
+zcfanout-logtcp-sender: lane=14 branch=1 port=28529 records=250000 wire_bytes=8000000 checksum=0x6bb0900e8e415100 seconds=0.017131 records_per_sec=14593282 wire_Gbitps=3.736 target_cpu=29 affinity_applied=true
+zcfanout-logtcp-sender: lane=15 branch=0 port=28530 records=250000 wire_bytes=8000000 checksum=0x3870000e8e3d8070 seconds=0.016726 records_per_sec=14946435 wire_Gbitps=3.826 target_cpu=30 affinity_applied=true
+zcfanout-logtcp-sender: lane=15 branch=1 port=28531 records=250000 wire_bytes=8000000 checksum=0x3c40900e8e415100 seconds=0.011056 records_per_sec=22611725 wire_Gbitps=5.789 target_cpu=31 affinity_applied=true
+zcfanout-logtcp-sender: lane=16 branch=0 port=28532 records=250000 wire_bytes=8000000 checksum=0x0900000e8e3d8070 seconds=0.011745 records_per_sec=21285664 wire_Gbitps=5.449 target_cpu=0 affinity_applied=true
+zcfanout-logtcp-sender: lane=16 branch=1 port=28533 records=250000 wire_bytes=8000000 checksum=0x0cd0900e8e415100 seconds=0.014543 records_per_sec=17190664 wire_Gbitps=4.401 target_cpu=1 affinity_applied=true
+zcfanout-logtcp-sender: lane=17 branch=0 port=28534 records=250000 wire_bytes=8000000 checksum=0xd990000e8e3d8070 seconds=0.011003 records_per_sec=22720704 wire_Gbitps=5.817 target_cpu=2 affinity_applied=true
+zcfanout-logtcp-sender: lane=17 branch=1 port=28535 records=250000 wire_bytes=8000000 checksum=0xdd60900e8e415100 seconds=0.012306 records_per_sec=20314588 wire_Gbitps=5.201 target_cpu=3 affinity_applied=true
+zcfanout-logtcp-sender: lane=18 branch=0 port=28536 records=250000 wire_bytes=8000000 checksum=0xaa20000e8e3d8070 seconds=0.005865 records_per_sec=42626495 wire_Gbitps=10.912 target_cpu=4 affinity_applied=true
+zcfanout-logtcp-sender: lane=18 branch=1 port=28537 records=250000 wire_bytes=8000000 checksum=0xadf0900e8e415100 seconds=0.014695 records_per_sec=17012327 wire_Gbitps=4.355 target_cpu=5 affinity_applied=true
+zcfanout-logtcp-sender: lane=19 branch=0 port=28538 records=250000 wire_bytes=8000000 checksum=0x7ab0000e8e3d8070 seconds=0.012715 records_per_sec=19662299 wire_Gbitps=5.034 target_cpu=6 affinity_applied=true
+zcfanout-logtcp-sender: lane=19 branch=1 port=28539 records=250000 wire_bytes=8000000 checksum=0x7e80900e8e415100 seconds=0.009711 records_per_sec=25742769 wire_Gbitps=6.590 target_cpu=7 affinity_applied=true
+zcfanout-logtcp-sender: lane=20 branch=0 port=28540 records=250000 wire_bytes=8000000 checksum=0x4b40000e8e3d8070 seconds=0.014951 records_per_sec=16721749 wire_Gbitps=4.281 target_cpu=8 affinity_applied=true
+zcfanout-logtcp-sender: lane=20 branch=1 port=28541 records=250000 wire_bytes=8000000 checksum=0x4f10900e8e415100 seconds=0.013202 records_per_sec=18936421 wire_Gbitps=4.848 target_cpu=9 affinity_applied=true
+zcfanout-logtcp-sender: lane=21 branch=0 port=28542 records=250000 wire_bytes=8000000 checksum=0x1bd0000e8e3d8070 seconds=0.017437 records_per_sec=14337517 wire_Gbitps=3.670 target_cpu=10 affinity_applied=true
+zcfanout-logtcp-sender: lane=21 branch=1 port=28543 records=250000 wire_bytes=8000000 checksum=0x1fa0900e8e415100 seconds=0.018070 records_per_sec=13834884 wire_Gbitps=3.542 target_cpu=11 affinity_applied=true
+zcfanout-logtcp-sender: lane=22 branch=0 port=28544 records=250000 wire_bytes=8000000 checksum=0xec60000e8e3d8070 seconds=0.016137 records_per_sec=15492726 wire_Gbitps=3.966 target_cpu=12 affinity_applied=true
+zcfanout-logtcp-sender: lane=22 branch=1 port=28545 records=250000 wire_bytes=8000000 checksum=0xf030900e8e415100 seconds=0.014188 records_per_sec=17620804 wire_Gbitps=4.511 target_cpu=13 affinity_applied=true
+zcfanout-logtcp-sender: lane=23 branch=0 port=28546 records=250000 wire_bytes=8000000 checksum=0xbcf0000e8e3d8070 seconds=0.015315 records_per_sec=16323886 wire_Gbitps=4.179 target_cpu=14 affinity_applied=true
+zcfanout-logtcp-sender: lane=23 branch=1 port=28547 records=250000 wire_bytes=8000000 checksum=0xc0c0900e8e415100 seconds=0.012401 records_per_sec=20159066 wire_Gbitps=5.161 target_cpu=15 affinity_applied=true
+zcfanout-logtcp-sender: lane=24 branch=0 port=28548 records=250000 wire_bytes=8000000 checksum=0x8d80000e8e3d8070 seconds=0.012973 records_per_sec=19270437 wire_Gbitps=4.933 target_cpu=16 affinity_applied=true
+zcfanout-logtcp-sender: lane=24 branch=1 port=28549 records=250000 wire_bytes=8000000 checksum=0x9150900e8e415100 seconds=0.014259 records_per_sec=17532436 wire_Gbitps=4.488 target_cpu=17 affinity_applied=true
+zcfanout-logtcp-sender: lane=25 branch=0 port=28550 records=250000 wire_bytes=8000000 checksum=0x5e10000e8e3d8070 seconds=0.011236 records_per_sec=22250879 wire_Gbitps=5.696 target_cpu=18 affinity_applied=true
+zcfanout-logtcp-sender: lane=25 branch=1 port=28551 records=250000 wire_bytes=8000000 checksum=0x61e0900e8e415100 seconds=0.014549 records_per_sec=17183658 wire_Gbitps=4.399 target_cpu=19 affinity_applied=true
+zcfanout-logtcp-sender: lane=26 branch=0 port=28552 records=250000 wire_bytes=8000000 checksum=0x2ea0000e8e3d8070 seconds=0.010572 records_per_sec=23647062 wire_Gbitps=6.054 target_cpu=20 affinity_applied=true
+zcfanout-logtcp-sender: lane=26 branch=1 port=28553 records=250000 wire_bytes=8000000 checksum=0x3270900e8e415100 seconds=0.011528 records_per_sec=21687207 wire_Gbitps=5.552 target_cpu=21 affinity_applied=true
+zcfanout-logtcp-sender: lane=27 branch=0 port=28554 records=250000 wire_bytes=8000000 checksum=0xff30000e8e3d8070 seconds=0.011878 records_per_sec=21046847 wire_Gbitps=5.388 target_cpu=22 affinity_applied=true
+zcfanout-logtcp-sender: lane=27 branch=1 port=28555 records=250000 wire_bytes=8000000 checksum=0x0300900e8e415100 seconds=0.009146 records_per_sec=27334079 wire_Gbitps=6.998 target_cpu=23 affinity_applied=true
+zcfanout-logtcp-sender: lane=28 branch=0 port=28556 records=250000 wire_bytes=8000000 checksum=0xcfc0000e8e3d8070 seconds=0.014002 records_per_sec=17854995 wire_Gbitps=4.571 target_cpu=24 affinity_applied=true
+zcfanout-logtcp-sender: lane=28 branch=1 port=28557 records=250000 wire_bytes=8000000 checksum=0xd390900e8e415100 seconds=0.012204 records_per_sec=20484605 wire_Gbitps=5.244 target_cpu=25 affinity_applied=true
+zcfanout-logtcp-sender: lane=29 branch=0 port=28558 records=250000 wire_bytes=8000000 checksum=0xa050000e8e3d8070 seconds=0.012078 records_per_sec=20698145 wire_Gbitps=5.299 target_cpu=26 affinity_applied=true
+zcfanout-logtcp-sender: lane=29 branch=1 port=28559 records=250000 wire_bytes=8000000 checksum=0xa420900e8e415100 seconds=0.015930 records_per_sec=15693538 wire_Gbitps=4.018 target_cpu=27 affinity_applied=true
+zcfanout-logtcp-sender: lane=30 branch=0 port=28560 records=250000 wire_bytes=8000000 checksum=0x70e0000e8e3d8070 seconds=0.011256 records_per_sec=22209956 wire_Gbitps=5.686 target_cpu=28 affinity_applied=true
+zcfanout-logtcp-sender: lane=30 branch=1 port=28561 records=250000 wire_bytes=8000000 checksum=0x74b0900e8e415100 seconds=0.023349 records_per_sec=10707102 wire_Gbitps=2.741 target_cpu=29 affinity_applied=true
+zcfanout-logtcp-sender: lane=31 branch=0 port=28562 records=250000 wire_bytes=8000000 checksum=0x4170000e8e3d8070 seconds=0.014620 records_per_sec=17099667 wire_Gbitps=4.378 target_cpu=30 affinity_applied=true
+zcfanout-logtcp-sender: lane=31 branch=1 port=28563 records=250000 wire_bytes=8000000 checksum=0x4540900e8e415100 seconds=0.013430 records_per_sec=18614595 wire_Gbitps=4.765 target_cpu=31 affinity_applied=true
+zcfanout-logtcp-receiver: worker=0 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x0000002baacb9420 seconds=0.028251 result_records_per_sec=17698670 emitted_per_sec=8849335 logical_4k_iops=8849335 wire_Gbitps=4.531 branch_Gibitps=579.950 target_cpu=0 affinity_applied=true
+zcfanout-logtcp-receiver: worker=1 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x71b0002baacb9420 seconds=0.026862 result_records_per_sec=18613860 emitted_per_sec=9306930 logical_4k_iops=9306930 wire_Gbitps=4.765 branch_Gibitps=609.939 target_cpu=1 affinity_applied=true
+zcfanout-logtcp-receiver: worker=2 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xe360002baacb9420 seconds=0.031210 result_records_per_sec=16020432 emitted_per_sec=8010216 logical_4k_iops=8010216 wire_Gbitps=4.101 branch_Gibitps=524.958 target_cpu=2 affinity_applied=true
+zcfanout-logtcp-receiver: worker=3 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x5510002baacb9420 seconds=0.029638 result_records_per_sec=16870378 emitted_per_sec=8435189 logical_4k_iops=8435189 wire_Gbitps=4.319 branch_Gibitps=552.809 target_cpu=3 affinity_applied=true
+zcfanout-logtcp-receiver: worker=4 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xc6c0002baacb9420 seconds=0.036049 result_records_per_sec=13870154 emitted_per_sec=6935077 logical_4k_iops=6935077 wire_Gbitps=3.551 branch_Gibitps=454.497 target_cpu=4 affinity_applied=true
+zcfanout-logtcp-receiver: worker=5 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x3870002baacb9420 seconds=0.029803 result_records_per_sec=16776577 emitted_per_sec=8388289 logical_4k_iops=8388289 wire_Gbitps=4.295 branch_Gibitps=549.735 target_cpu=5 affinity_applied=true
+zcfanout-logtcp-receiver: worker=6 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xaa20002baacb9420 seconds=0.031058 result_records_per_sec=16098967 emitted_per_sec=8049484 logical_4k_iops=8049484 wire_Gbitps=4.121 branch_Gibitps=527.531 target_cpu=6 affinity_applied=true
+zcfanout-logtcp-receiver: worker=7 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x1bd0002baacb9420 seconds=0.028931 result_records_per_sec=17282671 emitted_per_sec=8641335 logical_4k_iops=8641335 wire_Gbitps=4.424 branch_Gibitps=566.319 target_cpu=7 affinity_applied=true
+zcfanout-logtcp-receiver: worker=8 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x8d80002baacb9420 seconds=0.023600 result_records_per_sec=21186181 emitted_per_sec=10593091 logical_4k_iops=10593091 wire_Gbitps=5.424 branch_Gibitps=694.229 target_cpu=8 affinity_applied=true
+zcfanout-logtcp-receiver: worker=9 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xff30002baacb9420 seconds=0.029989 result_records_per_sec=16672881 emitted_per_sec=8336441 logical_4k_iops=8336441 wire_Gbitps=4.268 branch_Gibitps=546.337 target_cpu=9 affinity_applied=true
+zcfanout-logtcp-receiver: worker=10 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x70e0002baacb9420 seconds=0.013426 result_records_per_sec=37240694 emitted_per_sec=18620347 logical_4k_iops=18620347 wire_Gbitps=9.534 branch_Gibitps=1220.303 target_cpu=10 affinity_applied=true
+zcfanout-logtcp-receiver: worker=11 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xe290002baacb9420 seconds=0.019433 result_records_per_sec=25730025 emitted_per_sec=12865013 logical_4k_iops=12865013 wire_Gbitps=6.587 branch_Gibitps=843.121 target_cpu=11 affinity_applied=true
+zcfanout-logtcp-receiver: worker=12 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x5440002baacb9420 seconds=0.024359 result_records_per_sec=20526671 emitted_per_sec=10263335 logical_4k_iops=10263335 wire_Gbitps=5.255 branch_Gibitps=672.618 target_cpu=12 affinity_applied=true
+zcfanout-logtcp-receiver: worker=13 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xc5f0002baacb9420 seconds=0.039019 result_records_per_sec=12814162 emitted_per_sec=6407081 logical_4k_iops=6407081 wire_Gbitps=3.280 branch_Gibitps=419.894 target_cpu=13 affinity_applied=true
+zcfanout-logtcp-receiver: worker=14 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x37a0002baacb9420 seconds=0.038998 result_records_per_sec=12821098 emitted_per_sec=6410549 logical_4k_iops=6410549 wire_Gbitps=3.282 branch_Gibitps=420.122 target_cpu=14 affinity_applied=true
+zcfanout-logtcp-receiver: worker=15 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xa950002baacb9420 seconds=0.029971 result_records_per_sec=16682895 emitted_per_sec=8341447 logical_4k_iops=8341447 wire_Gbitps=4.271 branch_Gibitps=546.665 target_cpu=15 affinity_applied=true
+zcfanout-logtcp-receiver: worker=16 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x1b00002baacb9420 seconds=0.027284 result_records_per_sec=18325842 emitted_per_sec=9162921 logical_4k_iops=9162921 wire_Gbitps=4.691 branch_Gibitps=600.501 target_cpu=16 affinity_applied=true
+zcfanout-logtcp-receiver: worker=17 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x8cb0002baacb9420 seconds=0.041577 result_records_per_sec=12025998 emitted_per_sec=6012999 logical_4k_iops=6012999 wire_Gbitps=3.079 branch_Gibitps=394.068 target_cpu=17 affinity_applied=true
+zcfanout-logtcp-receiver: worker=18 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xfe60002baacb9420 seconds=0.041901 result_records_per_sec=11932928 emitted_per_sec=5966464 logical_4k_iops=5966464 wire_Gbitps=3.055 branch_Gibitps=391.018 target_cpu=18 affinity_applied=true
+zcfanout-logtcp-receiver: worker=19 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x7010002baacb9420 seconds=0.024455 result_records_per_sec=20445915 emitted_per_sec=10222957 logical_4k_iops=10222957 wire_Gbitps=5.234 branch_Gibitps=669.972 target_cpu=19 affinity_applied=true
+zcfanout-logtcp-receiver: worker=20 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xe1c0002baacb9420 seconds=0.035712 result_records_per_sec=14000730 emitted_per_sec=7000365 logical_4k_iops=7000365 wire_Gbitps=3.584 branch_Gibitps=458.776 target_cpu=20 affinity_applied=true
+zcfanout-logtcp-receiver: worker=21 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x5370002baacb9420 seconds=0.039480 result_records_per_sec=12664640 emitted_per_sec=6332320 logical_4k_iops=6332320 wire_Gbitps=3.242 branch_Gibitps=414.995 target_cpu=21 affinity_applied=true
+zcfanout-logtcp-receiver: worker=22 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xc520002baacb9420 seconds=0.041914 result_records_per_sec=11929105 emitted_per_sec=5964552 logical_4k_iops=5964552 wire_Gbitps=3.054 branch_Gibitps=390.893 target_cpu=22 affinity_applied=true
+zcfanout-logtcp-receiver: worker=23 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x36d0002baacb9420 seconds=0.025328 result_records_per_sec=19740681 emitted_per_sec=9870340 logical_4k_iops=9870340 wire_Gbitps=5.054 branch_Gibitps=646.863 target_cpu=23 affinity_applied=true
+zcfanout-logtcp-receiver: worker=24 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xa880002baacb9420 seconds=0.040518 result_records_per_sec=12340241 emitted_per_sec=6170121 logical_4k_iops=6170121 wire_Gbitps=3.159 branch_Gibitps=404.365 target_cpu=24 affinity_applied=true
+zcfanout-logtcp-receiver: worker=25 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x1a30002baacb9420 seconds=0.039308 result_records_per_sec=12719995 emitted_per_sec=6359998 logical_4k_iops=6359998 wire_Gbitps=3.256 branch_Gibitps=416.809 target_cpu=25 affinity_applied=true
+zcfanout-logtcp-receiver: worker=26 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x8be0002baacb9420 seconds=0.039009 result_records_per_sec=12817407 emitted_per_sec=6408704 logical_4k_iops=6408704 wire_Gbitps=3.281 branch_Gibitps=420.001 target_cpu=26 affinity_applied=true
+zcfanout-logtcp-receiver: worker=27 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xfd90002baacb9420 seconds=0.024996 result_records_per_sec=20003341 emitted_per_sec=10001670 logical_4k_iops=10001670 wire_Gbitps=5.121 branch_Gibitps=655.469 target_cpu=27 affinity_applied=true
+zcfanout-logtcp-receiver: worker=28 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x6f40002baacb9420 seconds=0.023404 result_records_per_sec=21363780 emitted_per_sec=10681890 logical_4k_iops=10681890 wire_Gbitps=5.469 branch_Gibitps=700.048 target_cpu=28 affinity_applied=true
+zcfanout-logtcp-receiver: worker=29 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xe0f0002baacb9420 seconds=0.020496 result_records_per_sec=24395498 emitted_per_sec=12197749 logical_4k_iops=12197749 wire_Gbitps=6.245 branch_Gibitps=799.392 target_cpu=29 affinity_applied=true
+zcfanout-logtcp-receiver: worker=30 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0x52a0002baacb9420 seconds=0.028388 result_records_per_sec=17613007 emitted_per_sec=8806504 logical_4k_iops=8806504 wire_Gbitps=4.509 branch_Gibitps=577.143 target_cpu=30 affinity_applied=true
+zcfanout-logtcp-receiver: worker=31 lanes=1 result_records=500000 emitted=250000 duplicate_results=0 wire_bytes=16000000 logical_bytes=1024000000 branch_bytes=2048000000 checksum=0xc450002baacb9420 seconds=0.027934 result_records_per_sec=17899182 emitted_per_sec=8949591 logical_4k_iops=8949591 wire_Gbitps=4.582 branch_Gibitps=586.520 target_cpu=31 affinity_applied=true
+zcfanout-logtcp-summary: mode=mirror-write lanes=32 branches=2 receiver_workers=32 sender_streams=64 send_records=16000000 result_records=16000000 emitted=8000000 duplicate_results=0 send_wire_bytes=512000000 recv_wire_bytes=512000000 logical_bytes=32768000000 branch_bytes=65536000000 send_checksum=0xa81203a38fda2e00 recv_checksum=0x4500057559728400 seconds=0.042220 result_records_per_sec=378966740 emitted_per_sec=189483370 logical_4k_iops=189483370 wire_Gbitps=97.015 logical_GiBps=722.822 branch_Gibitps=12417.982 transport=tcp sort=no global_queue=no payload_copy=no deep_payload_inspection=no block_devices=no

@@ -1,0 +1,76 @@
+memlock=unlimited
+● efa-config.service - Elastic Fabric Adapter Configuration
+     Loaded: loaded (/usr/lib/systemd/system/efa-config.service; enabled; preset: enabled)
+     Active: active (exited) since Fri 2026-06-05 02:25:35 UTC; 6min ago
+    Process: 4465 ExecStart=/opt/amazon/bin/efa-hugepages-reserve.sh (code=exited, status=0/SUCCESS)
+   Main PID: 4465 (code=exited, status=0/SUCCESS)
+        CPU: 266ms
+
+Jun 05 02:25:35 ip-172-31-44-136 systemd[1]: Starting efa-config.service - Elastic Fabric Adapter Configuration...
+Jun 05 02:25:35 ip-172-31-44-136 systemd[1]: Finished efa-config.service - Elastic Fabric Adapter Configuration.
+● efa-config.service - Elastic Fabric Adapter Configuration
+     Loaded: loaded (/usr/lib/systemd/system/efa-config.service; enabled; preset: enabled)
+     Active: active (exited) since Fri 2026-06-05 02:32:12 UTC; 3ms ago
+    Process: 5605 ExecStart=/opt/amazon/bin/efa-hugepages-reserve.sh (code=exited, status=0/SUCCESS)
+   Main PID: 5605 (code=exited, status=0/SUCCESS)
+        CPU: 26ms
+
+Jun 05 02:32:12 ip-172-31-44-136 systemd[1]: Starting efa-config.service - Elastic Fabric Adapter Configuration...
+Jun 05 02:32:12 ip-172-31-44-136 systemd[1]: Finished efa-config.service - Elastic Fabric Adapter Configuration.
+total 272K
+-rwxr-xr-x 1 root root 67K Apr  1 00:23 fi_info
+-rwxr-xr-x 1 root root 67K Apr  1 00:23 fi_mon_sampler
+-rwxr-xr-x 1 root root 66K Apr  1 00:23 fi_pingpong
+-rwxr-xr-x 1 root root 66K Apr  1 00:23 fi_strerror
+/opt/amazon/efa/bin/fi_info
+/opt/amazon/efa/bin/fi_mon_sampler
+/opt/amazon/efa/bin/fi_pingpong
+/opt/amazon/efa/bin/fi_strerror
+memlock=unlimited
+● efa-config.service - Elastic Fabric Adapter Configuration
+     Loaded: loaded (/usr/lib/systemd/system/efa-config.service; enabled; preset: enabled)
+     Active: active (exited) since Fri 2026-06-05 02:26:38 UTC; 5min ago
+    Process: 4475 ExecStart=/opt/amazon/bin/efa-hugepages-reserve.sh (code=exited, status=0/SUCCESS)
+   Main PID: 4475 (code=exited, status=0/SUCCESS)
+        CPU: 265ms
+
+Jun 05 02:26:37 ip-172-31-47-102 systemd[1]: Starting efa-config.service - Elastic Fabric Adapter Configuration...
+Jun 05 02:26:38 ip-172-31-47-102 systemd[1]: Finished efa-config.service - Elastic Fabric Adapter Configuration.
+● efa-config.service - Elastic Fabric Adapter Configuration
+     Loaded: loaded (/usr/lib/systemd/system/efa-config.service; enabled; preset: enabled)
+     Active: active (exited) since Fri 2026-06-05 02:32:13 UTC; 2ms ago
+    Process: 5542 ExecStart=/opt/amazon/bin/efa-hugepages-reserve.sh (code=exited, status=0/SUCCESS)
+   Main PID: 5542 (code=exited, status=0/SUCCESS)
+        CPU: 26ms
+
+Jun 05 02:32:13 ip-172-31-47-102 systemd[1]: Starting efa-config.service - Elastic Fabric Adapter Configuration...
+Jun 05 02:32:13 ip-172-31-47-102 systemd[1]: Finished efa-config.service - Elastic Fabric Adapter Configuration.
+total 272K
+-rwxr-xr-x 1 root root 67K Apr  1 00:23 fi_info
+-rwxr-xr-x 1 root root 67K Apr  1 00:23 fi_mon_sampler
+-rwxr-xr-x 1 root root 66K Apr  1 00:23 fi_pingpong
+-rwxr-xr-x 1 root root 66K Apr  1 00:23 fi_strerror
+/opt/amazon/efa/bin/fi_info
+/opt/amazon/efa/bin/fi_mon_sampler
+/opt/amazon/efa/bin/fi_pingpong
+/opt/amazon/efa/bin/fi_strerror
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@52.14.22.210 'URING_NODE_INDEX=1 URING_RUN_ID=zc-efa-adhoc-c8gn16-20260605T022316Z URING_PRIVATE_IPS=172.31.44.136,172.31.47.102 set -euo pipefail
+export PATH=/opt/amazon/efa/bin:$PATH
+export LD_LIBRARY_PATH=/opt/amazon/efa/lib:${LD_LIBRARY_PATH:-}
+echo memlock=$(ulimit -l)
+systemctl status efa-config --no-pager || true
+sudo systemctl restart efa-config || true
+systemctl status efa-config --no-pager || true
+ls -lh /opt/amazon/efa/bin
+find /opt/amazon/efa -maxdepth 3 -type f -perm -111 | sort | sed -n "1,120p"
+'
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.219.57.103 'URING_NODE_INDEX=2 URING_RUN_ID=zc-efa-adhoc-c8gn16-20260605T022316Z URING_PRIVATE_IPS=172.31.44.136,172.31.47.102 set -euo pipefail
+export PATH=/opt/amazon/efa/bin:$PATH
+export LD_LIBRARY_PATH=/opt/amazon/efa/lib:${LD_LIBRARY_PATH:-}
+echo memlock=$(ulimit -l)
+systemctl status efa-config --no-pager || true
+sudo systemctl restart efa-config || true
+systemctl status efa-config --no-pager || true
+ls -lh /opt/amazon/efa/bin
+find /opt/amazon/efa -maxdepth 3 -type f -perm -111 | sort | sed -n "1,120p"
+'

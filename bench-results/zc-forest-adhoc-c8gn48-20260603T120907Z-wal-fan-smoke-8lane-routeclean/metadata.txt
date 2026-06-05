@@ -1,0 +1,20 @@
+utc=2026-06-03T12:35:18Z
+run_id=zc-forest-adhoc-c8gn48-20260603T120907Z
+client=18.226.111.102 card1=172.31.37.180
+fan=13.59.98.72 card1=172.31.35.30
+leaf0=3.128.154.234 card1=172.31.45.85
+leaf1=3.17.98.78 card1=172.31.44.16
+ports=8 connections_per_port=1 bytes_per_connection=128M chunk=4K workers=8 batch_depth=2048 wal_batch_window=16 mode=stripe backend=zcdevnull route_dev=ens146 pin_cpu_list=0-7
+route-preflight:
+172.31.35.30 from 172.31.37.180 dev ens146 table 101 uid 1000 
+    cache 
+172.31.37.180 from 172.31.35.30 dev ens146 table 101 uid 1000 
+    cache 
+172.31.45.85 from 172.31.35.30 dev ens146 table 101 uid 1000 
+    cache 
+172.31.44.16 from 172.31.35.30 dev ens146 table 101 uid 1000 
+    cache 
+172.31.35.30 from 172.31.45.85 dev ens146 table 101 uid 1000 
+    cache 
+172.31.35.30 from 172.31.44.16 dev ens146 table 101 uid 1000 
+    cache 

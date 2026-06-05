@@ -1,0 +1,148 @@
+[debug] util/pingpong.c:282 :  * PingPong options:
+[debug] util/pingpong.c:283 :   - src_port            : [26610]
+[debug] util/pingpong.c:284 :   - dst_addr            : [None]
+[debug] util/pingpong.c:285 :   - dst_port            : [0]
+[debug] util/pingpong.c:286 :   - sizes_enabled       : selected size = 4096
+[debug] util/pingpong.c:287 :   - iterations          : selected iterations: 10000
+[debug] util/pingpong.c:289 :   - provider            : efa
+[debug] util/pingpong.c:292 :   - domain              : efa_1-rdm
+[debug] util/pingpong.c:2227: Selected endpoint: RDM
+[debug] util/pingpong.c:506 : Initializing control messages
+[debug] util/pingpong.c:471 : SERVER: waiting for connection
+[debug] util/pingpong.c:482 : SERVER: connected
+[debug] util/pingpong.c:529 : Control messages initialized
+[debug] util/pingpong.c:1782: Initializing fabric
+[debug] util/pingpong.c:1784: Connection-less endpoint: initializing address vector
+[debug] util/pingpong.c:1809: SERVER: getinfo
+[debug] util/pingpong.c:1814: SERVER: open fabric resources
+[debug] util/pingpong.c:1399: Opening fabric resources: fabric, eq & domain
+[debug] util/pingpong.c:1419: Fabric resources opened
+[debug] util/pingpong.c:1819: SERVER: allocate active resource
+[debug] util/pingpong.c:1824: SERVER: initialize endpoint
+[debug] util/pingpong.c:1541: Initializing endpoint
+[debug] util/pingpong.c:1560: Endpoint initialized
+[debug] util/pingpong.c:590 : Fetching local address
+[debug] util/pingpong.c:612 : Sending name length
+[debug] util/pingpong.c:618 : Sending address format
+[debug] util/pingpong.c:630 : Sending name
+[debug] util/pingpong.c:632 : Sent name
+[debug] util/pingpong.c:643 : Receiving name length
+[debug] util/pingpong.c:558 : receiving
+[debug] util/pingpong.c:658 : Receiving address format
+[debug] util/pingpong.c:558 : receiving
+[debug] util/pingpong.c:664 : Receiving name
+[debug] util/pingpong.c:558 : receiving
+[debug] util/pingpong.c:668 : Received name
+[debug] util/pingpong.c:1570: Connection-less endpoint: inserting new address in vector
+[debug] util/pingpong.c:1583: Connection-less endpoint: new address inserted in vector
+[debug] util/pingpong.c:1860: Connection-less endpoint: address vector initialized
+[debug] util/pingpong.c:1862: Fabric Initialized
+[debug] util/pingpong.c:252 : Running pingpong test with fi_info:
+fi_info:
+    caps: [ FI_MSG, FI_RECV, FI_SEND, FI_MULTI_RECV, FI_SOURCE ]
+    mode: [ FI_MSG_PREFIX ]
+    addr_format: FI_ADDR_EFA
+    src_addrlen: 32
+    dest_addrlen: 0
+    src_addr: fi_addr_efa://[fe80::8f0:89ff:fec6:2bc7]:0:0
+    dest_addr: (null)
+    handle: (nil)
+    fi_tx_attr:
+        caps: [ FI_MSG, FI_SEND ]
+        mode: [ FI_MSG_PREFIX ]
+        op_flags: [  ]
+        msg_order: [ FI_ORDER_SAS, FI_ORDER_ATOMIC_RAR, FI_ORDER_ATOMIC_RAW, FI_ORDER_ATOMIC_WAR, FI_ORDER_ATOMIC_WAW ]
+        comp_order: [ FI_ORDER_NONE ]
+        inject_size: 3928
+        size: 2048
+        iov_limit: 4
+        rma_iov_limit: 1
+        tclass: 0x0
+    fi_rx_attr:
+        caps: [ FI_MSG, FI_RECV, FI_MULTI_RECV, FI_SOURCE ]
+        mode: [ FI_MSG_PREFIX ]
+        op_flags: [  ]
+        msg_order: [ FI_ORDER_SAS, FI_ORDER_ATOMIC_RAR, FI_ORDER_ATOMIC_RAW, FI_ORDER_ATOMIC_WAR, FI_ORDER_ATOMIC_WAW ]
+        comp_order: [ FI_ORDER_NONE ]
+        total_buffered_recv: 0
+        size: 8192
+        iov_limit: 4
+    fi_ep_attr:
+        type: FI_EP_RDM
+        protocol: FI_PROTO_EFA
+        protocol_version: 4
+        max_msg_size: 18446744073709551615
+        msg_prefix_size: 112
+        max_order_raw_size: 0
+        max_order_war_size: 0
+        max_order_waw_size: 8928
+        mem_tag_format: 0xaaaaaaaaaaaaaaaa
+        tx_ctx_cnt: 1
+        rx_ctx_cnt: 1
+        auth_key_size: 0
+    fi_domain_attr:
+        domain: 0x0
+        name: efa_1-rdm
+        threading: FI_THREAD_SAFE
+        control_progress: FI_PROGRESS_AUTO
+        data_progress: FI_PROGRESS_AUTO
+        resource_mgmt: FI_RM_ENABLED
+        av_type: FI_AV_TABLE
+        mr_mode: [ FI_MR_LOCAL, FI_MR_VIRT_ADDR, FI_MR_ALLOCATED, FI_MR_PROV_KEY ]
+        mr_key_size: 4
+        cq_data_size: 8
+        cq_cnt: 1536
+        ep_cnt: 768
+        tx_ctx_cnt: 768
+        rx_ctx_cnt: 768
+        max_ep_tx_ctx: 1
+        max_ep_rx_ctx: 1
+        max_ep_stx_ctx: 0
+        max_ep_srx_ctx: 0
+        cntr_cnt: 0
+        mr_iov_limit: 1
+        caps: [  ]
+        mode: [  ]
+        auth_key_size: 0
+        max_err_data: 0
+        mr_cnt: 524288
+        tclass: 0x0
+    fi_fabric_attr:
+        name: efa
+        prov_name: efa
+        prov_version: 117.0
+        api_version: 1.17
+    nic:
+        fi_device_attr:
+            name: efa_1
+            device_id: 0xefa3
+            device_version: 6
+            vendor_id: 0x1d0f
+            driver: efa
+            firmware: 0.0.0.0
+        fi_bus_attr:
+            bus_type: FI_BUS_PCI
+            fi_pci_attr:
+                domain_id: 0
+                bus_id: 166
+                device_id: 0
+                function_id: 0
+        fi_link_attr:
+            address: EFA-fe80::8f0:89ff:fec6:2bc7
+            mtu: 8760
+            speed: 0
+            state: FI_LINK_UP
+            network_type: Ethernet
+
+[debug] util/pingpong.c:960 : Generating test sizes
+[debug] util/pingpong.c:1001: Generated 1 test sizes
+[debug] util/pingpong.c:2181: Count of sizes to test: 1
+[debug] util/pingpong.c:697 : Syncing nodes
+[debug] util/pingpong.c:727 : SERVER: syncing
+[debug] util/pingpong.c:558 : receiving
+[debug] util/pingpong.c:729 : SERVER: after recv / ret=2
+[debug] util/pingpong.c:739 : SERVER: syncing now
+[debug] util/pingpong.c:744 : SERVER: after send / ret=2
+[debug] util/pingpong.c:752 : SERVER: synced
+[debug] util/pingpong.c:755 : Nodes synced
+[debug] util/pingpong.c:846 : Starting test chrono

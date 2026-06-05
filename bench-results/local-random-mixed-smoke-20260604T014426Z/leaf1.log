@@ -1,0 +1,23 @@
+PERF WARNING: zcnblk-wal-leaf workers are not pinned; pass pin-workers=true and set URING_PLAY_PIN_CPU_LIST before trusting topology numbers
+zcnblk-wal-leaf: target=zcdevnull bind=127.0.0.1 base_port=28600 ports=4 connections_per_port=1 total_connections=4 chunk_bytes=4096 workers=4 pin_workers=false submit_mode=mixed ring_entries=64 ring_cq_entries=128 result_ranges_configured=true device_bytes=1099511627776 required_alignment=4096 protocol=fan-wal-v2
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:44076 lane=3 port=28603 conn=0 incoming_cpu=5 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:51982 lane=0 port=28600 conn=0 incoming_cpu=27 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:56498 lane=1 port=28601 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:41840 lane=2 port=28602 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=0 policy=port-lane peer=127.0.0.1:51982 listener_lane=0 listener_port=28600 conn=0 incoming_cpu=27 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=1 policy=port-lane peer=127.0.0.1:56498 listener_lane=1 listener_port=28601 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=2 policy=port-lane peer=127.0.0.1:41840 listener_lane=2 listener_port=28602 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=3 policy=port-lane peer=127.0.0.1:44076 listener_lane=3 listener_port=28603 conn=0 incoming_cpu=5 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment-summary: policy=port-lane workers=4 streams_by_worker=0:1,1:1,2:1,3:1
+zcnblk-wal-leaf-stream: worker=3 slot=0 peer=127.0.0.1:44076 lane=3 port=28603 conn=0 incoming_cpu=5 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: worker=1 slot=0 peer=127.0.0.1:56498 lane=1 port=28601 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: worker=0 slot=0 peer=127.0.0.1:51982 lane=0 port=28600 conn=0 incoming_cpu=27 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: worker=2 slot=0 peer=127.0.0.1:41840 lane=2 port=28602 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+zcnblk-wal-leaf-worker: worker=0 streams=1 read_bytes=290816 write_bytes=241664 result_records=130 result_batches=0 result_range_batches=0 frames=130 blocking_io_frames=73 uring_io_frames=57 frames_per_sec=26571 seconds=0.004892 logical_MiBps=103.79 target_cpu=-1 affinity_applied=false
+zcnblk-wal-leaf-worker: worker=1 streams=1 read_bytes=241664 write_bytes=237568 result_records=117 result_batches=0 result_range_batches=0 frames=117 blocking_io_frames=59 uring_io_frames=58 frames_per_sec=25237 seconds=0.004636 logical_MiBps=98.58 target_cpu=-1 affinity_applied=false
+zcnblk-wal-leaf-worker: worker=2 streams=1 read_bytes=278528 write_bytes=303104 result_records=142 result_batches=0 result_range_batches=0 frames=142 blocking_io_frames=68 uring_io_frames=74 frames_per_sec=27203 seconds=0.005220 logical_MiBps=106.26 target_cpu=-1 affinity_applied=false
+zcnblk-wal-leaf-worker: worker=3 streams=1 read_bytes=278528 write_bytes=204800 result_records=118 result_batches=0 result_range_batches=0 frames=118 blocking_io_frames=61 uring_io_frames=57 frames_per_sec=23022 seconds=0.005125 logical_MiBps=89.93 target_cpu=-1 affinity_applied=false
+zcnblk-wal-leaf-summary: streams=4 read_bytes=1089536 write_bytes=987136 result_records=507 result_batches=0 result_range_batches=0 frames=507 blocking_io_frames=261 uring_io_frames=246 frames_per_sec=97128
+zcnblk-wal-leaf: bytes=2076672 seconds=0.005220 GiBps=0.371 Gbitps=3.183

@@ -1,0 +1,15 @@
+utc=2026-06-03T13:23:29Z
+run_id=zc-forest-adhoc-c8gn48-20260603T120907Z
+case=high96_96_bulk_payload_sockbuf16m_aligned lanes=96 bytes_per_connection=96M chunk=4K batch_depth=2048 wal_batch_window=16 mode=stripe backend=zcdevnull route_dev=ens146 cpus=96-191 result_arena_spin=0 inline_primary=1 launcher=setsid-f source_env=URING_PLAY_SOURCE_IP socket_buffer_default=16M sysctl_wmem_max=128M sysctl_tcp_wmem_max=64M fan_binary_sha256=b3a9c65184192c84930f281233373e60bea2e3aa7680964e5d81272cfadb8a2b change=bulk-upstream-payload-read
+route-preflight:
+172.31.35.30 from 172.31.37.180 dev ens146 table 101 uid 1000 \    cache 
+172.31.37.180 from 172.31.35.30 dev ens146 table 101 uid 1000 \    cache 
+172.31.45.85 from 172.31.35.30 dev ens146 table 101 uid 1000 \    cache 
+172.31.44.16 from 172.31.35.30 dev ens146 table 101 uid 1000 \    cache 
+172.31.35.30 from 172.31.45.85 dev ens146 table 101 uid 1000 \    cache 
+172.31.35.30 from 172.31.44.16 dev ens146 table 101 uid 1000 \    cache 
+sysctl-fan:
+net.core.wmem_max = 134217728
+net.core.rmem_max = 134217728
+net.ipv4.tcp_wmem = 4096	1048576	67108864
+net.ipv4.tcp_rmem = 4096	1048576	67108864

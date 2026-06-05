@@ -1,0 +1,42 @@
+tcp-bench-uring-mux-send: mode=send addr=172.31.40.65 base_port=27800 ports=8 connections_per_port=1 total_connections=8 bytes_per_connection=1073741824 chunk_bytes=1048576 pipeline=16 tcp_nodelay=yes payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral fixed_file=false
+uring-send-worker: affinity_index=0 target_cpu=0 status=ok
+uring-send-worker: affinity_index=2 target_cpu=2 status=ok
+uring-send-worker: affinity_index=1 target_cpu=1 status=ok
+uring-send-worker: affinity_index=3 target_cpu=3 status=ok
+uring-send-worker: affinity_index=5 target_cpu=5 status=ok
+uring-send-worker: affinity_index=7 target_cpu=7 status=ok
+uring-send-worker: affinity_index=4 target_cpu=4 status=ok
+uring-send-worker: affinity_index=6 target_cpu=6 status=ok
+tcp-bench-uring-mux-send-worker: worker=0 streams=1 bytes=1073741824 wall_seconds=1.688439 thread_cpu_seconds=0.102794 cpu_wall_pct=6.1 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=91 involuntary_ctxt_switches=1 migrations=0
+tcp-bench-uring-mux-send-worker: worker=1 streams=1 bytes=1073741824 wall_seconds=1.682820 thread_cpu_seconds=0.116258 cpu_wall_pct=6.9 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=89 involuntary_ctxt_switches=5 migrations=0
+tcp-bench-uring-mux-send-worker: worker=2 streams=1 bytes=1073741824 wall_seconds=1.689453 thread_cpu_seconds=0.086341 cpu_wall_pct=5.1 target_cpu=2 affinity_applied=true start_cpu=2 end_cpu=2 voluntary_ctxt_switches=93 involuntary_ctxt_switches=0 migrations=0
+tcp-bench-uring-mux-send-worker: worker=3 streams=1 bytes=1073741824 wall_seconds=1.691532 thread_cpu_seconds=0.107293 cpu_wall_pct=6.3 target_cpu=3 affinity_applied=true start_cpu=3 end_cpu=3 voluntary_ctxt_switches=91 involuntary_ctxt_switches=3 migrations=0
+tcp-bench-uring-mux-send-worker: worker=4 streams=1 bytes=1073741824 wall_seconds=1.690394 thread_cpu_seconds=0.104844 cpu_wall_pct=6.2 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=92 involuntary_ctxt_switches=3 migrations=0
+tcp-bench-uring-mux-send-worker: worker=5 streams=1 bytes=1073741824 wall_seconds=1.682743 thread_cpu_seconds=0.108716 cpu_wall_pct=6.5 target_cpu=5 affinity_applied=true start_cpu=5 end_cpu=5 voluntary_ctxt_switches=90 involuntary_ctxt_switches=2 migrations=0
+tcp-bench-uring-mux-send-worker: worker=6 streams=1 bytes=1073741824 wall_seconds=1.682965 thread_cpu_seconds=0.097526 cpu_wall_pct=5.8 target_cpu=6 affinity_applied=true start_cpu=6 end_cpu=6 voluntary_ctxt_switches=91 involuntary_ctxt_switches=1 migrations=0
+tcp-bench-uring-mux-send-worker: worker=7 streams=1 bytes=1073741824 wall_seconds=1.693231 thread_cpu_seconds=0.107290 cpu_wall_pct=6.3 target_cpu=7 affinity_applied=true start_cpu=7 end_cpu=7 voluntary_ctxt_switches=92 involuntary_ctxt_switches=4 migrations=0
+tcp-bench-uring-mux-send-launcher: active_workers=8 launcher_seconds=1.693407 hot_seconds=1.693231
+tcp-bench-uring-mux-send: bytes=8589934592 seconds=1.693231 GiBps=4.725 Gbitps=40.585
+	Command being timed: "timeout 90s target/release/zcutils tcp-bench-uring-mux-send 172.31.40.65 27800 8 1 1073741824 1048576 16 8 4096 send"
+	User time (seconds): 0.00
+	System time (seconds): 0.83
+	Percent of CPU this job got: 49%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:01.69
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 17764
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 2323
+	Voluntary context switches: 792
+	Involuntary context switches: 29
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

@@ -1,0 +1,13 @@
+warning: zcnblk-target is running with small-page buffers (small-pages requested explicitly); standard high-throughput mode uses hugetlb buffers. Configure enough huge pages or pass hugetlb explicitly for representative WAL/NIC/DMA locality.
+PERF WARNING: zcnblk-target: buffer_mode=small-pages is not a high-throughput setting; reserve huge pages and use hugetlb unless this is only a functional smoke test
+PERF WARNING: zcnblk-target: RLIMIT_MEMLOCK is only 8.00 MiB; use prlimit --memlock=unlimited:unlimited or an equivalent limit before creating many per-lane io_uring rings
+PERF WARNING: zcnblk-target: loopback TCP is useful for topology smoke tests but can be context-switch bound; isolate CPUs and pin both target workers and zcnblk client kthreads for IOPS claims
+zcnblk-target: targets=0:zcdevnull:1099511627776B:align1 bind=127.0.0.1 base_port=33000 ports=1 connections_per_port=1 total_connections=1 bytes_per_connection=16777216 chunk_bytes=4096 pipeline=64 workers=1 ring_entries=128 submit_batch=64 buffer_mode=small-pages write_mode=null read_mode=null write_acks=true tier_write_extent_bytes=65536 shard_policy=port-lane topology_lane_base=0 topology_lane_count=1 encryption=none aes_frame_bytes=65536 pin_workers=true wal_target=-
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:43932 lane=0 port=33000 conn=0 incoming_cpu=3 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=0 policy=port-lane peer=127.0.0.1:43932 listener_lane=0 listener_port=33000 conn=0 incoming_cpu=3 incoming_napi_id=unknown
+zcnblk-target-mux-assignment-summary: policy=port-lane workers=1 streams_by_worker=0:1
+zcnblk-target-worker: affinity_index=0 target_cpu=0 status=ok
+zcnblk-target-worker-stream: worker=0 peer=127.0.0.1:43932 lane=0 port=33000 conn=0 incoming_cpu=3 incoming_napi_id=unknown
+zcnblk-target-worker-files: worker=0 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker-error: worker=0 error=failed to fill whole buffer
+Error: Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }

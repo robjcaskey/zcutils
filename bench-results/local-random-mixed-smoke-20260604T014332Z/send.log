@@ -1,0 +1,9 @@
+zcnblk-send: addr=127.0.0.1 shard_count=1 base_port=19600 ports=4 connections_per_port=1 total_connections=4 bytes_per_connection=1048576 chunk_bytes=4096 workers=4 op_mode=mixed read_window=4 write_window=4 access=random:range_bytes=1048576:seed=0x0000000000001234 verify_reads=no wait_write_acks=yes batch_depth=16 payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral latency=yes encryption=none aes_frame_bytes=65536
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcnblk-send-stream: worker=1 lane=1 port=19601 conn=0 shard=0 base_offset=1048576
+zcnblk-send-stream: worker=0 lane=0 port=19600 conn=0 shard=0 base_offset=0
+zcnblk-send-stream: worker=2 lane=2 port=19602 conn=0 shard=0 base_offset=2097152
+PERF WARNING: zcnblk-send write_window=4 is below batch_depth(zcnblk-send-stream: worker=3 lane=3 port=19603 conn=0 shard=0 base_offset=3145728
+16) * fan_batch_window(16); this forces upstream-idle drains in fan WAL and keeps effective leaf batches smaller than the configured topology window
+Error: Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }

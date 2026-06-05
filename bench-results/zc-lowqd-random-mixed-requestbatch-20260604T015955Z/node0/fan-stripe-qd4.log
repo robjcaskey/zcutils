@@ -1,0 +1,260 @@
+PERF WARNING: zcnblk-fan WAL needs explicit upstream batching for representative IOPS; set URING_PLAY_ZCNBLK_BATCH_DEPTH=64 or higher before trusting 4K numbers
+zcnblk-fan-wal: leaves=172.31.35.32:24600,172.31.38.85:28600 bind=172.31.34.212 base_port=19600 ports=64 connections_per_port=1 total_connections=64 bytes_per_connection=33554432 chunk_bytes=4096 stripe_bytes=4096 leaf_base_port=19600 source_ip=kernel-route source_ports=kernel-ephemeral pin_handlers=true placement=stripe order=per-4k-record order_shards=768 write_acks=true batch_window=16 result_ranges=true result_arena=false result_arena_slots=64 result_arena_spin=false result_arena_spin_budget=unbounded result_arena_inline_primary=false protocol=fan-wal-v2
+zcnblk-fan-wal-leaf-note: start each edge with zcnblk-wal-leaf; leaf block devices are terminal media only after userspace placement
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:59184 lane=0 port=19600 conn=0 incoming_cpu=74 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:54534 lane=1 port=19601 conn=0 incoming_cpu=75 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:59650 lane=2 port=19602 conn=0 incoming_cpu=128 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:40490 lane=4 port=19604 conn=0 incoming_cpu=78 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:38672 lane=5 port=19605 conn=0 incoming_cpu=189 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:33426 lane=3 port=19603 conn=0 incoming_cpu=190 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:56168 lane=6 port=19606 conn=0 incoming_cpu=76 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:60492 lane=7 port=19607 conn=0 incoming_cpu=79 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:52918 lane=9 port=19609 conn=0 incoming_cpu=189 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:52020 lane=8 port=19608 conn=0 incoming_cpu=77 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:38770 lane=10 port=19610 conn=0 incoming_cpu=167 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:42744 lane=11 port=19611 conn=0 incoming_cpu=80 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:33520 lane=12 port=19612 conn=0 incoming_cpu=81 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:42950 lane=13 port=19613 conn=0 incoming_cpu=167 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:53404 lane=15 port=19615 conn=0 incoming_cpu=82 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:56478 lane=16 port=19616 conn=0 incoming_cpu=84 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:48972 lane=17 port=19617 conn=0 incoming_cpu=85 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:47708 lane=14 port=19614 conn=0 incoming_cpu=85 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:46224 lane=19 port=19619 conn=0 incoming_cpu=83 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:52764 lane=18 port=19618 conn=0 incoming_cpu=168 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:47092 lane=20 port=19620 conn=0 incoming_cpu=96 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:38558 lane=21 port=19621 conn=0 incoming_cpu=86 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:58456 lane=22 port=19622 conn=0 incoming_cpu=87 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:57300 lane=24 port=19624 conn=0 incoming_cpu=90 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:59534 lane=23 port=19623 conn=0 incoming_cpu=88 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:43304 lane=25 port=19625 conn=0 incoming_cpu=96 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:44932 lane=26 port=19626 conn=0 incoming_cpu=169 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:60096 lane=28 port=19628 conn=0 incoming_cpu=91 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:42638 lane=29 port=19629 conn=0 incoming_cpu=89 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:50752 lane=27 port=19627 conn=0 incoming_cpu=98 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:52160 lane=30 port=19630 conn=0 incoming_cpu=93 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:39328 lane=31 port=19631 conn=0 incoming_cpu=167 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:55360 lane=32 port=19632 conn=0 incoming_cpu=97 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:54644 lane=33 port=19633 conn=0 incoming_cpu=53 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:49006 lane=34 port=19634 conn=0 incoming_cpu=92 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:34052 lane=35 port=19635 conn=0 incoming_cpu=94 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:56284 lane=36 port=19636 conn=0 incoming_cpu=99 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:56268 lane=37 port=19637 conn=0 incoming_cpu=167 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:49630 lane=38 port=19638 conn=0 incoming_cpu=168 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:57122 lane=39 port=19639 conn=0 incoming_cpu=0 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:40392 lane=40 port=19640 conn=0 incoming_cpu=4 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:37086 lane=41 port=19641 conn=0 incoming_cpu=5 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:54358 lane=42 port=19642 conn=0 incoming_cpu=6 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:39818 lane=44 port=19644 conn=0 incoming_cpu=167 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:53524 lane=43 port=19643 conn=0 incoming_cpu=169 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:52502 lane=46 port=19646 conn=0 incoming_cpu=1 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:56710 lane=47 port=19647 conn=0 incoming_cpu=7 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:59054 lane=45 port=19645 conn=0 incoming_cpu=170 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:53810 lane=48 port=19648 conn=0 incoming_cpu=171 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:33368 lane=50 port=19650 conn=0 incoming_cpu=170 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:36136 lane=49 port=19649 conn=0 incoming_cpu=8 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:60028 lane=51 port=19651 conn=0 incoming_cpu=9 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:53420 lane=52 port=19652 conn=0 incoming_cpu=95 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:40822 lane=53 port=19653 conn=0 incoming_cpu=170 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:40976 lane=55 port=19655 conn=0 incoming_cpu=10 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:38674 lane=56 port=19656 conn=0 incoming_cpu=11 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:39010 lane=54 port=19654 conn=0 incoming_cpu=173 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:51138 lane=57 port=19657 conn=0 incoming_cpu=12 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:56628 lane=58 port=19658 conn=0 incoming_cpu=13 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:41678 lane=59 port=19659 conn=0 incoming_cpu=171 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:48026 lane=60 port=19660 conn=0 incoming_cpu=173 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:33916 lane=63 port=19663 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:51996 lane=62 port=19662 conn=0 incoming_cpu=14 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.34.212:44856 lane=61 port=19661 conn=0 incoming_cpu=73 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=1 target_cpu=96 status=ok
+zcnblk-fan-wal-handler: affinity_index=0 target_cpu=0 status=ok
+zcnblk-fan-wal-upstream: handler=1 peer=172.31.34.212:54534 lane=1 port=19601 conn=0 incoming_cpu=75 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=2 target_cpu=1 status=ok
+zcnblk-fan-wal-handler: affinity_index=3 target_cpu=97 status=ok
+zcnblk-fan-wal-handler: affinity_index=4 target_cpu=2 status=ok
+zcnblk-fan-wal-upstream: handler=0 peer=172.31.34.212:59184 lane=0 port=19600 conn=0 incoming_cpu=74 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=2 peer=172.31.34.212:59650 lane=2 port=19602 conn=0 incoming_cpu=128 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=4 peer=172.31.34.212:40490 lane=4 port=19604 conn=0 incoming_cpu=78 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=6 target_cpu=3 status=ok
+zcnblk-fan-wal-upstream: handler=3 peer=172.31.34.212:33426 lane=3 port=19603 conn=0 incoming_cpu=190 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=6 peer=172.31.34.212:56168 lane=6 port=19606 conn=0 incoming_cpu=76 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=5 target_cpu=98 status=ok
+zcnblk-fan-wal-upstream: handler=5 peer=172.31.34.212:38672 lane=5 port=19605 conn=0 incoming_cpu=189 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=7 target_cpu=99 status=ok
+zcnblk-fan-wal-handler: affinity_index=8 target_cpu=4 status=ok
+zcnblk-fan-wal-handler: affinity_index=9 target_cpu=100 status=ok
+zcnblk-fan-wal-handler: affinity_index=10 target_cpu=5 status=ok
+zcnblk-fan-wal-upstream: handler=8 peer=172.31.34.212:52020 lane=8 port=19608 conn=0 incoming_cpu=77 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=9 peer=172.31.34.212:52918 lane=9 port=19609 conn=0 incoming_cpu=189 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=7 peer=172.31.34.212:60492 lane=7 port=19607 conn=0 incoming_cpu=79 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=10 peer=172.31.34.212:38770 lane=10 port=19610 conn=0 incoming_cpu=167 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=12 target_cpu=6 status=ok
+zcnblk-fan-wal-handler: affinity_index=13 target_cpu=102 status=ok
+zcnblk-fan-wal-handler-error: handler=0 error=zcnblk-fan-wal-upstream: handler=12 peer=172.31.34.212:33520 lane=12 port=19612 conn=0 incoming_cpu=81 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=14 target_cpu=7 status=ok
+Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=4 error=Connection refused (os error 111zcnblk-fan-wal-handler: affinity_index=11 target_cpu=101 status=ok
+)
+zcnblk-fan-wal-upstream: handler=14 peer=172.31.34.212:47708 lane=14 port=19614 conn=0 incoming_cpu=85 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=2 error=zcnblk-fan-wal-upstream: handler=13 peer=172.31.34.212:42950 lane=13 port=19613 conn=0 incoming_cpu=167 incoming_napi_id=unknown
+Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=16 target_cpu=8 status=ok
+zcnblk-fan-wal-upstream: handler=11 peer=172.31.34.212:42744 lane=11 port=19611 conn=0 incoming_cpu=80 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=3 error=zcnblk-fan-wal-handler: affinity_index=17 target_cpu=104 status=ok
+Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=16 peer=172.31.34.212:56478 lane=16 port=19616 conn=0 incoming_cpu=84 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=1 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=15 target_cpu=103 status=ok
+zcnblk-fan-wal-handler-error: handler=6 error=Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=17 peer=172.31.34.212:48972 lane=17 port=19617 conn=0 incoming_cpu=85 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=9 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=7 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=18 target_cpu=9 status=ok
+zcnblk-fan-wal-handler-error: handler=12 error=Connection refused (os error 111zcnblk-fan-wal-handler: affinity_index=19 target_cpu=105 status=ok
+)zcnblk-fan-wal-upstream: handler=15 peer=172.31.34.212:53404 lane=15 port=19615 conn=0 incoming_cpu=82 incoming_napi_id=unknown
+
+zcnblk-fan-wal-handler-error: handler=5 error=zcnblk-fan-wal-upstream: handler=18 peer=172.31.34.212:52764 lane=18 port=19618 conn=0 incoming_cpu=168 incoming_napi_id=unknown
+Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=19 peer=172.31.34.212:46224 lane=19 port=19619 conn=0 incoming_cpu=83 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=14 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=8 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=10 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=13 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=11 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=17 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=21 target_cpu=106 status=ok
+zcnblk-fan-wal-handler-error: handler=18 error=Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=21 peer=172.31.34.212:38558 lane=21 port=19621 conn=0 incoming_cpu=86 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=19 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=15 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=20 target_cpu=10 status=ok
+zcnblk-fan-wal-handler-error: handler=16 error=Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=20 peer=172.31.34.212:47092 lane=20 port=19620 conn=0 incoming_cpu=96 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=22 target_cpu=11 status=ok
+zcnblk-fan-wal-upstream: handler=22 peer=172.31.34.212:58456 lane=22 port=19622 conn=0 incoming_cpu=87 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=zcnblk-fan-wal-handler: affinity_index=23 target_cpu=107 status=ok
+21 error=Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=23 peer=172.31.34.212:59534 lane=23 port=19623 conn=0 incoming_cpu=88 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=25 target_cpu=108 status=ok
+zcnblk-fan-wal-upstream: handler=25 peer=172.31.34.212:43304 lane=25 port=19625 conn=0 incoming_cpu=96 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=27 target_cpu=109 status=ok
+zcnblk-fan-wal-upstream: handler=27 peer=172.31.34.212:50752 lane=27 port=19627 conn=0 incoming_cpu=98 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=23 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=29 target_cpu=110 status=ok
+zcnblk-fan-wal-upstream: handler=29 peer=172.31.34.212:42638 lane=29 port=19629 conn=0 incoming_cpu=89 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=27 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=29 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=26 target_cpu=13 status=ok
+zcnblk-fan-wal-handler: affinity_index=28 target_cpu=14 status=ok
+zcnblk-fan-wal-handler-error: handler=20 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=25 error=Connection refusedzcnblk-fan-wal-upstream: handler=26 peer=172.31.34.212:44932 lane=26 port=19626 conn=0 incoming_cpu=169 incoming_napi_id=unknown
+ (os error zcnblk-fan-wal-upstream: handler=28 peer=172.31.34.212:60096 lane=28 port=19628 conn=0 incoming_cpu=91 incoming_napi_id=unknown
+111)
+zcnblk-fan-wal-handler: affinity_index=30 target_cpu=15 status=ok
+zcnblk-fan-wal-handler-error: handler=22 error=Connection refused (os error 111zcnblk-fan-wal-handler: affinity_index=24 target_cpu=12 status=ok
+)
+zcnblk-fan-wal-upstream: handler=30 peer=172.31.34.212:52160 lane=30 port=19630 conn=0 incoming_cpu=93 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=24 peer=172.31.34.212:57300 lane=24 port=19624 conn=0 incoming_cpu=90 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=31 target_cpu=111 status=ok
+zcnblk-fan-wal-upstream: handler=31 peer=172.31.34.212:39328 lane=31 port=19631 conn=0 incoming_cpu=167 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=28 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=26 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=33 target_cpu=112 status=ok
+zcnblk-fan-wal-upstream: handler=33 peer=172.31.34.212:54644 lane=33 port=19633 conn=0 incoming_cpu=53 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=30 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=32 target_cpu=16 status=ok
+zcnblk-fan-wal-handler-error: handler=zcnblk-fan-wal-handler: affinity_index=34 target_cpu=17 status=ok
+24 error=Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=34 peer=172.31.34.212:49006 lane=34 port=19634 conn=0 incoming_cpu=92 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=32 peer=172.31.34.212:55360 lane=32 port=19632 conn=0 incoming_cpu=97 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=35 target_cpu=113 status=ok
+zcnblk-fan-wal-handler-error: handler=31 error=Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=35 peer=172.31.34.212:34052 lane=35 port=19635 conn=0 incoming_cpu=94 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=36 target_cpu=18 status=ok
+zcnblk-fan-wal-handler: affinity_index=37 target_cpu=114 status=ok
+zcnblk-fan-wal-upstream: handler=36 peer=172.31.34.212:56284 lane=36 port=19636 conn=0 incoming_cpu=99 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=37 peer=172.31.34.212:56268 lane=37 port=19637 conn=0 incoming_cpu=167 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=38 target_cpu=19 status=ok
+zcnblk-fan-wal-handler-error: handler=33 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=34 error=Connection refused (os error 111)zcnblk-fan-wal-upstream: handler=38 peer=172.31.34.212:49630 lane=38 port=19638 conn=0 incoming_cpu=168 incoming_napi_id=unknown
+
+zcnblk-fan-wal-handler-error: handler=32zcnblk-fan-wal-handler: affinity_index=39 target_cpu=115 status=ok
+ error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=40 target_cpu=20 status=ok
+zcnblk-fan-wal-upstream: handler=39 peer=172.31.34.212:57122 lane=39 port=19639 conn=0 incoming_cpu=0 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=35 error=Connection refused (os error zcnblk-fan-wal-upstream: handler=40 peer=172.31.34.212:40392 lane=40 port=19640 conn=0 incoming_cpu=4 incoming_napi_id=unknown
+111)
+zcnblk-fan-wal-handler-error: handler=36 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=41 target_cpu=116 status=ok
+zcnblk-fan-wal-handler: affinity_index=42 target_cpu=21 status=ok
+zcnblk-fan-wal-handler-error: handler=37 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=38zcnblk-fan-wal-upstream: handler=41 peer=172.31.34.212:37086 lane=41 port=19641 conn=0 incoming_cpu=5 incoming_napi_id=unknown
+ error=Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=42 peer=172.31.34.212:54358 lane=42 port=19642 conn=0 incoming_cpu=6 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=39 error=zcnblk-fan-wal-handler: affinity_index=43 target_cpu=117 status=ok
+Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=40 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=44 target_cpu=22 status=ok
+zcnblk-fan-wal-upstream: handler=43 peer=172.31.34.212:53524 lane=43 port=19643 conn=0 incoming_cpu=169 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=45 target_cpu=118 status=ok
+zcnblk-fan-wal-upstream: handler=44 peer=172.31.34.212:39818 lane=44 port=19644 conn=0 incoming_cpu=167 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=45 peer=172.31.34.212:59054 lane=45 port=19645 conn=0 incoming_cpu=170 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=46 target_cpu=23 status=ok
+zcnblk-fan-wal-handler-error: handler=42 error=Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=46 peer=172.31.34.212:52502 lane=46 port=19646 conn=0 incoming_cpu=1 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=41 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=47 target_cpu=119 status=ok
+zcnblk-fan-wal-handler: affinity_index=48 target_cpu=24 status=ok
+zcnblk-fan-wal-upstream: handler=47 peer=172.31.34.212:56710 lane=47 port=19647 conn=0 incoming_cpu=7 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=49 target_cpu=120 status=ok
+zcnblk-fan-wal-upstream: handler=48 peer=172.31.34.212:53810 lane=48 port=19648 conn=0 incoming_cpu=171 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=43 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=zcnblk-fan-wal-upstream: handler=49 peer=172.31.34.212:36136 lane=49 port=19649 conn=0 incoming_cpu=8 incoming_napi_id=unknown
+44 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=51 target_cpu=121 status=ok
+zcnblk-fan-wal-handler: affinity_index=52 target_cpu=26 status=ok
+zcnblk-fan-wal-handler-error: handler=46zcnblk-fan-wal-handler: affinity_index=50 target_cpu=25 status=ok
+ error=Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=51 peer=172.31.34.212:60028 lane=51 port=19651 conn=0 incoming_cpu=9 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=45 error=Connection refusedzcnblk-fan-wal-upstream: handler=50 peer=172.31.34.212:33368 lane=50 port=19650 conn=0 incoming_cpu=170 incoming_napi_id=unknown
+ (os error 111)
+zcnblk-fan-wal-upstream: handler=52 peer=172.31.34.212:53420 lane=52 port=19652 conn=0 incoming_cpu=95 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=47 error=zcnblk-fan-wal-handler: affinity_index=53 target_cpu=122 status=ok
+Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=54 target_cpu=27 status=ok
+zcnblk-fan-wal-handler-error: handler=48 error=Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=53 peer=172.31.34.212:40822 lane=53 port=19653 conn=0 incoming_cpu=170 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=49 error=Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=54 peer=172.31.34.212:39010 lane=54 port=19654 conn=0 incoming_cpu=173 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=55 target_cpu=123 status=ok
+zcnblk-fan-wal-handler-error: handler=50 error=Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=55 peer=172.31.34.212:40976 lane=55 port=19655 conn=0 incoming_cpu=10 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=57 target_cpu=124 status=ok
+zcnblk-fan-wal-upstream: handler=57 peer=172.31.34.212:51138 lane=57 port=19657 conn=0 incoming_cpu=12 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=53 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=54 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=52 error=Connection refused (os error 111zcnblk-fan-wal-handler: affinity_index=60 target_cpu=30 status=ok
+)
+zcnblk-fan-wal-handler: affinity_index=56 target_cpu=28 status=ok
+zcnblk-fan-wal-handler-error: handler=51 error=Connection refused (os error 111)zcnblk-fan-wal-handler: affinity_index=59 target_cpu=125 status=ok
+
+zcnblk-fan-wal-upstream: handler=56 peer=172.31.34.212:38674 lane=56 port=19656 conn=0 incoming_cpu=11 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=60 peer=172.31.34.212:48026 lane=60 port=19660 conn=0 incoming_cpu=173 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=59 peer=172.31.34.212:41678 lane=59 port=19659 conn=0 incoming_cpu=171 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=55 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=58 target_cpu=29 status=ok
+zcnblk-fan-wal-handler: affinity_index=61 target_cpu=126 status=ok
+zcnblk-fan-wal-handler-error: handler=zcnblk-fan-wal-handler: affinity_index=62 target_cpu=31 status=ok
+57 error=Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=58 peer=172.31.34.212:56628 lane=58 port=19658 conn=0 incoming_cpu=13 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=61 peer=172.31.34.212:44856 lane=61 port=19661 conn=0 incoming_cpu=73 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=62 peer=172.31.34.212:51996 lane=62 port=19662 conn=0 incoming_cpu=14 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=56 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=60 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=59 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler: affinity_index=63 target_cpu=127 status=ok
+zcnblk-fan-wal-upstream: handler=63 peer=172.31.34.212:33916 lane=63 port=19663 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=58 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=61 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=62 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=63 error=Connection refused (os error 111)
+Error: Os { code: 111, kind: ConnectionRefused, message: "Connection refused" }

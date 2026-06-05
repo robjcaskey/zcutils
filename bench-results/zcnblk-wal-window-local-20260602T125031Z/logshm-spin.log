@@ -1,0 +1,6 @@
+zcfanout-logshm-bench: records=2000000 payload_bytes=4096 batch_records=2048 window=2048 wait_mode=spin pin_workers=true lanes=1 branches=2 primary_leg=inline secondary_leg=shared-memory sort=no global_queue=no transport=no block_devices=no payload_copy=no
+zcfanout-logshm-secondary: affinity_index=1 target_cpu=20 status=ok
+zcfanout-logshm-primary: affinity_index=0 target_cpu=4 status=ok
+zcfanout-logshm-thread: role=primary records=2000000 batches=0 emitted=2000000 checksum=0x1e84905ef5126240 seconds=0.045505 records_per_sec=43951610 cpu_seconds=0.045482 start_cpu=4 end_cpu=4 target_cpu=4 affinity_applied=true voluntary_ctxt_switches=0 involuntary_ctxt_switches=0 migrations=0
+zcfanout-logshm-thread: role=secondary records=2000000 batches=977 emitted=0 checksum=0x1e8483a352dc4000 seconds=0.045492 records_per_sec=43963552 cpu_seconds=0.045470 start_cpu=20 end_cpu=20 target_cpu=20 affinity_applied=true voluntary_ctxt_switches=0 involuntary_ctxt_switches=0 migrations=0
+zcfanout-logshm-summary: records=2000000 emitted=2000000 payload_bytes=4096 logical_bytes=8192000000 branch_bytes=16384000000 wait_mode=spin seconds=0.045548 logical_4k_iops=43909499 logical_GiBps=167.501 branch_Gibitps=2877.653 voluntary_ctxt_switches=0 involuntary_ctxt_switches=0 migrations=0 primary_cpu=4 secondary_cpu=20 primary_secondary=shared-memory primary_interleaves=yes copy_bytes=0

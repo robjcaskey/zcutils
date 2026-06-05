@@ -1,0 +1,32 @@
+tcp-bench-uring-mux-server: listening on 127.0.0.1:34192.. ports=8 connections_per_port=1 total_connections=8 selected_connections_per_port=1 selected_total_connections=8 expected_bytes=67108864
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:51844 lane=1 port=34193 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:35658 lane=0 port=34192 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:36956 lane=4 port=34196 conn=0 incoming_cpu=20 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:46242 lane=3 port=34195 conn=0 incoming_cpu=19 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:55542 lane=7 port=34199 conn=0 incoming_cpu=23 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:44714 lane=2 port=34194 conn=0 incoming_cpu=18 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:53672 lane=6 port=34198 conn=0 incoming_cpu=22 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:44596 lane=5 port=34197 conn=0 incoming_cpu=21 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: start_handshake_ready=sent streams=8
+tcp-bench-uring-mux-server: start_handshake_ack=received streams=8
+tcp-bench-uring-mux-server-mux-assignment: worker=0 policy=observed peer=127.0.0.1:35658 listener_lane=0 listener_port=34192 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+tcp-bench-uring-mux-server-mux-assignment: worker=1 policy=observed peer=127.0.0.1:51844 listener_lane=1 listener_port=34193 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+tcp-bench-uring-mux-server-mux-assignment: worker=2 policy=observed peer=127.0.0.1:44714 listener_lane=2 listener_port=34194 conn=0 incoming_cpu=18 incoming_napi_id=unknown
+tcp-bench-uring-mux-server-mux-assignment: worker=3 policy=observed peer=127.0.0.1:46242 listener_lane=3 listener_port=34195 conn=0 incoming_cpu=19 incoming_napi_id=unknown
+tcp-bench-uring-mux-server-mux-assignment: worker=4 policy=observed peer=127.0.0.1:36956 listener_lane=4 listener_port=34196 conn=0 incoming_cpu=20 incoming_napi_id=unknown
+tcp-bench-uring-mux-server-mux-assignment: worker=5 policy=observed peer=127.0.0.1:44596 listener_lane=5 listener_port=34197 conn=0 incoming_cpu=21 incoming_napi_id=unknown
+tcp-bench-uring-mux-server-mux-assignment: worker=6 policy=observed peer=127.0.0.1:53672 listener_lane=6 listener_port=34198 conn=0 incoming_cpu=22 incoming_napi_id=unknown
+tcp-bench-uring-mux-server-mux-assignment: worker=7 policy=observed peer=127.0.0.1:55542 listener_lane=7 listener_port=34199 conn=0 incoming_cpu=23 incoming_napi_id=unknown
+tcp-bench-uring-mux-server-mux-assignment-summary: policy=observed workers=8 streams_by_worker=0:1,1:1,2:1,3:1,4:1,5:1,6:1,7:1
+uring-recv-worker: affinity_index=1 target_cpu=1 status=ok
+uring-recv-worker: affinity_index=2 target_cpu=2 status=ok
+uring-recv-worker: affinity_index=0 target_cpu=0 status=ok
+uring-recv-worker: affinity_index=3 target_cpu=3 status=ok
+tcp-bench-uring-mux-server: start_sync=waiting-for-workers active_workers=8
+uring-recv-worker: affinity_index=4 target_cpu=4 status=ok
+uring-recv-worker: affinity_index=7 target_cpu=7 status=ok
+uring-recv-worker: affinity_index=6 target_cpu=6 status=ok
+uring-recv-worker: affinity_index=5 target_cpu=5 status=ok
+tcp-bench-uring-mux-server: start_sync=workers-released active_workers=8
+tcp-bench-uring-mux-server: start_handshake_go=sent streams=8
+Error: Custom { kind: UnexpectedEof, error: "0 sent 0/67108864 bytes" }

@@ -1,0 +1,6 @@
+root=bench-results/local-mixed-requestbatch-current-20260605T015223Z
+topology=local real TCP; zcnblk-send -> 4 lane zcnblk-fan WAL stripe -> two terminal zcdevnull leaves; no block device used as RAID primitive
+cpu_map=leaf0 lanes 0-3 on CPUs 0-3; leaf1 lanes 0-3 on CPUs 4-7; fan handlers CPUs 8-11; sender workers CPUs 12-15
+perf_caveat=HugePages_Total=0 memlock_kib=8192; topology/function baseline, not final representative hugepage run
+
+starting qd1-b1-block base=34000 bytes=256M batch=1 read_window=1 write_window=1 fan_window=1 wait_policy=blocking spin_budget=0

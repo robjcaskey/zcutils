@@ -1,0 +1,330 @@
++ cd /home/ubuntu/uring-play
++ command -v cargo
++ curl https://sh.rustup.rs -sSf
++ sh -s -- -y
+info: downloading installer
+warn: It looks like you have an existing rustup settings file at:
+warn: /home/ubuntu/.rustup/settings.toml
+warn: Rustup will install the default toolchain as specified in the settings file,
+warn: instead of the one inferred from the default host triple.
+info: profile set to default
+info: default host triple is aarch64-unknown-linux-gnu
+info: syncing channel updates for stable-aarch64-unknown-linux-gnu
+info: latest update on 2026-05-28 for version 1.96.0 (ac68faa20 2026-05-25)
+info: downloading 6 components
+
+  stable-aarch64-unknown-linux-gnu installed - rustc 1.96.0 (ac68faa20 2026-05-25)
+
+
+Rust is installed now. Great!
+
+To get started you may need to restart your current shell.
+info: default toolchain set to stable-aarch64-unknown-linux-gnu
+This would reload your PATH environment variable to include
+Cargo's bin directory ($HOME/.cargo/bin).
+
+To configure your current shell, you need to source
+the corresponding env file under $HOME/.cargo.
+
+This is usually done by running one of the following (note the leading DOT):
+. "$HOME/.cargo/env"            # For sh/bash/zsh/ash/dash/pdksh
+source "$HOME/.cargo/env.fish"  # For fish
+source "~/.cargo/env.nu"  # For nushell
+source "$HOME/.cargo/env.tcsh"  # For tcsh
+. "$HOME/.cargo/env.ps1"        # For pwsh
+source "$HOME/.cargo/env.xsh"   # For xonsh
++ . /home/ubuntu/.cargo/env
+++ case ":${PATH}:" in
+++ export PATH=/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+++ PATH=/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
++ cargo build --release --bin zcutils --bin zcnblk-fan --bin zcnblk-wal-leaf
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded async-stream-impl v0.3.6
+  Downloaded block-buffer v0.10.4
+  Downloaded async-stream v0.3.6
+  Downloaded cfg-if v1.0.4
+  Downloaded crypto-common v0.1.7
+  Downloaded async-trait v0.1.89
+  Downloaded anyhow v1.0.102
+  Downloaded http-body v0.4.6
+  Downloaded zeroize v1.8.2
+  Downloaded equivalent v1.0.2
+  Downloaded httpdate v1.0.3
+  Downloaded futures-task v0.3.32
+  Downloaded cpufeatures v0.2.17
+  Downloaded unicode-ident v1.0.24
+  Downloaded tokio-io-timeout v1.2.1
+  Downloaded cmake v0.1.58
+  Downloaded digest v0.10.7
+  Downloaded untrusted v0.7.1
+  Downloaded tower-layer v0.3.3
+  Downloaded tracing-futures v0.2.5
+  Downloaded httparse v1.10.1
+  Downloaded fs_extra v1.3.0
+  Downloaded want v0.3.1
+  Downloaded tower-service v0.3.3
+  Downloaded tokio-rustls v0.22.0
+  Downloaded jobserver v0.1.34
+  Downloaded which v4.4.2
+  Downloaded version_check v0.9.5
+  Downloaded try-lock v0.2.5
+  Downloaded serde_derive v1.0.228
+  Downloaded home v0.5.12
+  Downloaded shlex v1.3.0
+  Downloaded typenum v1.20.0
+  Downloaded pin-project-lite v0.2.17
+  Downloaded zmij v1.0.21
+  Downloaded tokio-macros v2.7.0
+  Downloaded prost-derive v0.8.0
+  Downloaded spin v0.5.2
+  Downloaded itoa v1.0.18
+  Downloaded fixedbitset v0.2.0
+  Downloaded webpki v0.21.4
+  Downloaded tracing-attributes v0.1.31
+  Downloaded tracing-core v0.1.36
+  Downloaded dunce v1.0.5
+  Downloaded slab v0.4.12
+  Downloaded tonic v0.5.2
+  Downloaded once_cell v1.21.4
+  Downloaded unicode-segmentation v1.13.2
+  Downloaded quote v1.0.45
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded find-msvc-tools v0.1.9
+  Downloaded socket2 v0.5.10
+  Downloaded signal-hook-registry v1.4.8
+  Downloaded zerocopy v0.8.50
+  Downloaded socket2 v0.6.4
+  Downloaded prost-types v0.8.0
+  Downloaded getrandom v0.2.17
+  Downloaded mio v1.2.1
+  Downloaded k8s-csi v0.4.0
+  Downloaded tracing v0.1.44
+  Downloaded tokio-util v0.6.10
+  Downloaded tempfile v3.27.0
+  Downloaded tokio-util v0.7.18
+  Downloaded hashbrown v0.17.1
+  Downloaded hyper v0.14.32
+  Downloaded tower v0.4.13
+  Downloaded syn v1.0.109
+  Downloaded syn v2.0.117
+  Downloaded petgraph v0.5.1
+  Downloaded h2 v0.3.27
+  Downloaded rustls v0.19.1
+  Downloaded fnv v1.0.7
+  Downloaded hashbrown v0.12.3
+  Downloaded futures-core v0.3.32
+  Downloaded serde_core v1.0.228
+  Downloaded rustix v1.1.4
+  Downloaded rustix v0.38.44
+  Downloaded itertools v0.10.5
+  Downloaded hyper-timeout v0.4.1
+  Downloaded aws-lc-rs v1.17.0
+  Downloaded serde_json v1.0.150
+  Downloaded percent-encoding v2.3.2
+  Downloaded log v0.4.30
+  Downloaded indexmap v2.14.0
+  Downloaded http v0.2.12
+  Downloaded memchr v2.8.1
+  Downloaded futures-util v0.3.32
+  Downloaded serde v1.0.228
+  Downloaded rand_core v0.6.4
+  Downloaded rand v0.8.6
+  Downloaded proc-macro2 v1.0.106
+  Downloaded multimap v0.8.3
+  Downloaded tokio-stream v0.1.18
+  Downloaded indexmap v1.9.3
+  Downloaded generic-array v0.14.7
+  Downloaded either v1.16.0
+  Downloaded sha2 v0.10.9
+  Downloaded futures-channel v0.3.32
+  Downloaded libc v0.2.186
+  Downloaded sct v0.6.1
+  Downloaded rand_chacha v0.3.1
+  Downloaded prost v0.8.0
+  Downloaded pin-project v1.1.13
+  Downloaded cc v1.2.62
+  Downloaded pin-project-internal v1.1.13
+  Downloaded fastrand v2.4.1
+  Downloaded bytes v1.11.1
+  Downloaded heck v0.3.3
+  Downloaded tokio v1.52.3
+  Downloaded getrandom v0.3.4
+  Downloaded base64 v0.13.1
+  Downloaded tonic-build v0.5.2
+  Downloaded futures-sink v0.3.32
+  Downloaded errno v0.3.14
+  Downloaded autocfg v1.5.1
+  Downloaded bitflags v2.11.1
+  Downloaded linux-raw-sys v0.4.15
+  Downloaded linux-raw-sys v0.12.1
+  Downloaded ring v0.16.20
+  Downloaded prost-build v0.8.0
+  Downloaded aws-lc-sys v0.41.0
+   Compiling libc v0.2.186
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling pin-project-lite v0.2.17
+   Compiling bytes v1.11.1
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v1.3.0
+   Compiling either v1.16.0
+   Compiling once_cell v1.21.4
+   Compiling syn v1.0.109
+   Compiling anyhow v1.0.102
+   Compiling autocfg v1.5.1
+   Compiling futures-core v0.3.32
+   Compiling itertools v0.10.5
+   Compiling bitflags v2.11.1
+   Compiling log v0.4.30
+   Compiling indexmap v1.9.3
+   Compiling rustix v0.38.44
+   Compiling linux-raw-sys v0.4.15
+   Compiling syn v2.0.117
+   Compiling tracing-core v0.1.36
+   Compiling jobserver v0.1.34
+   Compiling errno v0.3.14
+   Compiling mio v1.2.1
+   Compiling socket2 v0.6.4
+   Compiling signal-hook-registry v1.4.8
+   Compiling cc v1.2.62
+   Compiling rustix v1.1.4
+   Compiling cfg-if v1.0.4
+   Compiling untrusted v0.7.1
+   Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.50
+   Compiling futures-sink v0.3.32
+   Compiling itoa v1.0.18
+   Compiling home v0.5.12
+   Compiling futures-task v0.3.32
+   Compiling spin v0.5.2
+   Compiling hashbrown v0.12.3
+   Compiling linux-raw-sys v0.12.1
+   Compiling slab v0.4.12
+   Compiling fnv v1.0.7
+   Compiling version_check v0.9.5
+   Compiling generic-array v0.14.7
+   Compiling which v4.4.2
+   Compiling ring v0.16.20
+   Compiling futures-util v0.3.32
+   Compiling http v0.2.12
+   Compiling prost-build v0.8.0
+   Compiling prost-derive v0.8.0
+   Compiling getrandom v0.2.17
+   Compiling hashbrown v0.17.1
+   Compiling fastrand v2.4.1
+   Compiling equivalent v1.0.2
+   Compiling fixedbitset v0.2.0
+   Compiling unicode-segmentation v1.13.2
+   Compiling httparse v1.10.1
+   Compiling prost v0.8.0
+   Compiling heck v0.3.3
+   Compiling petgraph v0.5.1
+   Compiling tempfile v3.27.0
+   Compiling indexmap v2.14.0
+   Compiling prost-types v0.8.0
+   Compiling rand_core v0.6.4
+   Compiling cmake v0.1.58
+   Compiling tokio-macros v2.7.0
+   Compiling tracing-attributes v0.1.31
+   Compiling pin-project-internal v1.1.13
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling multimap v0.8.3
+   Compiling try-lock v0.2.5
+   Compiling typenum v1.20.0
+   Compiling tower-service v0.3.3
+   Compiling want v0.3.1
+   Compiling aws-lc-sys v0.41.0
+   Compiling tokio v1.52.3
+   Compiling ppv-lite86 v0.2.21
+   Compiling pin-project v1.1.13
+   Compiling tracing v0.1.44
+   Compiling rand_chacha v0.3.1
+   Compiling http-body v0.4.6
+   Compiling socket2 v0.5.10
+   Compiling futures-channel v0.3.32
+   Compiling base64 v0.13.1
+   Compiling serde_core v1.0.228
+   Compiling httpdate v1.0.3
+   Compiling rand v0.8.6
+   Compiling tonic-build v0.5.2
+   Compiling async-stream-impl v0.3.6
+   Compiling zmij v1.0.21
+   Compiling tower-layer v0.3.3
+   Compiling k8s-csi v0.4.0
+   Compiling block-buffer v0.10.4
+   Compiling async-stream v0.3.6
+   Compiling crypto-common v0.1.7
+   Compiling tracing-futures v0.2.5
+   Compiling async-trait v0.1.89
+   Compiling serde v1.0.228
+   Compiling percent-encoding v2.3.2
+   Compiling aws-lc-rs v1.17.0
+   Compiling serde_json v1.0.150
+   Compiling digest v0.10.7
+   Compiling serde_derive v1.0.228
+   Compiling cpufeatures v0.2.17
+   Compiling memchr v2.8.1
+   Compiling zeroize v1.8.2
+   Compiling sha2 v0.10.9
+   Compiling tokio-util v0.7.18
+   Compiling tokio-io-timeout v1.2.1
+   Compiling tokio-util v0.6.10
+   Compiling tokio-stream v0.1.18
+   Compiling h2 v0.3.27
+   Compiling tower v0.4.13
+   Compiling webpki v0.21.4
+   Compiling sct v0.6.1
+   Compiling rustls v0.19.1
+   Compiling tokio-rustls v0.22.0
+   Compiling hyper v0.14.32
+   Compiling hyper-timeout v0.4.1
+   Compiling tonic v0.5.2
+   Compiling zcutils v1.0.0 (/home/ubuntu/uring-play)
+warning: value assigned to `rq_region` is never read
+    --> src/lib.rs:1971:13
+     |
+1971 |             rq_region.id = 0;
+     |             ^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `rq_region` is never read
+    --> src/lib.rs:1972:13
+     |
+1972 |             rq_region.mmap_offset = 0;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+
+warning: function `zcnblk_fan_wal_recv_exact_dontwait_spin` is never used
+     --> src/lib.rs:19674:4
+      |
+19674 | fn zcnblk_fan_wal_recv_exact_dontwait_spin(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `zcnblk_fan_wal_read_frame_dontwait_spin` is never used
+     --> src/lib.rs:19755:4
+      |
+19755 | fn zcnblk_fan_wal_read_frame_dontwait_spin(stream: &TcpStream) -> io::Result<ZcnblkFanWalFrame> {
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `zcnblk_fan_wal_read_payload_dontwait_spin` is never used
+     --> src/lib.rs:19781:4
+      |
+19781 | fn zcnblk_fan_wal_read_payload_dontwait_spin(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `zcutils` (lib) generated 5 warnings
+    Finished `release` profile [optimized] target(s) in 55.91s
++ tar -C /home/ubuntu/uring-play -czf /tmp/zcutils-release-bins.tgz target/release/zcutils target/release/zcnblk-fan target/release/zcnblk-wal-leaf
+-rw-rw-r-- 1 ubuntu ubuntu 5.1M Jun  5 00:55 /tmp/zcutils-release-bins.tgz
+-rwxrwxr-x 2 ubuntu ubuntu 4.3M Jun  5 00:55 target/release/zcnblk-fan
+-rwxrwxr-x 2 ubuntu ubuntu 4.3M Jun  5 00:55 target/release/zcnblk-wal-leaf
+-rwxrwxr-x 2 ubuntu ubuntu 4.3M Jun  5 00:55 target/release/zcutils
++ ls -lh /tmp/zcutils-release-bins.tgz target/release/zcutils target/release/zcnblk-fan target/release/zcnblk-wal-leaf

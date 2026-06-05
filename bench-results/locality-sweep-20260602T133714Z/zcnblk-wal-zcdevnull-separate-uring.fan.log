@@ -1,0 +1,9 @@
+zcnblk-fan-wal: leaves=127.0.0.1 bind=127.0.0.1 base_port=29420 ports=1 connections_per_port=1 total_connections=1 bytes_per_connection=134217728 chunk_bytes=4096 stripe_bytes=4096 leaf_base_port=29430 source_ip=kernel-route source_ports=kernel-ephemeral pin_handlers=true placement=stripe order=per-4k-record write_acks=true batch_window=16 protocol=fan-wal-v2
+zcnblk-fan-wal-leaf-note: start each edge with zcnblk-wal-leaf; leaf block devices are terminal media only after userspace placement
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:36484 lane=0 port=29420 conn=0 incoming_cpu=6 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=0 target_cpu=5 status=ok
+zcnblk-fan-wal-upstream: handler=0 peer=127.0.0.1:36484 lane=0 port=29420 conn=0 incoming_cpu=6 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=0 leaf=0 addr=127.0.0.1 port=29430 lane=0 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-handler: handler=0 lane=0 conn=0 read_bytes=0 write_bytes=134217728 response_bytes=2098176 branch_payload_bytes=134217728 frames=32768 batches=16 read_frames=0 write_frames=32768 leaf_submit_batches=16 leaf_submit_records=32768 max_leaf_submit_records=2048 max_outstanding_batches=16 result_records=32768 frames_per_sec=541346 seconds=0.060531 logical_MiBps=2114.63 target_cpu=5 affinity_applied=true voluntary_ctxt_switches=1 involuntary_ctxt_switches=2 migrations=1
+zcnblk-fan-wal-summary: read_bytes=0 write_bytes=134217728 response_bytes=2098176 branch_payload_bytes=134217728 frames=32768 batches=16 read_frames=0 write_frames=32768 leaf_submit_batches=16 leaf_submit_records=32768 max_leaf_submit_records=2048 max_outstanding_batches=16 result_records=32768 voluntary_ctxt_switches=1 involuntary_ctxt_switches=2 migrations=1 frames_per_sec=541346
+zcnblk-fan-wal: bytes=134217728 seconds=0.060531 GiBps=2.065 Gbitps=17.739

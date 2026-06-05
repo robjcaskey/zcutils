@@ -1,0 +1,28 @@
+zcnblk-read-fan: leaves=0:127.0.0.1:8388608B,1:127.0.0.2:8388608B bind=127.0.0.1 base_port=37880 ports=4 connections_per_port=1 total_connections=4 bytes_per_connection=16777216 chunk_bytes=4096 stripe_bytes=4096 leaf_base_port=38880 source_ip=kernel-route source_ports=kernel-ephemeral encryption=none aes_frame_bytes=65536 pin_handlers=true read_only=false placement=userspace-stripe order=per-4k-record write_acks=true leaf_write_acks=required
+zcnblk-fan-leaf-target-note: start each leaf zcnblk-target with URING_PLAY_ZCNBLK_WRITE_ACKS=1, the same ports/connections/chunk size, and its listed per-connection byte budget; /dev/zcbrd or other block media must remain terminal leaves behind those userspace targets
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:54648 lane=1 port=37881 conn=0 incoming_cpu=25 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:58288 lane=0 port=37880 conn=0 incoming_cpu=24 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:50508 lane=3 port=37883 conn=0 incoming_cpu=27 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:41758 lane=2 port=37882 conn=0 incoming_cpu=26 incoming_napi_id=unknown
+zcnblk-read-fan-handler: affinity_index=0 target_cpu=16 status=ok
+zcnblk-read-fan-upstream: handler=0 peer=127.0.0.1:58288 lane=0 port=37880 conn=0 incoming_cpu=24 incoming_napi_id=unknown
+zcnblk-read-fan-handler: affinity_index=1 target_cpu=17 status=ok
+zcnblk-read-fan-handler: affinity_index=3 target_cpu=19 status=ok
+zcnblk-read-fan-upstream: handler=3 peer=127.0.0.1:50508 lane=3 port=37883 conn=0 incoming_cpu=27 incoming_napi_id=unknown
+zcnblk-read-fan-handler: affinity_index=2 target_cpu=18 status=ok
+zcnblk-read-fan-upstream: handler=2 peer=127.0.0.1:41758 lane=2 port=37882 conn=0 incoming_cpu=26 incoming_napi_id=unknown
+zcnblk-read-fan-upstream: handler=1 peer=127.0.0.1:54648 lane=1 port=37881 conn=0 incoming_cpu=25 incoming_napi_id=unknown
+zcnblk-read-fan-leaf-stream: handler=0 leaf=0 addr=127.0.0.1 port=38880 lane=0 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=3 leaf=0 addr=127.0.0.1 port=38883 lane=3 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=0 leaf=1 addr=127.0.0.2 port=38880 lane=0 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=1 leaf=0 addr=127.0.0.1 port=38881 lane=1 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=2 leaf=0 addr=127.0.0.1 port=38882 lane=2 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=1 leaf=1 addr=127.0.0.2 port=38881 lane=1 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=3 leaf=1 addr=127.0.0.2 port=38883 lane=3 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=2 leaf=1 addr=127.0.0.2 port=38882 lane=2 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-handler: handler=0 lane=0 conn=0 read_bytes=16777216 write_bytes=0 response_bytes=17039360 frames=4096 batches=0 read_frames=4096 write_frames=0 leaf_read_bytes=0:8388608,1:8388608 leaf_write_bytes=0:0,1:0 frames_per_sec=49545 seconds=0.082673 logical_MiBps=193.53 target_cpu=16 affinity_applied=true
+zcnblk-read-fan-handler: handler=1 lane=1 conn=0 read_bytes=16777216 write_bytes=0 response_bytes=17039360 frames=4096 batches=0 read_frames=4096 write_frames=0 leaf_read_bytes=0:8388608,1:8388608 leaf_write_bytes=0:0,1:0 frames_per_sec=47093 seconds=0.086977 logical_MiBps=183.96 target_cpu=17 affinity_applied=true
+zcnblk-read-fan-handler: handler=2 lane=2 conn=0 read_bytes=16777216 write_bytes=0 response_bytes=17039360 frames=4096 batches=0 read_frames=4096 write_frames=0 leaf_read_bytes=0:8388608,1:8388608 leaf_write_bytes=0:0,1:0 frames_per_sec=48955 seconds=0.083669 logical_MiBps=191.23 target_cpu=18 affinity_applied=true
+zcnblk-read-fan-handler: handler=3 lane=3 conn=0 read_bytes=16777216 write_bytes=0 response_bytes=17039360 frames=4096 batches=0 read_frames=4096 write_frames=0 leaf_read_bytes=0:8388608,1:8388608 leaf_write_bytes=0:0,1:0 frames_per_sec=48841 seconds=0.083863 logical_MiBps=190.79 target_cpu=19 affinity_applied=true
+zcnblk-read-fan-summary: read_bytes=67108864 write_bytes=0 response_bytes=68157440 frames=16384 batches=0 read_frames=16384 write_frames=0 leaf_read_bytes=0:33554432,1:33554432 leaf_write_bytes=0:0,1:0 frames_per_sec=188372
+zcnblk-read-fan: bytes=67108864 seconds=0.086977 GiBps=0.719 Gbitps=6.173

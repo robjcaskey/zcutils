@@ -1,0 +1,17 @@
+zcnblk-send: addr=127.0.0.1 shard_count=1 base_port=47100 ports=8 connections_per_port=1 total_connections=8 bytes_per_connection=268435456 chunk_bytes=4096 workers=8 op_mode=write read_window=64 write_window=64 verify_reads=no wait_write_acks=yes batch_depth=64 payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral encryption=none aes_frame_bytes=65536
+zcnblk-send-worker: affinity_index=0 target_cpu=24 status=ok
+zcnblk-send-worker: affinity_index=3 target_cpu=27 status=ok
+zcnblk-send-worker: affinity_index=4 target_cpu=28 status=ok
+zcnblk-send-worker: affinity_index=2 target_cpu=26 status=ok
+zcnblk-send-worker: affinity_index=1 target_cpu=25 status=ok
+zcnblk-send-worker: affinity_index=6 target_cpu=30 status=ok
+zcnblk-send-worker: affinity_index=5 target_cpu=29 status=ok
+zcnblk-send-stream: worker=0 lane=0 port=47100 conn=0 shard=0 base_offset=0
+zcnblk-send-stream: worker=3 lane=3 port=47103 conn=0 shard=0 base_offset=805306368
+zcnblk-send-stream: worker=4 lane=4 port=47104 conn=0 shard=0 base_offset=1073741824
+zcnblk-send-stream: worker=1 lane=1 port=47101 conn=0 shard=0 base_offset=268435456
+zcnblk-send-stream: worker=2 lane=2 port=47102 conn=0 shard=0 base_offset=536870912
+zcnblk-send-stream: worker=5 lane=5 port=47105 conn=0 shard=0 base_offset=1342177280
+zcnblk-send-worker: affinity_index=7 target_cpu=31 status=ok
+zcnblk-send-stream: worker=6 lane=6 port=47106 conn=0 shard=0 base_offset=1610612736
+zcnblk-send-stream: worker=7 lane=7 port=47107 conn=0 shard=0 base_offset=1879048192

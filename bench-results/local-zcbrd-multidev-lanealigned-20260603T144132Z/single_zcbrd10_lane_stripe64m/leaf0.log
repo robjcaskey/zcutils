@@ -1,0 +1,74 @@
+zcnblk-wal-leaf: target=/dev/zcbrd10 bind=127.0.0.1 base_port=52000 ports=16 connections_per_port=1 total_connections=16 chunk_bytes=4096 workers=16 pin_workers=true submit_mode=uring ring_entries=32768 ring_cq_entries=65536 result_ranges_configured=true device_bytes=2147483648 required_alignment=4096 protocol=fan-wal-v2
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:38574 lane=0 port=52000 conn=0 incoming_cpu=0 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:41890 lane=3 port=52003 conn=0 incoming_cpu=3 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:52614 lane=7 port=52007 conn=0 incoming_cpu=7 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:44984 lane=6 port=52006 conn=0 incoming_cpu=6 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:45664 lane=2 port=52002 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:34156 lane=1 port=52001 conn=0 incoming_cpu=1 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:35696 lane=5 port=52005 conn=0 incoming_cpu=5 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:34568 lane=4 port=52004 conn=0 incoming_cpu=4 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:40682 lane=11 port=52011 conn=0 incoming_cpu=11 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:41006 lane=14 port=52014 conn=0 incoming_cpu=14 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:37784 lane=8 port=52008 conn=0 incoming_cpu=8 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:46204 lane=15 port=52015 conn=0 incoming_cpu=15 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:44182 lane=9 port=52009 conn=0 incoming_cpu=9 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:46874 lane=10 port=52010 conn=0 incoming_cpu=10 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:39374 lane=13 port=52013 conn=0 incoming_cpu=13 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:40570 lane=12 port=52012 conn=0 incoming_cpu=12 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=0 policy=port-lane peer=127.0.0.1:38574 listener_lane=0 listener_port=52000 conn=0 incoming_cpu=0 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=1 policy=port-lane peer=127.0.0.1:34156 listener_lane=1 listener_port=52001 conn=0 incoming_cpu=1 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=2 policy=port-lane peer=127.0.0.1:45664 listener_lane=2 listener_port=52002 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=3 policy=port-lane peer=127.0.0.1:41890 listener_lane=3 listener_port=52003 conn=0 incoming_cpu=3 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=4 policy=port-lane peer=127.0.0.1:34568 listener_lane=4 listener_port=52004 conn=0 incoming_cpu=4 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=5 policy=port-lane peer=127.0.0.1:35696 listener_lane=5 listener_port=52005 conn=0 incoming_cpu=5 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=6 policy=port-lane peer=127.0.0.1:44984 listener_lane=6 listener_port=52006 conn=0 incoming_cpu=6 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=7 policy=port-lane peer=127.0.0.1:52614 listener_lane=7 listener_port=52007 conn=0 incoming_cpu=7 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=8 policy=port-lane peer=127.0.0.1:37784 listener_lane=8 listener_port=52008 conn=0 incoming_cpu=8 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=9 policy=port-lane peer=127.0.0.1:44182 listener_lane=9 listener_port=52009 conn=0 incoming_cpu=9 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=10 policy=port-lane peer=127.0.0.1:46874 listener_lane=10 listener_port=52010 conn=0 incoming_cpu=10 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=11 policy=port-lane peer=127.0.0.1:40682 listener_lane=11 listener_port=52011 conn=0 incoming_cpu=11 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=12 policy=port-lane peer=127.0.0.1:40570 listener_lane=12 listener_port=52012 conn=0 incoming_cpu=12 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=13 policy=port-lane peer=127.0.0.1:39374 listener_lane=13 listener_port=52013 conn=0 incoming_cpu=13 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=14 policy=port-lane peer=127.0.0.1:41006 listener_lane=14 listener_port=52014 conn=0 incoming_cpu=14 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=15 policy=port-lane peer=127.0.0.1:46204 listener_lane=15 listener_port=52015 conn=0 incoming_cpu=15 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment-summary: policy=port-lane workers=16 streams_by_worker=0:1,1:1,2:1,3:1,4:1,5:1,6:1,7:1,8:1,9:1,10:1,11:1,12:1,13:1,14:1,15:1
+zcnblk-wal-leaf-worker: affinity_index=1 target_cpu=1 status=ok
+zcnblk-wal-leaf-worker: affinity_index=0 target_cpu=0 status=ok
+zcnblk-wal-leaf-worker: affinity_index=2 target_cpu=2 status=ok
+zcnblk-wal-leaf-worker: affinity_index=6 target_cpu=6 status=ok
+zcnblk-wal-leaf-stream: affinity_index=1 target_cpu=1 status=ok
+zcnblk-wal-leaf-stream: worker=1 slot=0 peer=127.0.0.1:34156 lane=1 port=52001 conn=0 incoming_cpu=1 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=0 target_cpu=0 status=ok
+zcnblk-wal-leaf-stream: worker=0 slot=0 peer=127.0.0.1:38574 lane=0 port=52000 conn=0 incoming_cpu=0 incoming_napi_id=unknown
+zcnblk-wal-leaf-worker: affinity_index=7 target_cpu=7 status=ok
+zcnblk-wal-leaf-stream: affinity_index=2 target_cpu=2 status=ok
+zcnblk-wal-leaf-stream: worker=2 slot=0 peer=127.0.0.1:45664 lane=2 port=52002 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-worker: affinity_index=8 target_cpu=8 status=ok
+zcnblk-wal-leaf-worker: affinity_index=9 target_cpu=9 status=ok
+zcnblk-wal-leaf-worker: affinity_index=10 target_cpu=10 status=ok
+zcnblk-wal-leaf-stream: affinity_index=6 target_cpu=6 status=ok
+zcnblk-wal-leaf-stream: worker=6 slot=0 peer=127.0.0.1:44984 lane=6 port=52006 conn=0 incoming_cpu=6 incoming_napi_id=unknown
+zcnblk-wal-leaf-worker: affinity_index=11 target_cpu=11 status=ok
+zcnblk-wal-leaf-stream: affinity_index=9 target_cpu=9 status=ok
+zcnblk-wal-leaf-stream: worker=9 slot=0 peer=127.0.0.1:44182 lane=9 port=52009 conn=0 incoming_cpu=9 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=7 target_cpu=7 status=ok
+zcnblk-wal-leaf-stream: worker=7 slot=0 peer=127.0.0.1:52614 lane=7 port=52007 conn=0 incoming_cpu=7 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=11 target_cpu=11 status=ok
+zcnblk-wal-leaf-stream: worker=11 slot=0 peer=127.0.0.1:40682 lane=11 port=52011 conn=0 incoming_cpu=11 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=8 target_cpu=8 status=ok
+zcnblk-wal-leaf-stream: worker=8 slot=0 peer=127.0.0.1:37784 lane=8 port=52008 conn=0 incoming_cpu=8 incoming_napi_id=unknown
+zcnblk-wal-leaf-worker: affinity_index=12 target_cpu=12 status=ok
+zcnblk-wal-leaf-worker: affinity_index=13 target_cpu=13 status=ok
+zcnblk-wal-leaf-stream: affinity_index=10 target_cpu=10 status=ok
+zcnblk-wal-leaf-stream: worker=10 slot=0 peer=127.0.0.1:46874 lane=10 port=52010 conn=0 incoming_cpu=10 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=12 target_cpu=12 status=ok
+zcnblk-wal-leaf-stream: worker=12 slot=0 peer=127.0.0.1:40570 lane=12 port=52012 conn=0 incoming_cpu=12 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=13 target_cpu=13 status=ok
+zcnblk-wal-leaf-stream: worker=13 slot=0 peer=127.0.0.1:39374 lane=13 port=52013 conn=0 incoming_cpu=13 incoming_napi_id=unknown
+zcnblk-wal-leaf-worker: affinity_index=14 target_cpu=14 status=ok
+zcnblk-wal-leaf-stream: affinity_index=14 target_cpu=14 status=ok
+zcnblk-wal-leaf-stream: worker=14 slot=0 peer=127.0.0.1:41006 lane=14 port=52014 conn=0 incoming_cpu=14 incoming_napi_id=unknown
+zcnblk-wal-leaf-worker: affinity_index=15 target_cpu=15 status=ok
+zcnblk-wal-leaf-stream: affinity_index=15 target_cpu=15 status=ok
+zcnblk-wal-leaf-stream: worker=15 slot=0 peer=127.0.0.1:46204 lane=15 port=52015 conn=0 incoming_cpu=15 incoming_napi_id=unknown
+Error: Os { code: 12, kind: OutOfMemory, message: "Cannot allocate memory" }

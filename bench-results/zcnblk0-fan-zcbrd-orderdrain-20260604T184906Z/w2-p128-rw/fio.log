@@ -1,0 +1,33 @@
+w2-p128-rw: (g=0): rw=randwrite, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=io_uring, iodepth=64
+...
+fio-3.39
+Starting 8 processes
+
+w2-p128-rw: (groupid=0, jobs=8): err= 0: pid=2983814: Thu Jun  4 14:49:13 2026
+  write: IOPS=712k, BW=2782MiB/s (2917MB/s)(8352MiB/3002msec); 0 zone resets
+    slat (nsec): min=380, max=461506, avg=601.75, stdev=4272.50
+    clat (usec): min=36, max=5570, avg=717.82, stdev=185.95
+     lat (usec): min=92, max=5571, avg=718.42, stdev=185.92
+    clat percentiles (usec):
+     |  1.00th=[  412],  5.00th=[  510], 10.00th=[  562], 20.00th=[  611],
+     | 30.00th=[  644], 40.00th=[  660], 50.00th=[  685], 60.00th=[  709],
+     | 70.00th=[  750], 80.00th=[  799], 90.00th=[  898], 95.00th=[ 1012],
+     | 99.00th=[ 1450], 99.50th=[ 1565], 99.90th=[ 1876], 99.95th=[ 2278],
+     | 99.99th=[ 4817]
+   bw (  MiB/s): min= 2713, max= 2830, per=100.00%, avg=2783.68, stdev= 5.16, samples=48
+   iops        : min=694602, max=724546, avg=712621.67, stdev=1320.53, samples=48
+  lat (usec)   : 50=0.01%, 100=0.01%, 250=0.05%, 500=4.22%, 750=66.40%
+  lat (usec)   : 1000=23.92%
+  lat (msec)   : 2=5.33%, 4=0.05%, 10=0.02%
+  cpu          : usr=1.91%, sys=4.35%, ctx=103500, majf=0, minf=71
+  IO depths    : 1=0.1%, 2=0.1%, 4=0.1%, 8=0.1%, 16=0.1%, 32=0.1%, >=64=100.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.1%, >=64=0.0%
+     issued rwts: total=0,2138117,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=64
+
+Run status group 0 (all jobs):
+  WRITE: bw=2782MiB/s (2917MB/s), 2782MiB/s-2782MiB/s (2917MB/s-2917MB/s), io=8352MiB (8758MB), run=3002-3002msec
+
+Disk stats (read/write):
+  zcnblk0: ios=0/2058690, sectors=0/16469520, merge=0/0, ticks=0/1398442, in_queue=1398442, util=100.00%

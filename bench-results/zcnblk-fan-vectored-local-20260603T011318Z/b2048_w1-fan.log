@@ -1,0 +1,4 @@
+PERF WARNING: zcnblk-fan WAL batch window is 1; this serializes each leaf batch/result round trip and can add one context-switch wakeup per batch
+zcnblk-fan-wal: leaves=127.0.0.2,127.0.0.3 bind=127.0.0.1 base_port=55500 ports=8 connections_per_port=1 total_connections=8 bytes_per_connection=134217728 chunk_bytes=4096 stripe_bytes=4096 leaf_base_port=56500 source_ip=kernel-route source_ports=kernel-ephemeral pin_handlers=true placement=stripe order=per-4k-record order_shards=128 write_acks=true batch_window=1 result_ranges=true protocol=fan-wal-v2
+zcnblk-fan-wal-leaf-note: start each edge with zcnblk-wal-leaf; leaf block devices are terminal media only after userspace placement
+Error: Os { code: 98, kind: AddrInUse, message: "Address already in use" }

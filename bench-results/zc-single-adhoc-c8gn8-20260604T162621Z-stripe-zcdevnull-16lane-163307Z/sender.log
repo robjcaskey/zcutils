@@ -1,0 +1,43 @@
+zcnblk-send: addr=172.31.37.11 shard_count=1 base_port=18100 ports=16 connections_per_port=1 total_connections=16 bytes_per_connection=67108864 chunk_bytes=4096 workers=16 op_mode=mixed read_window=512 write_window=4096 access=random:range_bytes=67108864:seed=0x7a636e626c6b0001 verify_reads=no wait_write_acks=yes batch_depth=64 payload_pattern=fill:0x00 source_ip=172.31.36.72 source_ports=kernel-ephemeral latency=yes encryption=none aes_frame_bytes=65536
+zcnblk-send-stream: worker=7 lane=7 port=18107 conn=0 shard=0 base_offset=469762048
+zcnblk-send-stream: worker=12 lane=12 port=18112 conn=0 shard=0 base_offset=805306368
+zcnblk-send-stream: worker=10 lane=10 port=18110 conn=0 shard=0 base_offset=671088640
+zcnblk-send-stream: worker=3 lane=3 port=18103 conn=0 shard=0 base_offset=201326592
+zcnblk-send-stream: worker=5 lane=5 port=18105 conn=0 shard=0 base_offset=335544320
+zcnblk-send-stream: worker=11 lane=11 port=18111 conn=0 shard=0 base_offset=738197504
+zcnblk-send-stream: worker=14 lane=14 port=18114 conn=0 shard=0 base_offset=939524096
+zcnblk-send-stream: worker=15 lane=15 port=18115 conn=0 shard=0 base_offset=1006632960
+zcnblk-send-stream: worker=1 lane=1 port=18101 conn=0 shard=0 base_offset=67108864
+zcnblk-send-stream: worker=2 lane=2 port=18102 conn=0 shard=0 base_offset=134217728
+zcnblk-send-stream: worker=9 lane=9 port=18109 conn=0 shard=0 base_offset=603979776
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 425984 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 425984 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcnblk-send-stream: worker=0 lane=0 port=18100 conn=0 shard=0 base_offset=0
+zcnblk-send-stream: worker=6 lane=6 port=18106 conn=0 shard=0 base_offset=402653184
+zcnblk-send-stream: worker=13 lane=13 port=18113 conn=0 shard=0 base_offset=872415232
+zcnblk-send-stream: worker=8 lane=8 port=18108 conn=0 shard=0 base_offset=536870912
+zcnblk-send-stream: worker=4 lane=4 port=18104 conn=0 shard=0 base_offset=268435456
+Command terminated by signal 15
+	Command being timed: "target/release/zcutils zcnblk-send 172.31.37.11 1 18100 16 1 64M 4096 16"
+	User time (seconds): 0.00
+	System time (seconds): 0.01
+	Percent of CPU this job got: 0%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 1:03.12
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 7524
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 1767
+	Voluntary context switches: 522
+	Involuntary context switches: 0
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

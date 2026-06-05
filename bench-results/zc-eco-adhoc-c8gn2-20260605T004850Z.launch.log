@@ -1,0 +1,205 @@
+{
+  "ami_id": "ami-0e03e3a55ecc62f7d",
+  "az": "us-east-2c",
+  "cost_ceiling": {
+    "duration_hours": 0.9969444444444444,
+    "public_ipv4_ceiling_usd": 0.019938888888888888,
+    "root_ebs_ceiling_usd": 0.04195360730593607,
+    "spot_ceiling_usd": 0.3987777777777778,
+    "total_ceiling_usd": 0.46067027397260274
+  },
+  "drop_dead_utc": "2026-06-05T01:48:50Z",
+  "ena_express": false,
+  "enable_efa": false,
+  "instance_type": "c8gn.2xlarge",
+  "network_card_count": 1,
+  "nodes": 4,
+  "public_ip_mode": "auto-associate",
+  "region": "us-east-2",
+  "request": {
+    "BlockDeviceMappings": [
+      {
+        "DeviceName": "/dev/sda1",
+        "Ebs": {
+          "DeleteOnTermination": true,
+          "VolumeSize": 64,
+          "VolumeType": "gp3"
+        }
+      }
+    ],
+    "ImageId": "ami-0e03e3a55ecc62f7d",
+    "InstanceMarketOptions": {
+      "MarketType": "spot",
+      "SpotOptions": {
+        "InstanceInterruptionBehavior": "terminate",
+        "MaxPrice": "0.10",
+        "SpotInstanceType": "one-time"
+      }
+    },
+    "InstanceType": "c8gn.2xlarge",
+    "KeyName": "adhocMasterKeypair",
+    "MaxCount": 4,
+    "MetadataOptions": {
+      "HttpEndpoint": "enabled",
+      "HttpTokens": "required"
+    },
+    "MinCount": 4,
+    "NetworkInterfaces": [
+      {
+        "AssociatePublicIpAddress": true,
+        "DeviceIndex": 0,
+        "Groups": [
+          "sg-025a50a35d3073a8a"
+        ],
+        "NetworkCardIndex": 0,
+        "SubnetId": "subnet-c66ddd8b"
+      }
+    ],
+    "Placement": {
+      "AvailabilityZone": "us-east-2c"
+    },
+    "TagSpecifications": [
+      {
+        "ResourceType": "instance",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "zc-eco-adhoc-c8gn2-20260605T004850Z"
+          },
+          {
+            "Key": "Project",
+            "Value": "uring-play"
+          },
+          {
+            "Key": "Purpose",
+            "Value": "adhoc-performance-compute"
+          },
+          {
+            "Key": "uringPlayRunId",
+            "Value": "zc-eco-adhoc-c8gn2-20260605T004850Z"
+          },
+          {
+            "Key": "adhocKeepaliveModeAction",
+            "Value": "terminate"
+          },
+          {
+            "Key": "adhocKeepalive",
+            "Value": "2026-06-05T01:48:50Z"
+          }
+        ]
+      },
+      {
+        "ResourceType": "volume",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "zc-eco-adhoc-c8gn2-20260605T004850Z"
+          },
+          {
+            "Key": "Project",
+            "Value": "uring-play"
+          },
+          {
+            "Key": "Purpose",
+            "Value": "adhoc-performance-compute"
+          },
+          {
+            "Key": "uringPlayRunId",
+            "Value": "zc-eco-adhoc-c8gn2-20260605T004850Z"
+          },
+          {
+            "Key": "adhocKeepaliveModeAction",
+            "Value": "terminate"
+          },
+          {
+            "Key": "adhocKeepalive",
+            "Value": "2026-06-05T01:48:50Z"
+          }
+        ]
+      }
+    ]
+  },
+  "run_id": "zc-eco-adhoc-c8gn2-20260605T004850Z",
+  "subnet_id": "subnet-c66ddd8b"
+}
+{
+  "drop_dead_utc": "2026-06-05T01:48:50Z",
+  "instances": [
+    {
+      "az": "us-east-2c",
+      "instance_id": "i-0d0e89295cccfb188",
+      "instance_type": "c8gn.2xlarge",
+      "network_interfaces": [
+        {
+          "device_index": 0,
+          "interface_type": "interface",
+          "mac": "0a:eb:4b:7a:16:55",
+          "network_card_index": 0,
+          "network_interface_id": "eni-03db6dab31098c573",
+          "private_ip": "172.31.36.162",
+          "public_ip": "18.116.238.90"
+        }
+      ],
+      "private_ip": "172.31.36.162",
+      "public_ip": "18.116.238.90"
+    },
+    {
+      "az": "us-east-2c",
+      "instance_id": "i-039fef140fd2aae53",
+      "instance_type": "c8gn.2xlarge",
+      "network_interfaces": [
+        {
+          "device_index": 0,
+          "interface_type": "interface",
+          "mac": "0a:20:7d:26:0c:d3",
+          "network_card_index": 0,
+          "network_interface_id": "eni-0bd2007b191dae2b2",
+          "private_ip": "172.31.40.65",
+          "public_ip": "18.219.100.152"
+        }
+      ],
+      "private_ip": "172.31.40.65",
+      "public_ip": "18.219.100.152"
+    },
+    {
+      "az": "us-east-2c",
+      "instance_id": "i-02a9ef2c003dabdee",
+      "instance_type": "c8gn.2xlarge",
+      "network_interfaces": [
+        {
+          "device_index": 0,
+          "interface_type": "interface",
+          "mac": "0a:e2:60:e6:c1:b7",
+          "network_card_index": 0,
+          "network_interface_id": "eni-0be0f3af371727d12",
+          "private_ip": "172.31.41.105",
+          "public_ip": "3.21.55.51"
+        }
+      ],
+      "private_ip": "172.31.41.105",
+      "public_ip": "3.21.55.51"
+    },
+    {
+      "az": "us-east-2c",
+      "instance_id": "i-036bc66c12a9e3193",
+      "instance_type": "c8gn.2xlarge",
+      "network_interfaces": [
+        {
+          "device_index": 0,
+          "interface_type": "interface",
+          "mac": "0a:34:35:8f:e9:4f",
+          "network_card_index": 0,
+          "network_interface_id": "eni-0d7437d007c76a943",
+          "private_ip": "172.31.47.69",
+          "public_ip": "3.141.190.123"
+        }
+      ],
+      "private_ip": "172.31.47.69",
+      "public_ip": "3.141.190.123"
+    }
+  ],
+  "public_ip_mode": "auto-associate",
+  "region": "us-east-2",
+  "run_id": "zc-eco-adhoc-c8gn2-20260605T004850Z"
+}
+wrote inventory: qemu-zcrx/zc-eco-adhoc-c8gn2-20260605T004850Z-inventory.json

@@ -1,0 +1,22 @@
+provider: efa
+    fabric: efa
+    domain: efa_0-dgrm
+    version: 204.0
+    type: FI_EP_DGRAM
+    protocol: FI_PROTO_EFA
+provider: efa
+    fabric: efa
+    domain: efa_0-dgrm
+    version: 204.0
+    type: FI_EP_DGRAM
+    protocol: FI_PROTO_EFA
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@52.14.22.210 'URING_NODE_INDEX=1 URING_RUN_ID=zc-efa-adhoc-c8gn16-20260605T022316Z URING_PRIVATE_IPS=172.31.44.136,172.31.47.102 set -euo pipefail
+export PATH=/opt/amazon/efa/bin:$PATH
+export LD_LIBRARY_PATH=/opt/amazon/efa/lib:${LD_LIBRARY_PATH:-}
+fi_info -p efa -t FI_EP_DGRAM | head -80
+'
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.219.57.103 'URING_NODE_INDEX=2 URING_RUN_ID=zc-efa-adhoc-c8gn16-20260605T022316Z URING_PRIVATE_IPS=172.31.44.136,172.31.47.102 set -euo pipefail
+export PATH=/opt/amazon/efa/bin:$PATH
+export LD_LIBRARY_PATH=/opt/amazon/efa/lib:${LD_LIBRARY_PATH:-}
+fi_info -p efa -t FI_EP_DGRAM | head -80
+'

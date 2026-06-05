@@ -1,0 +1,125 @@
+zcnblk-fan-wal: leaves=172.31.41.135:19100,172.31.43.89:19100 bind=172.31.37.11 base_port=18100 ports=16 connections_per_port=1 total_connections=16 bytes_per_connection=67108864 chunk_bytes=4096 stripe_bytes=4096 leaf_base_port=19100 source_ip=172.31.37.11 source_ports=kernel-ephemeral pin_handlers=true placement=stripe order=per-4k-record order_shards=128 write_acks=true batch_window=64 result_ranges=true result_arena=false result_arena_slots=128 result_arena_spin=true result_arena_spin_budget=unbounded result_arena_inline_primary=false protocol=fan-wal-v2
+zcnblk-fan-wal-leaf-note: start each edge with zcnblk-wal-leaf; leaf block devices are terminal media only after userspace placement
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 425984 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 425984 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:53219 lane=11 port=18111 conn=0 incoming_cpu=28 incoming_napi_id=520
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:51057 lane=5 port=18105 conn=0 incoming_cpu=16 incoming_napi_id=519
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:34433 lane=9 port=18109 conn=0 incoming_cpu=18 incoming_napi_id=513
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:40547 lane=6 port=18106 conn=0 incoming_cpu=26 incoming_napi_id=517
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:32983 lane=15 port=18115 conn=0 incoming_cpu=9 incoming_napi_id=516
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:32797 lane=7 port=18107 conn=0 incoming_cpu=5 incoming_napi_id=515
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:55679 lane=13 port=18113 conn=0 incoming_cpu=16 incoming_napi_id=519
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:38699 lane=14 port=18114 conn=0 incoming_cpu=28 incoming_napi_id=520
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:35517 lane=10 port=18110 conn=0 incoming_cpu=7 incoming_napi_id=518
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:49295 lane=3 port=18103 conn=0 incoming_cpu=7 incoming_napi_id=518
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:40659 lane=1 port=18101 conn=0 incoming_cpu=21 incoming_napi_id=514
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:41167 lane=12 port=18112 conn=0 incoming_cpu=5 incoming_napi_id=515
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:47129 lane=0 port=18100 conn=0 incoming_cpu=18 incoming_napi_id=513
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:34651 lane=2 port=18102 conn=0 incoming_cpu=21 incoming_napi_id=514
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:56149 lane=8 port=18108 conn=0 incoming_cpu=28 incoming_napi_id=520
+tcp-bench-uring-mux-server: accepted peer=172.31.36.72:59817 lane=4 port=18104 conn=0 incoming_cpu=16 incoming_napi_id=519
+zcnblk-fan-wal-handler: affinity_index=1 target_cpu=1 status=ok
+zcnblk-fan-wal-handler: affinity_index=0 target_cpu=0 status=ok
+zcnblk-fan-wal-handler: affinity_index=2 target_cpu=2 status=ok
+zcnblk-fan-wal-upstream: handler=1 peer=172.31.36.72:40659 lane=1 port=18101 conn=0 incoming_cpu=21 incoming_napi_id=514
+zcnblk-fan-wal-handler: affinity_index=3 target_cpu=3 status=ok
+zcnblk-fan-wal-handler: affinity_index=4 target_cpu=4 status=ok
+zcnblk-fan-wal-upstream: handler=0 peer=172.31.36.72:47129 lane=0 port=18100 conn=0 incoming_cpu=18 incoming_napi_id=513
+zcnblk-fan-wal-upstream: handler=2 peer=172.31.36.72:34651 lane=2 port=18102 conn=0 incoming_cpu=21 incoming_napi_id=514
+zcnblk-fan-wal-upstream: handler=3 peer=172.31.36.72:49295 lane=3 port=18103 conn=0 incoming_cpu=7 incoming_napi_id=518
+zcnblk-fan-wal-handler: affinity_index=8 target_cpu=8 status=ok
+zcnblk-fan-wal-handler: affinity_index=6 target_cpu=6 status=ok
+zcnblk-fan-wal-upstream: handler=4 peer=172.31.36.72:59817 lane=4 port=18104 conn=0 incoming_cpu=16 incoming_napi_id=519
+zcnblk-fan-wal-handler: affinity_index=7 target_cpu=7 status=ok
+zcnblk-fan-wal-handler: affinity_index=12 target_cpu=12 status=ok
+zcnblk-fan-wal-handler: affinity_index=5 target_cpu=5 status=ok
+zcnblk-fan-wal-upstream: handler=8 peer=172.31.36.72:56149 lane=8 port=18108 conn=0 incoming_cpu=28 incoming_napi_id=520
+zcnblk-fan-wal-handler: affinity_index=14 target_cpu=14 status=ok
+zcnblk-fan-wal-handler: affinity_index=10 target_cpu=10 status=ok
+zcnblk-fan-wal-handler: affinity_index=11 target_cpu=11 status=ok
+zcnblk-fan-wal-upstream: handler=7 peer=172.31.36.72:32797 lane=7 port=18107 conn=0 incoming_cpu=5 incoming_napi_id=515
+zcnblk-fan-wal-upstream: handler=14 peer=172.31.36.72:38699 lane=14 port=18114 conn=0 incoming_cpu=28 incoming_napi_id=520
+zcnblk-fan-wal-handler: affinity_index=15 target_cpu=15 status=ok
+zcnblk-fan-wal-upstream: handler=12 peer=172.31.36.72:41167 lane=12 port=18112 conn=0 incoming_cpu=5 incoming_napi_id=515
+zcnblk-fan-wal-upstream: handler=6 peer=172.31.36.72:40547 lane=6 port=18106 conn=0 incoming_cpu=26 incoming_napi_id=517
+zcnblk-fan-wal-upstream: handler=5 peer=172.31.36.72:51057 lane=5 port=18105 conn=0 incoming_cpu=16 incoming_napi_id=519
+zcnblk-fan-wal-upstream: handler=15 peer=172.31.36.72:32983 lane=15 port=18115 conn=0 incoming_cpu=9 incoming_napi_id=516
+zcnblk-fan-wal-handler: affinity_index=13 target_cpu=13 status=ok
+zcnblk-fan-wal-handler: affinity_index=9 target_cpu=9 status=ok
+zcnblk-fan-wal-upstream: handler=11 peer=172.31.36.72:53219 lane=11 port=18111 conn=0 incoming_cpu=28 incoming_napi_id=520
+zcnblk-fan-wal-upstream: handler=10 peer=172.31.36.72:35517 lane=10 port=18110 conn=0 incoming_cpu=7 incoming_napi_id=518
+zcnblk-fan-wal-upstream: handler=13 peer=172.31.36.72:55679 lane=13 port=18113 conn=0 incoming_cpu=16 incoming_napi_id=519
+zcnblk-fan-wal-upstream: handler=9 peer=172.31.36.72:34433 lane=9 port=18109 conn=0 incoming_cpu=18 incoming_napi_id=513
+zcnblk-fan-wal-leaf-stream: handler=3 leaf=0 addr=172.31.41.135 port=19103 lane=3 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=0 leaf=0 addr=172.31.41.135 port=19100 lane=0 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=2 leaf=0 addr=172.31.41.135 port=19102 lane=2 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=6 leaf=0 addr=172.31.41.135 port=19106 lane=6 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=15 leaf=0 addr=172.31.41.135 port=19115 lane=15 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=14 leaf=0 addr=172.31.41.135 port=19114 lane=14 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=4 leaf=0 addr=172.31.41.135 port=19104 lane=4 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=8 leaf=0 addr=172.31.41.135 port=19108 lane=8 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=11 leaf=0 addr=172.31.41.135 port=19111 lane=11 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=13 leaf=0 addr=172.31.41.135 port=19113 lane=13 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=7 leaf=0 addr=172.31.41.135 port=19107 lane=7 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=10 leaf=0 addr=172.31.41.135 port=19110 lane=10 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=12 leaf=0 addr=172.31.41.135 port=19112 lane=12 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=5 leaf=0 addr=172.31.41.135 port=19105 lane=5 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=9 leaf=0 addr=172.31.41.135 port=19109 lane=9 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=1 leaf=0 addr=172.31.41.135 port=19101 lane=1 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=15 leaf=1 addr=172.31.43.89 port=19115 lane=15 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=4 leaf=1 addr=172.31.43.89 port=19104 lane=4 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=8 leaf=1 addr=172.31.43.89 port=19108 lane=8 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=9 leaf=1 addr=172.31.43.89 port=19109 lane=9 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=11 leaf=1 addr=172.31.43.89 port=19111 lane=11 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=0 leaf=1 addr=172.31.43.89 port=19100 lane=0 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=14 leaf=1 addr=172.31.43.89 port=19114 lane=14 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=1 leaf=1 addr=172.31.43.89 port=19101 lane=1 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=13 leaf=1 addr=172.31.43.89 port=19113 lane=13 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=6 leaf=1 addr=172.31.43.89 port=19106 lane=6 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=7 leaf=1 addr=172.31.43.89 port=19107 lane=7 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=5 leaf=1 addr=172.31.43.89 port=19105 lane=5 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=2 leaf=1 addr=172.31.43.89 port=19102 lane=2 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=10 leaf=1 addr=172.31.43.89 port=19110 lane=10 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=3 leaf=1 addr=172.31.43.89 port=19103 lane=3 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=12 leaf=1 addr=172.31.43.89 port=19112 lane=12 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-handler-error: handler=15 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=14 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=13 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=12 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=11 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=10 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=9 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=6 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=8 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=5 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=3 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=4 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=7 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=2 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=0 error=Connection reset by peer (os error 104)
+zcnblk-fan-wal-handler-error: handler=1 error=Connection reset by peer (os error 104)
+Error: Os { code: 104, kind: ConnectionReset, message: "Connection reset by peer" }
+Command exited with non-zero status 1
+	Command being timed: "target/release/zcnblk-fan --engine wal --leaves 172.31.41.135,172.31.43.89 --bind 172.31.37.11 --base-port 18100 --ports 16 --connections-per-port 1 --bytes-per-connection 64M --chunk-bytes 4096 --stripe-bytes 4096 --leaf-base-port 19100 --pin-handlers true --mode stripe"
+	User time (seconds): 0.01
+	System time (seconds): 0.04
+	Percent of CPU this job got: 0%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 1:05.73
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 7524
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 4332
+	Voluntary context switches: 1345
+	Involuntary context switches: 16
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 32
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1

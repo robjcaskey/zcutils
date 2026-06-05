@@ -1,0 +1,48 @@
+run_id=zc-mid-adhoc-c8gn4-20260604T193327Z
+instance_type=c8gn.4xlarge nodes=4 region=us-east-2 az=us-east-2c spot_usd_per_instance_hour=0.1558 cluster_spot_usd_per_hour=0.6232
+drop_dead_utc=2026-06-04T21:33:27Z adhocKeepaliveModeAction=terminate
+role_map=qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-role-map.tsv
+raw_dir=qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-tcpbench-p16-512m
+wal_dir=qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m
+
+raw_tcpbench:
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-tcpbench-p16-512m/client.log:tcp-bench-uring-mux-send: bytes=8589934592 seconds=1.501546 GiBps=5.328 Gbitps=45.766
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-tcpbench-p16-512m/client.log:	Voluntary context switches: 341
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-tcpbench-p16-512m/client.log:	Involuntary context switches: 66
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-tcpbench-p16-512m/client.log:	Exit status: 0
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-tcpbench-p16-512m/server.log:tcp-bench-uring-mux-server: bytes=8589934592 seconds=1.594303 GiBps=5.018 Gbitps=43.103
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-tcpbench-p16-512m/server.log:	Voluntary context switches: 119764
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-tcpbench-p16-512m/server.log:	Involuntary context switches: 35
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-tcpbench-p16-512m/server.log:	Exit status: 0
+
+wal_fan_stripe:
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/client.log:zcnblk-send-summary: write_bytes=4294967296 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=4430233600 frames=1048576 read_frames=0 write_frames=1048576 frames_per_sec=522876
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/client.log:zcnblk-send: bytes=4294967296 seconds=2.005403 GiBps=1.995 Gbitps=17.134
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/client.log:	Voluntary context switches: 8391
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/client.log:	Involuntary context switches: 18
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/client.log:	Exit status: 0
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/fan.log:zcnblk-fan-wal-summary: read_bytes=0 write_bytes=4294967296 response_bytes=67633152 branch_payload_bytes=4294967296 frames=1048576 batches=8192 read_frames=0 write_frames=1048576 leaf_submit_batches=16384 leaf_submit_records=1048576 max_leaf_submit_records=64 max_outstanding_batches=4 upstream_idle_drains=1 result_records=1048576 result_batches=16384 result_range_batches=16384 voluntary_ctxt_switches=332382 involuntary_ctxt_switches=263 migrations=13 frames_per_sec=523259
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/fan.log:zcnblk-fan-wal: bytes=4294967296 seconds=2.003932 GiBps=1.996 Gbitps=17.146
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/fan.log:	Voluntary context switches: 332436
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/fan.log:	Involuntary context switches: 272
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/fan.log:	Exit status: 0
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/leaf1.log:zcnblk-wal-leaf-summary: streams=16 read_bytes=0 write_bytes=2147483648 result_records=524288 result_batches=8192 result_range_batches=8192 frames=524288 blocking_io_frames=524288 uring_io_frames=0 frames_per_sec=261770
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/leaf1.log:zcnblk-wal-leaf: bytes=2147483648 seconds=2.002859 GiBps=0.999 Gbitps=8.578
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/leaf1.log:	Voluntary context switches: 20427
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/leaf1.log:	Involuntary context switches: 58
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/leaf1.log:	Exit status: 0
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/leaf0.log:zcnblk-wal-leaf-summary: streams=16 read_bytes=0 write_bytes=2147483648 result_records=524288 result_batches=8192 result_range_batches=8192 frames=524288 blocking_io_frames=524288 uring_io_frames=0 frames_per_sec=261709
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/leaf0.log:zcnblk-wal-leaf: bytes=2147483648 seconds=2.003326 GiBps=0.998 Gbitps=8.576
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/leaf0.log:	Voluntary context switches: 21610
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/leaf0.log:	Involuntary context switches: 77
+qemu-zcrx/zc-mid-adhoc-c8gn4-20260604T193327Z-wal-fan-stripe-p16-b128-w4-256m/leaf0.log:	Exit status: 0
+
+warnings:
+single_network_card=c8gn.4xlarge supports one network card; public SSH/control and private data share ens34/card0 addresses, but benchmark commands use private IPs.
+hugetlb=not configured/used.
+memlock=headroom not increased.
+worker_cpu_pinning=explicit URING_PLAY_PIN_CPU_LIST=0-15 for client/fan; leaves use workers pinned 0-7 and streams/lane topology in logs.
+kthread_pinning=no SQPOLL/kthread pinning requested.
+hctx_affinity=not applicable to zcdevnull terminal leaves; no block leaf media used.
+io_uring_fast_path=raw mux used recv/send uring path; WAL leaves used blocking submit mode by design for zcdevnull.
+representativeness=quick topology-explicit spot run, not a definitive tuned maximum.

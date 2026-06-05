@@ -1,0 +1,104 @@
+warning: constant `LATENCY_FINE_STEP_NS` is never used
+     --> src/lib.rs:28148:7
+      |
+28148 | const LATENCY_FINE_STEP_NS: u64 = 100;
+      |       ^^^^^^^^^^^^^^^^^^^^
+      |
+      = note: `#[warn(dead_code)]` on by default
+
+warning: constant `LATENCY_FINE_BUCKETS` is never used
+     --> src/lib.rs:28149:7
+      |
+28149 | const LATENCY_FINE_BUCKETS: usize = 10;
+      |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `LATENCY_MID_START_NS` is never used
+     --> src/lib.rs:28150:7
+      |
+28150 | const LATENCY_MID_START_NS: u64 = 1_000;
+      |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `LATENCY_MID_STEP_NS` is never used
+     --> src/lib.rs:28151:7
+      |
+28151 | const LATENCY_MID_STEP_NS: u64 = 1_000;
+      |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `LATENCY_MID_BUCKETS` is never used
+     --> src/lib.rs:28152:7
+      |
+28152 | const LATENCY_MID_BUCKETS: usize = 999;
+      |       ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `LATENCY_HIGH_START_NS` is never used
+     --> src/lib.rs:28153:7
+      |
+28153 | const LATENCY_HIGH_START_NS: u64 = 1_000_000;
+      |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `LATENCY_HIGH_STEP_NS` is never used
+     --> src/lib.rs:28154:7
+      |
+28154 | const LATENCY_HIGH_STEP_NS: u64 = 1_000_000;
+      |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `LATENCY_HIGH_BUCKETS` is never used
+     --> src/lib.rs:28155:7
+      |
+28155 | const LATENCY_HIGH_BUCKETS: usize = 1_000;
+      |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `LATENCY_BUCKETS` is never used
+     --> src/lib.rs:28156:7
+      |
+28156 | const LATENCY_BUCKETS: usize =
+      |       ^^^^^^^^^^^^^^^
+
+warning: struct `LatencyHistogram` is never constructed
+     --> src/lib.rs:28160:8
+      |
+28160 | struct LatencyHistogram {
+      |        ^^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+     --> src/lib.rs:28169:8
+      |
+28168 | impl LatencyHistogram {
+      | --------------------- associated items in this implementation
+28169 |     fn new() -> Self {
+      |        ^^^
+...
+28179 |     fn record_duration(&mut self, duration: Duration) {
+      |        ^^^^^^^^^^^^^^^
+...
+28184 |     fn record_ns(&mut self, ns: u64) {
+      |        ^^^^^^^^^
+...
+28193 |     fn merge(&mut self, other: &Self) {
+      |        ^^^^^
+...
+28203 |     fn avg_ns(&self) -> u64 {
+      |        ^^^^^^
+...
+28211 |     fn min_ns(&self) -> u64 {
+      |        ^^^^^^
+...
+28215 |     fn percentile_ns(&self, numerator: u64, denominator: u64) -> u64 {
+      |        ^^^^^^^^^^^^^
+
+warning: function `latency_bucket_index` is never used
+     --> src/lib.rs:28241:4
+      |
+28241 | fn latency_bucket_index(ns: u64) -> usize {
+      |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `latency_bucket_upper_ns` is never used
+     --> src/lib.rs:28255:4
+      |
+28255 | fn latency_bucket_upper_ns(index: usize) -> u64 {
+      |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `zcutils` (lib) generated 13 warnings
+    Finished `release` profile [optimized] target(s) in 0.04s
+65003 blocks
+33281536 /home/rob/zcutils/qemu-zcrx/initramfs.cpio

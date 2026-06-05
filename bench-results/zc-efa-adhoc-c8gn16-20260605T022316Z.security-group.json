@@ -1,0 +1,88 @@
+{
+    "SecurityGroups": [
+        {
+            "GroupId": "sg-025a50a35d3073a8a",
+            "IpPermissionsEgress": [
+                {
+                    "IpProtocol": "-1",
+                    "UserIdGroupPairs": [],
+                    "IpRanges": [
+                        {
+                            "CidrIp": "0.0.0.0/0"
+                        }
+                    ],
+                    "Ipv6Ranges": [],
+                    "PrefixListIds": []
+                }
+            ],
+            "Tags": [
+                {
+                    "Key": "AdhocSupportLifetime",
+                    "Value": "shared-regional"
+                },
+                {
+                    "Key": "Purpose",
+                    "Value": "adhoc-performance-compute-support"
+                },
+                {
+                    "Key": "AdhocSupport",
+                    "Value": "true"
+                },
+                {
+                    "Key": "AdhocSupportRegion",
+                    "Value": "us-east-2"
+                },
+                {
+                    "Key": "Name",
+                    "Value": "up-adhoc-ctl"
+                },
+                {
+                    "Key": "AdhocCleanupScope",
+                    "Value": "region:us-east-2"
+                },
+                {
+                    "Key": "Project",
+                    "Value": "uring-play"
+                },
+                {
+                    "Key": "AdhocSupportKind",
+                    "Value": "control-security-group"
+                }
+            ],
+            "VpcId": "vpc-b3d28cda",
+            "SecurityGroupArn": "arn:aws:ec2:us-east-2:968134102381:security-group/sg-025a50a35d3073a8a",
+            "OwnerId": "968134102381",
+            "GroupName": "up-adhoc-ctl",
+            "Description": "uring-play adhoc support: public SSH control and private self traffic",
+            "IpPermissions": [
+                {
+                    "IpProtocol": "-1",
+                    "UserIdGroupPairs": [
+                        {
+                            "Description": "adhoc private worker traffic inside this SG",
+                            "UserId": "968134102381",
+                            "GroupId": "sg-025a50a35d3073a8a"
+                        }
+                    ],
+                    "IpRanges": [],
+                    "Ipv6Ranges": [],
+                    "PrefixListIds": []
+                },
+                {
+                    "IpProtocol": "tcp",
+                    "FromPort": 22,
+                    "ToPort": 22,
+                    "UserIdGroupPairs": [],
+                    "IpRanges": [
+                        {
+                            "Description": "adhoc SSH control",
+                            "CidrIp": "75.139.156.167/32"
+                        }
+                    ],
+                    "Ipv6Ranges": [],
+                    "PrefixListIds": []
+                }
+            ]
+        }
+    ]
+}

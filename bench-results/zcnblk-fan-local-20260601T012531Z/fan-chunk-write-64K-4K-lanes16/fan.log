@@ -1,0 +1,100 @@
+zcnblk-read-fan: leaves=0:127.0.0.1:33554432B,1:127.0.0.2:33554432B bind=127.0.0.1 base_port=23300 ports=16 connections_per_port=1 total_connections=16 bytes_per_connection=67108864 chunk_bytes=65536 stripe_bytes=4096 leaf_base_port=23200 source_ip=kernel-route source_ports=kernel-ephemeral encryption=none aes_frame_bytes=65536 pin_handlers=true read_only=false placement=userspace-stripe order=per-4k-record write_acks=true leaf_write_acks=required
+zcnblk-fan-leaf-target-note: start each leaf zcnblk-target with URING_PLAY_ZCNBLK_WRITE_ACKS=1, the same ports/connections/chunk size, and its listed per-connection byte budget; /dev/zcbrd or other block media must remain terminal leaves behind those userspace targets
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:46270 lane=2 port=23302 conn=0 incoming_cpu=26 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:41576 lane=0 port=23300 conn=0 incoming_cpu=24 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:59656 lane=1 port=23301 conn=0 incoming_cpu=25 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:58736 lane=3 port=23303 conn=0 incoming_cpu=27 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:44252 lane=4 port=23304 conn=0 incoming_cpu=28 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:33490 lane=5 port=23305 conn=0 incoming_cpu=29 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:42644 lane=7 port=23307 conn=0 incoming_cpu=31 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:50882 lane=6 port=23306 conn=0 incoming_cpu=30 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:58664 lane=11 port=23311 conn=0 incoming_cpu=27 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:60176 lane=9 port=23309 conn=0 incoming_cpu=25 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:45430 lane=8 port=23308 conn=0 incoming_cpu=24 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:57836 lane=10 port=23310 conn=0 incoming_cpu=26 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:53324 lane=13 port=23313 conn=0 incoming_cpu=29 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:47178 lane=14 port=23314 conn=0 incoming_cpu=30 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:50042 lane=12 port=23312 conn=0 incoming_cpu=28 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:50024 lane=15 port=23315 conn=0 incoming_cpu=31 incoming_napi_id=unknown
+zcnblk-read-fan-handler: affinity_index=0 target_cpu=16 status=ok
+zcnblk-read-fan-upstream: handler=0 peer=127.0.0.1:41576 lane=0 port=23300 conn=0 incoming_cpu=24 incoming_napi_id=unknown
+zcnblk-read-fan-handler: affinity_index=1 target_cpu=17 status=ok
+zcnblk-read-fan-upstream: handler=1 peer=127.0.0.1:59656 lane=1 port=23301 conn=0 incoming_cpu=25 incoming_napi_id=unknown
+zcnblk-read-fan-handler: affinity_index=2 target_cpu=18 status=ok
+zcnblk-read-fan-upstream: handler=2 peer=127.0.0.1:46270 lane=2 port=23302 conn=0 incoming_cpu=26 incoming_napi_id=unknown
+zcnblk-read-fan-handler: affinity_index=3 target_cpu=19 status=ok
+zcnblk-read-fan-upstream: handler=3 peer=127.0.0.1:58736 lane=3 port=23303 conn=0 incoming_cpu=27 incoming_napi_id=unknown
+zcnblk-read-fan-handler: affinity_index=4 target_cpu=20 status=ok
+zcnblk-read-fan-upstream: handler=4 peer=127.0.0.1:44252 lane=4 port=23304 conn=0 incoming_cpu=28 incoming_napi_id=unknown
+zcnblk-read-fan-handler: affinity_index=5 target_cpu=21 status=ok
+zcnblk-read-fan-upstream: handler=5 peer=127.0.0.1:33490 lane=5 port=23305 conn=0 incoming_cpu=29 incoming_napi_id=unknown
+zcnblk-read-fan-leaf-stream: handler=0 leaf=0 addr=127.0.0.1 port=23200 lane=0 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-handler: affinity_index=7 target_cpu=23 status=ok
+zcnblk-read-fan-upstream: handler=7 peer=127.0.0.1:42644 lane=7 port=23307 conn=0 incoming_cpu=31 incoming_napi_id=unknown
+zcnblk-read-fan-leaf-stream: handler=1 leaf=0 addr=127.0.0.1 port=23201 lane=1 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=2 leaf=0 addr=127.0.0.1 port=23202 lane=2 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=4 leaf=0 addr=127.0.0.1 port=23204 lane=4 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-handler: affinity_index=6 target_cpu=22 status=ok
+zcnblk-read-fan-leaf-stream: handler=3 leaf=0 addr=127.0.0.1 port=23203 lane=3 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-upstream: handler=6 peer=127.0.0.1:50882 lane=6 port=23306 conn=0 incoming_cpu=30 incoming_napi_id=unknown
+zcnblk-read-fan-leaf-stream: handler=0 leaf=1 addr=127.0.0.2 port=23200 lane=0 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=4 leaf=1 addr=127.0.0.2 port=23204 lane=4 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-handler: affinity_index=8 target_cpu=16 status=ok
+zcnblk-read-fan-leaf-stream: handler=1 leaf=1 addr=127.0.0.2 port=23201 lane=1 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-upstream: handler=8 peer=127.0.0.1:45430 lane=8 port=23308 conn=0 incoming_cpu=24 incoming_napi_id=unknown
+zcnblk-read-fan-leaf-stream: handler=7 leaf=0 addr=127.0.0.1 port=23207 lane=7 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=2 leaf=1 addr=127.0.0.2 port=23202 lane=2 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=3 leaf=1 addr=127.0.0.2 port=23203 lane=3 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-handler: affinity_index=10 target_cpu=18 status=ok
+zcnblk-read-fan-upstream: handler=10 peer=127.0.0.1:57836 lane=10 port=23310 conn=0 incoming_cpu=26 incoming_napi_id=unknown
+zcnblk-read-fan-leaf-stream: handler=7 leaf=1 addr=127.0.0.2 port=23207 lane=7 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=5 leaf=0 addr=127.0.0.1 port=23205 lane=5 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-handler: affinity_index=11 target_cpu=19 status=ok
+zcnblk-read-fan-leaf-stream: handler=8 leaf=0 addr=127.0.0.1 port=23208 lane=8 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-upstream: handler=11 peer=127.0.0.1:58664 lane=11 port=23311 conn=0 incoming_cpu=27 incoming_napi_id=unknown
+zcnblk-read-fan-leaf-stream: handler=10 leaf=0 addr=127.0.0.1 port=23210 lane=10 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=5 leaf=1 addr=127.0.0.2 port=23205 lane=5 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=6 leaf=0 addr=127.0.0.1 port=23206 lane=6 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-handler: affinity_index=15 target_cpu=23 status=ok
+zcnblk-read-fan-leaf-stream: handler=8 leaf=1 addr=127.0.0.2 port=23208 lane=8 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-upstream: handler=15 peer=127.0.0.1:50024 lane=15 port=23315 conn=0 incoming_cpu=31 incoming_napi_id=unknown
+zcnblk-read-fan-leaf-stream: handler=11 leaf=0 addr=127.0.0.1 port=23211 lane=11 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=10 leaf=1 addr=127.0.0.2 port=23210 lane=10 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-handler: affinity_index=12 target_cpu=20 status=ok
+zcnblk-read-fan-upstream: handler=12 peer=127.0.0.1:50042 lane=12 port=23312 conn=0 incoming_cpu=28 incoming_napi_id=unknown
+zcnblk-read-fan-leaf-stream: handler=15 leaf=0 addr=127.0.0.1 port=23215 lane=15 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=6 leaf=1 addr=127.0.0.2 port=23206 lane=6 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-handler: affinity_index=13 target_cpu=21 status=ok
+zcnblk-read-fan-leaf-stream: handler=11 leaf=1 addr=127.0.0.2 port=23211 lane=11 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-upstream: handler=13 peer=127.0.0.1:53324 lane=13 port=23313 conn=0 incoming_cpu=29 incoming_napi_id=unknown
+zcnblk-read-fan-handler: affinity_index=14 target_cpu=22 status=ok
+zcnblk-read-fan-leaf-stream: handler=15 leaf=1 addr=127.0.0.2 port=23215 lane=15 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=12 leaf=0 addr=127.0.0.1 port=23212 lane=12 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-upstream: handler=14 peer=127.0.0.1:47178 lane=14 port=23314 conn=0 incoming_cpu=30 incoming_napi_id=unknown
+zcnblk-read-fan-leaf-stream: handler=12 leaf=1 addr=127.0.0.2 port=23212 lane=12 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=13 leaf=0 addr=127.0.0.1 port=23213 lane=13 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=14 leaf=0 addr=127.0.0.1 port=23214 lane=14 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-handler: affinity_index=9 target_cpu=17 status=ok
+zcnblk-read-fan-leaf-stream: handler=13 leaf=1 addr=127.0.0.2 port=23213 lane=13 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-upstream: handler=9 peer=127.0.0.1:60176 lane=9 port=23309 conn=0 incoming_cpu=25 incoming_napi_id=unknown
+zcnblk-read-fan-leaf-stream: handler=14 leaf=1 addr=127.0.0.2 port=23214 lane=14 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=9 leaf=0 addr=127.0.0.1 port=23209 lane=9 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-leaf-stream: handler=9 leaf=1 addr=127.0.0.2 port=23209 lane=9 conn=0 source_port=kernel-ephemeral
+zcnblk-read-fan-handler: handler=0 lane=0 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2643 seconds=0.387452 logical_MiBps=165.18 target_cpu=16 affinity_applied=true
+zcnblk-read-fan-handler: handler=1 lane=1 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2661 seconds=0.384831 logical_MiBps=166.31 target_cpu=17 affinity_applied=true
+zcnblk-read-fan-handler: handler=2 lane=2 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2659 seconds=0.385130 logical_MiBps=166.18 target_cpu=18 affinity_applied=true
+zcnblk-read-fan-handler: handler=3 lane=3 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2619 seconds=0.390964 logical_MiBps=163.70 target_cpu=19 affinity_applied=true
+zcnblk-read-fan-handler: handler=4 lane=4 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2666 seconds=0.384088 logical_MiBps=166.63 target_cpu=20 affinity_applied=true
+zcnblk-read-fan-handler: handler=5 lane=5 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2629 seconds=0.389454 logical_MiBps=164.33 target_cpu=21 affinity_applied=true
+zcnblk-read-fan-handler: handler=6 lane=6 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2645 seconds=0.387145 logical_MiBps=165.31 target_cpu=22 affinity_applied=true
+zcnblk-read-fan-handler: handler=7 lane=7 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2664 seconds=0.384312 logical_MiBps=166.53 target_cpu=23 affinity_applied=true
+zcnblk-read-fan-handler: handler=8 lane=8 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2646 seconds=0.386982 logical_MiBps=165.38 target_cpu=16 affinity_applied=true
+zcnblk-read-fan-handler: handler=9 lane=9 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2661 seconds=0.384805 logical_MiBps=166.32 target_cpu=17 affinity_applied=true
+zcnblk-read-fan-handler: handler=10 lane=10 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2653 seconds=0.385968 logical_MiBps=165.82 target_cpu=18 affinity_applied=true
+zcnblk-read-fan-handler: handler=11 lane=11 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2622 seconds=0.390493 logical_MiBps=163.90 target_cpu=19 affinity_applied=true
+zcnblk-read-fan-handler: handler=12 lane=12 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2653 seconds=0.386012 logical_MiBps=165.80 target_cpu=20 affinity_applied=true
+zcnblk-read-fan-handler: handler=13 lane=13 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2619 seconds=0.391058 logical_MiBps=163.66 target_cpu=21 affinity_applied=true
+zcnblk-read-fan-handler: handler=14 lane=14 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2640 seconds=0.387949 logical_MiBps=164.97 target_cpu=22 affinity_applied=true
+zcnblk-read-fan-handler: handler=15 lane=15 conn=0 read_bytes=0 write_bytes=67108864 response_bytes=65536 frames=1024 batches=128 read_frames=0 write_frames=1024 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:33554432,1:33554432 frames_per_sec=2674 seconds=0.382943 logical_MiBps=167.13 target_cpu=23 affinity_applied=true
+zcnblk-read-fan-summary: read_bytes=0 write_bytes=1073741824 response_bytes=1048576 frames=16384 batches=2048 read_frames=0 write_frames=16384 leaf_read_bytes=0:0,1:0 leaf_write_bytes=0:536870912,1:536870912 frames_per_sec=41897
+zcnblk-read-fan: bytes=1073741824 seconds=0.391058 GiBps=2.557 Gbitps=21.966

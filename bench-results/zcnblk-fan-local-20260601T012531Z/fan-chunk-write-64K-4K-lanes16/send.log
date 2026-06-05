@@ -1,0 +1,51 @@
+zcnblk-send: addr=127.0.0.1 shard_count=1 base_port=23300 ports=16 connections_per_port=1 total_connections=16 bytes_per_connection=67108864 chunk_bytes=65536 workers=16 op_mode=write read_window=64 verify_reads=no wait_write_acks=yes batch_depth=8 payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral encryption=none aes_frame_bytes=65536
+zcnblk-send-worker: affinity_index=2 target_cpu=26 status=ok
+zcnblk-send-worker: affinity_index=0 target_cpu=24 status=ok
+zcnblk-send-worker: affinity_index=1 target_cpu=25 status=ok
+zcnblk-send-worker: affinity_index=3 target_cpu=27 status=ok
+zcnblk-send-stream: worker=2 lane=2 port=23302 conn=0 shard=0 base_offset=134217728
+zcnblk-send-stream: worker=0 lane=0 port=23300 conn=0 shard=0 base_offset=0
+zcnblk-send-stream: worker=1 lane=1 port=23301 conn=0 shard=0 base_offset=67108864
+zcnblk-send-worker: affinity_index=4 target_cpu=28 status=ok
+zcnblk-send-worker: affinity_index=5 target_cpu=29 status=ok
+zcnblk-send-worker: affinity_index=6 target_cpu=30 status=ok
+zcnblk-send-stream: worker=3 lane=3 port=23303 conn=0 shard=0 base_offset=201326592
+zcnblk-send-worker: affinity_index=7 target_cpu=31 status=ok
+zcnblk-send-stream: worker=4 lane=4 port=23304 conn=0 shard=0 base_offset=268435456
+zcnblk-send-stream: worker=5 lane=5 port=23305 conn=0 shard=0 base_offset=335544320
+zcnblk-send-stream: worker=6 lane=6 port=23306 conn=0 shard=0 base_offset=402653184
+zcnblk-send-stream: worker=7 lane=7 port=23307 conn=0 shard=0 base_offset=469762048
+zcnblk-send-worker: affinity_index=8 target_cpu=24 status=ok
+zcnblk-send-worker: affinity_index=9 target_cpu=25 status=ok
+zcnblk-send-worker: affinity_index=11 target_cpu=27 status=ok
+zcnblk-send-worker: affinity_index=10 target_cpu=26 status=ok
+zcnblk-send-stream: worker=11 lane=11 port=23311 conn=0 shard=0 base_offset=738197504
+zcnblk-send-stream: worker=9 lane=9 port=23309 conn=0 shard=0 base_offset=603979776
+zcnblk-send-stream: worker=8 lane=8 port=23308 conn=0 shard=0 base_offset=536870912
+zcnblk-send-stream: worker=10 lane=10 port=23310 conn=0 shard=0 base_offset=671088640
+zcnblk-send-worker: affinity_index=13 target_cpu=29 status=ok
+zcnblk-send-worker: affinity_index=14 target_cpu=30 status=ok
+zcnblk-send-worker: affinity_index=12 target_cpu=28 status=ok
+zcnblk-send-stream: worker=13 lane=13 port=23313 conn=0 shard=0 base_offset=872415232
+zcnblk-send-stream: worker=14 lane=14 port=23314 conn=0 shard=0 base_offset=939524096
+zcnblk-send-stream: worker=12 lane=12 port=23312 conn=0 shard=0 base_offset=805306368
+zcnblk-send-worker: affinity_index=15 target_cpu=31 status=ok
+zcnblk-send-stream: worker=15 lane=15 port=23315 conn=0 shard=0 base_offset=1006632960
+zcnblk-send-worker: worker=0 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2642 seconds=0.387582 logical_MiBps=165.13 target_cpu=24 affinity_applied=true
+zcnblk-send-worker: worker=1 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2660 seconds=0.384978 logical_MiBps=166.24 target_cpu=25 affinity_applied=true
+zcnblk-send-worker: worker=2 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2658 seconds=0.385317 logical_MiBps=166.10 target_cpu=26 affinity_applied=true
+zcnblk-send-worker: worker=3 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2618 seconds=0.391156 logical_MiBps=163.62 target_cpu=27 affinity_applied=true
+zcnblk-send-worker: worker=4 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2665 seconds=0.384230 logical_MiBps=166.57 target_cpu=28 affinity_applied=true
+zcnblk-send-worker: worker=5 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2628 seconds=0.389695 logical_MiBps=164.23 target_cpu=29 affinity_applied=true
+zcnblk-send-worker: worker=6 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2643 seconds=0.387428 logical_MiBps=165.19 target_cpu=30 affinity_applied=true
+zcnblk-send-worker: worker=7 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2663 seconds=0.384487 logical_MiBps=166.46 target_cpu=31 affinity_applied=true
+zcnblk-send-worker: worker=8 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2645 seconds=0.387199 logical_MiBps=165.29 target_cpu=24 affinity_applied=true
+zcnblk-send-worker: worker=9 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2658 seconds=0.385203 logical_MiBps=166.15 target_cpu=25 affinity_applied=true
+zcnblk-send-worker: worker=10 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2652 seconds=0.386196 logical_MiBps=165.72 target_cpu=26 affinity_applied=true
+zcnblk-send-worker: worker=11 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2621 seconds=0.390754 logical_MiBps=163.79 target_cpu=27 affinity_applied=true
+zcnblk-send-worker: worker=12 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2651 seconds=0.386339 logical_MiBps=165.66 target_cpu=28 affinity_applied=true
+zcnblk-send-worker: worker=13 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2616 seconds=0.391396 logical_MiBps=163.52 target_cpu=29 affinity_applied=true
+zcnblk-send-worker: worker=14 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2637 seconds=0.388299 logical_MiBps=164.82 target_cpu=30 affinity_applied=true
+zcnblk-send-worker: worker=15 streams=1 write_bytes=67108864 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=67248128 frames=1024 read_frames=0 write_frames=1024 frames_per_sec=2672 seconds=0.383227 logical_MiBps=167.00 target_cpu=31 affinity_applied=true
+zcnblk-send-summary: write_bytes=1073741824 read_bytes=0 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=1075970048 frames=16384 read_frames=0 write_frames=16384 frames_per_sec=41860
+zcnblk-send: bytes=1073741824 seconds=0.391396 GiBps=2.555 Gbitps=21.947

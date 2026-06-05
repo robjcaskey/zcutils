@@ -1,0 +1,34 @@
+local 172.31.44.136 dev lo src 172.31.44.136 uid 1000 
+    cache <local> 
+172.31.47.102 dev ens50 src 172.31.44.136 uid 1000 
+    cache 
+2: ens50: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9001 qdisc mq state UP mode DEFAULT group default qlen 1000
+    link/ether 0a:f2:84:b1:93:fb brd ff:ff:ff:ff:ff:ff
+    RX:  bytes packets errors dropped  missed   mcast           
+         58138     279      0       0       0       0 
+    TX:  bytes packets errors dropped carrier collsns           
+         53799     327      0       0       0       0 
+172.31.44.136 dev ens50 src 172.31.47.102 uid 1000 
+    cache 
+local 172.31.47.102 dev lo src 172.31.47.102 uid 1000 
+    cache <local> 
+2: ens50: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 9001 qdisc mq state UP mode DEFAULT group default qlen 1000
+    link/ether 0a:a3:40:9c:27:17 brd ff:ff:ff:ff:ff:ff
+    RX:  bytes packets errors dropped  missed   mcast           
+        207581     398      0       0       0       0 
+    TX:  bytes packets errors dropped carrier collsns           
+         62037     418      0       0       0       0 
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@52.14.22.210 'URING_NODE_INDEX=1 URING_RUN_ID=zc-efa-adhoc-c8gn16-20260605T022316Z URING_PRIVATE_IPS=172.31.44.136,172.31.47.102 set -euo pipefail
+ip route get 172.31.44.136 || true
+ip route get 172.31.47.102 || true
+ip -s link show ens50
+etstat -s | egrep "segments|retrans|errors|dropped" || true
+dmesg | egrep -i "efa|rdma|fabric|uverbs" | tail -80 || true
+'
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.219.57.103 'URING_NODE_INDEX=2 URING_RUN_ID=zc-efa-adhoc-c8gn16-20260605T022316Z URING_PRIVATE_IPS=172.31.44.136,172.31.47.102 set -euo pipefail
+ip route get 172.31.44.136 || true
+ip route get 172.31.47.102 || true
+ip -s link show ens50
+etstat -s | egrep "segments|retrans|errors|dropped" || true
+dmesg | egrep -i "efa|rdma|fabric|uverbs" | tail -80 || true
+'

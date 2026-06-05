@@ -1,0 +1,80 @@
+zcnblk-fan-wal: leaves=127.0.0.1:45000,127.0.0.1:46000,127.0.0.1:47000,127.0.0.1:48000 bind=127.0.0.1 base_port=49000 ports=16 connections_per_port=1 total_connections=16 bytes_per_connection=536870912 chunk_bytes=4096 stripe_bytes=536870912 leaf_base_port=49000 source_ip=kernel-route source_ports=kernel-ephemeral pin_handlers=true placement=stripe order=per-4k-record order_shards=128 write_acks=true batch_window=16 result_ranges=true result_arena=true result_arena_slots=64 result_arena_spin=false result_arena_spin_budget=unbounded result_arena_inline_primary=true protocol=fan-wal-v2
+zcnblk-fan-wal-leaf-note: start each edge with zcnblk-wal-leaf; leaf block devices are terminal media only after userspace placement
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:55880 lane=2 port=49002 conn=0 incoming_cpu=4 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:39028 lane=0 port=49000 conn=0 incoming_cpu=1 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:53506 lane=1 port=49001 conn=0 incoming_cpu=3 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:38742 lane=5 port=49005 conn=0 incoming_cpu=7 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:52148 lane=4 port=49004 conn=0 incoming_cpu=6 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:53936 lane=9 port=49009 conn=0 incoming_cpu=19 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:54144 lane=3 port=49003 conn=0 incoming_cpu=5 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:35024 lane=6 port=49006 conn=0 incoming_cpu=8 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:44920 lane=8 port=49008 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:59604 lane=10 port=49010 conn=0 incoming_cpu=20 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:48576 lane=11 port=49011 conn=0 incoming_cpu=21 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:34770 lane=12 port=49012 conn=0 incoming_cpu=22 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:45270 lane=13 port=49013 conn=0 incoming_cpu=23 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:57958 lane=14 port=49014 conn=0 incoming_cpu=24 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:53560 lane=15 port=49015 conn=0 incoming_cpu=25 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:53636 lane=7 port=49007 conn=0 incoming_cpu=9 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=3 target_cpu=5 status=ok
+zcnblk-fan-wal-handler: affinity_index=0 target_cpu=1 status=ok
+zcnblk-fan-wal-handler: affinity_index=1 target_cpu=3 status=ok
+zcnblk-fan-wal-handler: affinity_index=5 target_cpu=7 status=ok
+zcnblk-fan-wal-upstream: handler=0 peer=127.0.0.1:39028 lane=0 port=49000 conn=0 incoming_cpu=1 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=1 peer=127.0.0.1:53506 lane=1 port=49001 conn=0 incoming_cpu=3 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=7 target_cpu=9 status=ok
+zcnblk-fan-wal-upstream: handler=3 peer=127.0.0.1:54144 lane=3 port=49003 conn=0 incoming_cpu=5 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=5 peer=127.0.0.1:38742 lane=5 port=49005 conn=0 incoming_cpu=7 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=7 peer=127.0.0.1:53636 lane=7 port=49007 conn=0 incoming_cpu=9 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=10 target_cpu=20 status=ok
+zcnblk-fan-wal-handler: affinity_index=6 target_cpu=8 status=ok
+zcnblk-fan-wal-handler: affinity_index=4 target_cpu=6 status=ok
+zcnblk-fan-wal-handler: affinity_index=12 target_cpu=22 status=ok
+zcnblk-fan-wal-leaf-stream: handler=3 leaf=0 addr=127.0.0.1 port=45003 lane=3 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=0 leaf=0 addr=127.0.0.1 port=45000 lane=0 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=7 leaf=0 addr=127.0.0.1 port=45007 lane=7 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-handler: affinity_index=9 target_cpu=19 status=ok
+zcnblk-fan-wal-upstream: handler=4 peer=127.0.0.1:52148 lane=4 port=49004 conn=0 incoming_cpu=6 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=13 target_cpu=23 status=ok
+zcnblk-fan-wal-handler: affinity_index=15 target_cpu=25 status=ok
+zcnblk-fan-wal-leaf-stream: handler=7 leaf=1 addr=127.0.0.1 port=46007 lane=7 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-handler: affinity_index=14 target_cpu=24 status=ok
+zcnblk-fan-wal-upstream: handler=10 peer=127.0.0.1:59604 lane=10 port=49010 conn=0 incoming_cpu=20 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=13 peer=127.0.0.1:45270 lane=13 port=49013 conn=0 incoming_cpu=23 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=11 target_cpu=21 status=ok
+zcnblk-fan-wal-leaf-stream: handler=0 leaf=1 addr=127.0.0.1 port=46000 lane=0 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-handler-error: handler=7 error=zcnblk-fan-wal-leaf-stream: handler=3 leaf=1 addr=127.0.0.1 port=46003 lane=3 conn=0 source_port=kernel-ephemeral
+Connection refused (os error 111)
+zcnblk-fan-wal-upstream: handler=11 peer=127.0.0.1:48576 lane=11 port=49011 conn=0 incoming_cpu=21 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=4 leaf=0 addr=127.0.0.1 port=45004 lane=4 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-handler-error: handler=3 error=Connection refused (os error 111)
+zcnblk-fan-wal-leaf-stream: handler=13 leaf=0 addr=127.0.0.1 port=45013 lane=13 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=11 leaf=0 addr=127.0.0.1 port=45011 lane=11 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-upstream: handler=12 peer=127.0.0.1:34770 lane=12 port=49012 conn=0 incoming_cpu=22 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=6 peer=127.0.0.1:35024 lane=6 port=49006 conn=0 incoming_cpu=8 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=11 leaf=1 addr=127.0.0.1 port=46011 lane=11 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=13 leaf=1 addr=127.0.0.1 port=46013 lane=13 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=10 leaf=0 addr=127.0.0.1 port=45010 lane=10 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-handler-error: handler=zcnblk-fan-wal-leaf-stream: handler=12 leaf=0 addr=127.0.0.1 port=45012 lane=12 conn=0 source_port=kernel-ephemeral
+0 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=11 error=Connection refused (os error 111)
+zcnblk-fan-wal-leaf-stream: handler=5 leaf=0 addr=127.0.0.1 port=45005 lane=5 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-upstream: handler=14 peer=127.0.0.1:57958 lane=14 port=49014 conn=0 incoming_cpu=24 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=1 leaf=0 addr=127.0.0.1 port=45001 lane=1 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=4 leaf=1 addr=127.0.0.1 port=46004 lane=4 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-handler-error: handler=zcnblk-fan-wal-upstream: handler=9 peer=127.0.0.1:53936 lane=9 port=49009 conn=0 incoming_cpu=19 incoming_napi_id=unknown
+13 error=Connection refused (os error 111)zcnblk-fan-wal-leaf-stream: handler=6 leaf=0 addr=127.0.0.1 port=45006 lane=6 conn=0 source_port=kernel-ephemeral
+
+zcnblk-fan-wal-upstream: handler=15 peer=127.0.0.1:53560 lane=15 port=49015 conn=0 incoming_cpu=25 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=14 leaf=0 addr=127.0.0.1 port=45014 lane=14 conn=0 source_port=kernel-ephemeral
+Error: Os { code: zcnblk-fan-wal-leaf-stream: handler=10 leaf=1 addr=127.0.0.1 port=46010 lane=10 conn=0 source_port=kernel-ephemeral
+111, kind: ConnectionRefusedzcnblk-fan-wal-leaf-stream: handler=12 leaf=1 addr=127.0.0.1 port=46012 lane=12 conn=0 source_port=kernel-ephemeral
+, message: zcnblk-fan-wal-leaf-stream: handler=1 leaf=1 addr=127.0.0.1 port=46001 lane=1 conn=0 source_port=kernel-ephemeral
+"Connection refused" }
+zcnblk-fan-wal-leaf-stream: handler=6 leaf=1 addr=127.0.0.1 port=46006 lane=6 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-handler: affinity_index=2 target_cpu=4 status=ok
+zcnblk-fan-wal-leaf-stream: handler=9 leaf=0 addr=127.0.0.1 port=45009 lane=9 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=14 leaf=1 addr=127.0.0.1 port=46014 lane=14 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-leaf-stream: handler=5 leaf=1 addr=127.0.0.1 port=46005 lane=5 conn=0 source_port=kernel-ephemeral
+zcnblk-fan-wal-handler-error: handler=4 error=Connection refused (os error zcnblk-fan-wal-leaf-stream: handler=15 leaf=0 addr=127.0.0.1 port=45015 lane=15 conn=0 source_port=kernel-ephemeral
+111)

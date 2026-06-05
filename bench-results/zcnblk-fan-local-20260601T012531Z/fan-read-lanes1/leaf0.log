@@ -1,0 +1,14 @@
+warning: zcnblk-target is running with small-page buffers (small-pages requested explicitly); standard high-throughput mode uses hugetlb buffers. Configure enough huge pages or pass hugetlb explicitly for representative WAL/NIC/DMA locality.
+PERF WARNING: zcnblk-target: buffer_mode=small-pages is not a high-throughput setting; reserve huge pages and use hugetlb unless this is only a functional smoke test
+PERF WARNING: zcnblk-target: RLIMIT_MEMLOCK is only 8.00 MiB; use prlimit --memlock=unlimited:unlimited or an equivalent limit before creating many per-lane io_uring rings
+PERF WARNING: zcnblk-target: loopback TCP is useful for topology smoke tests but can be context-switch bound; isolate CPUs and pin both target workers and zcnblk client kthreads for IOPS claims
+zcnblk-target: targets=0:zcdevnull:1099511627776B:align1 bind=127.0.0.1 base_port=38240 ports=1 connections_per_port=1 total_connections=1 bytes_per_connection=8388608 chunk_bytes=4096 pipeline=64 workers=1 ring_entries=128 submit_batch=64 buffer_mode=small-pages write_mode=null read_mode=null write_acks=true tier_write_extent_bytes=65536 shard_policy=port-lane topology_lane_base=0 topology_lane_count=1 encryption=none aes_frame_bytes=65536 pin_workers=true wal_target=-
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:59922 lane=0 port=38240 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=0 policy=port-lane peer=127.0.0.1:59922 listener_lane=0 listener_port=38240 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+zcnblk-target-mux-assignment-summary: policy=port-lane workers=1 streams_by_worker=0:1
+zcnblk-target-worker: affinity_index=0 target_cpu=0 status=ok
+zcnblk-target-worker-stream: worker=0 peer=127.0.0.1:59922 lane=0 port=38240 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+zcnblk-target-worker-files: worker=0 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker: worker=0 streams=1 received_bytes=0 written_bytes=0 read_bytes=8388608 response_bytes=8519680 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=2048 write_frames=0 frames_per_sec=25366 seconds=0.080737 logical_MiBps=99.09 target_cpu=0 affinity_applied=true
+zcnblk-target-summary: received_bytes=0 written_bytes=0 read_bytes=8388608 response_bytes=8519680 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=2048 write_frames=0 frames_per_sec=25294
+zcnblk-target: bytes=8388608 seconds=0.080970 GiBps=0.096 Gbitps=0.829

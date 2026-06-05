@@ -1,0 +1,17 @@
+topology=client->fan->edge1,edge2
+mode=mirror
+bytes=64m
+chunk=1m
+buffer=1m
+qemu_smp=4
+qemu_mem=768M
+kernel=/home/rob/src/linux-7.0.8-zcslots/arch/x86/boot/bzImage
+initrd=/home/rob/zcutils/qemu-zcrx/initramfs.cpio
+fan_client_socket=30706
+fan_edge1_socket=30707
+fan_edge2_socket=30708
+client_link=client:10.71.0.1/24<->fan.eth0:10.71.0.2/24
+edge1_link=fan.eth1:10.71.1.1/24<->edge1:10.71.1.2/24
+edge2_link=fan.eth2:10.71.2.1/24<->edge2:10.71.2.2/24
+placement=zcraid-split-userspace
+terminal_edges=zcsink

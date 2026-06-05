@@ -1,0 +1,34 @@
+zcnblk-send: addr=127.0.0.1 shard_count=1 base_port=49000 ports=16 connections_per_port=1 total_connections=16 bytes_per_connection=536870912 chunk_bytes=4096 workers=16 op_mode=write read_window=64 write_window=32768 verify_reads=no wait_write_acks=yes batch_depth=2048 payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral encryption=none aes_frame_bytes=65536
+zcnblk-send-worker: affinity_index=1 target_cpu=3 status=ok
+zcnblk-send-worker: affinity_index=0 target_cpu=1 status=ok
+zcnblk-send-worker: affinity_index=2 target_cpu=4 status=ok
+zcnblk-send-worker: affinity_index=3 target_cpu=5 status=ok
+zcnblk-send-worker: affinity_index=6 target_cpu=8 status=ok
+zcnblk-send-stream: worker=3 lane=3 port=49003 conn=0 shard=0 base_offset=1610612736
+zcnblk-send-stream: worker=1 lane=1 port=49001 conn=0 shard=0 base_offset=536870912
+zcnblk-send-stream: worker=0 lane=0 port=49000 conn=0 shard=0 base_offset=0
+zcnblk-send-stream: worker=2 lane=2 port=49002 conn=0 shard=0 base_offset=1073741824
+zcnblk-send-worker: affinity_index=5 target_cpu=7 status=ok
+zcnblk-send-stream: worker=6 lane=6 port=49006 conn=0 shard=0 base_offset=3221225472
+zcnblk-send-worker: affinity_index=4 target_cpu=6 status=ok
+zcnblk-send-stream: worker=5 lane=5 port=49005 conn=0 shard=0 base_offset=2684354560
+zcnblk-send-worker: affinity_index=9 target_cpu=19 status=ok
+zcnblk-send-worker: affinity_index=8 target_cpu=17 status=ok
+zcnblk-send-worker: affinity_index=10 target_cpu=20 status=ok
+zcnblk-send-stream: worker=4 lane=4 port=49004 conn=0 shard=0 base_offset=2147483648
+zcnblk-send-worker: affinity_index=11 target_cpu=21 status=ok
+zcnblk-send-stream: worker=9 lane=9 port=49009 conn=0 shard=0 base_offset=4831838208
+zcnblk-send-stream: worker=8 lane=8 port=49008 conn=0 shard=0 base_offset=4294967296
+zcnblk-send-worker: affinity_index=12 target_cpu=22 status=ok
+zcnblk-send-stream: worker=11 lane=11 port=49011 conn=0 shard=0 base_offset=5905580032
+zcnblk-send-stream: worker=10 lane=10 port=49010 conn=0 shard=0 base_offset=5368709120
+zcnblk-send-worker: affinity_index=13 target_cpu=23 status=ok
+zcnblk-send-stream: worker=12 lane=12 port=49012 conn=0 shard=0 base_offset=6442450944
+zcnblk-send-worker: affinity_index=14 target_cpu=24 status=ok
+zcnblk-send-stream: worker=13 lane=13 port=49013 conn=0 shard=0 base_offset=6979321856
+zcnblk-send-worker: affinity_index=15 target_cpu=25 status=ok
+zcnblk-send-worker: affinity_index=7 target_cpu=9 status=ok
+zcnblk-send-stream: worker=14 lane=14 port=49014 conn=0 shard=0 base_offset=7516192768
+zcnblk-send-stream: worker=15 lane=15 port=49015 conn=0 shard=0 base_offset=8053063680
+zcnblk-send-stream: worker=7 lane=7 port=49007 conn=0 shard=0 base_offset=3758096384
+Error: Os { code: 32, kind: BrokenPipe, message: "Broken pipe" }

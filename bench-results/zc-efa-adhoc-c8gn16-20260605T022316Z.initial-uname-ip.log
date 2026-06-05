@@ -1,0 +1,8 @@
+Linux ip-172-31-44-136 6.17.0-1017-aws #17~24.04.1-Ubuntu SMP Tue May 26 21:09:53 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens50            UP             172.31.44.136/20 metric 100 fe80::8f2:84ff:feb1:93fb/64 
+Linux ip-172-31-47-102 6.17.0-1017-aws #17~24.04.1-Ubuntu SMP Tue May 26 21:09:53 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens50            UP             172.31.47.102/20 metric 100 fe80::8a3:40ff:fe9c:2717/64 
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@52.14.22.210 'URING_NODE_INDEX=1 URING_RUN_ID=zc-efa-adhoc-c8gn16-20260605T022316Z URING_PRIVATE_IPS=172.31.44.136,172.31.47.102 uname -a && ip -br addr'
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.219.57.103 'URING_NODE_INDEX=2 URING_RUN_ID=zc-efa-adhoc-c8gn16-20260605T022316Z URING_PRIVATE_IPS=172.31.44.136,172.31.47.102 uname -a && ip -br addr'

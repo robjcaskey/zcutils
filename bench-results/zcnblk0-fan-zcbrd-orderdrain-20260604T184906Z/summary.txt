@@ -1,0 +1,37 @@
+root=bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z
+case=w2-p128-rw topology=/dev/zcnblk0->8lane zcnblk-fan stripe->zcbrd0,zcbrd1 terminal leaves
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fio.log:6:w2-p128-rw: (groupid=0, jobs=8): err= 0: pid=2983814: Thu Jun  4 14:49:13 2026
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fio.log:7:  write: IOPS=712k, BW=2782MiB/s (2917MB/s)(8352MiB/3002msec); 0 zone resets
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fio.log:9:    clat (usec): min=36, max=5570, avg=717.82, stdev=185.95
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fio.log:10:     lat (usec): min=92, max=5571, avg=718.42, stdev=185.92
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fio.log:18:   iops        : min=694602, max=724546, avg=712621.67, stdev=1320.53, samples=48
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fio.log:19:  lat (usec)   : 50=0.01%, 100=0.01%, 250=0.05%, 500=4.22%, 750=66.40%
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fio.log:20:  lat (usec)   : 1000=23.92%
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fio.log:21:  lat (msec)   : 2=5.33%, 4=0.05%, 10=0.02%
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fio.log:30:  WRITE: bw=2782MiB/s (2917MB/s), 2782MiB/s-2782MiB/s (2917MB/s-2917MB/s), io=8352MiB (8758MB), run=3002-3002msec
+           1893.57 msec task-clock                       #    0.556 CPUs utilized             
+            104038      context-switches                 #   54.943 K/sec                     
+                67      cpu-migrations                   #   35.383 /sec                      
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fan.log:1:zcnblk-fan-wal: leaves=127.0.0.2:37100,127.0.0.3:37100 bind=127.0.0.1 base_port=36100 ports=8 connections_per_port=1 total_connections=8 bytes_per_connection=4294967296 chunk_bytes=4096 stripe_bytes=4096 leaf_base_port=37100 source_ip=127.0.0.1 source_ports=kernel-ephemeral pin_handlers=true placement=stripe order=per-4k-record order_shards=128 write_acks=true batch_window=2 result_ranges=true result_arena=false result_arena_slots=64 result_arena_spin=false result_arena_spin_budget=unbounded result_arena_inline_primary=false protocol=fan-wal-v2
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fan.log:11:zcnblk-fan-wal-handler: affinity_index=0 target_cpu=0 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fan.log:12:zcnblk-fan-wal-handler: affinity_index=1 target_cpu=1 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fan.log:13:zcnblk-fan-wal-handler: affinity_index=3 target_cpu=3 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fan.log:14:zcnblk-fan-wal-handler: affinity_index=2 target_cpu=2 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fan.log:16:zcnblk-fan-wal-handler: affinity_index=4 target_cpu=4 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fan.log:18:zcnblk-fan-wal-handler: affinity_index=6 target_cpu=6 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fan.log:21:zcnblk-fan-wal-handler: affinity_index=5 target_cpu=5 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/fan.log:34:zcnblk-fan-wal-handler: affinity_index=7 target_cpu=7 status=ok
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/leaf1.log:43:zcnblk-wal-leaf-batch-topology: worker=2 slot=0 stream_lane=2 branch=1 records=33 batch_payload_bytes=139392 desc_lane=2 desc_queue=2 desc_preferred_worker=2 desc_preferred_cpu=2 desc_numa_node=0 leaf_target_cpu=2 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=2
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/leaf1.log:44:zcnblk-wal-leaf-batch-topology: worker=3 slot=0 stream_lane=3 branch=1 records=35 batch_payload_bytes=147840 desc_lane=3 desc_queue=3 desc_preferred_worker=3 desc_preferred_cpu=3 desc_numa_node=0 leaf_target_cpu=3 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=3
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/leaf1.log:45:zcnblk-wal-leaf-batch-topology: worker=1 slot=0 stream_lane=1 branch=1 records=35 batch_payload_bytes=147840 desc_lane=1 desc_queue=1 desc_preferred_worker=1 desc_preferred_cpu=1 desc_numa_node=0 leaf_target_cpu=1 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=1
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/leaf1.log:46:zcnblk-wal-leaf-batch-topology: worker=0 slot=0 stream_lane=0 branch=1 records=31 batch_payload_bytes=130944 desc_lane=0 desc_queue=0 desc_preferred_worker=0 desc_preferred_cpu=0 desc_numa_node=0 leaf_target_cpu=0 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=0
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/leaf1.log:55:zcnblk-wal-leaf-summary: streams=8 read_bytes=0 write_bytes=4382228480 result_records=1069880 result_batches=53604 result_range_batches=53604 frames=1069880 blocking_io_frames=1069880 uring_io_frames=0 frames_per_sec=234103
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/leaf0.log:43:zcnblk-wal-leaf-batch-topology: worker=2 slot=0 stream_lane=2 branch=0 records=31 batch_payload_bytes=130944 desc_lane=2 desc_queue=2 desc_preferred_worker=2 desc_preferred_cpu=2 desc_numa_node=0 leaf_target_cpu=2 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=2
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/leaf0.log:44:zcnblk-wal-leaf-batch-topology: worker=3 slot=0 stream_lane=3 branch=0 records=29 batch_payload_bytes=122496 desc_lane=3 desc_queue=3 desc_preferred_worker=3 desc_preferred_cpu=3 desc_numa_node=0 leaf_target_cpu=3 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=3
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/leaf0.log:45:zcnblk-wal-leaf-batch-topology: worker=1 slot=0 stream_lane=1 branch=0 records=29 batch_payload_bytes=122496 desc_lane=1 desc_queue=1 desc_preferred_worker=1 desc_preferred_cpu=1 desc_numa_node=0 leaf_target_cpu=1 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=1
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/leaf0.log:46:zcnblk-wal-leaf-batch-topology: worker=0 slot=0 stream_lane=0 branch=0 records=33 batch_payload_bytes=139392 desc_lane=0 desc_queue=0 desc_preferred_worker=0 desc_preferred_cpu=0 desc_numa_node=0 leaf_target_cpu=0 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=0
+bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z/w2-p128-rw/leaf0.log:55:zcnblk-wal-leaf-summary: streams=8 read_bytes=0 write_bytes=4375498752 result_records=1068237 result_batches=53624 result_range_batches=53624 frames=1068237 blocking_io_frames=1068237 uring_io_frames=0 frames_per_sec=233740
+zcnblk_client_mod      40960  0
+zcbrd_mod              24576  4
+configfs               69632  2 zcbrd_mod
+done root=bench-results/zcnblk0-fan-zcbrd-orderdrain-20260604T184906Z

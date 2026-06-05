@@ -1,0 +1,76 @@
+role=client host=ip-172-31-35-161 nproc=16
+172.31.38.39 dev ens34 src 172.31.35.161 uid 1000 
+    cache 
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens34            UP             172.31.35.161/20 metric 100 fe80::857:b5ff:fec0:feff/64 
+CPU(s):                                  16
+On-line CPU(s) list:                     0-15
+Model name:                              Neoverse-V2
+Thread(s) per core:                      1
+Core(s) per socket:                      16
+Socket(s):                               1
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-15
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+net.ipv4.tcp_rmem = 4096	87380	134217728
+net.ipv4.tcp_wmem = 4096	65536	134217728
+net.core.somaxconn = 65535
+role=fan host=ip-172-31-38-39 nproc=16
+172.31.35.161 dev ens34 src 172.31.38.39 uid 1000 
+    cache 
+172.31.38.85 dev ens34 src 172.31.38.39 uid 1000 
+    cache 
+172.31.39.193 dev ens34 src 172.31.38.39 uid 1000 
+    cache 
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens34            UP             172.31.38.39/20 metric 100 fe80::84e:bbff:fe63:91d9/64 
+CPU(s):                                  16
+On-line CPU(s) list:                     0-15
+Model name:                              Neoverse-V2
+Thread(s) per core:                      1
+Core(s) per socket:                      16
+Socket(s):                               1
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-15
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+net.ipv4.tcp_rmem = 4096	87380	134217728
+net.ipv4.tcp_wmem = 4096	65536	134217728
+net.core.somaxconn = 65535
+role=leaf0 host=ip-172-31-38-85 nproc=16
+172.31.38.39 dev ens34 src 172.31.38.85 uid 1000 
+    cache 
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens34            UP             172.31.38.85/20 metric 100 fe80::808:dcff:fee5:3b4b/64 
+CPU(s):                                  16
+On-line CPU(s) list:                     0-15
+Model name:                              Neoverse-V2
+Thread(s) per core:                      1
+Core(s) per socket:                      16
+Socket(s):                               1
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-15
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+net.ipv4.tcp_rmem = 4096	87380	134217728
+net.ipv4.tcp_wmem = 4096	65536	134217728
+net.core.somaxconn = 65535
+role=leaf1 host=ip-172-31-39-193 nproc=16
+172.31.38.39 dev ens34 src 172.31.39.193 uid 1000 
+    cache 
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens34            UP             172.31.39.193/20 metric 100 fe80::8db:1fff:feff:c9d/64 
+CPU(s):                                  16
+On-line CPU(s) list:                     0-15
+Model name:                              Neoverse-V2
+Thread(s) per core:                      1
+Core(s) per socket:                      16
+Socket(s):                               1
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-15
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+net.ipv4.tcp_rmem = 4096	87380	134217728
+net.ipv4.tcp_wmem = 4096	65536	134217728
+net.core.somaxconn = 65535

@@ -1,0 +1,4 @@
+zcfanout-logshm-bench: records=2000000 payload_bytes=4096 batch_records=2048 window=2048 wait_mode=spin pin_workers=true lanes=1 branches=2 primary_leg=inline secondary_leg=shared-memory sort=no global_queue=no transport=no block_devices=no payload_copy=no arena=memfd-mmap-shared mapped_views=2
+zcfanout-logshm-arena: backend=memfd map=MAP_SHARED bytes=135168 slots=2048 slot_bytes=64 payload_bytes=4096 owner_fd=3 primary_secondary_views=separate
+zcfanout-logshm-secondary: affinity_index=1 target_cpu=5 status=ok
+zcfanout-logshm-primary: affinity_index=0 target_cpu=4 status=ok

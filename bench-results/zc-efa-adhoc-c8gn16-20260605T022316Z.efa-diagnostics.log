@@ -1,0 +1,376 @@
+---
+fi_info:
+    caps: [ FI_MSG, FI_RMA, FI_READ, FI_WRITE, FI_RECV, FI_SEND, FI_REMOTE_READ, FI_REMOTE_WRITE, FI_LOCAL_COMM, FI_REMOTE_COMM, FI_SOURCE ]
+    mode: [ FI_RX_CQ_DATA, FI_CONTEXT2 ]
+    addr_format: FI_ADDR_EFA
+    src_addrlen: 32
+    dest_addrlen: 0
+    src_addr: fi_addr_efa://[fe80::8f2:84ff:feb1:93fb]:0:0
+    dest_addr: (null)
+    handle: (nil)
+    fi_tx_attr:
+        caps: [ FI_MSG, FI_RMA, FI_READ, FI_WRITE, FI_SEND ]
+        mode: [ FI_CONTEXT2 ]
+        op_flags: [  ]
+        msg_order: [  ]
+        inject_size: 32
+        size: 2048
+        iov_limit: 2
+        rma_iov_limit: 1
+        tclass: 0x0
+    fi_rx_attr:
+        caps: [ FI_MSG, FI_RMA, FI_RECV, FI_REMOTE_READ, FI_REMOTE_WRITE, FI_SOURCE ]
+        mode: [ FI_RX_CQ_DATA, FI_CONTEXT2 ]
+        op_flags: [  ]
+        msg_order: [  ]
+        size: 8192
+        iov_limit: 3
+    fi_ep_attr:
+        type: FI_EP_RDM
+        protocol: FI_PROTO_EFA
+        protocol_version: 1
+        max_msg_size: 8928
+        msg_prefix_size: 0
+        max_order_raw_size: 0
+        max_order_war_size: 0
+        max_order_waw_size: 0
+        mem_tag_format: 0x0000000000000000
+        tx_ctx_cnt: 1
+        rx_ctx_cnt: 1
+        auth_key_size: 0
+    fi_domain_attr:
+        domain: 0x0
+        name: efa_0-rdm
+        threading: FI_THREAD_SAFE
+        progress: FI_PROGRESS_AUTO
+        resource_mgmt: FI_RM_ENABLED
+        av_type: FI_AV_TABLE
+        mr_mode: [ FI_MR_LOCAL, FI_MR_VIRT_ADDR, FI_MR_ALLOCATED, FI_MR_PROV_KEY ]
+        mr_key_size: 4
+        cq_data_size: 4
+        cq_cnt: 1536
+        ep_cnt: 768
+        tx_ctx_cnt: 768
+        rx_ctx_cnt: 768
+        max_ep_tx_ctx: 1
+        max_ep_rx_ctx: 1
+        max_ep_stx_ctx: 0
+        max_ep_srx_ctx: 0
+        cntr_cnt: 0
+        mr_iov_limit: 1
+        caps: [ FI_LOCAL_COMM, FI_REMOTE_COMM ]
+        mode: [  ]
+        auth_key_size: 0
+        max_err_data: 0
+        mr_cnt: 524288
+        tclass: 0x0
+    fi_fabric_attr:
+        name: efa-direct
+        prov_name: efa
+        prov_version: 204.0
+        api_version: 2.4
+    nic:
+        fi_device_attr:
+            name: efa_0
+            device_id: 0xefa3
+            device_version: 6
+            vendor_id: 0x1d0f
+            driver: efa
+            firmware: 0.0.0.0
+        fi_bus_attr:
+            bus_type: FI_BUS_PCI
+            fi_pci_attr:
+                domain_id: 0
+                bus_id: 71
+                device_id: 0
+                function_id: 0
+        fi_link_attr:
+            address: EFA-fe80::8f2:84ff:feb1:93fb
+            mtu: 8928
+            speed: 200000000000
+            state: FI_LINK_UP
+            network_type: Ethernet
+---
+fi_info:
+    caps: [ FI_MSG, FI_RMA, FI_TAGGED, FI_ATOMIC, FI_READ, FI_WRITE, FI_RECV, FI_SEND, FI_REMOTE_READ, FI_REMOTE_WRITE, FI_MULTI_RECV, FI_LOCAL_COMM, FI_REMOTE_COMM, FI_SOURCE, FI_DIRECTED_RECV ]
+    mode: [ FI_MSG_PREFIX ]
+    addr_format: FI_ADDR_EFA
+    src_addrlen: 32
+    dest_addrlen: 0
+    src_addr: fi_addr_efa://[fe80::8f2:84ff:feb1:93fb]:0:0
+    dest_addr: (null)
+    handle: (nil)
+    fi_tx_attr:
+        caps: [ FI_MSG, FI_RMA, FI_TAGGED, FI_ATOMIC, FI_READ, FI_WRITE, FI_SEND ]
+        mode: [ FI_MSG_PREFIX ]
+        op_flags: [  ]
+        msg_order: [  ]
+        inject_size: 4096
+        size: 2048
+        iov_limit: 4
+        rma_iov_limit: 1
+        tclass: 0x0
+    fi_rx_attr:
+        caps: [ FI_MSG, FI_RMA, FI_TAGGED, FI_ATOMIC, FI_RECV, FI_REMOTE_READ, FI_REMOTE_WRITE, FI_MULTI_RECV, FI_SOURCE, FI_DIRECTED_RECV ]
+        mode: [ FI_MSG_PREFIX ]
+        op_flags: [  ]
+        msg_order: [  ]
+        size: 8192
+        iov_limit: 4
+    fi_ep_attr:
+        type: FI_EP_RDM
+        protocol: FI_PROTO_EFA
+        protocol_version: 4
+        max_msg_size: 18446744073709551615
+        msg_prefix_size: 176
+        max_order_raw_size: 0
+        max_order_war_size: 0
+        max_order_waw_size: 0
+        mem_tag_format: 0xaaaaaaaaaaaaaaaa
+        tx_ctx_cnt: 1
+        rx_ctx_cnt: 1
+        auth_key_size: 0
+    fi_domain_attr:
+        domain: 0x0
+        name: efa_0-rdm
+        threading: FI_THREAD_SAFE
+        progress: FI_PROGRESS_MANUAL
+        resource_mgmt: FI_RM_ENABLED
+        av_type: FI_AV_TABLE
+        mr_mode: [ FI_MR_LOCAL, FI_MR_VIRT_ADDR, FI_MR_ALLOCATED, FI_MR_PROV_KEY ]
+        mr_key_size: 4
+        cq_data_size: 4
+        cq_cnt: 1536
+        ep_cnt: 768
+        tx_ctx_cnt: 768
+        rx_ctx_cnt: 768
+        max_ep_tx_ctx: 1
+        max_ep_rx_ctx: 1
+        max_ep_stx_ctx: 0
+        max_ep_srx_ctx: 0
+        cntr_cnt: 0
+        mr_iov_limit: 1
+        caps: [ FI_LOCAL_COMM, FI_REMOTE_COMM ]
+        mode: [  ]
+        auth_key_size: 0
+        max_err_data: 0
+        mr_cnt: 524288
+        tclass: 0x0
+    fi_fabric_attr:
+        name: efa
+hca_id:	efa_0
+	transport:			unspecified (4)
+	fw_ver:				0.0.0.0
+	node_guid:			fb93:b184:0006:0e00
+	sys_image_guid:			0000:0000:0000:0000
+	vendor_id:			0x1d0f
+	vendor_part_id:			61347
+	hw_ver:				0xEFA3
+	phys_port_cnt:			1
+		port:	1
+			state:			PORT_ACTIVE (4)
+			max_mtu:		4096 (5)
+			active_mtu:		4096 (5)
+			sm_lid:			0
+			port_lid:		0
+			port_lmc:		0x01
+			link_layer:		Unspecified
+
+0: efa_0: node_type unspecified node_guid fb93:b184:0006:0e00 sys_image_guid 0000:0000:0000:0000 
+link efa_0/1 state ACTIVE physical_state LINK_UP 
+---
+fi_info:
+    caps: [ FI_MSG, FI_RMA, FI_READ, FI_WRITE, FI_RECV, FI_SEND, FI_REMOTE_READ, FI_REMOTE_WRITE, FI_LOCAL_COMM, FI_REMOTE_COMM, FI_SOURCE ]
+    mode: [ FI_RX_CQ_DATA, FI_CONTEXT2 ]
+    addr_format: FI_ADDR_EFA
+    src_addrlen: 32
+    dest_addrlen: 0
+    src_addr: fi_addr_efa://[fe80::8a3:40ff:fe9c:2717]:0:0
+    dest_addr: (null)
+    handle: (nil)
+    fi_tx_attr:
+        caps: [ FI_MSG, FI_RMA, FI_READ, FI_WRITE, FI_SEND ]
+        mode: [ FI_CONTEXT2 ]
+        op_flags: [  ]
+        msg_order: [  ]
+        inject_size: 32
+        size: 2048
+        iov_limit: 2
+        rma_iov_limit: 1
+        tclass: 0x0
+    fi_rx_attr:
+        caps: [ FI_MSG, FI_RMA, FI_RECV, FI_REMOTE_READ, FI_REMOTE_WRITE, FI_SOURCE ]
+        mode: [ FI_RX_CQ_DATA, FI_CONTEXT2 ]
+        op_flags: [  ]
+        msg_order: [  ]
+        size: 8192
+        iov_limit: 3
+    fi_ep_attr:
+        type: FI_EP_RDM
+        protocol: FI_PROTO_EFA
+        protocol_version: 1
+        max_msg_size: 8928
+        msg_prefix_size: 0
+        max_order_raw_size: 0
+        max_order_war_size: 0
+        max_order_waw_size: 0
+        mem_tag_format: 0x0000000000000000
+        tx_ctx_cnt: 1
+        rx_ctx_cnt: 1
+        auth_key_size: 0
+    fi_domain_attr:
+        domain: 0x0
+        name: efa_0-rdm
+        threading: FI_THREAD_SAFE
+        progress: FI_PROGRESS_AUTO
+        resource_mgmt: FI_RM_ENABLED
+        av_type: FI_AV_TABLE
+        mr_mode: [ FI_MR_LOCAL, FI_MR_VIRT_ADDR, FI_MR_ALLOCATED, FI_MR_PROV_KEY ]
+        mr_key_size: 4
+        cq_data_size: 4
+        cq_cnt: 1536
+        ep_cnt: 768
+        tx_ctx_cnt: 768
+        rx_ctx_cnt: 768
+        max_ep_tx_ctx: 1
+        max_ep_rx_ctx: 1
+        max_ep_stx_ctx: 0
+        max_ep_srx_ctx: 0
+        cntr_cnt: 0
+        mr_iov_limit: 1
+        caps: [ FI_LOCAL_COMM, FI_REMOTE_COMM ]
+        mode: [  ]
+        auth_key_size: 0
+        max_err_data: 0
+        mr_cnt: 524288
+        tclass: 0x0
+    fi_fabric_attr:
+        name: efa-direct
+        prov_name: efa
+        prov_version: 204.0
+        api_version: 2.4
+    nic:
+        fi_device_attr:
+            name: efa_0
+            device_id: 0xefa3
+            device_version: 6
+            vendor_id: 0x1d0f
+            driver: efa
+            firmware: 0.0.0.0
+        fi_bus_attr:
+            bus_type: FI_BUS_PCI
+            fi_pci_attr:
+                domain_id: 0
+                bus_id: 71
+                device_id: 0
+                function_id: 0
+        fi_link_attr:
+            address: EFA-fe80::8a3:40ff:fe9c:2717
+            mtu: 8928
+            speed: 200000000000
+            state: FI_LINK_UP
+            network_type: Ethernet
+---
+fi_info:
+    caps: [ FI_MSG, FI_RMA, FI_TAGGED, FI_ATOMIC, FI_READ, FI_WRITE, FI_RECV, FI_SEND, FI_REMOTE_READ, FI_REMOTE_WRITE, FI_MULTI_RECV, FI_LOCAL_COMM, FI_REMOTE_COMM, FI_SOURCE, FI_DIRECTED_RECV ]
+    mode: [ FI_MSG_PREFIX ]
+    addr_format: FI_ADDR_EFA
+    src_addrlen: 32
+    dest_addrlen: 0
+    src_addr: fi_addr_efa://[fe80::8a3:40ff:fe9c:2717]:0:0
+    dest_addr: (null)
+    handle: (nil)
+    fi_tx_attr:
+        caps: [ FI_MSG, FI_RMA, FI_TAGGED, FI_ATOMIC, FI_READ, FI_WRITE, FI_SEND ]
+        mode: [ FI_MSG_PREFIX ]
+        op_flags: [  ]
+        msg_order: [  ]
+        inject_size: 4096
+        size: 2048
+        iov_limit: 4
+        rma_iov_limit: 1
+        tclass: 0x0
+    fi_rx_attr:
+        caps: [ FI_MSG, FI_RMA, FI_TAGGED, FI_ATOMIC, FI_RECV, FI_REMOTE_READ, FI_REMOTE_WRITE, FI_MULTI_RECV, FI_SOURCE, FI_DIRECTED_RECV ]
+        mode: [ FI_MSG_PREFIX ]
+        op_flags: [  ]
+        msg_order: [  ]
+        size: 8192
+        iov_limit: 4
+    fi_ep_attr:
+        type: FI_EP_RDM
+        protocol: FI_PROTO_EFA
+        protocol_version: 4
+        max_msg_size: 18446744073709551615
+        msg_prefix_size: 176
+        max_order_raw_size: 0
+        max_order_war_size: 0
+        max_order_waw_size: 0
+        mem_tag_format: 0xaaaaaaaaaaaaaaaa
+        tx_ctx_cnt: 1
+        rx_ctx_cnt: 1
+        auth_key_size: 0
+    fi_domain_attr:
+        domain: 0x0
+        name: efa_0-rdm
+        threading: FI_THREAD_SAFE
+        progress: FI_PROGRESS_MANUAL
+        resource_mgmt: FI_RM_ENABLED
+        av_type: FI_AV_TABLE
+        mr_mode: [ FI_MR_LOCAL, FI_MR_VIRT_ADDR, FI_MR_ALLOCATED, FI_MR_PROV_KEY ]
+        mr_key_size: 4
+        cq_data_size: 4
+        cq_cnt: 1536
+        ep_cnt: 768
+        tx_ctx_cnt: 768
+        rx_ctx_cnt: 768
+        max_ep_tx_ctx: 1
+        max_ep_rx_ctx: 1
+        max_ep_stx_ctx: 0
+        max_ep_srx_ctx: 0
+        cntr_cnt: 0
+        mr_iov_limit: 1
+        caps: [ FI_LOCAL_COMM, FI_REMOTE_COMM ]
+        mode: [  ]
+        auth_key_size: 0
+        max_err_data: 0
+        mr_cnt: 524288
+        tclass: 0x0
+    fi_fabric_attr:
+        name: efa
+hca_id:	efa_0
+	transport:			unspecified (4)
+	fw_ver:				0.0.0.0
+	node_guid:			1727:9c40:0006:0e00
+	sys_image_guid:			0000:0000:0000:0000
+	vendor_id:			0x1d0f
+	vendor_part_id:			61347
+	hw_ver:				0xEFA3
+	phys_port_cnt:			1
+		port:	1
+			state:			PORT_ACTIVE (4)
+			max_mtu:		4096 (5)
+			active_mtu:		4096 (5)
+			sm_lid:			0
+			port_lid:		0
+			port_lmc:		0x01
+			link_layer:		Unspecified
+
+0: efa_0: node_type unspecified node_guid 1727:9c40:0006:0e00 sys_image_guid 0000:0000:0000:0000 
+link efa_0/1 state ACTIVE physical_state LINK_UP 
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@52.14.22.210 'URING_NODE_INDEX=1 URING_RUN_ID=zc-efa-adhoc-c8gn16-20260605T022316Z URING_PRIVATE_IPS=172.31.44.136,172.31.47.102 set -euo pipefail
+export PATH=/opt/amazon/efa/bin:$PATH
+export LD_LIBRARY_PATH=/opt/amazon/efa/lib:${LD_LIBRARY_PATH:-}
+fi_info -p efa -t FI_EP_RDM -v | head -160
+ibv_devinfo
+rdma dev
+rdma link
+'
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.219.57.103 'URING_NODE_INDEX=2 URING_RUN_ID=zc-efa-adhoc-c8gn16-20260605T022316Z URING_PRIVATE_IPS=172.31.44.136,172.31.47.102 set -euo pipefail
+export PATH=/opt/amazon/efa/bin:$PATH
+export LD_LIBRARY_PATH=/opt/amazon/efa/lib:${LD_LIBRARY_PATH:-}
+fi_info -p efa -t FI_EP_RDM -v | head -160
+ibv_devinfo
+rdma dev
+rdma link
+'

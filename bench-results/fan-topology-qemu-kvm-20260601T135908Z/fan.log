@@ -1,0 +1,161 @@
+c[?7l[2J[0mSeaBIOS (version 1.16.3-debian-1.16.3-2)
+
+
+iPXE (https://ipxe.org) 00:02.0 C000 PCI2.10 PnP PMM+2EFC6CB0+2EF06CB0 C000
+Press Ctrl-B to configure iPXE (PCI 00:02.0)...                                                                               
+
+
+
+
+iPXE (https://ipxe.org) 00:03.0 C100 PCI2.10 PnP PMM 2EFC6CB0 2EF06CB0 C100
+Press Ctrl-B to configure iPXE (PCI 00:03.0)...                                                                               
+
+
+
+
+iPXE (https://ipxe.org) 00:04.0 C200 PCI2.10 PnP PMM 2EFC6CB0 2EF06CB0 C200
+Press Ctrl-B to configure iPXE (PCI 00:04.0)...                                                                               
+
+
+Booting from ROM..c[?7l[2J[    0.024180] RDSEED32 is broken. Disabling the corresponding CPUID bit.
+[zcrx-vm] booted
+Linux (none) 7.0.8-io-slots-03 #slots3 SMP PREEMPT_DYNAMIC Sun May 31 09:43:13 EDT 2026 x86_64 GNU/Linux
+[fan-qemu] role=fan mode=mirror bytes=64m chunk=1m buffer=1m
+Linux (none) 7.0.8-io-slots-03 #slots3 SMP PREEMPT_DYNAMIC Sun May 31 09:43:13 EDT 2026 x86_64 GNU/Linux
+io_uring opcode query result: 0
+request opcodes: 66
+register opcodes: 40
+query opcodes: 4
+feature flags: 0x3ffff
+setup flags: 0x1fffff
+enter flags: 0xff
+sqe flags: 0x7f
+has IORING_OP_SEND_ZC: yes
+has IORING_OP_RECV_ZC: yes
+has IORING_OP_READV_FIXED: yes
+has IORING_OP_WRITEV_FIXED: yes
+has IORING_OP_PIPE: yes
+has IORING_OP_NOP128: yes
+has IORING_OP_URING_CMD128: yes
+has IORING_OP_SLOT_RW: yes
+has IORING_REGISTER_NAPI: yes
+has IORING_UNREGISTER_NAPI: yes
+has IORING_REGISTER_CLONE_BUFFERS: yes
+has IORING_REGISTER_SEND_MSG_RING: yes
+has IORING_REGISTER_RESIZE_RINGS: yes
+has IORING_REGISTER_MEM_REGION: yes
+has IORING_REGISTER_ZCRX_IFQ: yes
+has IORING_REGISTER_ZCRX_CTRL: yes
+has IORING_REGISTER_BPF_FILTER: yes
+has IORING_REGISTER_IO_SLOT: yes
+has IORING_UNREGISTER_IO_SLOT: yes
+has IORING_SETUP_DEFER_TASKRUN: yes
+has IORING_SETUP_CQE_MIXED: yes
+has IORING_SETUP_SQE_MIXED: yes
+has IORING_SETUP_SQ_REWIND: yes
+has IORING_FEAT_RECVSEND_BUNDLE: yes
+has IORING_ENTER_NO_IOWAIT: yes
+io_uring api opportunities:
+  io-slots WAL path: active in slot-wal-bench, tcp-wal-mux-server, udp-wal-mux-server
+  network send zerocopy: active with tcp-bench-uring-mux-send send-zc/fixed-zc
+  network receive zerocopy: active with tcp-bench-uring-mux-server zcrx and tcp-wal-mux-server URING_PLAY_TCP_WAL_MODE=zcrx
+  io_uring NAPI busy poll: available; enable with URING_PLAY_REGISTER_NAPI=1 or URING_PLAY_NAPI_BUSY_POLL_US=<us>
+  no-iowait enter flag: available; enable with URING_PLAY_ENTER_NO_IOWAIT=1
+  recv/send bundle: available; candidate for provided-buffer UDP/TCP batching
+  clone registered buffers: available; candidate for split RX/WAL rings sharing one pinned buffer table
+  BPF ring filter: available; candidate for CQE filtering/classification once we add verifier-safe programs
+  SQ/CQE mixed + SQ rewind: available; candidate for raw-ring overhead experiments
+local io-slot compat: available=yes api=zcutils/io-slot-v0 backend=raw-uapi op=65 register=38/39 alignment=512
+upstream liburing io-slot helpers: available=no version=unknown header=not-found missing=io_uring_prep_slot_rw,io_uring_register_io_slot,io_uring_unregister_io_slot,io_uring_slot_reg checked=none
+zcrx query result: 0
+zcrx register flags: 0x1
+zcrx area flags: 0x1
+zcrx control opcodes: 3
+zcrx features: 0x3
+zcrx refill header size: 8
+zcrx refill header alignment: 64
+zcrx supports imported contexts: yes
+zcrx supports dmabuf areas: yes
+zcrx supports selectable rx page size: yes
+current process has CAP_NET_ADMIN: yes
+rdma steering: run rdma-probe and rdma-plan; RDMA lanes map to QPs/CQs or libfabric endpoints, not userspace 5-tuple reassembly
+[fan-qemu] iface=eth0 addr=10.71.0.2/24
+[fan-qemu] iface=eth1 addr=10.71.1.1/24
+[fan-qemu] iface=eth2 addr=10.71.2.1/24
+[35m10.71.0.0/24 [0mdev [36meth0 [0mproto kernel scope link src [35m10.71.0.2 [0mlinkdown 
+[35m10.71.1.0/24 [0mdev [36meth1 [0mproto kernel scope link src [35m10.71.1.1 [0mlinkdown 
+[35m10.71.2.0/24 [0mdev [36meth2 [0mproto kernel scope link src [35m10.71.2.1 [0mlinkdown 
+[fan-qemu] fan: branch1=/uring-play zc-tcpmux-send --peer-address 10.71.1.2 --port 42001 --local-data-address 10.71.1.1 --buffer-bytes 1m --encryption none --disable-authentication
+[fan-qemu] fan: branch2=/uring-play zc-tcpmux-send --peer-address 10.71.2.2 --port 42002 --local-data-address 10.71.2.1 --buffer-bytes 1m --encryption none --disable-authentication
+[fan-qemu] fan: starting receive/split
+ZC_TCPMUX_READY listen_address=10.71.0.2 listen_addresses=10.71.0.2 port=41000 ports=41000 lanes=1 lane_base=0 authentication=disabled encryption=none
+zc-tcpmux-receive-topology: lane=0 receiver_cpu=0 receiver_numa_node=0 affinity_target_cpu=-1 affinity_applied=false affinity=pin_cpus=false cpu_list=-
+zc-tcpmux-receive-result: peer=10.71.0.1:49949 bytes=67108864 encryption=none already_encrypted=false output=-
+zc-tcpmux-send-result: peer=zc-tcpmux-send-result: peer=10.71.1.2:42001 lanes=1 local_data_address=10.71.1.1 bytes=67113024 encryption=none already_encrypted=false
+10.71.2.2:42002zcraid-split-branch-result: branch=cmd:/uring-play zc-tcpmux-send --peer-address 10.71.1.2 --port 42001 --local-data-address 10.71.1.1 --buffer-bytes 1m --encryption none --disable-authentication logical_bytes=67108864 wire_bytes=67113024 frames=65 cpu_seconds=0.015621 voluntary_ctxt_switches=1032 involuntary_ctxt_switches=0 migrations=275
+ lanes=1 local_data_address=10.71.2.1 bytes=67113024 encryption=none already_encrypted=false
+zcraid-split-branch-result: branch=cmd:/uring-play zc-tcpmux-send --peer-address 10.71.2.2 --port 42002 --local-data-address 10.71.2.1 --buffer-bytes 1m --encryption none --disable-authentication logical_bytes=67108864 wire_bytes=67113024 frames=65 cpu_seconds=0.016340 voluntary_ctxt_switches=1033 involuntary_ctxt_switches=3 migrations=275
+zcraid-split-result: mode=mirror branches=2 replicas=2 layout=- layout_writes_per_chunk=2 bytes=67108864 chunks=64 branch_logical_bytes=134217728 branch_[    6.305580] reboot: Power down
+wire_bytes=134226048 checksum=false io_buffer_bytes=1048576 seconds=2.122532 MiBps=30.15 branch_labels=cmd:/uring-play zc-tcpmux-send --peer-address 10.71.1.2 --port 42001 --local-data-address 10.71.1.1 --buffer-bytes 1m --encryption none --disable-authentication,cmd:/uring-play zc-tcpmux-send --peer-address 10.71.2.2 --port 42002 --local-data-address 10.71.2.1 --buffer-bytes 1m --encryption none --disable-authentication descriptor_mode=auto zero_copy=auto preserve_lanes=no preserve_topology=no topology=- lane_id=- lane_count=- queue_id=- preferred_worker=- lane_map=- preferred_cpu=- numa_node=- ordered=global
+[fan-qemu] fan: ok
+[fan-qemu] recent kernel log
+[    0.101060] rtc_cmos 00:04: setting system clock to 2026-06-01T13:59:08 UTC (1780322348)
+[    0.101127] rtc_cmos 00:04: alarms up to one day, y3k, 242 bytes nvram, hpet irqs
+[    0.101136] amd_pstate: The CPPC feature is supported but currently disabled by the BIOS.
+[    0.101136] Please enable it if your BIOS has the CPPC option.
+[    0.101137] amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled
+[    0.101222] NET: Registered PF_INET6 protocol family
+[    0.101550] input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input0
+[    0.101579] Segment Routing with IPv6
+[    0.101586] In-situ OAM (IOAM) with IPv6
+[    0.101600] mip6: Mobile IPv6
+[    0.101603] NET: Registered PF_PACKET protocol family
+[    0.101645] mpls_gso: MPLS GSO support
+[    0.101960] IPI shorthand broadcast: enabled
+[    0.102631] sched_clock: Marking stable (98895007, 2955705)->(102819182, -968470)
+[    0.102788] registered taskstats version 1
+[    0.102866] Loading compiled-in X.509 certificates
+[    0.103183] Loaded X.509 cert 'Build time autogenerated kernel key: 9bb78960a7c48d33dad6713b161a74b0a863b123'
+[    0.103946] Demotion targets for Node 0: null
+[    0.104046] Key type .fscrypt registered
+[    0.104049] Key type fscrypt-provisioning registered
+[    0.104782] Key type encrypted registered
+[    0.104785] AppArmor: AppArmor sha256 policy hashing enabled
+[    0.104788] ima: No TPM chip found, activating TPM-bypass!
+[    0.104790] ima: Allocated hash algorithm: sha256
+[    0.104797] ima: No architecture policies found
+[    0.104809] evm: Initialising EVM extended attributes:
+[    0.104810] evm: security.selinux
+[    0.104810] evm: security.SMACK64 (disabled)
+[    0.104811] evm: security.SMACK64EXEC (disabled)
+[    0.104811] evm: security.SMACK64TRANSMUTE (disabled)
+[    0.104811] evm: security.SMACK64MMAP (disabled)
+[    0.104811] evm: security.apparmor
+[    0.104812] evm: security.ima
+[    0.104812] evm: security.capability
+[    0.104812] evm: HMAC attrs: 0x1
+[    0.104980] RAS: Correctable Errors collector initialized.
+[    0.105064] clk: Disabling unused clocks
+[    0.105066] PM: genpd: Disabling unused power domains
+[    0.105783] Freeing unused decrypted memory: 2036K
+[    0.106110] Freeing unused kernel image (initmem) memory: 4300K
+[    0.106119] Write protecting the kernel read-only data: 30720k
+[    0.106195] Freeing unused kernel image (text/rodata gap) memory: 8K
+[    0.106370] Freeing unused kernel image (rodata/data gap) memory: 1960K
+[    0.125216] x86/mm: Checked W+X mappings: passed, no W+X pages found.
+[    0.125220] Run /init as init process
+[    0.125222]   with arguments:
+[    0.125223]     /init
+[    0.125223]   with environment:
+[    0.125224]     HOME=/
+[    0.125224]     TERM=linux
+[    0.125224]     uring_vm_mode=fan-tcp-raid
+[    0.125225]     fan_role=fan
+[    0.125225]     fan_mode=mirror
+[    0.125225]     fan_bytes=64m
+[    0.125225]     fan_chunk=1m
+[    0.125226]     fan_buffer=1m
+[    0.125226]     fan_client_port=41000
+[    0.125226]     fan_edge1_port=42001
+[    0.125226]     fan_edge2_port=42002
+[    0.140953] failover: module verification failed: signature and/or required key missing - tainting kernel

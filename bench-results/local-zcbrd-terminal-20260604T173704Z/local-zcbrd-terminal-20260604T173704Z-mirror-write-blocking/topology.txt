@@ -1,0 +1,16 @@
+case=local-zcbrd-terminal-20260604T173704Z-mirror-write-blocking
+client=127.0.0.1
+fan=127.0.0.1
+leaf0=127.0.0.2:/dev/zcbrd0
+leaf1=127.0.0.3:/dev/zcbrd1
+lanes=8
+cpu_list=0,1,2,3,4,5,6,7
+lane_to_cpu=laneN->cpuN
+chunk=4096
+bytes_per_connection=64M
+mode=mirror
+op=write
+access=linear
+transport=loopback-tcp
+terminal_leaf=/dev/zcbrdN
+leaf_submit=blocking

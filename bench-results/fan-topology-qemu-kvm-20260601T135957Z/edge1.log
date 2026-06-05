@@ -1,0 +1,140 @@
+c[?7l[2J[0mSeaBIOS (version 1.16.3-debian-1.16.3-2)
+
+
+iPXE (https://ipxe.org) 00:02.0 C000 PCI2.10 PnP PMM+2EFC6D50+2EF06D50 C000
+Press Ctrl-B to configure iPXE (PCI 00:02.0)...                                                                               
+
+
+Booting from ROM..c[?7l[2J[    0.024648] RDSEED32 is broken. Disabling the corresponding CPUID bit.
+[zcrx-vm] booted
+Linux (none) 7.0.8-io-slots-03 #slots3 SMP PREEMPT_DYNAMIC Sun May 31 09:43:13 EDT 2026 x86_64 GNU/Linux
+[fan-qemu] role=edge1 mode=mirror bytes=64m chunk=1m buffer=1m
+Linux (none) 7.0.8-io-slots-03 #slots3 SMP PREEMPT_DYNAMIC Sun May 31 09:43:13 EDT 2026 x86_64 GNU/Linux
+io_uring opcode query result: 0
+request opcodes: 66
+register opcodes: 40
+query opcodes: 4
+feature flags: 0x3ffff
+setup flags: 0x1fffff
+enter flags: 0xff
+sqe flags: 0x7f
+has IORING_OP_SEND_ZC: yes
+has IORING_OP_RECV_ZC: yes
+has IORING_OP_READV_FIXED: yes
+has IORING_OP_WRITEV_FIXED: yes
+has IORING_OP_PIPE: yes
+has IORING_OP_NOP128: yes
+has IORING_OP_URING_CMD128: yes
+has IORING_OP_SLOT_RW: yes
+has IORING_REGISTER_NAPI: yes
+has IORING_UNREGISTER_NAPI: yes
+has IORING_REGISTER_CLONE_BUFFERS: yes
+has IORING_REGISTER_SEND_MSG_RING: yes
+has IORING_REGISTER_RESIZE_RINGS: yes
+has IORING_REGISTER_MEM_REGION: yes
+has IORING_REGISTER_ZCRX_IFQ: yes
+has IORING_REGISTER_ZCRX_CTRL: yes
+has IORING_REGISTER_BPF_FILTER: yes
+has IORING_REGISTER_IO_SLOT: yes
+has IORING_UNREGISTER_IO_SLOT: yes
+has IORING_SETUP_DEFER_TASKRUN: yes
+has IORING_SETUP_CQE_MIXED: yes
+has IORING_SETUP_SQE_MIXED: yes
+has IORING_SETUP_SQ_REWIND: yes
+has IORING_FEAT_RECVSEND_BUNDLE: yes
+has IORING_ENTER_NO_IOWAIT: yes
+io_uring api opportunities:
+  io-slots WAL path: active in slot-wal-bench, tcp-wal-mux-server, udp-wal-mux-server
+  network send zerocopy: active with tcp-bench-uring-mux-send send-zc/fixed-zc
+  network receive zerocopy: active with tcp-bench-uring-mux-server zcrx and tcp-wal-mux-server URING_PLAY_TCP_WAL_MODE=zcrx
+  io_uring NAPI busy poll: available; enable with URING_PLAY_REGISTER_NAPI=1 or URING_PLAY_NAPI_BUSY_POLL_US=<us>
+  no-iowait enter flag: available; enable with URING_PLAY_ENTER_NO_IOWAIT=1
+  recv/send bundle: available; candidate for provided-buffer UDP/TCP batching
+  clone registered buffers: available; candidate for split RX/WAL rings sharing one pinned buffer table
+  BPF ring filter: available; candidate for CQE filtering/classification once we add verifier-safe programs
+  SQ/CQE mixed + SQ rewind: available; candidate for raw-ring overhead experiments
+local io-slot compat: available=yes api=zcutils/io-slot-v0 backend=raw-uapi op=65 register=38/39 alignment=512
+upstream liburing io-slot helpers: available=no version=unknown header=not-found missing=io_uring_prep_slot_rw,io_uring_register_io_slot,io_uring_unregister_io_slot,io_uring_slot_reg checked=none
+zcrx query result: 0
+zcrx register flags: 0x1
+zcrx area flags: 0x1
+zcrx control opcodes: 3
+zcrx features: 0x3
+zcrx refill header size: 8
+zcrx refill header alignment: 64
+zcrx supports imported contexts: yes
+zcrx supports dmabuf areas: yes
+zcrx supports selectable rx page size: yes
+current process has CAP_NET_ADMIN: yes
+rdma steering: run rdma-probe and rdma-plan; RDMA lanes map to QPs/CQs or libfabric endpoints, not userspace 5-tuple reassembly
+[fan-qemu] iface=eth0 addr=10.71.1.2/24
+[35m10.71.1.0/24 [0mdev [36meth0 [0mproto kernel scope link src [35m10.71.1.2 [0m
+[fan-qemu] edge1: starting receive
+ZC_TCPMUX_READY listen_address=10.71.1.2 listen_addresses=10.71.1.2 port=42001 ports=42001 lanes=1 lane_base=0 authentication=disabled encryption=none
+zc-tcpmux-receive-topology: lane=0 receiver_cpu=0 receiver_numa_node=0 affinity_target_cpu=-1 affinity_applied=false affinity=pin_cpus=false cpu_list=-
+zc-tcpmux-receive-result: peer=10.71.1.1:42527 bytes=67113024 encryption=none already_encrypted=false output=-
+zcsink-result: consume=count bytes=67113024 checksum=0x0000000000000000 descriptor_mode=auto zero_copy=auto preserve_lanes=no preserve_topology=no topology=- lane_id=- lane_count=- queue_id=- preferred_worker=- lane_map=- preferred_cpu=- numa_node=- ordered=global
+zcsink: bytes=67113024 seconds=3.114720 GiBps=0.020 Gbitps=0.172
+[fan-qemu] edge1: ok
+[fan-qemu] recent kernel log
+[    0.109459] rtc_cmos 00:04: setting system clock to 2026-06-01T13:59:59 UTC (1780322399)
+[    0.109532] rtc_cmos 00:04: alarms up to one day, y3k, 242 bytes nvram, hpet irqs
+[    0.109542] amd_pstate: The CPPC feature is supported but currently disabled by the BIOS.
+[    0.109542] Please enable it if your BIOS has the CPPC option.
+[    0.109544] amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled
+[    0.109661] NET: Registered PF_INET6 protocol family
+[    0.110033] Segment Routing with IPv6
+[    0.110038] In-situ OAM (IOAM) with IPv6
+[    0.110049] mip6: Mobile IPv6
+[    0.110051] NET: Registered PF_PACKET protocol family
+[    0.110126] mpls_gso: MPLS GSO support
+[    0.110174] input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input0
+[    0.110581] IPI shorthand broadcast: enabled
+[    0.111329] sched_clock: Marking stable (108004885, 2967174)->(111795636, -823577)
+[    0.111495] registered taskstats version 1
+[    0.111597] Loading compiled-in X.509 certificates
+[    0.111909] Loaded X.509 cert 'Build time autogenerated kernel key: 9bb78960a7c48d33dad6713b161a74b0a863b123'
+[    0.112720] Demotion targets for Node 0: null
+[    0.112802] Key type .fscrypt registered
+[    0.112804] Key type fscrypt-provisioning registered
+[    0.113357] Key type encrypted registered
+[    0.113361] AppArmor: AppArmor sha256 policy hashing enabled
+[    0.113364] ima: No TPM chip found, activating TPM-bypass!
+[    0.113366] ima: Allocated hash algorithm: sha256
+[    0.113374] ima: No architecture policies found
+[    0.113389] evm: Initialising EVM extended attributes:
+[    0.113390] evm: security.selinux
+[    0.113391] evm: security.SMACK64 (disabled)
+[    0.113391] evm: security.SMACK64EXEC (disabled)
+[    0.113391] evm: security.SMACK64TRANSMUTE (disabled)
+[    0.113391] evm: security.SMACK64MMAP (disabled)
+[    0.113392] evm: security.apparmor
+[    0.113392] evm: security.ima
+[    0.113392] evm: security.capability
+[    0.113393] evm: HMAC attrs: 0x1
+[    0.113466] RAS: Correctable Errors collector initialized.
+[    0.113559] clk: Disabling unused clocks
+[    0.113561] PM: genpd: Disabling unused power domains
+[    0.114326] Freeing unused decrypted memory: 2036K
+[    0.114671] Freeing unused kernel image (initmem) memory: 4300K
+[    0.114683] Write protecting the kernel read-only data: 30720k
+[    0.114763] Freeing unused kernel image (text/rodata gap) memory: 8K
+[    0.114949] Freeing unused kernel image (rodata/data gap) memory: 1960K
+[    0.133463] x86/mm: Checked W+X mappings: passed, no W+X pages found.
+[    0.133468] Run /init as init process
+[    0.133469]   with arguments:
+[    0.133470]     /init
+[    0.133470]   with environment:
+[    0.133471]     HOME=/
+[    0.133471]     TERM=linux
+[    0.133471]     uring_vm_mode=fan-tcp-raid
+[    0.133472]     fan_role=edge1
+[    0.133472]     fan_mode=mirror
+[    0.133472]     fan_bytes=64m
+[    0.133472]     fan_chunk=1m
+[    0.133473]     fan_buffer=1m
+[    0.133473]     fan_client_port=41000
+[    0.133473]     fan_edge1_port=42001
+[    0.133473]     fan_edge2_port=42002
+[    0.149347] failover: module verification failed: signature and/or required key missing - tainting kernel
+[    5.353764] reboot: Power down

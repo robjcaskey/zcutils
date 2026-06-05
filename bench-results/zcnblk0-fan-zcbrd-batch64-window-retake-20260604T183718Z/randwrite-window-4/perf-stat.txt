@@ -1,0 +1,15 @@
+# started on Thu Jun  4 14:37:20 2026
+
+
+ Performance counter stats for 'timeout --signal=TERM --kill-after=5s 30s fio --name=zcnblk0-batch64-window4-randwrite --filename=/dev/zcnblk0 --rw=randwrite --bs=4k --iodepth=64 --numjobs=8 --ioengine=io_uring --direct=1 --time_based=1 --runtime=3 --group_reporting=1 --randrepeat=0 --norandommap=1 --cpus_allowed=0-7 --cpus_allowed_policy=split':
+
+            409.35 msec task-clock                       #    0.012 CPUs utilized             
+              6291      context-switches                 #   15.368 K/sec                     
+               274      cpu-migrations                   #  669.361 /sec                      
+
+      35.001817699 seconds time elapsed
+
+       0.000608000 seconds user
+       0.000000000 seconds sys
+
+

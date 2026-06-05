@@ -1,0 +1,104 @@
+warning: zcnblk-target is running with small-page buffers (small-pages requested explicitly); standard high-throughput mode uses hugetlb buffers. Configure enough huge pages or pass hugetlb explicitly for representative WAL/NIC/DMA locality.
+PERF WARNING: zcnblk-target: buffer_mode=small-pages is not a high-throughput setting; reserve huge pages and use hugetlb unless this is only a functional smoke test
+PERF WARNING: zcnblk-target: RLIMIT_MEMLOCK is only 8.00 MiB; use prlimit --memlock=unlimited:unlimited or an equivalent limit before creating many per-lane io_uring rings
+PERF WARNING: zcnblk-target: loopback TCP is useful for topology smoke tests but can be context-switch bound; isolate CPUs and pin both target workers and zcnblk client kthreads for IOPS claims
+zcnblk-target: targets=0:zcdevnull:1099511627776B:align1 bind=127.0.0.1 base_port=22400 ports=16 connections_per_port=1 total_connections=16 bytes_per_connection=33554432 chunk_bytes=16384 pipeline=64 workers=16 ring_entries=128 submit_batch=64 buffer_mode=small-pages write_mode=null read_mode=null write_acks=true tier_write_extent_bytes=65536 shard_policy=port-lane topology_lane_base=0 topology_lane_count=16 encryption=none aes_frame_bytes=65536 pin_workers=true wal_target=-
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:54694 lane=1 port=22401 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:36384 lane=2 port=22402 conn=0 incoming_cpu=18 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:38932 lane=3 port=22403 conn=0 incoming_cpu=19 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:59478 lane=4 port=22404 conn=0 incoming_cpu=20 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:56252 lane=9 port=22409 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:43086 lane=10 port=22410 conn=0 incoming_cpu=18 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:32892 lane=0 port=22400 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:50928 lane=6 port=22406 conn=0 incoming_cpu=22 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:37690 lane=8 port=22408 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:50944 lane=14 port=22414 conn=0 incoming_cpu=22 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:47528 lane=12 port=22412 conn=0 incoming_cpu=20 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:53014 lane=13 port=22413 conn=0 incoming_cpu=21 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:36684 lane=11 port=22411 conn=0 incoming_cpu=19 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:37972 lane=5 port=22405 conn=0 incoming_cpu=21 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:58434 lane=15 port=22415 conn=0 incoming_cpu=23 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:34224 lane=7 port=22407 conn=0 incoming_cpu=23 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=0 policy=port-lane peer=127.0.0.1:32892 listener_lane=0 listener_port=22400 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=1 policy=port-lane peer=127.0.0.1:54694 listener_lane=1 listener_port=22401 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=2 policy=port-lane peer=127.0.0.1:36384 listener_lane=2 listener_port=22402 conn=0 incoming_cpu=18 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=3 policy=port-lane peer=127.0.0.1:38932 listener_lane=3 listener_port=22403 conn=0 incoming_cpu=19 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=4 policy=port-lane peer=127.0.0.1:59478 listener_lane=4 listener_port=22404 conn=0 incoming_cpu=20 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=5 policy=port-lane peer=127.0.0.1:37972 listener_lane=5 listener_port=22405 conn=0 incoming_cpu=21 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=6 policy=port-lane peer=127.0.0.1:50928 listener_lane=6 listener_port=22406 conn=0 incoming_cpu=22 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=7 policy=port-lane peer=127.0.0.1:34224 listener_lane=7 listener_port=22407 conn=0 incoming_cpu=23 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=8 policy=port-lane peer=127.0.0.1:37690 listener_lane=8 listener_port=22408 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=9 policy=port-lane peer=127.0.0.1:56252 listener_lane=9 listener_port=22409 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=10 policy=port-lane peer=127.0.0.1:43086 listener_lane=10 listener_port=22410 conn=0 incoming_cpu=18 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=11 policy=port-lane peer=127.0.0.1:36684 listener_lane=11 listener_port=22411 conn=0 incoming_cpu=19 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=12 policy=port-lane peer=127.0.0.1:47528 listener_lane=12 listener_port=22412 conn=0 incoming_cpu=20 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=13 policy=port-lane peer=127.0.0.1:53014 listener_lane=13 listener_port=22413 conn=0 incoming_cpu=21 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=14 policy=port-lane peer=127.0.0.1:50944 listener_lane=14 listener_port=22414 conn=0 incoming_cpu=22 incoming_napi_id=unknown
+zcnblk-target-mux-assignment: worker=15 policy=port-lane peer=127.0.0.1:58434 listener_lane=15 listener_port=22415 conn=0 incoming_cpu=23 incoming_napi_id=unknown
+zcnblk-target-mux-assignment-summary: policy=port-lane workers=16 streams_by_worker=0:1,1:1,2:1,3:1,4:1,5:1,6:1,7:1,8:1,9:1,10:1,11:1,12:1,13:1,14:1,15:1
+zcnblk-target-worker: affinity_index=0 target_cpu=0 status=ok
+zcnblk-target-worker: affinity_index=2 target_cpu=2 status=ok
+zcnblk-target-worker-stream: worker=0 peer=127.0.0.1:32892 lane=0 port=22400 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+zcnblk-target-worker-stream: worker=2 peer=127.0.0.1:36384 lane=2 port=22402 conn=0 incoming_cpu=18 incoming_napi_id=unknown
+zcnblk-target-worker: affinity_index=1 target_cpu=1 status=ok
+zcnblk-target-worker-stream: worker=1 peer=127.0.0.1:54694 lane=1 port=22401 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-target-worker: affinity_index=4 target_cpu=4 status=ok
+zcnblk-target-worker-stream: worker=4 peer=127.0.0.1:59478 lane=4 port=22404 conn=0 incoming_cpu=20 incoming_napi_id=unknown
+zcnblk-target-worker-files: worker=1 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker: affinity_index=3 target_cpu=3 status=ok
+zcnblk-target-worker-files: worker=0 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker-files: worker=2 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker-stream: worker=3 peer=127.0.0.1:38932 lane=3 port=22403 conn=0 incoming_cpu=19 incoming_napi_id=unknown
+zcnblk-target-worker-files: worker=4 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker-files: worker=3 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker: affinity_index=8 target_cpu=0 status=ok
+zcnblk-target-worker-stream: worker=8 peer=127.0.0.1:37690 lane=8 port=22408 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+zcnblk-target-worker: affinity_index=14 target_cpu=6 status=ok
+zcnblk-target-worker-stream: worker=14 peer=127.0.0.1:50944 lane=14 port=22414 conn=0 incoming_cpu=22 incoming_napi_id=unknown
+zcnblk-target-worker: affinity_index=5 target_cpu=5 status=ok
+zcnblk-target-worker: affinity_index=7 target_cpu=7 status=ok
+zcnblk-target-worker-stream: worker=5 peer=127.0.0.1:37972 lane=5 port=22405 conn=0 incoming_cpu=21 incoming_napi_id=unknown
+zcnblk-target-worker-stream: worker=7 peer=127.0.0.1:34224 lane=7 port=22407 conn=0 incoming_cpu=23 incoming_napi_id=unknown
+zcnblk-target-worker-files: worker=14 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker: affinity_index=12 target_cpu=4 status=ok
+zcnblk-target-worker: affinity_index=10 target_cpu=2 status=ok
+zcnblk-target-worker-stream: worker=12 peer=127.0.0.1:47528 lane=12 port=22412 conn=0 incoming_cpu=20 incoming_napi_id=unknown
+zcnblk-target-worker-stream: worker=10 peer=127.0.0.1:43086 lane=10 port=22410 conn=0 incoming_cpu=18 incoming_napi_id=unknown
+zcnblk-target-worker-files: worker=8 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker: affinity_index=6 target_cpu=6 status=ok
+zcnblk-target-worker-files: worker=5 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker-stream: worker=6 peer=127.0.0.1:50928 lane=6 port=22406 conn=0 incoming_cpu=22 incoming_napi_id=unknown
+zcnblk-target-worker-files: worker=7 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker: affinity_index=15 target_cpu=7 status=ok
+zcnblk-target-worker-stream: worker=15 peer=127.0.0.1:58434 lane=15 port=22415 conn=0 incoming_cpu=23 incoming_napi_id=unknown
+zcnblk-target-worker-files: worker=10 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker-files: worker=12 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker-files: worker=6 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker-files: worker=15 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker: affinity_index=9 target_cpu=1 status=ok
+zcnblk-target-worker-stream: worker=9 peer=127.0.0.1:56252 lane=9 port=22409 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-target-worker-files: worker=9 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker: affinity_index=13 target_cpu=5 status=ok
+zcnblk-target-worker: affinity_index=11 target_cpu=3 status=ok
+zcnblk-target-worker-stream: worker=13 peer=127.0.0.1:53014 lane=13 port=22413 conn=0 incoming_cpu=21 incoming_napi_id=unknown
+zcnblk-target-worker-stream: worker=11 peer=127.0.0.1:36684 lane=11 port=22411 conn=0 incoming_cpu=19 incoming_napi_id=unknown
+zcnblk-target-worker-files: worker=13 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker-files: worker=11 opened_shards=- raid0_shards=- registered_files=false
+zcnblk-target-worker: worker=0 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=11119 seconds=0.184182 logical_MiBps=173.74 target_cpu=0 affinity_applied=true
+zcnblk-target-worker: worker=1 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10550 seconds=0.194114 logical_MiBps=164.85 target_cpu=1 affinity_applied=true
+zcnblk-target-worker: worker=2 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10440 seconds=0.196171 logical_MiBps=163.12 target_cpu=2 affinity_applied=true
+zcnblk-target-worker: worker=3 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10712 seconds=0.191180 logical_MiBps=167.38 target_cpu=3 affinity_applied=true
+zcnblk-target-worker: worker=4 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10767 seconds=0.190212 logical_MiBps=168.23 target_cpu=4 affinity_applied=true
+zcnblk-target-worker: worker=5 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10535 seconds=0.194393 logical_MiBps=164.62 target_cpu=5 affinity_applied=true
+zcnblk-target-worker: worker=6 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10519 seconds=0.194698 logical_MiBps=164.36 target_cpu=6 affinity_applied=true
+zcnblk-target-worker: worker=7 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10687 seconds=0.191631 logical_MiBps=166.99 target_cpu=7 affinity_applied=true
+zcnblk-target-worker: worker=8 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10868 seconds=0.188440 logical_MiBps=169.82 target_cpu=0 affinity_applied=true
+zcnblk-target-worker: worker=9 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10339 seconds=0.198091 logical_MiBps=161.54 target_cpu=1 affinity_applied=true
+zcnblk-target-worker: worker=10 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10739 seconds=0.190703 logical_MiBps=167.80 target_cpu=2 affinity_applied=true
+zcnblk-target-worker: worker=11 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10669 seconds=0.191967 logical_MiBps=166.70 target_cpu=3 affinity_applied=true
+zcnblk-target-worker: worker=12 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10689 seconds=0.191597 logical_MiBps=167.02 target_cpu=4 affinity_applied=true
+zcnblk-target-worker: worker=13 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10528 seconds=0.194531 logical_MiBps=164.50 target_cpu=5 affinity_applied=true
+zcnblk-target-worker: worker=14 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10642 seconds=0.192441 logical_MiBps=166.29 target_cpu=6 affinity_applied=true
+zcnblk-target-worker: worker=15 streams=1 received_bytes=33554432 written_bytes=33554432 read_bytes=0 response_bytes=131072 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=2048 batches=0 read_frames=0 write_frames=2048 frames_per_sec=10830 seconds=0.189104 logical_MiBps=169.22 target_cpu=7 affinity_applied=true
+zcnblk-target-summary: received_bytes=536870912 written_bytes=536870912 read_bytes=0 response_bytes=2097152 wal_wire_bytes=0 wal_extents=0 wal_acks=0 frames=32768 batches=0 read_frames=0 write_frames=32768 frames_per_sec=164142
+zcnblk-target: bytes=536870912 seconds=0.199634 GiBps=2.505 Gbitps=21.514

@@ -1,0 +1,35 @@
+PERF WARNING: zcblockbench: small-page buffers are fine for smoke tests; use --buffer-mode hugetlb with enough huge pages for high-IOPS claims
+zcblockbench-plan: target=/dev/zcbrd10 engine=uring-fixed mode=write workers=32 ops_per_worker=32768 chunk_bytes=4096 iodepth=64 ring_entries=128 read_percent=80 region_bytes_per_worker=67108864 ring_mode=normal cqe=16 registered_ring=false sqpoll_idle_ms=1000 buffers=small-pages pin_workers=true target_kind=block
+zcblockbench-target: target=/dev/zcbrd10 total_region_bytes=2147483648 device_bytes=2147483648 required_alignment=4096 segment_bytes=4096
+zcblockbench-worker: affinity_index=1 target_cpu=17 status=ok
+zcblockbench-worker: affinity_index=0 target_cpu=1 status=ok
+zcblockbench-worker: affinity_index=3 target_cpu=19 status=ok
+zcblockbench-worker: affinity_index=2 target_cpu=3 status=ok
+zcblockbench-worker: affinity_index=4 target_cpu=4 status=ok
+zcblockbench-worker: affinity_index=6 target_cpu=5 status=ok
+zcblockbench-worker: affinity_index=5 target_cpu=20 status=ok
+zcblockbench-worker: affinity_index=8 target_cpu=6 status=ok
+zcblockbench-worker: affinity_index=9 target_cpu=22 status=ok
+zcblockbench-worker: affinity_index=10 target_cpu=7 status=ok
+zcblockbench-worker: affinity_index=7 target_cpu=21 status=ok
+zcblockbench-worker: affinity_index=11 target_cpu=23 status=ok
+zcblockbench-worker: affinity_index=12 target_cpu=8 status=ok
+zcblockbench-worker: affinity_index=13 target_cpu=24 status=ok
+zcblockbench-worker: affinity_index=14 target_cpu=9 status=ok
+zcblockbench-worker: affinity_index=15 target_cpu=25 status=ok
+zcblockbench-worker: affinity_index=17 target_cpu=26 status=ok
+zcblockbench-worker: affinity_index=16 target_cpu=10 status=ok
+zcblockbench-worker: affinity_index=18 target_cpu=11 status=ok
+zcblockbench-worker: affinity_index=19 target_cpu=27 status=ok
+zcblockbench-worker: affinity_index=20 target_cpu=12 status=ok
+zcblockbench-worker: affinity_index=21 target_cpu=28 status=ok
+zcblockbench-worker: affinity_index=23 target_cpu=29 status=ok
+zcblockbench-worker: affinity_index=22 target_cpu=13 status=ok
+zcblockbench-worker: affinity_index=24 target_cpu=14 status=ok
+zcblockbench-worker: affinity_index=25 target_cpu=30 status=ok
+zcblockbench-worker: affinity_index=26 target_cpu=15 status=ok
+zcblockbench-worker: affinity_index=27 target_cpu=31 status=ok
+zcblockbench-worker: affinity_index=28 target_cpu=2 status=ok
+zcblockbench-worker: affinity_index=29 target_cpu=18 status=ok
+zcblockbench-worker: affinity_index=30 target_cpu=0 status=ok
+zcblockbench-worker: affinity_index=31 target_cpu=16 status=ok

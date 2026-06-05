@@ -1,0 +1,34 @@
+zcnblk-send: addr=127.0.0.1 shard_count=1 base_port=51000 ports=16 connections_per_port=1 total_connections=16 bytes_per_connection=67108864 chunk_bytes=4096 workers=16 op_mode=write read_window=64 write_window=32768 verify_reads=no wait_write_acks=yes batch_depth=2048 payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral encryption=none aes_frame_bytes=65536
+zcnblk-send-worker: affinity_index=2 target_cpu=2 status=ok
+zcnblk-send-worker: affinity_index=1 target_cpu=1 status=ok
+zcnblk-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcnblk-send-worker: affinity_index=3 target_cpu=3 status=ok
+zcnblk-send-worker: affinity_index=4 target_cpu=4 status=ok
+zcnblk-send-worker: affinity_index=5 target_cpu=5 status=ok
+zcnblk-send-stream: worker=2 lane=2 port=51002 conn=0 shard=0 base_offset=134217728
+zcnblk-send-stream: worker=1 lane=1 port=51001 conn=0 shard=0 base_offset=67108864
+zcnblk-send-stream: worker=0 lane=0 port=51000 conn=0 shard=0 base_offset=0
+zcnblk-send-stream: worker=3 lane=3 port=51003 conn=0 shard=0 base_offset=201326592
+zcnblk-send-stream: worker=4 lane=4 port=51004 conn=0 shard=0 base_offset=268435456
+zcnblk-send-stream: worker=5 lane=5 port=51005 conn=0 shard=0 base_offset=335544320
+zcnblk-send-worker: affinity_index=7 target_cpu=7 status=ok
+zcnblk-send-worker: affinity_index=6 target_cpu=6 status=ok
+zcnblk-send-stream: worker=7 lane=7 port=51007 conn=0 shard=0 base_offset=469762048
+zcnblk-send-worker: affinity_index=8 target_cpu=8 status=ok
+zcnblk-send-stream: worker=6 lane=6 port=51006 conn=0 shard=0 base_offset=402653184
+zcnblk-send-worker: affinity_index=9 target_cpu=9 status=ok
+zcnblk-send-worker: affinity_index=10 target_cpu=10 status=ok
+zcnblk-send-worker: affinity_index=11 target_cpu=11 status=ok
+zcnblk-send-worker: affinity_index=12 target_cpu=12 status=ok
+zcnblk-send-worker: affinity_index=13 target_cpu=13 status=ok
+zcnblk-send-worker: affinity_index=14 target_cpu=14 status=ok
+zcnblk-send-stream: worker=9 lane=9 port=51009 conn=0 shard=0 base_offset=603979776
+zcnblk-send-worker: affinity_index=15 target_cpu=15 status=ok
+zcnblk-send-stream: worker=12 lane=12 port=51012 conn=0 shard=0 base_offset=805306368
+zcnblk-send-stream: worker=8 lane=8 port=51008 conn=0 shard=0 base_offset=536870912
+zcnblk-send-stream: worker=13 lane=13 port=51013 conn=0 shard=0 base_offset=872415232
+zcnblk-send-stream: worker=10 lane=10 port=51010 conn=0 shard=0 base_offset=671088640
+zcnblk-send-stream: worker=11 lane=11 port=51011 conn=0 shard=0 base_offset=738197504
+zcnblk-send-stream: worker=14 lane=14 port=51014 conn=0 shard=0 base_offset=939524096
+zcnblk-send-stream: worker=15 lane=15 port=51015 conn=0 shard=0 base_offset=1006632960
+Error: Os { code: 104, kind: ConnectionReset, message: "Connection reset by peer" }

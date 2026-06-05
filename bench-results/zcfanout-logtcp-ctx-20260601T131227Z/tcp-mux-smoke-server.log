@@ -1,0 +1,9 @@
+tcp-bench-uring-mux-server: listening on 127.0.0.1:31000.. ports=2 connections_per_port=1 total_connections=2 selected_connections_per_port=1 selected_total_connections=2 expected_bytes=67108864
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:53052 lane=0 port=31000 conn=0 incoming_cpu=0 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:54074 lane=1 port=31001 conn=0 incoming_cpu=1 incoming_napi_id=unknown
+tcp-bench-uring-mux-server-mux-assignment: worker=0 policy=observed peer=127.0.0.1:53052 listener_lane=0 listener_port=31000 conn=0 incoming_cpu=0 incoming_napi_id=unknown
+tcp-bench-uring-mux-server-mux-assignment: worker=1 policy=observed peer=127.0.0.1:54074 listener_lane=1 listener_port=31001 conn=0 incoming_cpu=1 incoming_napi_id=unknown
+tcp-bench-uring-mux-server-mux-assignment-summary: policy=observed workers=2 streams_by_worker=0:1,1:1
+uring-recv-worker: affinity_index=0 target_cpu=0 status=ok
+uring-recv-worker: affinity_index=1 target_cpu=1 status=ok
+tcp-bench-uring-mux-server: bytes=134217728 seconds=0.007075 GiBps=17.667 Gbitps=151.761
