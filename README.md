@@ -37,6 +37,8 @@ zc-tcpmux-xfer ./file nodeB:/tmp/file
 - `zc-tcpmux-send` and `zc-tcpmux-receive`: direct token-authenticated TCP mux
   sender and receiver primitives.
 - `zcencrypt` and `zcdecrypt`: AES-256-GCM framed stream filters.
+- `zcplan`: topology-aware descriptor planner for local capability JSON and
+  compiled lane/CPU/NIC/WAL/branch/zipper plans.
 - `zcflow`: descriptor-aware pipeline runner; byte pipes today.
 - `zccat`, `zcout`, `zcmap`, `zcmaptee`, `zctee`, `zctier`, `zcsink`, `zcstat`,
   `zcmeter`, and `zcgrep`: byte-compatible forms of the planned descriptor
@@ -50,6 +52,10 @@ zc-tcpmux-xfer ./file nodeB:/tmp/file
 - `/dev/zcnblk0`: the client-side block onramp to the SAN fabric. It is backed
   by the `zcnblk` wire protocol today, but the block device users point fio,
   databases, and filesystems at is `/dev/zcnblk0`.
+- `zcnblk-fan`: ordered userspace read/write fan target between `/dev/zcnblk0`
+  or `zcnblk-send` and leaf `zcnblk-target` services. It owns stripe placement,
+  splits requests at leaf switch points, and preserves same-sector ordering
+  without using block devices as RAID primitives.
 - `zcbrd`: optional RAM-backed block media for targets and tests. Mid-tree
   fanout, fanin, forwarding, RAID0/RAID1 policy, tier routing, tier spill
   decisions, and backpressure stay in userspace. Block is only the client
@@ -111,6 +117,13 @@ without dragging in the SAN stack.
   means by lanes.
 - `docs/wal-extent-framing.md`: lane-preserving WAL extent framing for logical
   4K records over coalesced physical appends.
+- `docs/zcnblk-wal-fan-topology.md`: four-host zcnblk fan topology and the WAL
+  visibility contract for ordered fanout without block-device RAID primitives.
+- `docs/zcnblk-log-fanout-architecture.md`: log-based fanout/fanin design for
+  400G-class zcnblk mirror/stripe result-log zipper paths.
+- `docs/topology-aware-zero-copy-planner.md`: negotiated descriptor planner for
+  deriving lane, CPU, queue, WAL, branch, and zipper topology from workload
+  intent instead of per-run manual knobs.
 - `docs/zccu-target-architecture.html`: rendered single-page topology for the
   concrete `/dev/zcnblk0 -> tcpmux -> zctee -> split tree -> zcbrd` layout.
 - `scripts/render-zccu-volume-layout.py`: `uv` Python renderer for that HTML

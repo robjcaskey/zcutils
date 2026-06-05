@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::ffi::CString;
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write};
+use std::hint::black_box;
+use std::io::{self, BufRead, BufReader, BufWriter, IoSlice, Read, Seek, Write};
 use std::net::{
     IpAddr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream, ToSocketAddrs, UdpSocket,
 };
@@ -14,7 +15,7 @@ use std::process::{Command, Stdio};
 use std::ptr;
 use std::slice;
 use std::sync::atomic::{AtomicU64, Ordering, fence};
-use std::sync::{Arc, Barrier, Condvar, Mutex, mpsc};
+use std::sync::{Arc, Barrier, Condvar, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -133,6 +134,7 @@ const ZC_TCPMUX_PARALLEL_MAGIC_V2: &[u8] = b"ZCTCPMUX_PARALLEL_V2";
 const ZC_TCPMUX_PARALLEL_MAGIC: &[u8] = ZC_TCPMUX_PARALLEL_MAGIC_V2;
 const ZC_TCPMUX_TOPOLOGY_DESC_VERSION: u16 = 2;
 const ZC_TCPMUX_TOPOLOGY_DESC_BODY_LEN: u16 = 44;
+const ZC_TCPMUX_TOPOLOGY_DESC_EXTENDED_BODY_LEN: u16 = 60;
 const ZC_TCPMUX_TOPOLOGY_F_AFFINITY_APPLIED: u32 = 1 << 0;
 const ZC_TCPMUX_TOPOLOGY_F_CPU_KNOWN: u32 = 1 << 1;
 const ZC_TCPMUX_TOPOLOGY_F_NUMA_KNOWN: u32 = 1 << 2;
@@ -459,6 +461,7 @@ struct RawRing {
     pending_submit: u32,
     enter_flags: u32,
     cqe_spin: u32,
+    cqe_hot_poll: bool,
     stats_enabled: bool,
     stats: RawRingStats,
 }
@@ -474,6 +477,7 @@ struct RawRingStats {
     wait_cqe_calls: u64,
     submit_short: u64,
     cqe_spin_loops: u64,
+    cqe_hot_poll_waits: u64,
 }
 
 struct ZcrxContext {
@@ -979,6 +983,7 @@ impl RawRing {
             0
         };
         let cqe_spin = env_usize_or("URING_PLAY_CQE_SPIN", 0).min(u32::MAX as usize) as u32;
+        let cqe_hot_poll = env_enabled_or("URING_PLAY_CQE_HOT_POLL", false);
 
         let cqe_stride = options.cqe_mode.cqe_size();
         let cq_ring_end = params.cq_off.cqes as usize + params.cq_entries as usize * cqe_stride;
@@ -1103,6 +1108,7 @@ impl RawRing {
             pending_submit: 0,
             enter_flags,
             cqe_spin,
+            cqe_hot_poll,
             stats_enabled: options.stats_enabled,
             stats: RawRingStats::default(),
         })
@@ -1622,6 +1628,21 @@ impl RawRing {
                 }
             }
 
+            if self.cqe_hot_poll {
+                if self.stats_enabled {
+                    self.stats.cqe_hot_poll_waits = self.stats.cqe_hot_poll_waits.saturating_add(1);
+                }
+                loop {
+                    std::hint::spin_loop();
+                    if self.stats_enabled {
+                        self.stats.cqe_spin_loops = self.stats.cqe_spin_loops.saturating_add(1);
+                    }
+                    if let Some(cqe) = self.try_pop_cqe() {
+                        return Ok(cqe);
+                    }
+                }
+            }
+
             if self.stats_enabled {
                 self.stats.wait_syscalls = self.stats.wait_syscalls.saturating_add(1);
             }
@@ -1722,6 +1743,101 @@ fn env_usize_or(name: &str, default: usize) -> usize {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(default)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ZcPlanRuntime {
+    plan_hash: u64,
+    placement_epoch: u64,
+}
+
+impl ZcPlanRuntime {
+    fn is_set(self) -> bool {
+        self.plan_hash != 0 || self.placement_epoch != 0
+    }
+
+    fn label(self) -> String {
+        if self.is_set() {
+            format!(
+                "plan_hash=0x{:016x} placement_epoch={}",
+                self.plan_hash, self.placement_epoch
+            )
+        } else {
+            "plan=none placement_epoch=0".to_string()
+        }
+    }
+}
+
+fn zc_plan_hash(value: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+fn zc_u64_from_env_names(names: &[&str], default: u64) -> io::Result<u64> {
+    for name in names {
+        let Ok(value) = env::var(name) else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        if let Some(hex) = value
+            .strip_prefix("0x")
+            .or_else(|| value.strip_prefix("0X"))
+        {
+            return u64::from_str_radix(hex, 16).map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{name}={value:?} is not a valid hex u64: {err}"),
+                )
+            });
+        }
+        return value.parse::<u64>().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{name}={value:?} is not a valid u64: {err}"),
+            )
+        });
+    }
+    Ok(default)
+}
+
+fn zc_plan_runtime_from_env() -> io::Result<ZcPlanRuntime> {
+    let explicit_hash = zc_u64_from_env_names(
+        &[
+            "URING_PLAY_ZC_PLAN_HASH",
+            "URING_PLAY_ZCNBLK_PLAN_HASH",
+            "URING_PLAY_ZCNBLK_WAL_PLAN_HASH",
+        ],
+        0,
+    )?;
+    let plan_hash = if explicit_hash != 0 {
+        explicit_hash
+    } else {
+        env::var("URING_PLAY_ZC_PLAN_ID")
+            .ok()
+            .or_else(|| env::var("URING_PLAY_ZCNBLK_PLAN_ID").ok())
+            .or_else(|| env::var("URING_PLAY_ZCNBLK_WAL_PLAN_ID").ok())
+            .map(|value| zc_plan_hash(value.trim()))
+            .unwrap_or(0)
+    };
+    let placement_epoch = zc_u64_from_env_names(
+        &[
+            "URING_PLAY_ZC_PLACEMENT_EPOCH",
+            "URING_PLAY_ZCNBLK_PLACEMENT_EPOCH",
+            "URING_PLAY_ZCNBLK_WAL_PLACEMENT_EPOCH",
+        ],
+        0,
+    )?;
+    Ok(ZcPlanRuntime {
+        plan_hash,
+        placement_epoch,
+    })
 }
 
 fn env_u8_or(name: &str, default: u8) -> io::Result<u8> {
@@ -3972,23 +4088,90 @@ fn socket_bench_buffer_bytes() -> libc::c_int {
     libc::c_int::try_from(bytes).unwrap_or(libc::c_int::MAX)
 }
 
+static SOCKET_BUFFER_WARNED: OnceLock<Mutex<BTreeMap<String, ()>>> = OnceLock::new();
+
+fn socket_buffer_warn_once(key: &str, message: impl FnOnce() -> String) {
+    let warned = SOCKET_BUFFER_WARNED.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let Ok(mut warned) = warned.lock() else {
+        eprintln!("{}", message());
+        return;
+    };
+    if warned.contains_key(key) {
+        return;
+    }
+    warned.insert(key.to_string(), ());
+    eprintln!("{}", message());
+}
+
+fn getsockopt_int(fd: i32, level: libc::c_int, optname: libc::c_int) -> io::Result<libc::c_int> {
+    let mut value = 0 as libc::c_int;
+    let mut len = std::mem::size_of_val(&value) as libc::socklen_t;
+    let ret = unsafe {
+        libc::getsockopt(
+            fd,
+            level,
+            optname,
+            &mut value as *mut _ as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    if ret != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(value)
+}
+
+fn warn_if_socket_buffer_clamped(
+    fd: i32,
+    optname: libc::c_int,
+    opt_label: &str,
+    requested: libc::c_int,
+    set_ret: libc::c_int,
+) {
+    if set_ret != 0 {
+        let err = io::Error::last_os_error();
+        socket_buffer_warn_once(opt_label, || {
+            format!(
+                "PERF WARNING: setting {opt_label} to {requested} bytes failed: {err}; \
+                 raise socket buffer limits before trusting high-IOPS TCP fan numbers"
+            )
+        });
+        return;
+    }
+    let Ok(actual) = getsockopt_int(fd, libc::SOL_SOCKET, optname) else {
+        return;
+    };
+    if actual < requested {
+        socket_buffer_warn_once(opt_label, || {
+            format!(
+                "PERF WARNING: requested {opt_label}={} bytes via URING_PLAY_SOCKET_BUFFER_BYTES \
+                 but kernel reports {} bytes; raise net.core.wmem_max/net.core.rmem_max and \
+                 tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers",
+                requested, actual
+            )
+        });
+    }
+}
+
 fn set_socket_bench_buffers(fd: i32) {
     let value: libc::c_int = socket_bench_buffer_bytes();
     unsafe {
-        let _ = libc::setsockopt(
+        let snd_ret = libc::setsockopt(
             fd,
             libc::SOL_SOCKET,
             libc::SO_SNDBUF,
             &value as *const _ as *const libc::c_void,
             std::mem::size_of_val(&value) as libc::socklen_t,
         );
-        let _ = libc::setsockopt(
+        warn_if_socket_buffer_clamped(fd, libc::SO_SNDBUF, "SO_SNDBUF", value, snd_ret);
+        let rcv_ret = libc::setsockopt(
             fd,
             libc::SOL_SOCKET,
             libc::SO_RCVBUF,
             &value as *const _ as *const libc::c_void,
             std::mem::size_of_val(&value) as libc::socklen_t,
         );
+        warn_if_socket_buffer_clamped(fd, libc::SO_RCVBUF, "SO_RCVBUF", value, rcv_ret);
     }
 }
 
@@ -4281,6 +4464,192 @@ fn socket_locality_label(locality: SocketLocality) -> String {
         "unknown".to_string()
     };
     format!("incoming_cpu={cpu} incoming_napi_id={napi}")
+}
+
+#[derive(Default)]
+struct RouteProbe {
+    dev: Option<String>,
+    src: Option<String>,
+    raw: String,
+}
+
+static ROUTE_ALIGNMENT_WARNED: OnceLock<Mutex<BTreeMap<String, ()>>> = OnceLock::new();
+
+fn env_first_nonempty(names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        env::var(name)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn zc_parse_route_get_output(output: &str) -> RouteProbe {
+    let raw = output.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut probe = RouteProbe {
+        raw,
+        ..RouteProbe::default()
+    };
+    let tokens = output.split_whitespace().collect::<Vec<_>>();
+    for pair in tokens.windows(2) {
+        match pair[0] {
+            "dev" => probe.dev = Some(pair[1].to_string()),
+            "src" => probe.src = Some(pair[1].to_string()),
+            "from" if probe.src.is_none() => probe.src = Some(pair[1].to_string()),
+            _ => {}
+        }
+    }
+    probe
+}
+
+fn ip_is_unspecified(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_unspecified(),
+        IpAddr::V6(ip) => ip.is_unspecified(),
+    }
+}
+
+fn zc_route_get(peer: IpAddr, source: Option<IpAddr>) -> io::Result<RouteProbe> {
+    let mut command = Command::new("ip");
+    command
+        .arg("-o")
+        .arg("route")
+        .arg("get")
+        .arg(peer.to_string());
+    if let Some(source) = source {
+        command.arg("from").arg(source.to_string());
+    }
+    let output = command.output()?;
+    if !output.status.success() {
+        let source_label = source
+            .map(|source| format!(" from {source}"))
+            .unwrap_or_default();
+        return Err(io::Error::other(format!(
+            "ip route get {}{} exited with {}: {}",
+            peer,
+            source_label,
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(zc_parse_route_get_output(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn zc_route_alignment_seen(key: &str) -> bool {
+    let seen = ROUTE_ALIGNMENT_WARNED.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let Ok(mut seen) = seen.lock() else {
+        return false;
+    };
+    if seen.contains_key(key) {
+        true
+    } else {
+        seen.insert(key.to_string(), ());
+        false
+    }
+}
+
+fn zc_maybe_warn_route_alignment(label: &str, peer: SocketAddr, local: Option<SocketAddr>) {
+    let expected_dev = env_first_nonempty(&[
+        "URING_PLAY_EXPECT_ROUTE_DEV",
+        "URING_PLAY_EXPECT_DATA_IFACE",
+        "URING_PLAY_EXPECT_NETDEV",
+    ]);
+    let expected_src = env_first_nonempty(&[
+        "URING_PLAY_EXPECT_ROUTE_SRC",
+        "URING_PLAY_EXPECT_DATA_SRC",
+        "URING_PLAY_EXPECT_LOCAL_ADDR",
+    ]);
+    let probe_requested = env_enabled_or("URING_PLAY_ROUTE_PROBE", false)
+        || expected_dev.is_some()
+        || expected_src.is_some();
+    if !probe_requested {
+        return;
+    }
+
+    let route_source = local
+        .map(|addr| addr.ip())
+        .filter(|ip| !ip_is_unspecified(*ip));
+    let key = format!(
+        "{label}|{}|{}|{}|{}",
+        peer.ip(),
+        route_source
+            .map(|source| source.to_string())
+            .as_deref()
+            .unwrap_or("-"),
+        expected_dev.as_deref().unwrap_or("-"),
+        expected_src.as_deref().unwrap_or("-")
+    );
+    if zc_route_alignment_seen(&key) {
+        return;
+    }
+
+    let local_label = local
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    match zc_route_get(peer.ip(), route_source) {
+        Ok(route) => {
+            eprintln!(
+                "{label}-route-probe: peer={} local_socket={} probe_src={} route_dev={} route_src={} route=\"{}\"",
+                peer,
+                local_label,
+                route_source
+                    .map(|source| source.to_string())
+                    .as_deref()
+                    .unwrap_or("-"),
+                route.dev.as_deref().unwrap_or("unknown"),
+                route.src.as_deref().unwrap_or("unknown"),
+                route.raw
+            );
+            if expected_dev
+                .as_ref()
+                .is_some_and(|expected| route.dev.as_deref() != Some(expected.as_str()))
+            {
+                eprintln!(
+                    "PERF WARNING: {label}: route to peer={} uses dev={} but expected {}; fix host routes, source binding, or data-NIC selection before treating this run as topologically aligned",
+                    peer.ip(),
+                    route.dev.as_deref().unwrap_or("unknown"),
+                    expected_dev.as_deref().unwrap_or("-")
+                );
+            }
+            if expected_src
+                .as_ref()
+                .is_some_and(|expected| route.src.as_deref() != Some(expected.as_str()))
+            {
+                eprintln!(
+                    "PERF WARNING: {label}: route to peer={} uses src={} but expected {}; bind the data source address or add an explicit host route before treating this run as topologically aligned",
+                    peer.ip(),
+                    route.src.as_deref().unwrap_or("unknown"),
+                    expected_src.as_deref().unwrap_or("-")
+                );
+            }
+        }
+        Err(err) => {
+            eprintln!(
+                "PERF WARNING: {label}: could not probe route to peer={} with source={}: {err}",
+                peer.ip(),
+                route_source
+                    .map(|source| source.to_string())
+                    .as_deref()
+                    .unwrap_or("-")
+            );
+            eprintln!(
+                "PERF WARNING: {label}: could not prove route alignment for peer={} with `ip route get`; do not treat this run as topologically aligned",
+                peer.ip()
+            );
+        }
+    }
+
+    if let (Some(expected), Some(local)) = (expected_src.as_ref(), local) {
+        if local.ip().to_string() != *expected {
+            eprintln!(
+                "PERF WARNING: {label}: established socket local address is {} but expected {}; peer may be connected through the wrong NIC/IP",
+                local.ip(),
+                expected
+            );
+        }
+    }
 }
 
 fn print_tcp_bench_result(label: &str, total: usize, elapsed: Duration) {
@@ -4588,6 +4957,15 @@ fn configured_affinity_target_cpu(index: usize) -> usize {
     let stride = env_usize_or("URING_PLAY_PIN_STRIDE", 1).max(1);
     let count = env_usize_or("URING_PLAY_PIN_CPU_COUNT", online_cpu_count()).max(1);
     base + index.saturating_mul(stride) % count
+}
+
+fn explicit_affinity_map_configured() -> bool {
+    env::var("URING_PLAY_PIN_CPU_LIST")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        || env::var_os("URING_PLAY_PIN_BASE_CPU").is_some()
+        || env::var_os("URING_PLAY_PIN_CPU_COUNT").is_some()
+        || env::var_os("URING_PLAY_PIN_STRIDE").is_some()
 }
 
 fn affinity_target_cpu(index: usize) -> Option<usize> {
@@ -5214,7 +5592,11 @@ fn connect_tcp_bound(remote: SocketAddr, source_port: u16) -> io::Result<TcpStre
 fn tcp_bench_connect(addr: &str, port: u16, source_port: Option<u16>) -> io::Result<TcpStream> {
     let source_ip = tcp_bench_source_ip_from_env()?;
     if source_ip.is_none() && source_port.is_none() {
-        return TcpStream::connect((addr, port));
+        let stream = TcpStream::connect((addr, port))?;
+        if let Ok(peer) = stream.peer_addr() {
+            zc_maybe_warn_route_alignment("tcp-bench-connect", peer, stream.local_addr().ok());
+        }
+        return Ok(stream);
     }
     let remote = (addr, port)
         .to_socket_addrs()?
@@ -5243,9 +5625,17 @@ fn tcp_bench_connect(addr: &str, port: u16, source_port: Option<u16>) -> io::Res
                 ));
             }
         };
-        connect_tcp_bound_local_addr(remote, local)
+        let stream = connect_tcp_bound_local_addr(remote, local)?;
+        if let Ok(peer) = stream.peer_addr() {
+            zc_maybe_warn_route_alignment("tcp-bench-connect", peer, stream.local_addr().ok());
+        }
+        Ok(stream)
     } else {
-        connect_tcp_bound(remote, source_port.expect("source_port checked above"))
+        let stream = connect_tcp_bound(remote, source_port.expect("source_port checked above"))?;
+        if let Ok(peer) = stream.peer_addr() {
+            zc_maybe_warn_route_alignment("tcp-bench-connect", peer, stream.local_addr().ok());
+        }
+        Ok(stream)
     }
 }
 
@@ -5397,6 +5787,9 @@ fn zc_tcpmux_connect_tcp(
             ),
         )
     })?;
+    if let Ok(peer) = stream.peer_addr() {
+        zc_maybe_warn_route_alignment(context, peer, stream.local_addr().ok());
+    }
     Ok(stream)
 }
 
@@ -5979,9 +6372,11 @@ fn tcp_bench_mux_accept_tagged_listeners(
                 let mut streams = Vec::with_capacity(connections_per_port);
                 for conn_index in 0..connections_per_port {
                     let (stream, peer_addr) = listener.accept()?;
+                    let local_addr = stream.local_addr().ok();
                     set_tcp_nodelay_from_env(&stream)?;
                     set_tcp_bench_buffers(&stream);
                     let locality = observe_socket_locality(&stream);
+                    zc_maybe_warn_route_alignment("tcp-bench-mux-accept", peer_addr, local_addr);
                     println!(
                         "tcp-bench-uring-mux-server: accepted peer={peer_addr} lane={lane} \
                      port={port} conn={conn_index} {}",
@@ -12537,6 +12932,82 @@ struct ZcnblkConnectSpec {
     base_offset: u64,
 }
 
+struct ZcnblkPendingIo {
+    op: u16,
+    request_id: u64,
+    len: usize,
+    offset: u64,
+    issued_at: Instant,
+}
+
+fn zcnblk_track_pending_io(
+    pending: &mut BTreeMap<(u16, u64), ZcnblkPendingIo>,
+    op: u16,
+    request_id: u64,
+    len: usize,
+    offset: u64,
+    issued_at: Instant,
+) -> io::Result<()> {
+    let key = (op, request_id);
+    if pending.contains_key(&key) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("duplicate pending zcnblk request op={op} request_id={request_id}"),
+        ));
+    }
+    pending.insert(
+        key,
+        ZcnblkPendingIo {
+            op,
+            request_id,
+            len,
+            offset,
+            issued_at,
+        },
+    );
+    Ok(())
+}
+
+fn zcnblk_complete_pending_io(
+    pending: &mut BTreeMap<(u16, u64), ZcnblkPendingIo>,
+    expected_op: u16,
+    request_id: u64,
+    len: usize,
+    offset: u64,
+    latency: &mut LatencyHistogram,
+    context: &str,
+) -> io::Result<()> {
+    let pending = pending.remove(&(expected_op, request_id)).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{context} had no pending zcnblk request op={expected_op} request_id={request_id} offset={offset}"
+            ),
+        )
+    })?;
+    if pending.op != expected_op
+        || pending.request_id != request_id
+        || pending.len != len
+        || pending.offset != offset
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{context} pending request mismatch op={} request_id={} len={} offset={} expected_op={} request_id={} len={} offset={offset}",
+                pending.op,
+                pending.request_id,
+                pending.len,
+                pending.offset,
+                expected_op,
+                request_id,
+                len
+            ),
+        ));
+    }
+    latency.record_duration(pending.issued_at.elapsed());
+    Ok(())
+}
+
 #[derive(Default)]
 struct ZcnblkSendStats {
     worker: usize,
@@ -12550,9 +13021,17 @@ struct ZcnblkSendStats {
     frames: usize,
     read_frames: usize,
     write_frames: usize,
+    request_batches: usize,
+    request_batch_frames: usize,
+    max_request_batch_frames: usize,
+    write_batches: usize,
+    write_batch_frames: usize,
+    max_write_batch_frames: usize,
     elapsed: Duration,
     target_cpu: i32,
     affinity_applied: bool,
+    write_ack_latency: LatencyHistogram,
+    read_latency: LatencyHistogram,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12600,6 +13079,122 @@ impl ZcnblkOperationMode {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ZcnblkAccessPattern {
+    Linear,
+    Random { range_bytes: usize, seed: u64 },
+}
+
+impl ZcnblkAccessPattern {
+    fn from_env(bytes_per_connection: usize, chunk_bytes: usize) -> io::Result<Self> {
+        let mode = env::var("URING_PLAY_ZCNBLK_ACCESS")
+            .or_else(|_| env::var("URING_PLAY_ZCNBLK_OFFSET_MODE"))
+            .unwrap_or_else(|_| "linear".to_string())
+            .to_ascii_lowercase();
+        match mode.as_str() {
+            "" | "linear" | "sequential" | "seq" => Ok(Self::Linear),
+            "random" | "rand" | "rand4k" | "random-4k" => {
+                let range_bytes = env_size_opt("URING_PLAY_ZCNBLK_RANDOM_RANGE_BYTES")?
+                    .unwrap_or(bytes_per_connection);
+                if range_bytes < chunk_bytes || range_bytes % chunk_bytes != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "URING_PLAY_ZCNBLK_RANDOM_RANGE_BYTES={range_bytes} must be >= chunk_bytes={chunk_bytes} and a multiple of chunk_bytes"
+                        ),
+                    ));
+                }
+                if range_bytes > bytes_per_connection {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "URING_PLAY_ZCNBLK_RANDOM_RANGE_BYTES={range_bytes} exceeds bytes_per_connection={bytes_per_connection}; response validation expects requests inside the stream range"
+                        ),
+                    ));
+                }
+                let seed =
+                    env_u64_parse_or("URING_PLAY_ZCNBLK_RANDOM_SEED", 0x7a63_6e62_6c6b_0001)?;
+                Ok(Self::Random { range_bytes, seed })
+            }
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown URING_PLAY_ZCNBLK_ACCESS={other:?}; use linear or random"),
+            )),
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            Self::Linear => "linear".to_string(),
+            Self::Random { range_bytes, seed } => {
+                format!("random:range_bytes={range_bytes}:seed=0x{seed:016x}")
+            }
+        }
+    }
+
+    fn offset(
+        self,
+        spec: &ZcnblkConnectSpec,
+        issued_bytes: usize,
+        frame_index: usize,
+        bytes_per_connection: usize,
+        chunk_bytes: usize,
+    ) -> io::Result<u64> {
+        let relative = match self {
+            Self::Linear => issued_bytes,
+            Self::Random { range_bytes, seed } => {
+                let chunks = range_bytes / chunk_bytes;
+                let lane = spec.spec.lane as u64;
+                let conn = spec.spec.conn_index as u64;
+                let shard = spec.shard as u64;
+                let stream = lane.rotate_left(17) ^ conn.rotate_left(33) ^ shard.rotate_left(49);
+                let hash = splitmix64(
+                    seed ^ stream ^ (frame_index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15),
+                );
+                (hash as usize % chunks) * chunk_bytes
+            }
+        };
+        if relative >= bytes_per_connection {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "zcnblk access pattern produced relative offset {relative} outside bytes_per_connection={bytes_per_connection}"
+                ),
+            ));
+        }
+        spec.base_offset
+            .checked_add(relative as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zcnblk offset overflow"))
+    }
+}
+
+fn env_u64_parse_or(name: &str, default: u64) -> io::Result<u64> {
+    let Ok(value) = env::var(name) else {
+        return Ok(default);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(default);
+    }
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        return u64::from_str_radix(hex, 16).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid {name}={value:?}: {err}"),
+            )
+        });
+    }
+    value.parse::<u64>().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid {name}={value:?}: {err}"),
+        )
+    })
 }
 
 fn zcnblk_parse_io_mode(value: &str, env_name: &str) -> io::Result<TcpWalWriteMode> {
@@ -16039,6 +16634,22 @@ fn zcnblk_partition_connect_specs(
     shards
 }
 
+fn zcnblk_latency_fields(prefix: &str, latency: &LatencyHistogram) -> String {
+    format!(
+        "{prefix}_count={} {prefix}_avg_ns={} {prefix}_min_ns={} \
+         {prefix}_p50_ns={} {prefix}_p95_ns={} {prefix}_p99_ns={} \
+         {prefix}_p999_ns={} {prefix}_max_ns={}",
+        latency.count,
+        latency.avg_ns(),
+        latency.min_ns(),
+        latency.percentile_ns(50, 100),
+        latency.percentile_ns(95, 100),
+        latency.percentile_ns(99, 100),
+        latency.percentile_ns(999, 1000),
+        latency.max_ns(),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn zcnblk_send_worker(
     worker: usize,
@@ -16050,6 +16661,7 @@ fn zcnblk_send_worker(
     chunk_bytes: usize,
     payload_pattern: SendPayloadPattern,
     op_mode: ZcnblkOperationMode,
+    access_pattern: ZcnblkAccessPattern,
     crypto_config: ZcnblkCryptoConfig,
     ready_barrier: Arc<Barrier>,
     start_barrier: Arc<Barrier>,
@@ -16099,6 +16711,31 @@ fn zcnblk_send_worker(
     let read_window = env_usize_or("URING_PLAY_ZCNBLK_READ_WINDOW", 64).max(1);
     let wait_write_acks = env_enabled_or("URING_PLAY_ZCNBLK_WAIT_WRITE_ACKS", false);
     let batch_depth = env_usize_or("URING_PLAY_ZCNBLK_BATCH_DEPTH", 1).max(1);
+    let latency_enabled = env_enabled_or("URING_PLAY_ZCNBLK_LATENCY", false);
+    let drain_ready_responses = env_enabled_or("URING_PLAY_ZCNBLK_DRAIN_READY_RESPONSES", true);
+    let write_window_default = batch_depth.saturating_mul(16).max(read_window);
+    let write_window = env_usize_or("URING_PLAY_ZCNBLK_WRITE_WINDOW", write_window_default).max(1);
+    let fan_batch_window = env_usize_or("URING_PLAY_ZCNBLK_WAL_BATCH_WINDOW", 16).max(1);
+    let min_pipelined_write_window = batch_depth.saturating_mul(fan_batch_window);
+    if worker == 0
+        && zcnblk_perf_warnings_enabled()
+        && wait_write_acks
+        && batch_depth > 1
+        && write_window < min_pipelined_write_window
+    {
+        eprintln!(
+            "PERF WARNING: zcnblk-send write_window={write_window} is below \
+             batch_depth({batch_depth}) * fan_batch_window({fan_batch_window}); \
+             this forces upstream-idle drains in fan WAL and keeps effective leaf batches \
+             smaller than the configured topology window"
+        );
+    }
+    if worker == 0 && latency_enabled && op_mode != ZcnblkOperationMode::Read && !wait_write_acks {
+        eprintln!(
+            "PERF WARNING: URING_PLAY_ZCNBLK_LATENCY=1 cannot report write latency unless \
+             URING_PLAY_ZCNBLK_WAIT_WRITE_ACKS=1; writes complete at issue time in this run"
+        );
+    }
     let mut issued = vec![0usize; streams.len()];
     let mut completed = vec![0usize; streams.len()];
     let mut in_flight_reads = vec![0usize; streams.len()];
@@ -16114,6 +16751,28 @@ fn zcnblk_send_worker(
     let mut frames = 0usize;
     let mut read_frames = 0usize;
     let mut write_frames = 0usize;
+    let mut request_batches = 0usize;
+    let mut request_batch_frames = 0usize;
+    let mut max_request_batch_frames = 0usize;
+    let mut write_batches = 0usize;
+    let mut write_batch_frames = 0usize;
+    let mut max_write_batch_frames = 0usize;
+    let mut pending_write_latency = if latency_enabled {
+        (0..streams.len())
+            .map(|_| BTreeMap::<(u16, u64), ZcnblkPendingIo>::new())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut pending_read_latency = if latency_enabled {
+        (0..streams.len())
+            .map(|_| BTreeMap::<(u16, u64), ZcnblkPendingIo>::new())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut write_ack_latency = LatencyHistogram::new();
+    let mut read_latency = LatencyHistogram::new();
 
     ready_barrier.wait();
     start_barrier.wait();
@@ -16127,6 +16786,431 @@ fn zcnblk_send_worker(
                 if op == ZCNBLK_OP_READ && in_flight_reads[idx] >= read_window {
                     break;
                 }
+                if op == ZCNBLK_OP_WRITE && wait_write_acks && in_flight_writes[idx] >= write_window
+                {
+                    break;
+                }
+                if op == ZCNBLK_OP_READ && op_mode == ZcnblkOperationMode::Read && batch_depth > 1 {
+                    if streams[idx].uses_payload_crypto() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "zcnblk-send payload AES mode does not support request batches",
+                        ));
+                    }
+                    let remaining_frames =
+                        (bytes_per_connection - issued[idx]).div_ceil(chunk_bytes);
+                    let target_batch = batch_depth.min(read_window).min(remaining_frames);
+                    let available_window = read_window.saturating_sub(in_flight_reads[idx]);
+                    if available_window == 0 {
+                        break;
+                    }
+                    if in_flight_reads[idx] > 0 && available_window < target_batch {
+                        break;
+                    }
+                    let batch_limit = target_batch.min(available_window);
+                    if batch_limit <= 1 {
+                        // Let the ordinary single-frame path handle the tail.
+                    } else {
+                        let mut header_bytes =
+                            Vec::with_capacity(batch_limit.saturating_mul(ZCNBLK_FRAME_HEADER_LEN));
+                        let mut batch_pending = if latency_enabled {
+                            Vec::with_capacity(batch_limit)
+                        } else {
+                            Vec::new()
+                        };
+                        let mut batch_count = 0usize;
+                        while issued[idx] < bytes_per_connection && batch_count < batch_limit {
+                            let frame_index = issued[idx] / chunk_bytes;
+                            let len = (bytes_per_connection - issued[idx]).min(chunk_bytes);
+                            let offset = access_pattern.offset(
+                                &specs[idx],
+                                issued[idx],
+                                frame_index,
+                                bytes_per_connection,
+                                chunk_bytes,
+                            )?;
+                            let request_id = ((idx as u64) << 32) | frame_index as u64;
+                            let topology = ZcnblkFrameTopology {
+                                lane_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "zcnblk lane exceeds u32",
+                                    )
+                                })?,
+                                lane_count: u32::try_from(lane_count).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "zcnblk lane count exceeds u32",
+                                    )
+                                })?,
+                                preferred_worker: u32::try_from(worker).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "zcnblk worker exceeds u32",
+                                    )
+                                })?,
+                                queue_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "zcnblk queue exceeds u32",
+                                    )
+                                })?,
+                                request_id,
+                                tier_id: u32::try_from(specs[idx].shard).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "zcnblk tier exceeds u32",
+                                    )
+                                })?,
+                                topology_flags: ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE,
+                            };
+                            let frame = ZcnblkFrameHeader::with_topology(
+                                ZCNBLK_OP_READ,
+                                0,
+                                specs[idx].shard,
+                                len,
+                                offset,
+                                topology,
+                            )?;
+                            header_bytes.extend_from_slice(&frame.encode());
+                            issued[idx] += len;
+                            frames += 1;
+                            read_frames += 1;
+                            batch_count += 1;
+                            if latency_enabled {
+                                batch_pending.push((request_id, len, offset));
+                            }
+                            in_flight_reads[idx] += 1;
+                        }
+                        let outer = ZcnblkFrameHeader::with_topology(
+                            ZCNBLK_OP_BATCH,
+                            0,
+                            0,
+                            batch_count,
+                            0,
+                            ZcnblkFrameTopology {
+                                lane_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "zcnblk lane exceeds u32",
+                                    )
+                                })?,
+                                lane_count: u32::try_from(lane_count).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "zcnblk lane count exceeds u32",
+                                    )
+                                })?,
+                                preferred_worker: u32::try_from(worker).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "zcnblk worker exceeds u32",
+                                    )
+                                })?,
+                                queue_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "zcnblk queue exceeds u32",
+                                    )
+                                })?,
+                                request_id: 0,
+                                tier_id: 0,
+                                topology_flags: ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE,
+                            },
+                        )?
+                        .encode();
+                        let issued_at = if latency_enabled {
+                            Some(Instant::now())
+                        } else {
+                            None
+                        };
+                        streams[idx].write_all(&outer)?;
+                        streams[idx].write_all(&header_bytes)?;
+                        if let Some(issued_at) = issued_at {
+                            for (request_id, len, offset) in batch_pending {
+                                zcnblk_track_pending_io(
+                                    &mut pending_read_latency[idx],
+                                    ZCNBLK_OP_READ,
+                                    request_id,
+                                    len,
+                                    offset,
+                                    issued_at,
+                                )?;
+                            }
+                        }
+                        wire_bytes = wire_bytes
+                            .checked_add(ZCNBLK_FRAME_HEADER_LEN + header_bytes.len())
+                            .ok_or_else(|| {
+                                io::Error::new(io::ErrorKind::InvalidData, "zcnblk wire overflow")
+                            })?;
+                        request_batches = request_batches.checked_add(1).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "zcnblk request batch overflow",
+                            )
+                        })?;
+                        request_batch_frames = request_batch_frames
+                            .checked_add(batch_count)
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcnblk request batch frame overflow",
+                                )
+                            })?;
+                        max_request_batch_frames = max_request_batch_frames.max(batch_count);
+                        progressed = true;
+                        continue;
+                    }
+                }
+                if op_mode == ZcnblkOperationMode::Mixed && batch_depth > 1 {
+                    if streams[idx].uses_payload_crypto() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "zcnblk-send payload AES mode does not support request batches",
+                        ));
+                    }
+                    let remaining_frames =
+                        (bytes_per_connection - issued[idx]).div_ceil(chunk_bytes);
+                    let mut probe_issued = issued[idx];
+                    let mut batch_count = 0usize;
+                    let mut batch_payload_len = 0usize;
+                    let mut batch_read_count = 0usize;
+                    let mut batch_write_count = 0usize;
+                    let mut header_bytes =
+                        Vec::with_capacity(batch_depth.saturating_mul(ZCNBLK_FRAME_HEADER_LEN));
+                    let mut payload_bytes =
+                        Vec::with_capacity(batch_depth.saturating_mul(chunk_bytes / 2));
+                    let mut batch_pending_reads = if latency_enabled {
+                        Vec::with_capacity(batch_depth)
+                    } else {
+                        Vec::new()
+                    };
+                    let mut batch_pending_writes = if latency_enabled && wait_write_acks {
+                        Vec::with_capacity(batch_depth)
+                    } else {
+                        Vec::new()
+                    };
+                    while probe_issued < bytes_per_connection && batch_count < batch_depth {
+                        let batch_frame_index = probe_issued / chunk_bytes;
+                        let batch_op = op_mode.op_for_frame(batch_frame_index);
+                        if batch_op == ZCNBLK_OP_READ
+                            && in_flight_reads[idx] + batch_read_count >= read_window
+                        {
+                            break;
+                        }
+                        if batch_op == ZCNBLK_OP_WRITE
+                            && wait_write_acks
+                            && in_flight_writes[idx] + batch_write_count >= write_window
+                        {
+                            break;
+                        }
+                        let len = (bytes_per_connection - probe_issued).min(chunk_bytes);
+                        let offset = access_pattern.offset(
+                            &specs[idx],
+                            probe_issued,
+                            batch_frame_index,
+                            bytes_per_connection,
+                            chunk_bytes,
+                        )?;
+                        let request_id = ((idx as u64) << 32) | batch_frame_index as u64;
+                        let topology = ZcnblkFrameTopology {
+                            lane_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk lane exceeds u32",
+                                )
+                            })?,
+                            lane_count: u32::try_from(lane_count).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk lane count exceeds u32",
+                                )
+                            })?,
+                            preferred_worker: u32::try_from(worker).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk worker exceeds u32",
+                                )
+                            })?,
+                            queue_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk queue exceeds u32",
+                                )
+                            })?,
+                            request_id,
+                            tier_id: u32::try_from(specs[idx].shard).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "zcnblk tier exceeds u32",
+                                )
+                            })?,
+                            topology_flags: ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE,
+                        };
+                        let frame = ZcnblkFrameHeader::with_topology(
+                            batch_op,
+                            0,
+                            specs[idx].shard,
+                            len,
+                            offset,
+                            topology,
+                        )?;
+                        header_bytes.extend_from_slice(&frame.encode());
+                        if batch_op == ZCNBLK_OP_WRITE {
+                            if payload_pattern.is_offset_dependent() {
+                                payload_pattern.fill_for_zcnblk(
+                                    &mut payload[..len],
+                                    specs[idx].shard,
+                                    offset,
+                                );
+                            }
+                            payload_bytes.extend_from_slice(&payload[..len]);
+                            batch_payload_len =
+                                batch_payload_len.checked_add(len).ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "zcnblk mixed batch payload overflow",
+                                    )
+                                })?;
+                            batch_write_count += 1;
+                            if latency_enabled && wait_write_acks {
+                                batch_pending_writes.push((request_id, len, offset));
+                            }
+                        } else {
+                            batch_read_count += 1;
+                            if latency_enabled {
+                                batch_pending_reads.push((request_id, len, offset));
+                            }
+                        }
+                        probe_issued += len;
+                        batch_count += 1;
+                    }
+                    if batch_count == 0 {
+                        break;
+                    }
+                    if batch_count == 1
+                        && remaining_frames > 1
+                        && (in_flight_reads[idx] != 0 || in_flight_writes[idx] != 0)
+                    {
+                        break;
+                    }
+                    if batch_count > 1 {
+                        let outer = ZcnblkFrameHeader::with_topology(
+                            ZCNBLK_OP_BATCH,
+                            0,
+                            0,
+                            batch_count,
+                            batch_payload_len as u64,
+                            ZcnblkFrameTopology {
+                                lane_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "zcnblk lane exceeds u32",
+                                    )
+                                })?,
+                                lane_count: u32::try_from(lane_count).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "zcnblk lane count exceeds u32",
+                                    )
+                                })?,
+                                preferred_worker: u32::try_from(worker).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "zcnblk worker exceeds u32",
+                                    )
+                                })?,
+                                queue_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "zcnblk queue exceeds u32",
+                                    )
+                                })?,
+                                request_id: 0,
+                                tier_id: 0,
+                                topology_flags: ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE,
+                            },
+                        )?
+                        .encode();
+                        let issued_at = if latency_enabled {
+                            Some(Instant::now())
+                        } else {
+                            None
+                        };
+                        streams[idx].write_all(&outer)?;
+                        streams[idx].write_all(&header_bytes)?;
+                        streams[idx].write_all(&payload_bytes)?;
+                        if let Some(issued_at) = issued_at {
+                            for (request_id, len, offset) in batch_pending_reads {
+                                zcnblk_track_pending_io(
+                                    &mut pending_read_latency[idx],
+                                    ZCNBLK_OP_READ,
+                                    request_id,
+                                    len,
+                                    offset,
+                                    issued_at,
+                                )?;
+                            }
+                            if wait_write_acks {
+                                for (request_id, len, offset) in batch_pending_writes {
+                                    zcnblk_track_pending_io(
+                                        &mut pending_write_latency[idx],
+                                        ZCNBLK_OP_WRITE,
+                                        request_id,
+                                        len,
+                                        offset,
+                                        issued_at,
+                                    )?;
+                                }
+                            }
+                        }
+                        issued[idx] = probe_issued;
+                        frames += batch_count;
+                        read_frames += batch_read_count;
+                        write_frames += batch_write_count;
+                        write_bytes =
+                            write_bytes.checked_add(batch_payload_len).ok_or_else(|| {
+                                io::Error::new(io::ErrorKind::InvalidData, "zcnblk write overflow")
+                            })?;
+                        in_flight_reads[idx] += batch_read_count;
+                        if wait_write_acks {
+                            in_flight_writes[idx] += batch_write_count;
+                        } else {
+                            completed[idx] = completed[idx]
+                                .checked_add(batch_payload_len)
+                                .ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "zcnblk completion overflow",
+                                    )
+                                })?;
+                        }
+                        wire_bytes = wire_bytes
+                            .checked_add(
+                                ZCNBLK_FRAME_HEADER_LEN + header_bytes.len() + payload_bytes.len(),
+                            )
+                            .ok_or_else(|| {
+                                io::Error::new(io::ErrorKind::InvalidData, "zcnblk wire overflow")
+                            })?;
+                        request_batches = request_batches.checked_add(1).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "zcnblk request batch overflow",
+                            )
+                        })?;
+                        request_batch_frames = request_batch_frames
+                            .checked_add(batch_count)
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcnblk request batch frame overflow",
+                                )
+                            })?;
+                        max_request_batch_frames = max_request_batch_frames.max(batch_count);
+                        progressed = true;
+                        continue;
+                    }
+                }
                 if op == ZCNBLK_OP_WRITE && op_mode == ZcnblkOperationMode::Write && batch_depth > 1
                 {
                     if streams[idx].uses_payload_crypto() {
@@ -16135,24 +17219,35 @@ fn zcnblk_send_worker(
                             "zcnblk-send payload AES mode does not support request batches",
                         ));
                     }
+                    let batch_limit = if wait_write_acks {
+                        batch_depth.min(write_window.saturating_sub(in_flight_writes[idx]))
+                    } else {
+                        batch_depth
+                    };
+                    if batch_limit == 0 {
+                        break;
+                    }
                     let mut header_bytes =
-                        Vec::with_capacity(batch_depth.saturating_mul(ZCNBLK_FRAME_HEADER_LEN));
+                        Vec::with_capacity(batch_limit.saturating_mul(ZCNBLK_FRAME_HEADER_LEN));
                     let mut payload_bytes =
-                        Vec::with_capacity(batch_depth.saturating_mul(chunk_bytes));
+                        Vec::with_capacity(batch_limit.saturating_mul(chunk_bytes));
+                    let mut batch_pending = if latency_enabled && wait_write_acks {
+                        Vec::with_capacity(batch_limit)
+                    } else {
+                        Vec::new()
+                    };
                     let mut batch_count = 0usize;
                     let mut batch_payload_len = 0usize;
-                    while issued[idx] < bytes_per_connection && batch_count < batch_depth {
+                    while issued[idx] < bytes_per_connection && batch_count < batch_limit {
                         let frame_index = issued[idx] / chunk_bytes;
                         let len = (bytes_per_connection - issued[idx]).min(chunk_bytes);
-                        let offset = specs[idx]
-                            .base_offset
-                            .checked_add(issued[idx] as u64)
-                            .ok_or_else(|| {
-                                io::Error::new(
-                                    io::ErrorKind::InvalidInput,
-                                    "zcnblk offset overflow",
-                                )
-                            })?;
+                        let offset = access_pattern.offset(
+                            &specs[idx],
+                            issued[idx],
+                            frame_index,
+                            bytes_per_connection,
+                            chunk_bytes,
+                        )?;
                         let request_id = ((idx as u64) << 32) | frame_index as u64;
                         let topology = ZcnblkFrameTopology {
                             lane_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
@@ -16218,6 +17313,9 @@ fn zcnblk_send_worker(
                                 )
                             })?;
                         if wait_write_acks {
+                            if latency_enabled {
+                                batch_pending.push((request_id, len, offset));
+                            }
                             in_flight_writes[idx] += 1;
                         } else {
                             completed[idx] = completed[idx].checked_add(len).ok_or_else(|| {
@@ -16265,9 +17363,26 @@ fn zcnblk_send_worker(
                         },
                     )?
                     .encode();
+                    let issued_at = if latency_enabled && wait_write_acks {
+                        Some(Instant::now())
+                    } else {
+                        None
+                    };
                     streams[idx].write_all(&outer)?;
                     streams[idx].write_all(&header_bytes)?;
                     streams[idx].write_all(&payload_bytes)?;
+                    if let Some(issued_at) = issued_at {
+                        for (request_id, len, offset) in batch_pending {
+                            zcnblk_track_pending_io(
+                                &mut pending_write_latency[idx],
+                                ZCNBLK_OP_WRITE,
+                                request_id,
+                                len,
+                                offset,
+                                issued_at,
+                            )?;
+                        }
+                    }
                     wire_bytes = wire_bytes
                         .checked_add(
                             ZCNBLK_FRAME_HEADER_LEN + header_bytes.len() + payload_bytes.len(),
@@ -16275,16 +17390,28 @@ fn zcnblk_send_worker(
                         .ok_or_else(|| {
                             io::Error::new(io::ErrorKind::InvalidData, "zcnblk wire overflow")
                         })?;
+                    write_batches = write_batches.checked_add(1).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "zcnblk write batch overflow")
+                    })?;
+                    write_batch_frames =
+                        write_batch_frames.checked_add(batch_count).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "zcnblk write batch frame overflow",
+                            )
+                        })?;
+                    max_write_batch_frames = max_write_batch_frames.max(batch_count);
                     progressed = true;
                     continue;
                 }
                 let len = (bytes_per_connection - issued[idx]).min(chunk_bytes);
-                let offset = specs[idx]
-                    .base_offset
-                    .checked_add(issued[idx] as u64)
-                    .ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::InvalidInput, "zcnblk offset overflow")
-                    })?;
+                let offset = access_pattern.offset(
+                    &specs[idx],
+                    issued[idx],
+                    frame_index,
+                    bytes_per_connection,
+                    chunk_bytes,
+                )?;
                 let request_id = ((idx as u64) << 32) | frame_index as u64;
                 let topology = ZcnblkFrameTopology {
                     lane_id: u32::try_from(specs[idx].spec.lane).map_err(|_| {
@@ -16325,11 +17452,26 @@ fn zcnblk_send_worker(
                             offset,
                         );
                     }
+                    let issued_at = if latency_enabled && wait_write_acks {
+                        Some(Instant::now())
+                    } else {
+                        None
+                    };
                     wire_bytes +=
                         streams[idx].write_frame_payload(&header, &payload[..len], false)?;
                     write_bytes += len;
                     write_frames += 1;
                     if wait_write_acks {
+                        if let Some(issued_at) = issued_at {
+                            zcnblk_track_pending_io(
+                                &mut pending_write_latency[idx],
+                                ZCNBLK_OP_WRITE,
+                                request_id,
+                                len,
+                                offset,
+                                issued_at,
+                            )?;
+                        }
                         in_flight_writes[idx] += 1;
                     } else {
                         completed[idx] = completed[idx].checked_add(len).ok_or_else(|| {
@@ -16337,7 +17479,22 @@ fn zcnblk_send_worker(
                         })?;
                     }
                 } else {
+                    let issued_at = if latency_enabled {
+                        Some(Instant::now())
+                    } else {
+                        None
+                    };
                     wire_bytes += streams[idx].write_frame_payload(&header, &[], false)?;
+                    if let Some(issued_at) = issued_at {
+                        zcnblk_track_pending_io(
+                            &mut pending_read_latency[idx],
+                            ZCNBLK_OP_READ,
+                            request_id,
+                            len,
+                            offset,
+                            issued_at,
+                        )?;
+                    }
                     in_flight_reads[idx] += 1;
                     read_frames += 1;
                 }
@@ -16345,115 +17502,332 @@ fn zcnblk_send_worker(
         }
 
         for idx in 0..streams.len() {
-            if in_flight_reads[idx] == 0 && in_flight_writes[idx] == 0 {
-                continue;
-            }
-            let mut response_header = [0u8; ZCNBLK_FRAME_HEADER_LEN];
-            streams[idx].read_exact(&mut response_header)?;
-            let response = ZcnblkFrameHeader::decode(&response_header)?;
-            let len = response.len as usize;
-            let response_end = response
-                .offset
-                .checked_add(response.len as u64)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "zcnblk response offset overflow",
-                    )
-                })?;
-            let expected_start = specs[idx].base_offset;
-            let expected_end = specs[idx]
-                .base_offset
-                .checked_add(bytes_per_connection as u64)
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk expected range overflow")
-                })?;
-            let response_header = response.encode();
-            if response.op == ZCNBLK_OP_WRITE_ACK {
-                if !wait_write_acks
-                    || response.shard as usize != specs[idx].shard
-                    || len == 0
-                    || len > chunk_bytes
-                    || response.offset < expected_start
-                    || response_end > expected_end
-                {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "zcnblk write ack mismatch op={} shard={} len={} offset={}",
-                            response.op, response.shard, response.len, response.offset
-                        ),
-                    ));
+            let mut drained_for_stream = false;
+            loop {
+                if in_flight_reads[idx] == 0 && in_flight_writes[idx] == 0 {
+                    break;
                 }
-                let mut empty = [];
-                wire_bytes +=
-                    streams[idx].read_frame_payload(&response_header, &mut empty, true)?
-                        + ZCNBLK_FRAME_HEADER_LEN;
-                in_flight_writes[idx] -= 1;
-            } else {
-                if response.op != ZCNBLK_OP_READ_RESP
-                    || response.shard as usize != specs[idx].shard
-                    || len == 0
-                    || len > chunk_bytes
-                    || response.offset < expected_start
-                    || response_end > expected_end
+                if drained_for_stream
+                    && (!drain_ready_responses
+                        || !zcnblk_fan_wal_upstream_next_request_ready(&streams[idx])?)
                 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "zcnblk read response mismatch op={} shard={} len={} offset={}",
-                            response.op, response.shard, response.len, response.offset
-                        ),
-                    ));
+                    break;
                 }
-                wire_bytes += streams[idx].read_frame_payload(
-                    &response_header,
-                    &mut read_buf[..len],
-                    true,
-                )? + ZCNBLK_FRAME_HEADER_LEN;
-                if verify_reads {
-                    payload_pattern.fill_for_zcnblk(
-                        &mut expected_buf[..len],
-                        specs[idx].shard,
-                        response.offset,
-                    );
-                    let got_checksum = checksum_bytes_scalar(&read_buf[..len]);
-                    let want_checksum = checksum_bytes_scalar(&expected_buf[..len]);
-                    read_checksum = read_checksum.wrapping_add(got_checksum);
-                    expected_checksum = expected_checksum.wrapping_add(want_checksum);
-                    if read_buf[..len] != expected_buf[..len] {
-                        let mismatch = read_buf[..len]
-                            .iter()
-                            .zip(&expected_buf[..len])
-                            .position(|(got, want)| got != want)
-                            .unwrap_or(0);
+                let mut response_header = [0u8; ZCNBLK_FRAME_HEADER_LEN];
+                streams[idx].read_exact(&mut response_header)?;
+                let response = ZcnblkFrameHeader::decode(&response_header)?;
+                let expected_start = specs[idx].base_offset;
+                let expected_end = specs[idx]
+                    .base_offset
+                    .checked_add(bytes_per_connection as u64)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "zcnblk expected range overflow")
+                    })?;
+                if response.op == ZCNBLK_OP_BATCH_RESP {
+                    let count = response.len as usize;
+                    let payload_bytes = usize::try_from(response.offset).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "zcnblk batch response payload byte count overflow",
+                        )
+                    })?;
+                    if count == 0 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "zcnblk got an empty batch response",
+                        ));
+                    }
+                    let batch_frames = zcnblk_read_batch_headers(
+                        &mut streams[idx],
+                        count,
+                        "zcnblk-send-response",
+                    )?;
+                    wire_bytes = wire_bytes
+                        .checked_add(
+                            ZCNBLK_FRAME_HEADER_LEN
+                                + count * ZCNBLK_FRAME_HEADER_LEN
+                                + payload_bytes,
+                        )
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "zcnblk wire overflow")
+                        })?;
+                    let mut batch_payload_read = 0usize;
+                    for member in batch_frames {
+                        let len = member.len as usize;
+                        let member_end =
+                            member
+                                .offset
+                                .checked_add(member.len as u64)
+                                .ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "zcnblk batch response offset overflow",
+                                    )
+                                })?;
+                        if member.shard as usize != specs[idx].shard
+                            || len == 0
+                            || len > chunk_bytes
+                            || member.offset < expected_start
+                            || member_end > expected_end
+                        {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "zcnblk batch response member mismatch op={} shard={} len={} offset={}",
+                                    member.op, member.shard, member.len, member.offset
+                                ),
+                            ));
+                        }
+                        if member.op == ZCNBLK_OP_WRITE_ACK {
+                            if !wait_write_acks {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcnblk got batched write ack while write acks are disabled",
+                                ));
+                            }
+                            if in_flight_writes[idx] == 0 {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcnblk write ack batch exceeded inflight writes",
+                                ));
+                            }
+                            in_flight_writes[idx] -= 1;
+                            if latency_enabled {
+                                zcnblk_complete_pending_io(
+                                    &mut pending_write_latency[idx],
+                                    ZCNBLK_OP_WRITE,
+                                    member.topology.request_id,
+                                    len,
+                                    member.offset,
+                                    &mut write_ack_latency,
+                                    "zcnblk batch write ack",
+                                )?;
+                            }
+                        } else if member.op == ZCNBLK_OP_READ_RESP {
+                            let next_payload_read =
+                                batch_payload_read.checked_add(len).ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "zcnblk batch response payload overflow",
+                                    )
+                                })?;
+                            if next_payload_read > payload_bytes {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcnblk batch response read payload exceeded outer byte count",
+                                ));
+                            }
+                            streams[idx].read_exact(&mut read_buf[..len])?;
+                            batch_payload_read = next_payload_read;
+                            if latency_enabled {
+                                zcnblk_complete_pending_io(
+                                    &mut pending_read_latency[idx],
+                                    ZCNBLK_OP_READ,
+                                    member.topology.request_id,
+                                    len,
+                                    member.offset,
+                                    &mut read_latency,
+                                    "zcnblk batch read response",
+                                )?;
+                            }
+                            if verify_reads {
+                                payload_pattern.fill_for_zcnblk(
+                                    &mut expected_buf[..len],
+                                    specs[idx].shard,
+                                    member.offset,
+                                );
+                                let got_checksum = checksum_bytes_scalar(&read_buf[..len]);
+                                let want_checksum = checksum_bytes_scalar(&expected_buf[..len]);
+                                read_checksum = read_checksum.wrapping_add(got_checksum);
+                                expected_checksum = expected_checksum.wrapping_add(want_checksum);
+                                if read_buf[..len] != expected_buf[..len] {
+                                    let mismatch = read_buf[..len]
+                                        .iter()
+                                        .zip(&expected_buf[..len])
+                                        .position(|(got, want)| got != want)
+                                        .unwrap_or(0);
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!(
+                                            "zcnblk batch read verify mismatch stream={idx} shard={} offset={} len={len} mismatch_at={} got=0x{:02x} expected=0x{:02x} got_checksum=0x{got_checksum:016x} expected_checksum=0x{want_checksum:016x}",
+                                            member.shard,
+                                            member.offset,
+                                            mismatch,
+                                            read_buf[mismatch],
+                                            expected_buf[mismatch],
+                                        ),
+                                    ));
+                                }
+                                verified_read_bytes =
+                                    verified_read_bytes.checked_add(len).ok_or_else(|| {
+                                        io::Error::new(
+                                            io::ErrorKind::InvalidData,
+                                            "zcnblk verified bytes overflow",
+                                        )
+                                    })?;
+                            }
+                            if in_flight_reads[idx] == 0 {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcnblk read response batch exceeded inflight reads",
+                                ));
+                            }
+                            in_flight_reads[idx] -= 1;
+                            read_bytes += len;
+                        } else {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("zcnblk batch response got unsupported op={}", member.op),
+                            ));
+                        }
+                        completed[idx] = completed[idx].checked_add(len).ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "zcnblk completion overflow")
+                        })?;
+                    }
+                    if batch_payload_read != payload_bytes {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             format!(
-                                "zcnblk read verify mismatch stream={idx} shard={} offset={} len={len} mismatch_at={} got=0x{:02x} expected=0x{:02x} got_checksum=0x{got_checksum:016x} expected_checksum=0x{want_checksum:016x}",
-                                response.shard,
-                                response.offset,
-                                mismatch,
-                                read_buf[mismatch],
-                                expected_buf[mismatch],
+                                "zcnblk batch response payload mismatch read={batch_payload_read} expected={payload_bytes}"
                             ),
                         ));
                     }
-                    verified_read_bytes =
-                        verified_read_bytes.checked_add(len).ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "zcnblk verified bytes overflow",
-                            )
-                        })?;
+                    progressed = true;
+                    drained_for_stream = true;
+                    continue;
                 }
-                in_flight_reads[idx] -= 1;
-                read_bytes += len;
+                let len = response.len as usize;
+                let response_end = response
+                    .offset
+                    .checked_add(response.len as u64)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "zcnblk response offset overflow",
+                        )
+                    })?;
+                let response_header = response.encode();
+                if response.op == ZCNBLK_OP_WRITE_ACK {
+                    if !wait_write_acks
+                        || response.shard as usize != specs[idx].shard
+                        || len == 0
+                        || len > chunk_bytes
+                        || response.offset < expected_start
+                        || response_end > expected_end
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "zcnblk write ack mismatch op={} shard={} len={} offset={}",
+                                response.op, response.shard, response.len, response.offset
+                            ),
+                        ));
+                    }
+                    let mut empty = [];
+                    wire_bytes +=
+                        streams[idx].read_frame_payload(&response_header, &mut empty, true)?
+                            + ZCNBLK_FRAME_HEADER_LEN;
+                    if in_flight_writes[idx] == 0 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "zcnblk write ack exceeded inflight writes",
+                        ));
+                    }
+                    in_flight_writes[idx] -= 1;
+                    if latency_enabled {
+                        zcnblk_complete_pending_io(
+                            &mut pending_write_latency[idx],
+                            ZCNBLK_OP_WRITE,
+                            response.topology.request_id,
+                            len,
+                            response.offset,
+                            &mut write_ack_latency,
+                            "zcnblk write ack",
+                        )?;
+                    }
+                } else {
+                    if response.op != ZCNBLK_OP_READ_RESP
+                        || response.shard as usize != specs[idx].shard
+                        || len == 0
+                        || len > chunk_bytes
+                        || response.offset < expected_start
+                        || response_end > expected_end
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "zcnblk read response mismatch op={} shard={} len={} offset={}",
+                                response.op, response.shard, response.len, response.offset
+                            ),
+                        ));
+                    }
+                    wire_bytes += streams[idx].read_frame_payload(
+                        &response_header,
+                        &mut read_buf[..len],
+                        true,
+                    )? + ZCNBLK_FRAME_HEADER_LEN;
+                    if latency_enabled {
+                        zcnblk_complete_pending_io(
+                            &mut pending_read_latency[idx],
+                            ZCNBLK_OP_READ,
+                            response.topology.request_id,
+                            len,
+                            response.offset,
+                            &mut read_latency,
+                            "zcnblk read response",
+                        )?;
+                    }
+                    if verify_reads {
+                        payload_pattern.fill_for_zcnblk(
+                            &mut expected_buf[..len],
+                            specs[idx].shard,
+                            response.offset,
+                        );
+                        let got_checksum = checksum_bytes_scalar(&read_buf[..len]);
+                        let want_checksum = checksum_bytes_scalar(&expected_buf[..len]);
+                        read_checksum = read_checksum.wrapping_add(got_checksum);
+                        expected_checksum = expected_checksum.wrapping_add(want_checksum);
+                        if read_buf[..len] != expected_buf[..len] {
+                            let mismatch = read_buf[..len]
+                                .iter()
+                                .zip(&expected_buf[..len])
+                                .position(|(got, want)| got != want)
+                                .unwrap_or(0);
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "zcnblk read verify mismatch stream={idx} shard={} offset={} len={len} mismatch_at={} got=0x{:02x} expected=0x{:02x} got_checksum=0x{got_checksum:016x} expected_checksum=0x{want_checksum:016x}",
+                                    response.shard,
+                                    response.offset,
+                                    mismatch,
+                                    read_buf[mismatch],
+                                    expected_buf[mismatch],
+                                ),
+                            ));
+                        }
+                        verified_read_bytes =
+                            verified_read_bytes.checked_add(len).ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "zcnblk verified bytes overflow",
+                                )
+                            })?;
+                    }
+                    if in_flight_reads[idx] == 0 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "zcnblk read response exceeded inflight reads",
+                        ));
+                    }
+                    in_flight_reads[idx] -= 1;
+                    read_bytes += len;
+                }
+                completed[idx] = completed[idx].checked_add(len).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk completion overflow")
+                })?;
+                progressed = true;
+                drained_for_stream = true;
             }
-            completed[idx] = completed[idx].checked_add(len).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "zcnblk completion overflow")
-            })?;
-            progressed = true;
         }
 
         for idx in 0..streams.len() {
@@ -16477,6 +17851,21 @@ fn zcnblk_send_worker(
         }
     }
 
+    if latency_enabled {
+        for idx in 0..streams.len() {
+            if !pending_write_latency[idx].is_empty() || !pending_read_latency[idx].is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk-send finished with pending latency entries stream={idx} writes={} reads={}",
+                        pending_write_latency[idx].len(),
+                        pending_read_latency[idx].len()
+                    ),
+                ));
+            }
+        }
+    }
+
     Ok(ZcnblkSendStats {
         worker,
         streams: stream_count,
@@ -16489,9 +17878,17 @@ fn zcnblk_send_worker(
         frames,
         read_frames,
         write_frames,
+        request_batches,
+        request_batch_frames,
+        max_request_batch_frames,
+        write_batches,
+        write_batch_frames,
+        max_write_batch_frames,
         elapsed: started.elapsed(),
         target_cpu: affinity.target_cpu,
         affinity_applied: affinity.applied,
+        write_ack_latency,
+        read_latency,
     })
 }
 
@@ -16522,10 +17919,15 @@ fn zcnblk_send(
     let payload_pattern = SendPayloadPattern::from_env(chunk_bytes)?;
     payload_pattern.validate(bytes_per_connection, chunk_bytes)?;
     let op_mode = ZcnblkOperationMode::from_env()?;
+    let access_pattern = ZcnblkAccessPattern::from_env(bytes_per_connection, chunk_bytes)?;
     let verify_reads = env_enabled_or("URING_PLAY_ZCNBLK_VERIFY_READS", false);
     let read_window = env_usize_or("URING_PLAY_ZCNBLK_READ_WINDOW", 64).max(1);
     let wait_write_acks = env_enabled_or("URING_PLAY_ZCNBLK_WAIT_WRITE_ACKS", false);
     let batch_depth = env_usize_or("URING_PLAY_ZCNBLK_BATCH_DEPTH", 1).max(1);
+    let latency_enabled = env_enabled_or("URING_PLAY_ZCNBLK_LATENCY", false);
+    let drain_ready_responses = env_enabled_or("URING_PLAY_ZCNBLK_DRAIN_READY_RESPONSES", true);
+    let write_window_default = batch_depth.saturating_mul(16).max(read_window);
+    let write_window = env_usize_or("URING_PLAY_ZCNBLK_WRITE_WINDOW", write_window_default).max(1);
     let source_ports = TcpSourcePortPlan::from_env()?;
     let source_ip = tcp_bench_source_ip_from_env()?;
     let crypto_config = ZcnblkCryptoConfig::from_env()?;
@@ -16549,18 +17951,22 @@ fn zcnblk_send(
         "zcnblk-send: addr={} shard_count={shard_count} base_port={base_port} ports={ports} \
          connections_per_port={connections_per_port} total_connections={total_connections} \
          bytes_per_connection={bytes_per_connection} chunk_bytes={chunk_bytes} \
-         workers={workers} op_mode={} read_window={read_window} verify_reads={} \
-         wait_write_acks={} batch_depth={batch_depth} payload_pattern={} source_ip={} \
-         source_ports={} encryption={} aes_frame_bytes={}",
+         workers={workers} op_mode={} read_window={read_window} write_window={write_window} \
+         access={} verify_reads={} wait_write_acks={} batch_depth={batch_depth} \
+         drain_ready_responses={} payload_pattern={} source_ip={} \
+         source_ports={} latency={} encryption={} aes_frame_bytes={}",
         addr,
         op_mode.label(),
+        access_pattern.label(),
         yes(verify_reads),
         yes(wait_write_acks),
+        yes(drain_ready_responses),
         payload_pattern.label(),
         source_ip
             .map(|ip| ip.to_string())
             .unwrap_or_else(|| "kernel-route".to_string()),
         source_ports.label(),
+        yes(latency_enabled),
         crypto_config.label(),
         crypto_config.max_frame_bytes,
     );
@@ -16585,6 +17991,7 @@ fn zcnblk_send(
                 chunk_bytes,
                 payload_pattern,
                 op_mode,
+                access_pattern,
                 crypto_config,
                 ready_barrier,
                 start_barrier,
@@ -16604,6 +18011,14 @@ fn zcnblk_send(
     let mut total_frames = 0usize;
     let mut total_read_frames = 0usize;
     let mut total_write_frames = 0usize;
+    let mut total_request_batches = 0usize;
+    let mut total_request_batch_frames = 0usize;
+    let mut total_max_request_batch_frames = 0usize;
+    let mut total_write_batches = 0usize;
+    let mut total_write_batch_frames = 0usize;
+    let mut total_max_write_batch_frames = 0usize;
+    let mut total_write_ack_latency = LatencyHistogram::new();
+    let mut total_read_latency = LatencyHistogram::new();
     let mut elapsed = started.elapsed();
     for handle in handles {
         let stats = handle
@@ -16614,6 +18029,8 @@ fn zcnblk_send(
             "zcnblk-send-worker: worker={} streams={} write_bytes={} read_bytes={} \
              verified_read_bytes={} read_checksum=0x{:016x} expected_checksum=0x{:016x} \
              wire_bytes={} frames={} read_frames={} write_frames={} frames_per_sec={:.0} \
+             request_batches={} request_batch_frames={} max_request_batch_frames={} \
+             write_batches={} write_batch_frames={} max_write_batch_frames={} \
              seconds={secs:.6} logical_MiBps={:.2} \
              target_cpu={} affinity_applied={}",
             stats.worker,
@@ -16628,10 +18045,24 @@ fn zcnblk_send(
             stats.read_frames,
             stats.write_frames,
             stats.frames as f64 / secs,
+            stats.request_batches,
+            stats.request_batch_frames,
+            stats.max_request_batch_frames,
+            stats.write_batches,
+            stats.write_batch_frames,
+            stats.max_write_batch_frames,
             (stats.write_bytes + stats.read_bytes) as f64 / (1024.0 * 1024.0) / secs,
             stats.target_cpu,
             stats.affinity_applied
         );
+        if latency_enabled {
+            println!(
+                "zcnblk-send-worker-latency: worker={} {} {}",
+                stats.worker,
+                zcnblk_latency_fields("write_ack", &stats.write_ack_latency),
+                zcnblk_latency_fields("read", &stats.read_latency)
+            );
+        }
         total_write += stats.write_bytes;
         total_read += stats.read_bytes;
         total_verified_read += stats.verified_read_bytes;
@@ -16641,6 +18072,18 @@ fn zcnblk_send(
         total_frames += stats.frames;
         total_read_frames += stats.read_frames;
         total_write_frames += stats.write_frames;
+        total_request_batches += stats.request_batches;
+        total_request_batch_frames += stats.request_batch_frames;
+        total_max_request_batch_frames =
+            total_max_request_batch_frames.max(stats.max_request_batch_frames);
+        total_write_batches += stats.write_batches;
+        total_write_batch_frames += stats.write_batch_frames;
+        total_max_write_batch_frames =
+            total_max_write_batch_frames.max(stats.max_write_batch_frames);
+        if latency_enabled {
+            total_write_ack_latency.merge(&stats.write_ack_latency);
+            total_read_latency.merge(&stats.read_latency);
+        }
         elapsed = elapsed.max(stats.elapsed);
     }
     println!(
@@ -16648,11 +18091,7402 @@ fn zcnblk_send(
          verified_read_bytes={total_verified_read} read_checksum=0x{total_read_checksum:016x} \
          expected_checksum=0x{total_expected_checksum:016x} wire_bytes={total_wire} \
          frames={total_frames} read_frames={total_read_frames} write_frames={total_write_frames} \
+         request_batches={total_request_batches} request_batch_frames={total_request_batch_frames} \
+         max_request_batch_frames={total_max_request_batch_frames} \
+         write_batches={total_write_batches} write_batch_frames={total_write_batch_frames} \
+         max_write_batch_frames={total_max_write_batch_frames} \
          frames_per_sec={:.0}",
         total_frames as f64 / elapsed.as_secs_f64().max(f64::MIN_POSITIVE)
     );
+    if latency_enabled {
+        println!(
+            "zcnblk-send-latency-summary: {} {}",
+            zcnblk_latency_fields("write_ack", &total_write_ack_latency),
+            zcnblk_latency_fields("read", &total_read_latency)
+        );
+    }
     print_tcp_bench_result("zcnblk-send", total_write + total_read, elapsed);
     Ok(())
+}
+
+#[derive(Default)]
+struct ZcnblkReadFanStats {
+    handler: usize,
+    lane: usize,
+    conn_index: usize,
+    read_bytes: usize,
+    write_bytes: usize,
+    response_bytes: usize,
+    frames: usize,
+    batches: usize,
+    read_frames: usize,
+    write_frames: usize,
+    leaf_read_bytes: Vec<usize>,
+    leaf_write_bytes: Vec<usize>,
+    elapsed: Duration,
+    target_cpu: i32,
+    affinity_applied: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ZcnblkFanLeafSpec {
+    addr: String,
+    base_port: Option<u16>,
+}
+
+impl ZcnblkFanLeafSpec {
+    fn connect_port(&self, fallback_base_port: u16, lane: usize) -> io::Result<u16> {
+        tcp_bench_port(self.base_port.unwrap_or(fallback_base_port), lane)
+    }
+
+    fn label(&self, fallback_base_port: u16) -> String {
+        match self.base_port {
+            Some(base_port) => format!("{}:{base_port}", self.addr),
+            None => format!("{}:{fallback_base_port}", self.addr),
+        }
+    }
+}
+
+fn zcnblk_parse_fan_leaf_spec(entry: &str) -> io::Result<ZcnblkFanLeafSpec> {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "empty zcnblk fan leaf entry",
+        ));
+    }
+    if let Some(rest) = entry.strip_prefix('[') {
+        let (addr, tail) = rest.split_once(']').ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid bracketed zcnblk fan leaf {entry:?}"),
+            )
+        })?;
+        let base_port = if let Some(port) = tail.strip_prefix(':') {
+            Some(parse_u16_value(port, "leaf base port")?)
+        } else if tail.is_empty() {
+            None
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid bracketed zcnblk fan leaf suffix {tail:?}"),
+            ));
+        };
+        return Ok(ZcnblkFanLeafSpec {
+            addr: addr.to_string(),
+            base_port,
+        });
+    }
+    if let Some((addr, port)) = entry.rsplit_once(':') {
+        if !addr.contains(':') {
+            return Ok(ZcnblkFanLeafSpec {
+                addr: addr.to_string(),
+                base_port: Some(parse_u16_value(port, "leaf base port")?),
+            });
+        }
+    }
+    Ok(ZcnblkFanLeafSpec {
+        addr: entry.to_string(),
+        base_port: None,
+    })
+}
+
+fn zcnblk_read_fan_leaf_specs(spec: &str) -> io::Result<Vec<ZcnblkFanLeafSpec>> {
+    let leaves = spec
+        .split(',')
+        .map(str::trim)
+        .filter(|addr| !addr.is_empty())
+        .map(zcnblk_parse_fan_leaf_spec)
+        .collect::<io::Result<Vec<_>>>()?;
+    if leaves.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-read-fan requires at least one leaf address",
+        ));
+    }
+    Ok(leaves)
+}
+
+#[derive(Default)]
+struct ZcnblkFanOrderInner {
+    queues: BTreeMap<u64, VecDeque<u64>>,
+}
+
+struct ZcnblkFanOrderShard {
+    inner: Mutex<ZcnblkFanOrderInner>,
+    cv: Condvar,
+}
+
+struct ZcnblkFanOrder {
+    next_seq: AtomicU64,
+    shards: Vec<ZcnblkFanOrderShard>,
+}
+
+struct ZcnblkFanOrderGuard {
+    order: Arc<ZcnblkFanOrder>,
+    seq: u64,
+    records: Vec<u64>,
+    released: bool,
+}
+
+#[derive(Clone)]
+struct ZcnblkFanOrderHandle {
+    inner: Arc<ZcnblkFanOrderHandleInner>,
+}
+
+struct ZcnblkFanOrderHandleInner {
+    seq: u64,
+    records: Vec<u64>,
+    guard: Mutex<Option<ZcnblkFanOrderGuard>>,
+}
+
+fn zcnblk_fan_order_queue_insert(queue: &mut VecDeque<u64>, seq: u64) {
+    if let Some(pos) = queue.iter().position(|queued| *queued > seq) {
+        queue.insert(pos, seq);
+    } else {
+        queue.push_back(seq);
+    }
+}
+
+impl ZcnblkFanOrder {
+    fn new() -> Self {
+        let shard_count = env_usize_or(
+            "URING_PLAY_ZCNBLK_FAN_ORDER_SHARDS",
+            online_cpu_count().saturating_mul(4),
+        )
+        .max(1);
+        Self {
+            next_seq: AtomicU64::new(0),
+            shards: (0..shard_count)
+                .map(|_| ZcnblkFanOrderShard {
+                    inner: Mutex::new(ZcnblkFanOrderInner::default()),
+                    cv: Condvar::new(),
+                })
+                .collect(),
+        }
+    }
+
+    fn shard_count(&self) -> usize {
+        self.shards.len()
+    }
+
+    fn shard_index(&self, record: u64) -> usize {
+        record as usize % self.shards.len()
+    }
+
+    fn reserve_records(self: &Arc<Self>, mut records: Vec<u64>) -> io::Result<ZcnblkFanOrderGuard> {
+        if records.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-fan order reservation needs at least one record",
+            ));
+        }
+        records.sort_unstable();
+        records.dedup();
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        for record in &records {
+            let shard = &self.shards[self.shard_index(*record)];
+            let mut inner = shard.inner.lock().map_err(|_| {
+                io::Error::other("zcnblk-fan order lock poisoned while reserving request")
+            })?;
+            zcnblk_fan_order_queue_insert(inner.queues.entry(*record).or_default(), seq);
+            shard.cv.notify_all();
+        }
+        Ok(ZcnblkFanOrderGuard {
+            order: Arc::clone(self),
+            seq,
+            records,
+            released: false,
+        })
+    }
+}
+
+impl ZcnblkFanOrderHandle {
+    fn from_guard(guard: ZcnblkFanOrderGuard) -> Self {
+        let seq = guard.seq;
+        let records = guard.records.clone();
+        Self {
+            inner: Arc::new(ZcnblkFanOrderHandleInner {
+                seq,
+                records,
+                guard: Mutex::new(Some(guard)),
+            }),
+        }
+    }
+
+    fn seq(&self) -> u64 {
+        self.inner.seq
+    }
+
+    fn records(&self) -> &[u64] {
+        &self.inner.records
+    }
+
+    fn wait_turn(&self) -> io::Result<()> {
+        let guard = self
+            .inner
+            .guard
+            .lock()
+            .map_err(|_| io::Error::other("zcnblk-fan order handle lock poisoned"))?;
+        if let Some(guard) = guard.as_ref() {
+            guard.wait_turn()?;
+        }
+        Ok(())
+    }
+
+    fn is_turn(&self) -> io::Result<bool> {
+        let guard = self
+            .inner
+            .guard
+            .lock()
+            .map_err(|_| io::Error::other("zcnblk-fan order handle lock poisoned"))?;
+        if let Some(guard) = guard.as_ref() {
+            return guard.is_turn();
+        }
+        Ok(true)
+    }
+
+    fn release(&self) {
+        if let Ok(mut guard) = self.inner.guard.lock() {
+            if let Some(mut guard) = guard.take() {
+                guard.release();
+            }
+        }
+    }
+}
+
+impl ZcnblkFanOrderGuard {
+    fn is_turn(&self) -> io::Result<bool> {
+        for record in &self.records {
+            let shard = &self.order.shards[self.order.shard_index(*record)];
+            let inner = shard.inner.lock().map_err(|_| {
+                io::Error::other("zcnblk-fan order lock poisoned while checking request turn")
+            })?;
+            let ready = inner
+                .queues
+                .get(record)
+                .and_then(|queue| queue.front().copied())
+                == Some(self.seq);
+            if !ready {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn wait_turn(&self) -> io::Result<()> {
+        loop {
+            let mut missing_record = None;
+            for record in &self.records {
+                let shard = &self.order.shards[self.order.shard_index(*record)];
+                let inner = shard.inner.lock().map_err(|_| {
+                    io::Error::other("zcnblk-fan order lock poisoned while waiting for request")
+                })?;
+                let ready = inner
+                    .queues
+                    .get(record)
+                    .and_then(|queue| queue.front().copied())
+                    == Some(self.seq);
+                drop(inner);
+                if !ready {
+                    missing_record = Some(*record);
+                    break;
+                }
+            }
+            let Some(record) = missing_record else {
+                return Ok(());
+            };
+            let shard = &self.order.shards[self.order.shard_index(record)];
+            let mut inner = shard.inner.lock().map_err(|_| {
+                io::Error::other("zcnblk-fan order lock poisoned while waiting for request")
+            })?;
+            while inner
+                .queues
+                .get(&record)
+                .and_then(|queue| queue.front().copied())
+                != Some(self.seq)
+            {
+                inner = shard
+                    .cv
+                    .wait(inner)
+                    .map_err(|_| io::Error::other("zcnblk-fan order condvar lock poisoned"))?;
+            }
+        }
+    }
+
+    fn release(&mut self) {
+        if self.released {
+            return;
+        }
+        for record in &self.records {
+            let shard = &self.order.shards[self.order.shard_index(*record)];
+            if let Ok(mut inner) = shard.inner.lock() {
+                let mut remove_record = false;
+                if let Some(queue) = inner.queues.get_mut(record) {
+                    if queue.front().copied() == Some(self.seq) {
+                        queue.pop_front();
+                    } else if let Some(pos) = queue.iter().position(|queued| *queued == self.seq) {
+                        queue.remove(pos);
+                    }
+                    remove_record = queue.is_empty();
+                }
+                if remove_record {
+                    inner.queues.remove(record);
+                }
+                shard.cv.notify_all();
+            }
+        }
+        self.released = true;
+    }
+}
+
+impl Drop for ZcnblkFanOrderGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+fn zcnblk_fan_order_records(offset: u64, len: usize) -> io::Result<Vec<u64>> {
+    if len == 0 || len % ZC_WAL_RECORD_SIZE != 0 || offset % ZC_WAL_RECORD_SIZE as u64 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-fan ordered records require 4K-aligned ranges, got offset={offset} len={len}"
+            ),
+        ));
+    }
+    let first = offset / ZC_WAL_RECORD_SIZE as u64;
+    let count = len / ZC_WAL_RECORD_SIZE;
+    let mut records = Vec::with_capacity(count);
+    for idx in 0..count {
+        records.push(first.checked_add(idx as u64).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcnblk-fan record index overflow",
+            )
+        })?);
+    }
+    records.dedup();
+    Ok(records)
+}
+
+fn zcnblk_read_fan_leaf_bytes(
+    bytes_per_connection: usize,
+    stripe_bytes: usize,
+    leaf_count: usize,
+    leaf_idx: usize,
+) -> io::Result<usize> {
+    if stripe_bytes == 0 || leaf_count == 0 || leaf_idx >= leaf_count {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-read-fan leaf-byte calculation got an empty stripe or leaf set",
+        ));
+    }
+    let full_stripes = bytes_per_connection / stripe_bytes;
+    let tail = bytes_per_connection % stripe_bytes;
+    let base_stripes = full_stripes / leaf_count;
+    let extra_stripes = full_stripes % leaf_count;
+    let mut bytes = base_stripes
+        .checked_mul(stripe_bytes)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "leaf byte count overflow"))?;
+    if leaf_idx < extra_stripes {
+        bytes = bytes.checked_add(stripe_bytes).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "leaf byte count overflow")
+        })?;
+    }
+    if tail != 0 && leaf_idx == extra_stripes {
+        bytes = bytes.checked_add(tail).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "leaf byte count overflow")
+        })?;
+    }
+    Ok(bytes)
+}
+
+fn zcnblk_read_fan_leaf_byte_plan(
+    bytes_per_connection: usize,
+    stripe_bytes: usize,
+    leaf_count: usize,
+) -> io::Result<Vec<usize>> {
+    (0..leaf_count)
+        .map(|leaf_idx| {
+            zcnblk_read_fan_leaf_bytes(bytes_per_connection, stripe_bytes, leaf_count, leaf_idx)
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+struct ZcnblkFanSegment {
+    leaf_idx: usize,
+    leaf_offset: u64,
+    payload_offset: usize,
+    len: usize,
+}
+
+struct ZcnblkFanPreparedFrame {
+    frame: ZcnblkFrameHeader,
+    len: usize,
+    next_completed: usize,
+    order: ZcnblkFanOrderHandle,
+}
+
+struct ZcnblkFanFramePlan {
+    frame: ZcnblkFrameHeader,
+    len: usize,
+    next_completed: usize,
+    records: Vec<u64>,
+}
+
+fn zcnblk_read_fan_map_segments(
+    offset: u64,
+    len: usize,
+    stripe_bytes: usize,
+    leaf_count: usize,
+) -> io::Result<Vec<ZcnblkFanSegment>> {
+    if stripe_bytes == 0 || leaf_count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-fan requires non-zero stripe bytes and leaf count",
+        ));
+    }
+    let stripe_bytes_u64 = stripe_bytes as u64;
+    let mut segments = Vec::new();
+    let mut logical_offset = offset;
+    let mut payload_offset = 0usize;
+    let mut remaining = len;
+    while remaining != 0 {
+        let stripe_off = logical_offset % stripe_bytes_u64;
+        let stripe_remaining = stripe_bytes - stripe_off as usize;
+        let seg_len = remaining.min(stripe_remaining);
+        if seg_len == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-fan produced an empty stripe segment",
+            ));
+        }
+        let stripe_no = logical_offset / stripe_bytes_u64;
+        let leaf_idx = (stripe_no % leaf_count as u64) as usize;
+        let row = stripe_no / leaf_count as u64;
+        let leaf_offset = row
+            .checked_mul(stripe_bytes_u64)
+            .and_then(|base| base.checked_add(stripe_off))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "zcnblk-fan offset overflow")
+            })?;
+        segments.push(ZcnblkFanSegment {
+            leaf_idx,
+            leaf_offset,
+            payload_offset,
+            len: seg_len,
+        });
+        logical_offset = logical_offset.checked_add(seg_len as u64).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "zcnblk-fan offset overflow")
+        })?;
+        payload_offset = payload_offset.checked_add(seg_len).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcnblk-fan payload offset overflow",
+            )
+        })?;
+        remaining -= seg_len;
+    }
+    Ok(segments)
+}
+
+fn zcnblk_read_fan_plan_frame(
+    frame: ZcnblkFrameHeader,
+    stream_lane: usize,
+    ports: usize,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    completed: usize,
+) -> io::Result<ZcnblkFanFramePlan> {
+    if !matches!(frame.op, ZCNBLK_OP_READ | ZCNBLK_OP_WRITE) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcnblk-fan request op {} is not supported", frame.op),
+        ));
+    }
+    zcnblk_validate_frame_topology(frame, stream_lane, 0, ports)?;
+    if frame.shard != 0 || frame.topology.tier_id != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-fan accepts only the client edge shard 0, got shard={} tier_id={}",
+                frame.shard, frame.topology.tier_id
+            ),
+        ));
+    }
+    let len = frame.len as usize;
+    if len == 0 || len > chunk_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcnblk-fan frame length {len} invalid for chunk_bytes={chunk_bytes}"),
+        ));
+    }
+    let next_completed = completed.checked_add(len).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "zcnblk-fan byte count overflow")
+    })?;
+    if next_completed > bytes_per_connection {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcnblk-fan stream requested {next_completed}/{bytes_per_connection} bytes"),
+        ));
+    }
+    let records = zcnblk_fan_order_records(frame.offset, len)?;
+    Ok(ZcnblkFanFramePlan {
+        frame,
+        len,
+        next_completed,
+        records,
+    })
+}
+
+fn zcnblk_read_fan_prepared_from_plan(
+    plan: ZcnblkFanFramePlan,
+    order: ZcnblkFanOrderHandle,
+) -> ZcnblkFanPreparedFrame {
+    ZcnblkFanPreparedFrame {
+        frame: plan.frame,
+        len: plan.len,
+        next_completed: plan.next_completed,
+        order,
+    }
+}
+
+fn zcnblk_read_fan_prepared_batch_from_plans(
+    plans: Vec<ZcnblkFanFramePlan>,
+    order: ZcnblkFanOrderHandle,
+) -> Vec<ZcnblkFanPreparedFrame> {
+    plans
+        .into_iter()
+        .map(|plan| zcnblk_read_fan_prepared_from_plan(plan, order.clone()))
+        .collect()
+}
+
+fn zcnblk_read_fan_prepare_frame(
+    frame: ZcnblkFrameHeader,
+    order: &Arc<ZcnblkFanOrder>,
+    stream_lane: usize,
+    ports: usize,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    completed: usize,
+) -> io::Result<ZcnblkFanPreparedFrame> {
+    let plan = zcnblk_read_fan_plan_frame(
+        frame,
+        stream_lane,
+        ports,
+        bytes_per_connection,
+        chunk_bytes,
+        completed,
+    )?;
+    let guard = order.reserve_records(plan.records.clone())?;
+    Ok(zcnblk_read_fan_prepared_from_plan(
+        plan,
+        ZcnblkFanOrderHandle::from_guard(guard),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_read_fan_forward_frame(
+    upstream: &mut ZcnblkTransport,
+    leaves: &mut [ZcnblkTransport],
+    prepared: ZcnblkFanPreparedFrame,
+    stripe_bytes: usize,
+    write_acks: bool,
+    completed: &mut usize,
+    payload: &mut Vec<u8>,
+    leaf_read_bytes: &mut [usize],
+    leaf_write_bytes: &mut [usize],
+    total_read: &mut usize,
+    total_write: &mut usize,
+    total_response: &mut usize,
+    frames: &mut usize,
+    read_frames: &mut usize,
+    write_frames: &mut usize,
+) -> io::Result<()> {
+    let frame = prepared.frame;
+    let len = prepared.len;
+    let segments = zcnblk_read_fan_map_segments(frame.offset, len, stripe_bytes, leaves.len())?;
+    if frame.op == ZCNBLK_OP_WRITE {
+        payload.resize(len, 0);
+        let header = frame.encode();
+        upstream.read_frame_payload(&header, &mut payload[..], false)?;
+    } else if upstream.uses_payload_crypto() {
+        let header = frame.encode();
+        let mut empty = [];
+        upstream.read_frame_payload(&header, &mut empty, false)?;
+    }
+
+    prepared.order.wait_turn()?;
+    if frame.op == ZCNBLK_OP_READ {
+        payload.resize(len, 0);
+        for segment in &segments {
+            let leaf_header = ZcnblkFrameHeader::with_topology(
+                ZCNBLK_OP_READ,
+                frame.flags,
+                0,
+                segment.len,
+                segment.leaf_offset,
+                frame.topology,
+            )?
+            .encode();
+            leaves[segment.leaf_idx].write_frame_payload(&leaf_header, &[], false)?;
+
+            let mut response_header = [0u8; ZCNBLK_FRAME_HEADER_LEN];
+            leaves[segment.leaf_idx].read_exact(&mut response_header)?;
+            let response = ZcnblkFrameHeader::decode(&response_header)?;
+            if response.op != ZCNBLK_OP_READ_RESP
+                || response.shard != 0
+                || response.len as usize != segment.len
+                || response.offset != segment.leaf_offset
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk-fan leaf read response mismatch op={} shard={} len={} offset={} expected_leaf={} expected_offset={} expected_len={}",
+                        response.op,
+                        response.shard,
+                        response.len,
+                        response.offset,
+                        segment.leaf_idx,
+                        segment.leaf_offset,
+                        segment.len
+                    ),
+                ));
+            }
+            let response_header = response.encode();
+            let start = segment.payload_offset;
+            let end = start.checked_add(segment.len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk-fan segment overflow")
+            })?;
+            leaves[segment.leaf_idx].read_frame_payload(
+                &response_header,
+                &mut payload[start..end],
+                true,
+            )?;
+            leaf_read_bytes[segment.leaf_idx] = leaf_read_bytes[segment.leaf_idx]
+                .checked_add(segment.len)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk-fan leaf read overflow")
+                })?;
+        }
+        let upstream_header = ZcnblkFrameHeader::with_topology(
+            ZCNBLK_OP_READ_RESP,
+            frame.flags,
+            frame.shard as usize,
+            len,
+            frame.offset,
+            frame.topology,
+        )?
+        .encode();
+        *total_response = total_response
+            .checked_add(upstream.write_frame_payload(&upstream_header, &payload[..], true)?)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-fan response byte count overflow",
+                )
+            })?;
+        *total_read = total_read.checked_add(len).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-fan read byte count overflow",
+            )
+        })?;
+        *read_frames = read_frames.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-fan read frame count overflow",
+            )
+        })?;
+    } else {
+        for segment in &segments {
+            let start = segment.payload_offset;
+            let end = start.checked_add(segment.len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcnblk-fan segment overflow")
+            })?;
+            let leaf_header = ZcnblkFrameHeader::with_topology(
+                ZCNBLK_OP_WRITE,
+                frame.flags,
+                0,
+                segment.len,
+                segment.leaf_offset,
+                frame.topology,
+            )?
+            .encode();
+            leaves[segment.leaf_idx].write_frame_payload(
+                &leaf_header,
+                &payload[start..end],
+                false,
+            )?;
+
+            let mut ack_header = [0u8; ZCNBLK_FRAME_HEADER_LEN];
+            leaves[segment.leaf_idx].read_exact(&mut ack_header)?;
+            let ack = ZcnblkFrameHeader::decode(&ack_header)?;
+            if ack.op != ZCNBLK_OP_WRITE_ACK
+                || ack.shard != 0
+                || ack.len as usize != segment.len
+                || ack.offset != segment.leaf_offset
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk-fan leaf write ack mismatch op={} shard={} len={} offset={} expected_leaf={} expected_offset={} expected_len={}",
+                        ack.op,
+                        ack.shard,
+                        ack.len,
+                        ack.offset,
+                        segment.leaf_idx,
+                        segment.leaf_offset,
+                        segment.len
+                    ),
+                ));
+            }
+            let mut empty = [];
+            leaves[segment.leaf_idx].read_frame_payload(&ack_header, &mut empty, true)?;
+            leaf_write_bytes[segment.leaf_idx] = leaf_write_bytes[segment.leaf_idx]
+                .checked_add(segment.len)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk-fan leaf write overflow")
+                })?;
+        }
+        if write_acks {
+            let upstream_header = ZcnblkFrameHeader::with_topology(
+                ZCNBLK_OP_WRITE_ACK,
+                frame.flags,
+                frame.shard as usize,
+                len,
+                frame.offset,
+                frame.topology,
+            )?
+            .encode();
+            *total_response = total_response
+                .checked_add(upstream.write_frame_payload(&upstream_header, &[], true)?)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcnblk-fan write ack byte count overflow",
+                    )
+                })?;
+        }
+        *total_write = total_write.checked_add(len).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-fan write byte count overflow",
+            )
+        })?;
+        *write_frames = write_frames.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-fan write frame count overflow",
+            )
+        })?;
+    }
+    prepared.order.release();
+    *completed = prepared.next_completed;
+    *frames = frames.checked_add(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "zcnblk-fan frame count overflow",
+        )
+    })?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_read_fan_handler(
+    handler: usize,
+    accepted: TcpBenchAcceptedStream,
+    leaf_addrs: Arc<Vec<ZcnblkFanLeafSpec>>,
+    order: Arc<ZcnblkFanOrder>,
+    leaf_base_port: u16,
+    ports: usize,
+    connections_per_port: usize,
+    total_connections: usize,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    stripe_bytes: usize,
+    write_acks: bool,
+    source_ports: TcpSourcePortPlan,
+    crypto_config: ZcnblkCryptoConfig,
+    pin_handlers: bool,
+) -> io::Result<ZcnblkReadFanStats> {
+    let affinity =
+        pin_current_thread_if_requested("zcnblk-read-fan-handler", handler, pin_handlers);
+    let meta = accepted.meta();
+    println!(
+        "zcnblk-read-fan-upstream: handler={handler} peer={} lane={} port={} conn={} {}",
+        meta.peer_addr,
+        meta.lane,
+        meta.port,
+        meta.conn_index,
+        socket_locality_label(meta.locality)
+    );
+    let conn_id = zcnblk_transport_conn_id(meta.lane, meta.conn_index, connections_per_port)?;
+    let mut upstream = ZcnblkTransport::accept_target(accepted, conn_id, &crypto_config)?;
+
+    let mut leaves = Vec::with_capacity(leaf_addrs.len());
+    for (leaf_idx, leaf) in leaf_addrs.iter().enumerate() {
+        let port = leaf.connect_port(leaf_base_port, meta.lane)?;
+        let source_index = leaf_idx
+            .checked_mul(total_connections)
+            .and_then(|base| base.checked_add(handler))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "zcnblk-read-fan source-port index overflow",
+                )
+            })?;
+        let stream = tcp_bench_connect(&leaf.addr, port, source_ports.source_port(source_index)?)?;
+        set_tcp_nodelay_from_env(&stream)?;
+        set_tcp_bench_buffers(&stream);
+        println!(
+            "zcnblk-read-fan-leaf-stream: handler={handler} leaf={leaf_idx} addr={} port={port} lane={} conn={} source_port={}",
+            leaf.addr,
+            meta.lane,
+            meta.conn_index,
+            source_ports
+                .source_port(source_index)?
+                .map(|port| port.to_string())
+                .unwrap_or_else(|| "kernel-ephemeral".to_string())
+        );
+        leaves.push(ZcnblkTransport::connect_client(
+            stream,
+            meta.lane,
+            conn_id,
+            &crypto_config,
+        )?);
+    }
+
+    let mut completed = 0usize;
+    let mut read_bytes = 0usize;
+    let mut write_bytes = 0usize;
+    let mut response_bytes = 0usize;
+    let mut frames = 0usize;
+    let mut batches = 0usize;
+    let mut read_frames = 0usize;
+    let mut write_frames = 0usize;
+    let mut leaf_read_bytes = vec![0usize; leaf_addrs.len()];
+    let mut leaf_write_bytes = vec![0usize; leaf_addrs.len()];
+    let mut payload = Vec::with_capacity(chunk_bytes);
+    let started = Instant::now();
+
+    while completed < bytes_per_connection {
+        let mut header_buf = [0u8; ZCNBLK_FRAME_HEADER_LEN];
+        upstream.read_exact(&mut header_buf)?;
+        let frame = ZcnblkFrameHeader::decode(&header_buf)?;
+        if frame.op == ZCNBLK_OP_BATCH {
+            batches = batches.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-read-fan batch count overflow",
+                )
+            })?;
+            let count = frame.len as usize;
+            if count == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-read-fan got an empty request batch",
+                ));
+            }
+            let batch_frames = zcnblk_read_batch_headers(&mut upstream, count, "zcnblk-read-fan")?;
+            for batch_frame in batch_frames {
+                let prepared = zcnblk_read_fan_prepare_frame(
+                    batch_frame,
+                    &order,
+                    meta.lane,
+                    ports,
+                    bytes_per_connection,
+                    chunk_bytes,
+                    completed,
+                )?;
+                zcnblk_read_fan_forward_frame(
+                    &mut upstream,
+                    &mut leaves,
+                    prepared,
+                    stripe_bytes,
+                    write_acks,
+                    &mut completed,
+                    &mut payload,
+                    &mut leaf_read_bytes,
+                    &mut leaf_write_bytes,
+                    &mut read_bytes,
+                    &mut write_bytes,
+                    &mut response_bytes,
+                    &mut frames,
+                    &mut read_frames,
+                    &mut write_frames,
+                )?;
+            }
+        } else {
+            let prepared = zcnblk_read_fan_prepare_frame(
+                frame,
+                &order,
+                meta.lane,
+                ports,
+                bytes_per_connection,
+                chunk_bytes,
+                completed,
+            )?;
+            zcnblk_read_fan_forward_frame(
+                &mut upstream,
+                &mut leaves,
+                prepared,
+                stripe_bytes,
+                write_acks,
+                &mut completed,
+                &mut payload,
+                &mut leaf_read_bytes,
+                &mut leaf_write_bytes,
+                &mut read_bytes,
+                &mut write_bytes,
+                &mut response_bytes,
+                &mut frames,
+                &mut read_frames,
+                &mut write_frames,
+            )?;
+        }
+    }
+
+    let _ = upstream.shutdown(Shutdown::Both);
+    for leaf in &leaves {
+        let _ = leaf.shutdown(Shutdown::Both);
+    }
+
+    Ok(ZcnblkReadFanStats {
+        handler,
+        lane: meta.lane,
+        conn_index: meta.conn_index,
+        read_bytes,
+        write_bytes,
+        response_bytes,
+        frames,
+        batches,
+        read_frames,
+        write_frames,
+        leaf_read_bytes,
+        leaf_write_bytes,
+        elapsed: started.elapsed(),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_read_fan(
+    leaf_spec: &str,
+    bind: &str,
+    base_port: u16,
+    ports: usize,
+    connections_per_port: usize,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    stripe_bytes: usize,
+    leaf_base_port: u16,
+    pin_handlers: bool,
+) -> io::Result<()> {
+    if bytes_per_connection == 0 || chunk_bytes == 0 || stripe_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-read-fan bytes-per-connection, chunk-bytes, and stripe-bytes must be non-zero",
+        ));
+    }
+    if bytes_per_connection % chunk_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-read-fan bytes-per-connection must be a multiple of chunk-bytes",
+        ));
+    }
+    ensure_sector_aligned(chunk_bytes, "chunk-bytes")?;
+    ensure_sector_aligned(stripe_bytes, "stripe-bytes")?;
+    let leaf_addrs = Arc::new(zcnblk_read_fan_leaf_specs(leaf_spec)?);
+    let leaf_bytes =
+        zcnblk_read_fan_leaf_byte_plan(bytes_per_connection, stripe_bytes, leaf_addrs.len())?;
+    if leaf_bytes.iter().any(|bytes| *bytes == 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-read-fan byte budget is too small to touch every leaf; reduce leaf count or stripe bytes",
+        ));
+    }
+    if leaf_bytes.iter().any(|bytes| *bytes % chunk_bytes != 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-fan leaf byte budgets must be multiples of chunk-bytes so leaf zcnblk-target instances can use the same chunk size",
+        ));
+    }
+    let total_connections = tcp_bench_total_connections(ports, connections_per_port)?;
+    let source_ports = TcpSourcePortPlan::from_env()?;
+    let source_ip = tcp_bench_source_ip_from_env()?;
+    let crypto_config = ZcnblkCryptoConfig::from_env()?;
+    let write_acks = env_enabled_or("URING_PLAY_ZCNBLK_WRITE_ACKS", false);
+    if crypto_config.wire == ZcnblkCryptoWire::Payload {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-read-fan supports plaintext and stream AES only; payload AES depends on end-to-end conn_id ownership",
+        ));
+    }
+    let order = Arc::new(ZcnblkFanOrder::new());
+
+    let leaf_labels = leaf_addrs
+        .iter()
+        .enumerate()
+        .map(|(idx, leaf)| format!("{idx}:{}:{}B", leaf.label(leaf_base_port), leaf_bytes[idx]))
+        .collect::<Vec<_>>()
+        .join(",");
+    println!(
+        "zcnblk-read-fan: leaves={} bind={bind} base_port={base_port} ports={ports} \
+         connections_per_port={connections_per_port} total_connections={total_connections} \
+         bytes_per_connection={bytes_per_connection} chunk_bytes={chunk_bytes} \
+         stripe_bytes={stripe_bytes} leaf_base_port={leaf_base_port} source_ip={} \
+         source_ports={} encryption={} aes_frame_bytes={} pin_handlers={pin_handlers} \
+         read_only=false placement=userspace-stripe order=per-4k-record \
+         write_acks={write_acks} leaf_write_acks=required",
+        leaf_labels,
+        source_ip
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| "kernel-route".to_string()),
+        source_ports.label(),
+        crypto_config.label(),
+        crypto_config.max_frame_bytes,
+    );
+    eprintln!(
+        "zcnblk-fan-leaf-target-note: start each leaf zcnblk-target with URING_PLAY_ZCNBLK_WRITE_ACKS=1, the same ports/connections/chunk size, and its listed per-connection byte budget; /dev/zcbrd or other block media must remain terminal leaves behind those userspace targets"
+    );
+
+    let listeners = tcp_bench_mux_bind_listeners(bind, base_port, ports)?;
+    let accepted = tcp_bench_mux_accept_tagged_listeners(listeners, ports, connections_per_port)?;
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(accepted.len());
+    for (handler, accepted) in accepted.into_iter().enumerate() {
+        let leaf_addrs = Arc::clone(&leaf_addrs);
+        let order = Arc::clone(&order);
+        let crypto_config = crypto_config.clone();
+        handles.push(thread::spawn(move || {
+            let result = zcnblk_read_fan_handler(
+                handler,
+                accepted,
+                leaf_addrs,
+                order,
+                leaf_base_port,
+                ports,
+                connections_per_port,
+                total_connections,
+                bytes_per_connection,
+                chunk_bytes,
+                stripe_bytes,
+                write_acks,
+                source_ports,
+                crypto_config,
+                pin_handlers,
+            );
+            if let Err(err) = &result {
+                eprintln!("zcnblk-read-fan-handler-error: handler={handler} error={err}");
+            }
+            result
+        }));
+    }
+
+    let mut total_read = 0usize;
+    let mut total_write = 0usize;
+    let mut total_response = 0usize;
+    let mut total_frames = 0usize;
+    let mut total_batches = 0usize;
+    let mut total_read_frames = 0usize;
+    let mut total_write_frames = 0usize;
+    let mut leaf_read_totals = vec![0usize; leaf_addrs.len()];
+    let mut leaf_write_totals = vec![0usize; leaf_addrs.len()];
+    let mut elapsed = started.elapsed();
+    for handle in handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other("zcnblk-read-fan handler panicked"))??;
+        let secs = stats.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        let leaf_label = stats
+            .leaf_read_bytes
+            .iter()
+            .enumerate()
+            .map(|(idx, bytes)| format!("{idx}:{bytes}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let leaf_write_label = stats
+            .leaf_write_bytes
+            .iter()
+            .enumerate()
+            .map(|(idx, bytes)| format!("{idx}:{bytes}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "zcnblk-read-fan-handler: handler={} lane={} conn={} read_bytes={} write_bytes={} \
+             response_bytes={} frames={} batches={} read_frames={} write_frames={} \
+             leaf_read_bytes={} leaf_write_bytes={} frames_per_sec={:.0} \
+             seconds={secs:.6} logical_MiBps={:.2} target_cpu={} affinity_applied={}",
+            stats.handler,
+            stats.lane,
+            stats.conn_index,
+            stats.read_bytes,
+            stats.write_bytes,
+            stats.response_bytes,
+            stats.frames,
+            stats.batches,
+            stats.read_frames,
+            stats.write_frames,
+            leaf_label,
+            leaf_write_label,
+            stats.frames as f64 / secs,
+            (stats.read_bytes + stats.write_bytes) as f64 / (1024.0 * 1024.0) / secs,
+            stats.target_cpu,
+            stats.affinity_applied
+        );
+        total_read = total_read.checked_add(stats.read_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-read-fan total read overflow",
+            )
+        })?;
+        total_write = total_write.checked_add(stats.write_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-fan total write overflow",
+            )
+        })?;
+        total_response = total_response
+            .checked_add(stats.response_bytes)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-read-fan total response overflow",
+                )
+            })?;
+        total_frames = total_frames.checked_add(stats.frames).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-read-fan frame count overflow",
+            )
+        })?;
+        total_batches = total_batches.checked_add(stats.batches).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-read-fan batch count overflow",
+            )
+        })?;
+        total_read_frames = total_read_frames
+            .checked_add(stats.read_frames)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-fan read frame count overflow",
+                )
+            })?;
+        total_write_frames = total_write_frames
+            .checked_add(stats.write_frames)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-fan write frame count overflow",
+                )
+            })?;
+        for (idx, bytes) in stats.leaf_read_bytes.into_iter().enumerate() {
+            leaf_read_totals[idx] = leaf_read_totals[idx].checked_add(bytes).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-read-fan leaf read total overflow",
+                )
+            })?;
+        }
+        for (idx, bytes) in stats.leaf_write_bytes.into_iter().enumerate() {
+            leaf_write_totals[idx] =
+                leaf_write_totals[idx].checked_add(bytes).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcnblk-fan leaf write total overflow",
+                    )
+                })?;
+        }
+        elapsed = elapsed.max(stats.elapsed);
+    }
+    let leaf_read_totals_label = leaf_read_totals
+        .iter()
+        .enumerate()
+        .map(|(idx, bytes)| format!("{idx}:{bytes}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let leaf_write_totals_label = leaf_write_totals
+        .iter()
+        .enumerate()
+        .map(|(idx, bytes)| format!("{idx}:{bytes}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    println!(
+        "zcnblk-read-fan-summary: read_bytes={total_read} write_bytes={total_write} \
+         response_bytes={total_response} frames={total_frames} batches={total_batches} \
+         read_frames={total_read_frames} write_frames={total_write_frames} \
+         leaf_read_bytes={leaf_read_totals_label} leaf_write_bytes={leaf_write_totals_label} \
+         frames_per_sec={:.0}",
+        total_frames as f64 / elapsed.as_secs_f64().max(f64::MIN_POSITIVE)
+    );
+    print_tcp_bench_result("zcnblk-read-fan", total_read + total_write, elapsed);
+    Ok(())
+}
+
+const ZCNBLK_FAN_WAL_MAGIC: &[u8; 8] = b"ZCFANW1\0";
+const ZCNBLK_FAN_WAL_VERSION: u16 = 2;
+const ZCNBLK_FAN_WAL_HEADER_LEN: usize = 128;
+const ZCNBLK_FAN_WAL_OP_HELLO: u16 = 1;
+const ZCNBLK_FAN_WAL_OP_WRITE_DESC: u16 = 2;
+const ZCNBLK_FAN_WAL_OP_READ_DESC: u16 = 3;
+const ZCNBLK_FAN_WAL_OP_RESULT: u16 = 4;
+const ZCNBLK_FAN_WAL_OP_SYNC: u16 = 5;
+const ZCNBLK_FAN_WAL_OP_EOF: u16 = 6;
+const ZCNBLK_FAN_WAL_OP_WRITE_BATCH: u16 = 7;
+const ZCNBLK_FAN_WAL_OP_RESULT_BATCH: u16 = 8;
+const ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH: u16 = 9;
+const ZCNBLK_FAN_WAL_OP_REQUEST_BATCH: u16 = 10;
+const ZCNBLK_FAN_WAL_STATUS_OK: u32 = 0;
+const ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH: u16 = 1 << 0;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZcnblkFanEngine {
+    Sync,
+    Wal,
+}
+
+impl ZcnblkFanEngine {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "" | "sync" | "compat" | "compatibility" => Ok(Self::Sync),
+            "wal" | "log" | "descriptor-wal" => Ok(Self::Wal),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown zcnblk-fan engine {other:?}; use sync or wal"),
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZcnblkFanPlacementMode {
+    Stripe,
+    Mirror,
+    Raid10,
+}
+
+impl ZcnblkFanPlacementMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "" | "stripe" | "raid0" => Ok(Self::Stripe),
+            "mirror" | "raid1" => Ok(Self::Mirror),
+            "raid10" | "raid1+0" | "raid-10" | "raid-1+0" => Ok(Self::Raid10),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown zcnblk-fan mode {other:?}; use stripe, mirror, or raid10"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Stripe => "stripe",
+            Self::Mirror => "mirror",
+            Self::Raid10 => "raid10",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ZcnblkFanWalFrame {
+    op: u16,
+    flags: u16,
+    status: u32,
+    lane_id: u32,
+    lane_count: u32,
+    branch_id: u32,
+    branch_count: u32,
+    segment_index: u32,
+    segment_count: u32,
+    payload_len: u32,
+    sequence: u64,
+    request_id: u64,
+    sync_epoch: u64,
+    placement_epoch: u64,
+    logical_offset: u64,
+    leaf_offset: u64,
+    logical_len: u32,
+    zcnblk_op: u16,
+    zcnblk_flags: u16,
+    zcnblk_shard: u32,
+    topology_preferred_worker: u32,
+    topology_queue_id: u32,
+    topology_tier_id: u32,
+    topology_flags: u32,
+    topology_preferred_cpu: i16,
+    topology_numa_node: i16,
+}
+
+impl Default for ZcnblkFanWalFrame {
+    fn default() -> Self {
+        Self {
+            op: 0,
+            flags: 0,
+            status: 0,
+            lane_id: 0,
+            lane_count: 0,
+            branch_id: 0,
+            branch_count: 0,
+            segment_index: 0,
+            segment_count: 0,
+            payload_len: 0,
+            sequence: 0,
+            request_id: 0,
+            sync_epoch: 0,
+            placement_epoch: 0,
+            logical_offset: 0,
+            leaf_offset: 0,
+            logical_len: 0,
+            zcnblk_op: 0,
+            zcnblk_flags: 0,
+            zcnblk_shard: 0,
+            topology_preferred_worker: 0,
+            topology_queue_id: 0,
+            topology_tier_id: 0,
+            topology_flags: 0,
+            topology_preferred_cpu: -1,
+            topology_numa_node: -1,
+        }
+    }
+}
+
+impl ZcnblkFanWalFrame {
+    fn encode(self) -> [u8; ZCNBLK_FAN_WAL_HEADER_LEN] {
+        let mut out = [0u8; ZCNBLK_FAN_WAL_HEADER_LEN];
+        out[0..8].copy_from_slice(ZCNBLK_FAN_WAL_MAGIC);
+        out[8..10].copy_from_slice(&ZCNBLK_FAN_WAL_VERSION.to_le_bytes());
+        out[10..12].copy_from_slice(&(ZCNBLK_FAN_WAL_HEADER_LEN as u16).to_le_bytes());
+        out[12..14].copy_from_slice(&self.op.to_le_bytes());
+        out[14..16].copy_from_slice(&self.flags.to_le_bytes());
+        out[16..20].copy_from_slice(&self.status.to_le_bytes());
+        out[20..24].copy_from_slice(&self.lane_id.to_le_bytes());
+        out[24..28].copy_from_slice(&self.lane_count.to_le_bytes());
+        out[28..32].copy_from_slice(&self.branch_id.to_le_bytes());
+        out[32..36].copy_from_slice(&self.branch_count.to_le_bytes());
+        out[36..40].copy_from_slice(&self.segment_index.to_le_bytes());
+        out[40..44].copy_from_slice(&self.segment_count.to_le_bytes());
+        out[44..48].copy_from_slice(&self.payload_len.to_le_bytes());
+        out[48..56].copy_from_slice(&self.sequence.to_le_bytes());
+        out[56..64].copy_from_slice(&self.request_id.to_le_bytes());
+        out[64..72].copy_from_slice(&self.sync_epoch.to_le_bytes());
+        out[72..80].copy_from_slice(&self.placement_epoch.to_le_bytes());
+        out[80..88].copy_from_slice(&self.logical_offset.to_le_bytes());
+        out[88..96].copy_from_slice(&self.leaf_offset.to_le_bytes());
+        out[96..100].copy_from_slice(&self.logical_len.to_le_bytes());
+        out[100..102].copy_from_slice(&self.zcnblk_op.to_le_bytes());
+        out[102..104].copy_from_slice(&self.zcnblk_flags.to_le_bytes());
+        out[104..108].copy_from_slice(&self.zcnblk_shard.to_le_bytes());
+        out[108..112].copy_from_slice(&self.topology_preferred_worker.to_le_bytes());
+        out[112..116].copy_from_slice(&self.topology_queue_id.to_le_bytes());
+        out[116..120].copy_from_slice(&self.topology_tier_id.to_le_bytes());
+        out[120..124].copy_from_slice(&self.topology_flags.to_le_bytes());
+        out[124..126].copy_from_slice(&self.topology_preferred_cpu.to_le_bytes());
+        out[126..128].copy_from_slice(&self.topology_numa_node.to_le_bytes());
+        out
+    }
+
+    fn decode(input: &[u8; ZCNBLK_FAN_WAL_HEADER_LEN]) -> io::Result<Self> {
+        if &input[0..8] != ZCNBLK_FAN_WAL_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk fan WAL magic mismatch",
+            ));
+        }
+        let version = u16::from_le_bytes(input[8..10].try_into().expect("u16"));
+        let header_len = u16::from_le_bytes(input[10..12].try_into().expect("u16")) as usize;
+        if version != ZCNBLK_FAN_WAL_VERSION || header_len != ZCNBLK_FAN_WAL_HEADER_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported zcnblk fan WAL version={version} header_len={header_len}"),
+            ));
+        }
+        let op = u16::from_le_bytes(input[12..14].try_into().expect("u16"));
+        if !matches!(
+            op,
+            ZCNBLK_FAN_WAL_OP_HELLO
+                | ZCNBLK_FAN_WAL_OP_WRITE_DESC
+                | ZCNBLK_FAN_WAL_OP_READ_DESC
+                | ZCNBLK_FAN_WAL_OP_RESULT
+                | ZCNBLK_FAN_WAL_OP_SYNC
+                | ZCNBLK_FAN_WAL_OP_EOF
+                | ZCNBLK_FAN_WAL_OP_WRITE_BATCH
+                | ZCNBLK_FAN_WAL_OP_RESULT_BATCH
+                | ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH
+                | ZCNBLK_FAN_WAL_OP_REQUEST_BATCH
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown zcnblk fan WAL op {op}"),
+            ));
+        }
+        Ok(Self {
+            op,
+            flags: u16::from_le_bytes(input[14..16].try_into().expect("u16")),
+            status: u32::from_le_bytes(input[16..20].try_into().expect("u32")),
+            lane_id: u32::from_le_bytes(input[20..24].try_into().expect("u32")),
+            lane_count: u32::from_le_bytes(input[24..28].try_into().expect("u32")),
+            branch_id: u32::from_le_bytes(input[28..32].try_into().expect("u32")),
+            branch_count: u32::from_le_bytes(input[32..36].try_into().expect("u32")),
+            segment_index: u32::from_le_bytes(input[36..40].try_into().expect("u32")),
+            segment_count: u32::from_le_bytes(input[40..44].try_into().expect("u32")),
+            payload_len: u32::from_le_bytes(input[44..48].try_into().expect("u32")),
+            sequence: u64::from_le_bytes(input[48..56].try_into().expect("u64")),
+            request_id: u64::from_le_bytes(input[56..64].try_into().expect("u64")),
+            sync_epoch: u64::from_le_bytes(input[64..72].try_into().expect("u64")),
+            placement_epoch: u64::from_le_bytes(input[72..80].try_into().expect("u64")),
+            logical_offset: u64::from_le_bytes(input[80..88].try_into().expect("u64")),
+            leaf_offset: u64::from_le_bytes(input[88..96].try_into().expect("u64")),
+            logical_len: u32::from_le_bytes(input[96..100].try_into().expect("u32")),
+            zcnblk_op: u16::from_le_bytes(input[100..102].try_into().expect("u16")),
+            zcnblk_flags: u16::from_le_bytes(input[102..104].try_into().expect("u16")),
+            zcnblk_shard: u32::from_le_bytes(input[104..108].try_into().expect("u32")),
+            topology_preferred_worker: u32::from_le_bytes(input[108..112].try_into().expect("u32")),
+            topology_queue_id: u32::from_le_bytes(input[112..116].try_into().expect("u32")),
+            topology_tier_id: u32::from_le_bytes(input[116..120].try_into().expect("u32")),
+            topology_flags: u32::from_le_bytes(input[120..124].try_into().expect("u32")),
+            topology_preferred_cpu: i16::from_le_bytes(input[124..126].try_into().expect("i16")),
+            topology_numa_node: i16::from_le_bytes(input[126..128].try_into().expect("i16")),
+        })
+    }
+
+    fn from_zcnblk_request(
+        op: u16,
+        frame: ZcnblkFrameHeader,
+        lane_id: usize,
+        lane_count: usize,
+        branch_id: usize,
+        branch_count: usize,
+        segment_index: usize,
+        segment_count: usize,
+        sequence: u64,
+        logical_offset: u64,
+        leaf_offset: u64,
+        payload_len: usize,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            op,
+            flags: 0,
+            status: 0,
+            lane_id: u32::try_from(lane_id).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "fan WAL lane exceeds u32")
+            })?,
+            lane_count: u32::try_from(lane_count).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "fan WAL lane count exceeds u32",
+                )
+            })?,
+            branch_id: u32::try_from(branch_id).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "fan WAL branch exceeds u32")
+            })?,
+            branch_count: u32::try_from(branch_count).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "fan WAL branch count exceeds u32",
+                )
+            })?,
+            segment_index: u32::try_from(segment_index).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "fan WAL segment exceeds u32")
+            })?,
+            segment_count: u32::try_from(segment_count).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "fan WAL segment count exceeds u32",
+                )
+            })?,
+            payload_len: u32::try_from(payload_len).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "fan WAL payload exceeds u32")
+            })?,
+            sequence,
+            request_id: frame.topology.request_id,
+            sync_epoch: 0,
+            placement_epoch: 0,
+            logical_offset,
+            leaf_offset,
+            logical_len: frame.len,
+            zcnblk_op: frame.op,
+            zcnblk_flags: frame.flags,
+            zcnblk_shard: frame.shard,
+            topology_preferred_worker: frame.topology.preferred_worker,
+            topology_queue_id: frame.topology.queue_id,
+            topology_tier_id: frame.topology.tier_id,
+            topology_flags: frame.topology.topology_flags,
+            topology_preferred_cpu: -1,
+            topology_numa_node: -1,
+        })
+    }
+}
+
+fn zcnblk_fan_i16_topology_hint(value: i32) -> i16 {
+    if value >= i16::MIN as i32 && value <= i16::MAX as i32 {
+        value as i16
+    } else {
+        -1
+    }
+}
+
+fn zcnblk_fan_wal_local_topology_hints(affinity: ThreadAffinity) -> (i16, i16) {
+    let preferred_cpu = if affinity.target_cpu >= 0 {
+        affinity.target_cpu
+    } else {
+        current_cpu()
+    };
+    let numa_node = if preferred_cpu >= 0 {
+        cpu_numa_node(preferred_cpu as usize).unwrap_or(-1)
+    } else {
+        -1
+    };
+    (
+        zcnblk_fan_i16_topology_hint(preferred_cpu),
+        zcnblk_fan_i16_topology_hint(numa_node),
+    )
+}
+
+fn zcnblk_fan_wal_attach_local_topology(
+    mut frame: ZcnblkFanWalFrame,
+    preferred_cpu: i16,
+    numa_node: i16,
+) -> ZcnblkFanWalFrame {
+    frame.topology_preferred_cpu = preferred_cpu;
+    frame.topology_numa_node = numa_node;
+    frame
+}
+
+fn zcnblk_fan_wal_attach_placement_epoch(
+    mut frame: ZcnblkFanWalFrame,
+    plan: ZcPlanRuntime,
+) -> ZcnblkFanWalFrame {
+    frame.placement_epoch = plan.placement_epoch;
+    frame
+}
+
+fn zcnblk_fan_wal_attach_stream_plan(
+    mut frame: ZcnblkFanWalFrame,
+    plan: ZcPlanRuntime,
+) -> ZcnblkFanWalFrame {
+    frame.request_id = plan.plan_hash;
+    frame.placement_epoch = plan.placement_epoch;
+    frame
+}
+
+fn zcnblk_fan_wal_result_ranges_enabled() -> bool {
+    env_enabled_or("URING_PLAY_ZCNBLK_WAL_RESULT_RANGES", true)
+}
+
+fn zcnblk_fan_wal_write_frame(
+    stream: &mut TcpStream,
+    frame: ZcnblkFanWalFrame,
+    payload: &[u8],
+) -> io::Result<()> {
+    let expected_payload_len = match frame.op {
+        ZCNBLK_FAN_WAL_OP_WRITE_DESC
+        | ZCNBLK_FAN_WAL_OP_RESULT
+        | ZCNBLK_FAN_WAL_OP_WRITE_BATCH
+        | ZCNBLK_FAN_WAL_OP_RESULT_BATCH
+        | ZCNBLK_FAN_WAL_OP_REQUEST_BATCH => frame.payload_len as usize,
+        ZCNBLK_FAN_WAL_OP_HELLO
+        | ZCNBLK_FAN_WAL_OP_READ_DESC
+        | ZCNBLK_FAN_WAL_OP_SYNC
+        | ZCNBLK_FAN_WAL_OP_EOF
+        | ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH => 0,
+        _ => frame.payload_len as usize,
+    };
+    if payload.len() != expected_payload_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "fan WAL payload length mismatch header={} actual={}",
+                expected_payload_len,
+                payload.len()
+            ),
+        ));
+    }
+    stream.write_all(&frame.encode())?;
+    if !payload.is_empty() {
+        stream.write_all(payload)?;
+    }
+    Ok(())
+}
+
+fn zcnblk_fan_wal_write_vectored_payload(
+    stream: &mut TcpStream,
+    mut bufs: &mut [IoSlice<'_>],
+) -> io::Result<()> {
+    const MAX_IOV: usize = 1024;
+    while !bufs.is_empty() {
+        let take = bufs.len().min(MAX_IOV);
+        let (head, tail) = bufs.split_at_mut(take);
+        let mut current = head;
+        while !current.is_empty() {
+            let written = stream.write_vectored(current)?;
+            if written == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "fan WAL vectored payload write returned zero",
+                ));
+            }
+            IoSlice::advance_slices(&mut current, written);
+        }
+        bufs = tail;
+    }
+    Ok(())
+}
+
+fn zcnblk_fan_wal_write_frame_vectored(
+    stream: &mut TcpStream,
+    frame: ZcnblkFanWalFrame,
+    payloads: &mut [IoSlice<'_>],
+) -> io::Result<()> {
+    let actual_payload_len = payloads.iter().map(|payload| payload.len()).sum::<usize>();
+    let expected_payload_len = match frame.op {
+        ZCNBLK_FAN_WAL_OP_WRITE_DESC
+        | ZCNBLK_FAN_WAL_OP_RESULT
+        | ZCNBLK_FAN_WAL_OP_WRITE_BATCH
+        | ZCNBLK_FAN_WAL_OP_RESULT_BATCH
+        | ZCNBLK_FAN_WAL_OP_REQUEST_BATCH => frame.payload_len as usize,
+        ZCNBLK_FAN_WAL_OP_HELLO
+        | ZCNBLK_FAN_WAL_OP_READ_DESC
+        | ZCNBLK_FAN_WAL_OP_SYNC
+        | ZCNBLK_FAN_WAL_OP_EOF
+        | ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH => 0,
+        _ => frame.payload_len as usize,
+    };
+    if actual_payload_len != expected_payload_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "fan WAL vectored payload length mismatch header={} actual={}",
+                expected_payload_len, actual_payload_len
+            ),
+        ));
+    }
+    stream.write_all(&frame.encode())?;
+    zcnblk_fan_wal_write_vectored_payload(stream, payloads)
+}
+
+fn zcnblk_fan_wal_read_frame(stream: &mut TcpStream) -> io::Result<ZcnblkFanWalFrame> {
+    let mut header = [0u8; ZCNBLK_FAN_WAL_HEADER_LEN];
+    stream.read_exact(&mut header)?;
+    ZcnblkFanWalFrame::decode(&header)
+}
+
+fn zcnblk_fan_wal_recv_exact_dontwait_spin(
+    stream: &TcpStream,
+    mut out: &mut [u8],
+) -> io::Result<()> {
+    while !out.is_empty() {
+        let received = unsafe {
+            libc::recv(
+                stream.as_raw_fd(),
+                out.as_mut_ptr() as *mut libc::c_void,
+                out.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+        if received > 0 {
+            let received = received as usize;
+            out = &mut out[received..];
+            continue;
+        }
+        if received == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "fan WAL socket closed",
+            ));
+        }
+        let err = io::Error::last_os_error();
+        if matches!(
+            err.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+        ) {
+            std::hint::spin_loop();
+            continue;
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn zcnblk_fan_wal_recv_exact_spin_then_block(
+    stream: &mut TcpStream,
+    mut out: &mut [u8],
+    spin_budget: Option<usize>,
+) -> io::Result<()> {
+    let mut spins = 0usize;
+    while !out.is_empty() {
+        let received = unsafe {
+            libc::recv(
+                stream.as_raw_fd(),
+                out.as_mut_ptr() as *mut libc::c_void,
+                out.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+        if received > 0 {
+            let received = received as usize;
+            out = &mut out[received..];
+            continue;
+        }
+        if received == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "fan WAL socket closed",
+            ));
+        }
+        let err = io::Error::last_os_error();
+        if matches!(
+            err.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+        ) {
+            if spin_budget.is_some_and(|budget| spins >= budget) {
+                stream.read_exact(out)?;
+                return Ok(());
+            }
+            spins = spins.saturating_add(1);
+            std::hint::spin_loop();
+            continue;
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn zcnblk_fan_wal_read_frame_dontwait_spin(stream: &TcpStream) -> io::Result<ZcnblkFanWalFrame> {
+    let mut header = [0u8; ZCNBLK_FAN_WAL_HEADER_LEN];
+    zcnblk_fan_wal_recv_exact_dontwait_spin(stream, &mut header)?;
+    ZcnblkFanWalFrame::decode(&header)
+}
+
+fn zcnblk_fan_wal_read_frame_spin_then_block(
+    stream: &mut TcpStream,
+    spin_budget: Option<usize>,
+) -> io::Result<ZcnblkFanWalFrame> {
+    let mut header = [0u8; ZCNBLK_FAN_WAL_HEADER_LEN];
+    zcnblk_fan_wal_recv_exact_spin_then_block(stream, &mut header, spin_budget)?;
+    ZcnblkFanWalFrame::decode(&header)
+}
+
+fn zcnblk_fan_wal_read_payload(
+    stream: &mut TcpStream,
+    frame: ZcnblkFanWalFrame,
+) -> io::Result<Vec<u8>> {
+    let mut payload = vec![0u8; frame.payload_len as usize];
+    if !payload.is_empty() {
+        stream.read_exact(&mut payload)?;
+    }
+    Ok(payload)
+}
+
+fn zcnblk_fan_wal_read_payload_dontwait_spin(
+    stream: &TcpStream,
+    frame: ZcnblkFanWalFrame,
+) -> io::Result<Vec<u8>> {
+    let mut payload = vec![0u8; frame.payload_len as usize];
+    if !payload.is_empty() {
+        zcnblk_fan_wal_recv_exact_dontwait_spin(stream, &mut payload)?;
+    }
+    Ok(payload)
+}
+
+fn zcnblk_fan_wal_read_payload_spin_then_block(
+    stream: &mut TcpStream,
+    frame: ZcnblkFanWalFrame,
+    spin_budget: Option<usize>,
+) -> io::Result<Vec<u8>> {
+    let mut payload = vec![0u8; frame.payload_len as usize];
+    if !payload.is_empty() {
+        zcnblk_fan_wal_recv_exact_spin_then_block(stream, &mut payload, spin_budget)?;
+    }
+    Ok(payload)
+}
+
+fn zcnblk_fan_wal_decode_frame_slice(input: &[u8]) -> io::Result<ZcnblkFanWalFrame> {
+    let header: &[u8; ZCNBLK_FAN_WAL_HEADER_LEN] = input.try_into().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "fan WAL frame slice length {} is not {}",
+                input.len(),
+                ZCNBLK_FAN_WAL_HEADER_LEN
+            ),
+        )
+    })?;
+    ZcnblkFanWalFrame::decode(header)
+}
+
+fn zcnblk_fan_wal_segments(
+    mode: ZcnblkFanPlacementMode,
+    op: u16,
+    offset: u64,
+    len: usize,
+    stripe_bytes: usize,
+    leaf_count: usize,
+) -> io::Result<Vec<ZcnblkFanSegment>> {
+    match mode {
+        ZcnblkFanPlacementMode::Stripe => {
+            zcnblk_read_fan_map_segments(offset, len, stripe_bytes, leaf_count)
+        }
+        ZcnblkFanPlacementMode::Mirror => {
+            if op == ZCNBLK_OP_READ {
+                return zcnblk_fan_wal_mirror_read_segments(offset, len, stripe_bytes, leaf_count);
+            }
+            Ok((0..leaf_count)
+                .map(|leaf_idx| ZcnblkFanSegment {
+                    leaf_idx,
+                    leaf_offset: offset,
+                    payload_offset: 0,
+                    len,
+                })
+                .collect())
+        }
+        ZcnblkFanPlacementMode::Raid10 => {
+            zcnblk_fan_wal_raid10_segments(op, offset, len, stripe_bytes, leaf_count)
+        }
+    }
+}
+
+fn zcnblk_fan_wal_mirror_read_segments(
+    offset: u64,
+    len: usize,
+    stripe_bytes: usize,
+    leaf_count: usize,
+) -> io::Result<Vec<ZcnblkFanSegment>> {
+    if stripe_bytes == 0 || leaf_count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-fan mirror reads require non-zero stripe bytes and leaf count",
+        ));
+    }
+    let stripe_bytes_u64 = stripe_bytes as u64;
+    let mut segments = Vec::new();
+    let mut logical_offset = offset;
+    let mut payload_offset = 0usize;
+    let mut remaining = len;
+    while remaining != 0 {
+        let stripe_off = logical_offset % stripe_bytes_u64;
+        let stripe_remaining = stripe_bytes - stripe_off as usize;
+        let seg_len = remaining.min(stripe_remaining);
+        let stripe_no = logical_offset / stripe_bytes_u64;
+        segments.push(ZcnblkFanSegment {
+            leaf_idx: stripe_no as usize % leaf_count,
+            leaf_offset: logical_offset,
+            payload_offset,
+            len: seg_len,
+        });
+        logical_offset = logical_offset.checked_add(seg_len as u64).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "fan WAL mirror offset overflow",
+            )
+        })?;
+        payload_offset = payload_offset.checked_add(seg_len).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "fan WAL mirror payload offset overflow",
+            )
+        })?;
+        remaining -= seg_len;
+    }
+    Ok(segments)
+}
+
+fn zcnblk_fan_wal_raid10_segments(
+    op: u16,
+    offset: u64,
+    len: usize,
+    stripe_bytes: usize,
+    leaf_count: usize,
+) -> io::Result<Vec<ZcnblkFanSegment>> {
+    if stripe_bytes == 0 || leaf_count < 4 || leaf_count % 2 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-fan raid10 requires non-zero stripe bytes and an even leaf count of at least 4",
+        ));
+    }
+    let pair_count = leaf_count / 2;
+    let stripe_bytes_u64 = stripe_bytes as u64;
+    let mut segments = Vec::new();
+    let mut logical_offset = offset;
+    let mut payload_offset = 0usize;
+    let mut remaining = len;
+    while remaining != 0 {
+        let stripe_off = logical_offset % stripe_bytes_u64;
+        let stripe_remaining = stripe_bytes - stripe_off as usize;
+        let seg_len = remaining.min(stripe_remaining);
+        let stripe_no = logical_offset / stripe_bytes_u64;
+        let pair_idx = stripe_no as usize % pair_count;
+        let row = stripe_no / pair_count as u64;
+        let leaf_offset = row
+            .checked_mul(stripe_bytes_u64)
+            .and_then(|base| base.checked_add(stripe_off))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "raid10 offset overflow"))?;
+        let pair_base = pair_idx * 2;
+        if op == ZCNBLK_OP_READ {
+            let mirror_idx = row as usize & 1;
+            segments.push(ZcnblkFanSegment {
+                leaf_idx: pair_base + mirror_idx,
+                leaf_offset,
+                payload_offset,
+                len: seg_len,
+            });
+        } else {
+            for mirror_idx in 0..2 {
+                segments.push(ZcnblkFanSegment {
+                    leaf_idx: pair_base + mirror_idx,
+                    leaf_offset,
+                    payload_offset,
+                    len: seg_len,
+                });
+            }
+        }
+        logical_offset = logical_offset.checked_add(seg_len as u64).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "raid10 logical offset overflow",
+            )
+        })?;
+        payload_offset = payload_offset.checked_add(seg_len).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "raid10 payload offset overflow",
+            )
+        })?;
+        remaining -= seg_len;
+    }
+    Ok(segments)
+}
+
+#[derive(Default)]
+struct ZcnblkWalFanStats {
+    handler: usize,
+    lane: usize,
+    conn_index: usize,
+    read_bytes: usize,
+    write_bytes: usize,
+    response_bytes: usize,
+    branch_payload_bytes: usize,
+    frames: usize,
+    batches: usize,
+    read_frames: usize,
+    write_frames: usize,
+    leaf_submit_batches: usize,
+    leaf_submit_records: usize,
+    max_leaf_submit_records: usize,
+    pipelined_write_batches: usize,
+    pipelined_request_batches: usize,
+    batch_fallbacks: usize,
+    batch_fallback_frames: usize,
+    max_upstream_batch_frames: usize,
+    max_outstanding_batches: usize,
+    upstream_idle_drains: usize,
+    result_records: usize,
+    result_batches: usize,
+    result_range_batches: usize,
+    elapsed: Duration,
+    target_cpu: i32,
+    affinity_applied: bool,
+    voluntary_switches: u64,
+    involuntary_switches: u64,
+    migrations: u64,
+}
+
+struct ZcnblkFanWalPendingWrite {
+    prepared: ZcnblkFanPreparedFrame,
+    segments: Vec<ZcnblkFanSegment>,
+    payload_start: usize,
+    payload_len: usize,
+}
+
+struct ZcnblkFanWalSubmittedWrite {
+    prepared: ZcnblkFanPreparedFrame,
+    segments: Vec<ZcnblkFanSegment>,
+}
+
+struct ZcnblkFanWalSubmittedWriteBatch {
+    writes: Vec<ZcnblkFanWalSubmittedWrite>,
+    leaf_batches: Vec<Vec<ZcnblkFanWalLeafBatchItem>>,
+    records: Vec<u64>,
+}
+
+struct ZcnblkFanWalPendingRequest {
+    prepared: ZcnblkFanPreparedFrame,
+    segments: Vec<ZcnblkFanSegment>,
+    payload_start: usize,
+}
+
+struct ZcnblkFanWalSubmittedRequest {
+    prepared: ZcnblkFanPreparedFrame,
+    segments: Vec<ZcnblkFanSegment>,
+}
+
+struct ZcnblkFanWalSubmittedRequestBatch {
+    requests: Vec<ZcnblkFanWalSubmittedRequest>,
+    leaf_batches: Vec<Vec<ZcnblkFanWalLeafBatchItem>>,
+}
+
+#[derive(Clone, Copy)]
+struct ZcnblkFanWalLeafBatchItem {
+    request_idx: usize,
+    segment_idx: usize,
+    segment: ZcnblkFanSegment,
+}
+
+fn zcnblk_fan_wal_upstream_readable(upstream: &ZcnblkTransport) -> io::Result<bool> {
+    if let Some(crypto) = upstream.crypto.as_ref() {
+        if crypto.rx_offset < crypto.rx_plaintext.len() {
+            return Ok(true);
+        }
+    }
+
+    upstream.stream.set_nonblocking(true)?;
+    let mut byte = [0u8; 1];
+    let peek_result = match upstream.stream.peek(&mut byte) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::WouldBlock => Ok(false),
+        Err(err) => Err(err),
+    };
+    if let Err(restore_err) = upstream.stream.set_nonblocking(false) {
+        return match peek_result {
+            Ok(_) => Err(restore_err),
+            Err(peek_err) => Err(io::Error::new(
+                restore_err.kind(),
+                format!(
+                    "fan WAL upstream readiness peek failed ({peek_err}) and blocking-mode restore failed ({restore_err})"
+                ),
+            )),
+        };
+    }
+    peek_result
+}
+
+fn zcnblk_fan_wal_socket_available(stream: &TcpStream) -> io::Result<usize> {
+    let mut available: libc::c_int = 0;
+    let ret = unsafe { libc::ioctl(stream.as_raw_fd(), libc::FIONREAD, &mut available) };
+    if ret != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    usize::try_from(available).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("fan WAL socket reported negative readable bytes {available}"),
+        )
+    })
+}
+
+fn zcnblk_fan_wal_peek_exact(stream: &TcpStream, len: usize) -> io::Result<Option<Vec<u8>>> {
+    if len == 0 {
+        return Ok(Some(Vec::new()));
+    }
+    let mut buf = vec![0u8; len];
+    let ret = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            buf.as_mut_ptr().cast(),
+            len,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    if ret == len as isize {
+        return Ok(Some(buf));
+    }
+    if ret >= 0 {
+        return Ok(None);
+    }
+    let err = io::Error::last_os_error();
+    if matches!(
+        err.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+    ) {
+        return Ok(None);
+    }
+    Err(err)
+}
+
+fn zcnblk_fan_wal_zcnblk_frame_payload_len(frame: ZcnblkFrameHeader) -> io::Result<usize> {
+    let len = frame.len as usize;
+    match frame.op {
+        ZCNBLK_OP_WRITE | ZCNBLK_OP_READ_RESP => Ok(len),
+        _ => Ok(0),
+    }
+}
+
+fn zcnblk_fan_wal_zcnblk_batch_wire_len(batch_frames: &[ZcnblkFrameHeader]) -> io::Result<usize> {
+    let descriptor_bytes = batch_frames
+        .len()
+        .checked_mul(ZCNBLK_FRAME_HEADER_LEN)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "fan WAL batch header overflow")
+        })?;
+    let payload_bytes = batch_frames.iter().try_fold(0usize, |total, frame| {
+        total
+            .checked_add(zcnblk_fan_wal_zcnblk_frame_payload_len(*frame)?)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL batch payload overflow")
+            })
+    })?;
+    ZCNBLK_FRAME_HEADER_LEN
+        .checked_add(descriptor_bytes)
+        .and_then(|total| total.checked_add(payload_bytes))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL batch wire overflow"))
+}
+
+fn zcnblk_fan_wal_upstream_next_request_ready(upstream: &ZcnblkTransport) -> io::Result<bool> {
+    if upstream.is_encrypted() {
+        return zcnblk_fan_wal_upstream_readable(upstream);
+    }
+
+    let available = zcnblk_fan_wal_socket_available(&upstream.stream)?;
+    if available < ZCNBLK_FRAME_HEADER_LEN {
+        return Ok(false);
+    }
+    let Some(header_bytes) = zcnblk_fan_wal_peek_exact(&upstream.stream, ZCNBLK_FRAME_HEADER_LEN)?
+    else {
+        return Ok(false);
+    };
+    let header: &[u8; ZCNBLK_FRAME_HEADER_LEN] =
+        header_bytes.as_slice().try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fan WAL peeked header length mismatch",
+            )
+        })?;
+    let frame = ZcnblkFrameHeader::decode(header)?;
+    let needed = if frame.op == ZCNBLK_OP_BATCH {
+        let count = frame.len as usize;
+        let descriptor_bytes = count.checked_mul(ZCNBLK_FRAME_HEADER_LEN).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fan WAL peek batch header overflow",
+            )
+        })?;
+        let prefix_len = ZCNBLK_FRAME_HEADER_LEN
+            .checked_add(descriptor_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL peek overflow"))?;
+        if available < prefix_len {
+            return Ok(false);
+        }
+        let Some(prefix) = zcnblk_fan_wal_peek_exact(&upstream.stream, prefix_len)? else {
+            return Ok(false);
+        };
+        let mut batch_frames = Vec::with_capacity(count);
+        for batch_buf in prefix[ZCNBLK_FRAME_HEADER_LEN..].chunks_exact(ZCNBLK_FRAME_HEADER_LEN) {
+            let batch_buf: &[u8; ZCNBLK_FRAME_HEADER_LEN] = batch_buf.try_into().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL peeked batch header length mismatch",
+                )
+            })?;
+            batch_frames.push(ZcnblkFrameHeader::decode(batch_buf)?);
+        }
+        zcnblk_fan_wal_zcnblk_batch_wire_len(&batch_frames)?
+    } else {
+        ZCNBLK_FRAME_HEADER_LEN
+            .checked_add(zcnblk_fan_wal_zcnblk_frame_payload_len(frame)?)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL frame wire overflow")
+            })?
+    };
+    Ok(available >= needed)
+}
+
+const ZCNBLK_FAN_RESULT_ARENA_MAGIC: u64 = 0x7a6366616e726573;
+const ZCNBLK_FAN_RESULT_ARENA_VERSION: u64 = 1;
+
+#[repr(C, align(64))]
+struct ZcnblkFanWalResultArenaHeader {
+    magic: u64,
+    version: u64,
+    slot_count: u64,
+    published: AtomicU64,
+    consumed: AtomicU64,
+    closed: AtomicU64,
+    error: AtomicU64,
+    _pad: [u64; 1],
+}
+
+#[repr(C, align(64))]
+struct ZcnblkFanWalResultArenaSlot {
+    sequence_plus_one: AtomicU64,
+    op: AtomicU64,
+    status: AtomicU64,
+    branch_id: AtomicU64,
+    segment_count: AtomicU64,
+    payload_len: AtomicU64,
+    _pad: [u64; 2],
+}
+
+#[derive(Clone, Copy)]
+struct ZcnblkFanWalResultBatchHeader {
+    op: u16,
+    status: u32,
+    branch_id: u32,
+    segment_count: u32,
+    payload_len: u32,
+}
+
+struct ZcnblkFanWalResultArenaMap {
+    file: fs::File,
+    ptr: *mut u8,
+    len: usize,
+    slots_offset: usize,
+    slot_count: usize,
+}
+
+unsafe impl Send for ZcnblkFanWalResultArenaMap {}
+unsafe impl Sync for ZcnblkFanWalResultArenaMap {}
+
+impl Drop for ZcnblkFanWalResultArenaMap {
+    fn drop(&mut self) {
+        munmap_if_mapped(self.ptr as *mut libc::c_void, self.len);
+    }
+}
+
+impl ZcnblkFanWalResultArenaMap {
+    fn create(slot_count: usize) -> io::Result<Self> {
+        if slot_count < 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "fan WAL result arena needs at least two slots",
+            ));
+        }
+        let page_size = page_size()?;
+        let slots_offset = align_up(std::mem::size_of::<ZcnblkFanWalResultArenaHeader>(), 64);
+        let slots_bytes = slot_count
+            .checked_mul(std::mem::size_of::<ZcnblkFanWalResultArenaSlot>())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "fan WAL result arena slot allocation overflow",
+                )
+            })?;
+        let len = align_up(
+            slots_offset.checked_add(slots_bytes).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "fan WAL result arena allocation overflow",
+                )
+            })?,
+            page_size,
+        );
+        let name = CString::new("zcnblk-fan-result-arena")
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+        let fd = unsafe {
+            libc::syscall(
+                libc::SYS_memfd_create,
+                name.as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let file = unsafe { fs::File::from_raw_fd(fd as i32) };
+        file.set_len(len as u64)?;
+        let ptr = mmap_shared(file.as_raw_fd(), len, 0)?;
+        unsafe {
+            let header = ptr as *mut ZcnblkFanWalResultArenaHeader;
+            ptr::write(
+                header,
+                ZcnblkFanWalResultArenaHeader {
+                    magic: ZCNBLK_FAN_RESULT_ARENA_MAGIC,
+                    version: ZCNBLK_FAN_RESULT_ARENA_VERSION,
+                    slot_count: slot_count as u64,
+                    published: AtomicU64::new(0),
+                    consumed: AtomicU64::new(0),
+                    closed: AtomicU64::new(0),
+                    error: AtomicU64::new(0),
+                    _pad: [0; 1],
+                },
+            );
+            for slot_idx in 0..slot_count {
+                let slot = ptr.add(slots_offset) as *mut ZcnblkFanWalResultArenaSlot;
+                ptr::write(
+                    slot.add(slot_idx),
+                    ZcnblkFanWalResultArenaSlot {
+                        sequence_plus_one: AtomicU64::new(0),
+                        op: AtomicU64::new(0),
+                        status: AtomicU64::new(0),
+                        branch_id: AtomicU64::new(0),
+                        segment_count: AtomicU64::new(0),
+                        payload_len: AtomicU64::new(0),
+                        _pad: [0; 2],
+                    },
+                );
+            }
+        }
+        Ok(Self {
+            file,
+            ptr,
+            len,
+            slots_offset,
+            slot_count,
+        })
+    }
+
+    fn duplicate_view(&self) -> io::Result<Self> {
+        let file = self.file.try_clone()?;
+        let ptr = mmap_shared(file.as_raw_fd(), self.len, 0)?;
+        let view = Self {
+            file,
+            ptr,
+            len: self.len,
+            slots_offset: self.slots_offset,
+            slot_count: self.slot_count,
+        };
+        view.validate()?;
+        Ok(view)
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        let header = self.header();
+        if header.magic != ZCNBLK_FAN_RESULT_ARENA_MAGIC
+            || header.version != ZCNBLK_FAN_RESULT_ARENA_VERSION
+            || header.slot_count as usize != self.slot_count
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fan WAL result arena header mismatch",
+            ));
+        }
+        Ok(())
+    }
+
+    fn header(&self) -> &ZcnblkFanWalResultArenaHeader {
+        unsafe { &*(self.ptr as *const ZcnblkFanWalResultArenaHeader) }
+    }
+
+    fn slot(&self, sequence: u64) -> &ZcnblkFanWalResultArenaSlot {
+        let idx = sequence as usize % self.slot_count;
+        unsafe {
+            &*((self.ptr.add(self.slots_offset) as *const ZcnblkFanWalResultArenaSlot).add(idx))
+        }
+    }
+
+    fn wait_publish_capacity(&self, sequence: u64) -> io::Result<()> {
+        while sequence.saturating_sub(self.header().consumed.load(Ordering::Acquire))
+            >= self.slot_count as u64
+        {
+            if self.header().error.load(Ordering::Acquire) != 0 {
+                return Err(io::Error::other(
+                    "fan WAL result arena receiver is in error state",
+                ));
+            }
+            std::hint::spin_loop();
+        }
+        Ok(())
+    }
+
+    fn publish(&self, sequence: u64, result: ZcnblkFanWalResultBatchHeader) -> io::Result<()> {
+        self.wait_publish_capacity(sequence)?;
+        let slot = self.slot(sequence);
+        slot.op.store(result.op as u64, Ordering::Relaxed);
+        slot.status.store(result.status as u64, Ordering::Relaxed);
+        slot.branch_id
+            .store(result.branch_id as u64, Ordering::Relaxed);
+        slot.segment_count
+            .store(result.segment_count as u64, Ordering::Relaxed);
+        slot.payload_len
+            .store(result.payload_len as u64, Ordering::Relaxed);
+        slot.sequence_plus_one
+            .store(sequence.saturating_add(1), Ordering::Release);
+        self.header()
+            .published
+            .store(sequence.saturating_add(1), Ordering::Release);
+        Ok(())
+    }
+
+    fn consume(&self, sequence: u64) -> io::Result<ZcnblkFanWalResultBatchHeader> {
+        let want = sequence.saturating_add(1);
+        let slot = self.slot(sequence);
+        while slot.sequence_plus_one.load(Ordering::Acquire) != want {
+            if self.header().error.load(Ordering::Acquire) != 0 {
+                return Err(io::Error::other(
+                    "fan WAL result receiver failed before publishing",
+                ));
+            }
+            if self.header().closed.load(Ordering::Acquire) != 0
+                && self.header().published.load(Ordering::Acquire) < want
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "fan WAL result receiver closed before publishing expected batch",
+                ));
+            }
+            std::hint::spin_loop();
+        }
+        let result = ZcnblkFanWalResultBatchHeader {
+            op: slot.op.load(Ordering::Relaxed) as u16,
+            status: slot.status.load(Ordering::Relaxed) as u32,
+            branch_id: slot.branch_id.load(Ordering::Relaxed) as u32,
+            segment_count: slot.segment_count.load(Ordering::Relaxed) as u32,
+            payload_len: slot.payload_len.load(Ordering::Relaxed) as u32,
+        };
+        self.header().consumed.store(want, Ordering::Release);
+        Ok(result)
+    }
+
+    fn mark_closed(&self) {
+        self.header().closed.store(1, Ordering::Release);
+    }
+
+    fn mark_error(&self) {
+        self.header().error.store(1, Ordering::Release);
+    }
+}
+
+#[derive(Default)]
+struct ZcnblkFanWalResultReceiverStats {
+    leaf_idx: usize,
+    batches: u64,
+    drained_payload_bytes: u64,
+    elapsed: Duration,
+    target_cpu: i32,
+    affinity_applied: bool,
+    voluntary_switches: u64,
+    involuntary_switches: u64,
+    migrations: u64,
+    spin_reads: bool,
+}
+
+struct ZcnblkFanWalResultReceiverSet {
+    rings: Vec<Option<ZcnblkFanWalResultArenaMap>>,
+    next_sequences: Vec<u64>,
+    handles: Vec<thread::JoinHandle<io::Result<ZcnblkFanWalResultReceiverStats>>>,
+    inline_leaf: Option<usize>,
+}
+
+impl ZcnblkFanWalResultReceiverSet {
+    fn is_inline_leaf(&self, leaf_idx: usize) -> bool {
+        self.inline_leaf == Some(leaf_idx)
+    }
+
+    fn consume(&mut self, leaf_idx: usize) -> io::Result<ZcnblkFanWalResultBatchHeader> {
+        let sequence = self.next_sequences.get_mut(leaf_idx).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("fan WAL result arena leaf {leaf_idx} is out of range"),
+            )
+        })?;
+        let ring = self
+            .rings
+            .get(leaf_idx)
+            .and_then(|ring| ring.as_ref())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("fan WAL result arena leaf {leaf_idx} has no receiver ring"),
+                )
+            })?;
+        let result = ring.consume(*sequence)?;
+        *sequence = sequence.saturating_add(1);
+        Ok(result)
+    }
+
+    fn join(self) -> io::Result<()> {
+        for handle in self.handles {
+            let stats = handle
+                .join()
+                .map_err(|_| io::Error::other("fan WAL result receiver panicked"))??;
+            let secs = stats.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+            println!(
+                "zcnblk-fan-wal-result-receiver: leaf={} batches={} drained_payload_bytes={} \
+                 seconds={secs:.6} batches_per_sec={:.0} target_cpu={} affinity_applied={} \
+                 spin_reads={} voluntary_ctxt_switches={} involuntary_ctxt_switches={} \
+                 migrations={}",
+                stats.leaf_idx,
+                stats.batches,
+                stats.drained_payload_bytes,
+                stats.batches as f64 / secs,
+                stats.target_cpu,
+                stats.affinity_applied,
+                stats.spin_reads,
+                stats.voluntary_switches,
+                stats.involuntary_switches,
+                stats.migrations,
+            );
+        }
+        Ok(())
+    }
+}
+
+fn zcnblk_fan_wal_result_arena_enabled() -> bool {
+    env_enabled_or("URING_PLAY_ZCNBLK_FAN_RESULT_ARENA", false)
+}
+
+fn zcnblk_fan_wal_result_arena_slots(batch_window: usize) -> usize {
+    env_usize_or(
+        "URING_PLAY_ZCNBLK_FAN_RESULT_ARENA_SLOTS",
+        batch_window.saturating_mul(2).max(64),
+    )
+    .max(2)
+}
+
+fn zcnblk_fan_wal_result_arena_spin_enabled() -> bool {
+    env_enabled_or("URING_PLAY_ZCNBLK_FAN_RESULT_ARENA_SPIN", false)
+}
+
+fn zcnblk_fan_wal_result_arena_spin_budget() -> Option<usize> {
+    env::var("URING_PLAY_ZCNBLK_FAN_RESULT_ARENA_SPIN_BUDGET")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZcnblkFanWalResultWaitMode {
+    Blocking,
+    Adaptive,
+    Greedy,
+}
+
+impl ZcnblkFanWalResultWaitMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "blocking" | "block" | "default" | "off" => Ok(Self::Blocking),
+            "adaptive" | "busy" | "busy-spin" | "spin-when-busy" => Ok(Self::Adaptive),
+            "greedy" | "spin" | "always-spin" | "ultra-low-latency" | "trading" => Ok(Self::Greedy),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown URING_PLAY_ZCNBLK_FAN_RESULT_WAIT_POLICY={other:?}; use blocking, adaptive, or greedy"
+                ),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Blocking => "blocking",
+            Self::Adaptive => "adaptive",
+            Self::Greedy => "greedy",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ZcnblkFanWalResultWaitPolicy {
+    mode: ZcnblkFanWalResultWaitMode,
+    spin_budget: Option<usize>,
+    adaptive_min_outstanding: usize,
+}
+
+impl ZcnblkFanWalResultWaitPolicy {
+    fn from_env(batch_window: usize, legacy_spin_enabled: bool) -> io::Result<Self> {
+        let mode = match env::var("URING_PLAY_ZCNBLK_FAN_RESULT_WAIT_POLICY")
+            .or_else(|_| env::var("URING_PLAY_ZCNBLK_FAN_WAIT_POLICY"))
+        {
+            Ok(value) => ZcnblkFanWalResultWaitMode::parse(&value)?,
+            Err(env::VarError::NotPresent)
+                if env_enabled_or("URING_PLAY_ZCNBLK_FAN_ULTRA_LOW_LATENCY", false) =>
+            {
+                ZcnblkFanWalResultWaitMode::Greedy
+            }
+            Err(env::VarError::NotPresent) if legacy_spin_enabled => {
+                ZcnblkFanWalResultWaitMode::Greedy
+            }
+            Err(env::VarError::NotPresent) => ZcnblkFanWalResultWaitMode::Blocking,
+            Err(err) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid fan result wait policy env: {err}"),
+                ));
+            }
+        };
+        let default_min = if batch_window <= 1 {
+            1
+        } else {
+            ((batch_window + 3) / 4).clamp(2, batch_window)
+        };
+        let adaptive_min_outstanding = env_usize_or(
+            "URING_PLAY_ZCNBLK_FAN_RESULT_SPIN_MIN_OUTSTANDING",
+            default_min,
+        )
+        .max(1);
+        let spin_budget = env::var("URING_PLAY_ZCNBLK_FAN_RESULT_SPIN_BUDGET")
+            .ok()
+            .or_else(|| env::var("URING_PLAY_ZCNBLK_FAN_RESULT_ARENA_SPIN_BUDGET").ok())
+            .or_else(|| env::var("URING_PLAY_SPIN_BUDGET").ok())
+            .and_then(|value| value.trim().parse::<usize>().ok());
+        Ok(Self {
+            mode,
+            spin_budget,
+            adaptive_min_outstanding,
+        })
+    }
+
+    fn should_spin(self, outstanding_units: usize) -> bool {
+        match self.mode {
+            ZcnblkFanWalResultWaitMode::Blocking => false,
+            ZcnblkFanWalResultWaitMode::Adaptive => {
+                outstanding_units >= self.adaptive_min_outstanding
+            }
+            ZcnblkFanWalResultWaitMode::Greedy => true,
+        }
+    }
+
+    fn label(self) -> String {
+        format!(
+            "result_wait_policy={} result_spin_budget={} result_spin_min_outstanding={}",
+            self.mode.label(),
+            self.spin_budget
+                .map(|budget| budget.to_string())
+                .unwrap_or_else(|| "unbounded".to_string()),
+            self.adaptive_min_outstanding
+        )
+    }
+}
+
+fn zcnblk_fan_wal_result_arena_inline_primary_enabled() -> bool {
+    env_enabled_or("URING_PLAY_ZCNBLK_FAN_RESULT_ARENA_INLINE_PRIMARY", false)
+}
+
+fn zcnblk_fan_wal_result_receiver(
+    leaf_idx: usize,
+    affinity_index: usize,
+    mut stream: TcpStream,
+    arena: ZcnblkFanWalResultArenaMap,
+    pin: bool,
+    spin_reads: bool,
+    spin_budget: Option<usize>,
+) -> io::Result<ZcnblkFanWalResultReceiverStats> {
+    let affinity =
+        pin_current_thread_if_requested("zcnblk-fan-wal-result-receiver", affinity_index, pin);
+    let tid = current_tid();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
+    let started = Instant::now();
+    let mut batches = 0u64;
+    let mut drained_payload_bytes = 0u64;
+    let result = loop {
+        let frame = match if spin_reads {
+            zcnblk_fan_wal_read_frame_spin_then_block(&mut stream, spin_budget)
+        } else {
+            zcnblk_fan_wal_read_frame(&mut stream)
+        } {
+            Ok(frame) => frame,
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::ConnectionReset => break Ok(()),
+            Err(err) => break Err(err),
+        };
+        if frame.payload_len > 0 {
+            let payload = if spin_reads {
+                zcnblk_fan_wal_read_payload_spin_then_block(&mut stream, frame, spin_budget)?
+            } else {
+                zcnblk_fan_wal_read_payload(&mut stream, frame)?
+            };
+            drained_payload_bytes = drained_payload_bytes.saturating_add(payload.len() as u64);
+        }
+        arena.publish(
+            batches,
+            ZcnblkFanWalResultBatchHeader {
+                op: frame.op,
+                status: frame.status,
+                branch_id: frame.branch_id,
+                segment_count: frame.segment_count,
+                payload_len: frame.payload_len,
+            },
+        )?;
+        batches = batches.saturating_add(1);
+        if frame.op == ZCNBLK_FAN_WAL_OP_EOF {
+            break Ok(());
+        }
+    };
+    match result {
+        Ok(()) => arena.mark_closed(),
+        Err(_) => arena.mark_error(),
+    }
+    result?;
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    Ok(ZcnblkFanWalResultReceiverStats {
+        leaf_idx,
+        batches,
+        drained_payload_bytes,
+        elapsed: started.elapsed(),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+        voluntary_switches: end_switches
+            .voluntary
+            .saturating_sub(start_switches.voluntary),
+        involuntary_switches: end_switches
+            .involuntary
+            .saturating_sub(start_switches.involuntary),
+        migrations: end_switches
+            .migrations
+            .saturating_sub(start_switches.migrations),
+        spin_reads,
+    })
+}
+
+fn zcnblk_fan_wal_start_result_receivers(
+    leaves: &[TcpStream],
+    ring_slots: usize,
+    handler: usize,
+    total_connections: usize,
+    pin: bool,
+    spin_reads: bool,
+    spin_budget: Option<usize>,
+    inline_leaf: Option<usize>,
+) -> io::Result<ZcnblkFanWalResultReceiverSet> {
+    let mut rings = Vec::with_capacity(leaves.len());
+    let mut handles = Vec::with_capacity(leaves.len());
+    for (leaf_idx, stream) in leaves.iter().enumerate() {
+        if inline_leaf == Some(leaf_idx) {
+            rings.push(None);
+            continue;
+        }
+        let arena = ZcnblkFanWalResultArenaMap::create(ring_slots)?;
+        let receiver_arena = arena.duplicate_view()?;
+        let read_stream = stream.try_clone()?;
+        let affinity_index = leaf_idx
+            .checked_add(1)
+            .and_then(|idx| idx.checked_mul(total_connections))
+            .and_then(|base| base.checked_add(handler))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "fan WAL result receiver affinity index overflow",
+                )
+            })?;
+        handles.push(thread::spawn(move || {
+            zcnblk_fan_wal_result_receiver(
+                leaf_idx,
+                affinity_index,
+                read_stream,
+                receiver_arena,
+                pin,
+                spin_reads,
+                spin_budget,
+            )
+        }));
+        rings.push(Some(arena));
+    }
+    Ok(ZcnblkFanWalResultReceiverSet {
+        rings,
+        next_sequences: vec![0; leaves.len()],
+        handles,
+        inline_leaf,
+    })
+}
+
+fn zcnblk_fan_wal_can_pipeline_write_batch(frame_plans: &[ZcnblkFanFramePlan]) -> bool {
+    if frame_plans.len() < 2
+        || frame_plans
+            .iter()
+            .any(|plan| plan.frame.op != ZCNBLK_OP_WRITE)
+    {
+        return false;
+    }
+    let mut records = Vec::new();
+    for plan in frame_plans {
+        records.extend_from_slice(&plan.records);
+    }
+    let original = records.len();
+    records.sort_unstable();
+    records.dedup();
+    records.len() == original
+}
+
+fn zcnblk_fan_wal_can_pipeline_request_batch(frame_plans: &[ZcnblkFanFramePlan]) -> bool {
+    if frame_plans.len() < 2
+        || frame_plans
+            .iter()
+            .any(|plan| !matches!(plan.frame.op, ZCNBLK_OP_READ | ZCNBLK_OP_WRITE))
+    {
+        return false;
+    }
+    let mut records = Vec::new();
+    for plan in frame_plans {
+        records.extend_from_slice(&plan.records);
+    }
+    let original = records.len();
+    records.sort_unstable();
+    records.dedup();
+    records.len() == original
+}
+
+fn zcnblk_fan_wal_plan_records(frame_plans: &[ZcnblkFanFramePlan]) -> io::Result<Vec<u64>> {
+    let mut records = Vec::new();
+    for plan in frame_plans {
+        records.extend_from_slice(&plan.records);
+    }
+    if records.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "fan WAL batch has no ordered records",
+        ));
+    }
+    records.sort_unstable();
+    records.dedup();
+    Ok(records)
+}
+
+fn zcnblk_fan_wal_batch_records(
+    prepared_frames: &[ZcnblkFanPreparedFrame],
+) -> io::Result<Vec<u64>> {
+    let mut records = Vec::new();
+    for prepared in prepared_frames {
+        records.extend_from_slice(prepared.order.records());
+    }
+    if records.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "fan WAL write batch has no ordered records",
+        ));
+    }
+    records.sort_unstable();
+    records.dedup();
+    Ok(records)
+}
+
+fn zcnblk_fan_wal_records_overlap(a: &[u64], b: &[u64]) -> bool {
+    let mut a_idx = 0usize;
+    let mut b_idx = 0usize;
+    while a_idx < a.len() && b_idx < b.len() {
+        match a[a_idx].cmp(&b[b_idx]) {
+            std::cmp::Ordering::Less => a_idx += 1,
+            std::cmp::Ordering::Greater => b_idx += 1,
+            std::cmp::Ordering::Equal => return true,
+        }
+    }
+    false
+}
+
+fn zcnblk_fan_wal_outstanding_overlaps(
+    records: &[u64],
+    outstanding: &VecDeque<ZcnblkFanWalSubmittedWriteBatch>,
+) -> bool {
+    outstanding
+        .iter()
+        .any(|batch| zcnblk_fan_wal_records_overlap(records, &batch.records))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_fan_wal_submit_write_batch(
+    upstream: &mut ZcnblkTransport,
+    leaves: &mut [TcpStream],
+    prepared_frames: Vec<ZcnblkFanPreparedFrame>,
+    mode: ZcnblkFanPlacementMode,
+    stripe_bytes: usize,
+    plan: ZcPlanRuntime,
+    topology_preferred_cpu: i16,
+    topology_numa_node: i16,
+    branch_payload_bytes: &mut usize,
+    leaf_submit_batches: &mut usize,
+    leaf_submit_records: &mut usize,
+    max_leaf_submit_records: &mut usize,
+) -> io::Result<ZcnblkFanWalSubmittedWriteBatch> {
+    let records = zcnblk_fan_wal_batch_records(&prepared_frames)?;
+    let mut pending = Vec::with_capacity(prepared_frames.len());
+    let mut submitted_records = 0usize;
+    let mut upstream_payload_bytes_len = 0usize;
+    for prepared in prepared_frames {
+        let frame = prepared.frame;
+        let len = prepared.len;
+        if frame.op != ZCNBLK_OP_WRITE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "fan WAL write batch got a non-write request",
+            ));
+        }
+        let segments = zcnblk_fan_wal_segments(
+            mode,
+            frame.op,
+            frame.offset,
+            len,
+            stripe_bytes,
+            leaves.len(),
+        )?;
+        submitted_records = submitted_records
+            .checked_add(segments.len())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL submit record overflow")
+            })?;
+        let payload_start = upstream_payload_bytes_len;
+        upstream_payload_bytes_len =
+            upstream_payload_bytes_len.checked_add(len).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL upstream batch payload overflow",
+                )
+            })?;
+        pending.push(ZcnblkFanWalPendingWrite {
+            prepared,
+            segments,
+            payload_start,
+            payload_len: len,
+        });
+    }
+    let mut upstream_payload_bytes = vec![0u8; upstream_payload_bytes_len];
+    upstream.read_exact(&mut upstream_payload_bytes)?;
+
+    for item in &pending {
+        item.prepared.order.wait_turn()?;
+    }
+
+    let mut leaf_batches = vec![Vec::<ZcnblkFanWalLeafBatchItem>::new(); leaves.len()];
+    for (request_idx, item) in pending.iter().enumerate() {
+        let len = item.prepared.len;
+        if len != item.payload_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fan WAL pending write payload length changed",
+            ));
+        }
+        for (segment_idx, segment) in item.segments.iter().copied().enumerate() {
+            leaf_batches[segment.leaf_idx].push(ZcnblkFanWalLeafBatchItem {
+                request_idx,
+                segment_idx,
+                segment,
+            });
+        }
+    }
+
+    for (leaf_idx, leaf_items) in leaf_batches.iter().enumerate() {
+        if leaf_items.is_empty() {
+            continue;
+        }
+        let descriptor_bytes_len = leaf_items
+            .len()
+            .checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL descriptor byte count overflow",
+                )
+            })?;
+        let payload_bytes_len = leaf_items.iter().try_fold(0usize, |total, leaf_item| {
+            total.checked_add(leaf_item.segment.len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL payload byte overflow")
+            })
+        })?;
+        let batch_payload_len = descriptor_bytes_len
+            .checked_add(payload_bytes_len)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL batch payload overflow")
+            })?;
+        let mut descriptor_bytes = Vec::with_capacity(descriptor_bytes_len);
+        let mut payload_slices = Vec::with_capacity(leaf_items.len());
+        for leaf_item in leaf_items {
+            let item = &pending[leaf_item.request_idx];
+            let frame = item.prepared.frame;
+            let sequence = item.prepared.order.seq();
+            let segment = leaf_item.segment;
+            let descriptor = zcnblk_fan_wal_attach_placement_epoch(
+                zcnblk_fan_wal_attach_local_topology(
+                    ZcnblkFanWalFrame::from_zcnblk_request(
+                        ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+                        frame,
+                        frame.topology.lane_id as usize,
+                        frame.topology.lane_count as usize,
+                        segment.leaf_idx,
+                        leaves.len(),
+                        leaf_item.segment_idx,
+                        item.segments.len(),
+                        sequence,
+                        frame
+                            .offset
+                            .checked_add(segment.payload_offset as u64)
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "fan WAL logical offset overflow",
+                                )
+                            })?,
+                        segment.leaf_offset,
+                        segment.len,
+                    )?,
+                    topology_preferred_cpu,
+                    topology_numa_node,
+                ),
+                plan,
+            );
+            let start = item
+                .payload_start
+                .checked_add(segment.payload_offset)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fan WAL segment offset overflow",
+                    )
+                })?;
+            let end = start.checked_add(segment.len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL segment overflow")
+            })?;
+            let payload = upstream_payload_bytes.get(start..end).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL segment payload out of upstream batch range",
+                )
+            })?;
+            descriptor_bytes.extend_from_slice(&descriptor.encode());
+            payload_slices.push(IoSlice::new(payload));
+            *branch_payload_bytes =
+                branch_payload_bytes
+                    .checked_add(segment.len)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "fan WAL branch byte overflow")
+                    })?;
+        }
+        let batch = zcnblk_fan_wal_attach_stream_plan(
+            zcnblk_fan_wal_attach_local_topology(
+                ZcnblkFanWalFrame {
+                    op: ZCNBLK_FAN_WAL_OP_WRITE_BATCH,
+                    lane_id: pending[leaf_items[0].request_idx]
+                        .prepared
+                        .frame
+                        .topology
+                        .lane_id,
+                    lane_count: pending[leaf_items[0].request_idx]
+                        .prepared
+                        .frame
+                        .topology
+                        .lane_count,
+                    branch_id: leaf_idx as u32,
+                    branch_count: leaves.len() as u32,
+                    segment_count: u32::try_from(leaf_items.len()).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "fan WAL leaf batch exceeds u32",
+                        )
+                    })?,
+                    payload_len: u32::try_from(batch_payload_len).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "fan WAL leaf batch payload exceeds u32",
+                        )
+                    })?,
+                    ..ZcnblkFanWalFrame::default()
+                },
+                topology_preferred_cpu,
+                topology_numa_node,
+            ),
+            plan,
+        );
+        let mut batch_payloads = Vec::with_capacity(payload_slices.len() + 1);
+        batch_payloads.push(IoSlice::new(&descriptor_bytes));
+        batch_payloads.extend(payload_slices);
+        zcnblk_fan_wal_write_frame_vectored(&mut leaves[leaf_idx], batch, &mut batch_payloads)?;
+    }
+
+    *leaf_submit_batches = leaf_submit_batches
+        .checked_add(
+            leaf_batches
+                .iter()
+                .filter(|batch| !batch.is_empty())
+                .count(),
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fan WAL leaf submit batch overflow",
+            )
+        })?;
+    *leaf_submit_records = leaf_submit_records
+        .checked_add(submitted_records)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fan WAL leaf submit record overflow",
+            )
+        })?;
+    *max_leaf_submit_records =
+        (*max_leaf_submit_records).max(leaf_batches.iter().map(Vec::len).max().unwrap_or(0));
+
+    let writes = pending
+        .into_iter()
+        .map(|item| ZcnblkFanWalSubmittedWrite {
+            prepared: item.prepared,
+            segments: item.segments,
+        })
+        .collect();
+    Ok(ZcnblkFanWalSubmittedWriteBatch {
+        writes,
+        leaf_batches,
+        records,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_fan_wal_submit_request_batch(
+    upstream: &mut ZcnblkTransport,
+    leaves: &mut [TcpStream],
+    prepared_frames: Vec<ZcnblkFanPreparedFrame>,
+    mode: ZcnblkFanPlacementMode,
+    stripe_bytes: usize,
+    plan: ZcPlanRuntime,
+    topology_preferred_cpu: i16,
+    topology_numa_node: i16,
+    branch_payload_bytes: &mut usize,
+    leaf_submit_batches: &mut usize,
+    leaf_submit_records: &mut usize,
+    max_leaf_submit_records: &mut usize,
+) -> io::Result<ZcnblkFanWalSubmittedRequestBatch> {
+    let _records = zcnblk_fan_wal_batch_records(&prepared_frames)?;
+    let mut pending = Vec::with_capacity(prepared_frames.len());
+    let mut submitted_records = 0usize;
+    let mut upstream_payload_bytes_len = 0usize;
+    for prepared in prepared_frames {
+        let frame = prepared.frame;
+        let len = prepared.len;
+        if !matches!(frame.op, ZCNBLK_OP_READ | ZCNBLK_OP_WRITE) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "fan WAL request batch got an unsupported request op",
+            ));
+        }
+        let segments = zcnblk_fan_wal_segments(
+            mode,
+            frame.op,
+            frame.offset,
+            len,
+            stripe_bytes,
+            leaves.len(),
+        )?;
+        submitted_records = submitted_records
+            .checked_add(segments.len())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL submit record overflow")
+            })?;
+        let payload_start = if frame.op == ZCNBLK_OP_WRITE {
+            let payload_start = upstream_payload_bytes_len;
+            upstream_payload_bytes_len =
+                upstream_payload_bytes_len.checked_add(len).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fan WAL upstream request batch payload overflow",
+                    )
+                })?;
+            payload_start
+        } else {
+            0
+        };
+        pending.push(ZcnblkFanWalPendingRequest {
+            prepared,
+            segments,
+            payload_start,
+        });
+    }
+    let mut upstream_payload_bytes = vec![0u8; upstream_payload_bytes_len];
+    if !upstream_payload_bytes.is_empty() {
+        upstream.read_exact(&mut upstream_payload_bytes)?;
+    }
+
+    for item in &pending {
+        item.prepared.order.wait_turn()?;
+    }
+
+    let mut leaf_batches = vec![Vec::<ZcnblkFanWalLeafBatchItem>::new(); leaves.len()];
+    for (request_idx, item) in pending.iter().enumerate() {
+        for (segment_idx, segment) in item.segments.iter().copied().enumerate() {
+            leaf_batches[segment.leaf_idx].push(ZcnblkFanWalLeafBatchItem {
+                request_idx,
+                segment_idx,
+                segment,
+            });
+        }
+    }
+
+    for (leaf_idx, leaf_items) in leaf_batches.iter().enumerate() {
+        if leaf_items.is_empty() {
+            continue;
+        }
+        let descriptor_bytes_len = leaf_items
+            .len()
+            .checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL descriptor byte count overflow",
+                )
+            })?;
+        let payload_bytes_len = leaf_items.iter().try_fold(0usize, |total, leaf_item| {
+            let item = &pending[leaf_item.request_idx];
+            if item.prepared.frame.op == ZCNBLK_OP_WRITE {
+                total.checked_add(leaf_item.segment.len).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "fan WAL payload byte overflow")
+                })
+            } else {
+                Ok(total)
+            }
+        })?;
+        let batch_payload_len = descriptor_bytes_len
+            .checked_add(payload_bytes_len)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL batch payload overflow")
+            })?;
+        let mut descriptor_bytes = Vec::with_capacity(descriptor_bytes_len);
+        let mut payload_slices = Vec::with_capacity(leaf_items.len());
+        for leaf_item in leaf_items {
+            let item = &pending[leaf_item.request_idx];
+            let frame = item.prepared.frame;
+            let sequence = item.prepared.order.seq();
+            let segment = leaf_item.segment;
+            let request_op = if frame.op == ZCNBLK_OP_WRITE {
+                ZCNBLK_FAN_WAL_OP_WRITE_DESC
+            } else {
+                ZCNBLK_FAN_WAL_OP_READ_DESC
+            };
+            let descriptor = zcnblk_fan_wal_attach_placement_epoch(
+                zcnblk_fan_wal_attach_local_topology(
+                    ZcnblkFanWalFrame::from_zcnblk_request(
+                        request_op,
+                        frame,
+                        frame.topology.lane_id as usize,
+                        frame.topology.lane_count as usize,
+                        segment.leaf_idx,
+                        leaves.len(),
+                        leaf_item.segment_idx,
+                        item.segments.len(),
+                        sequence,
+                        frame
+                            .offset
+                            .checked_add(segment.payload_offset as u64)
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "fan WAL logical offset overflow",
+                                )
+                            })?,
+                        segment.leaf_offset,
+                        segment.len,
+                    )?,
+                    topology_preferred_cpu,
+                    topology_numa_node,
+                ),
+                plan,
+            );
+            descriptor_bytes.extend_from_slice(&descriptor.encode());
+            if frame.op == ZCNBLK_OP_WRITE {
+                let start = item
+                    .payload_start
+                    .checked_add(segment.payload_offset)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "fan WAL segment offset overflow",
+                        )
+                    })?;
+                let end = start.checked_add(segment.len).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "fan WAL segment overflow")
+                })?;
+                let payload = upstream_payload_bytes.get(start..end).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fan WAL segment payload out of upstream request batch range",
+                    )
+                })?;
+                payload_slices.push(IoSlice::new(payload));
+                *branch_payload_bytes =
+                    branch_payload_bytes
+                        .checked_add(segment.len)
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "fan WAL branch byte overflow",
+                            )
+                        })?;
+            }
+        }
+        let batch = zcnblk_fan_wal_attach_stream_plan(
+            zcnblk_fan_wal_attach_local_topology(
+                ZcnblkFanWalFrame {
+                    op: ZCNBLK_FAN_WAL_OP_REQUEST_BATCH,
+                    lane_id: pending[leaf_items[0].request_idx]
+                        .prepared
+                        .frame
+                        .topology
+                        .lane_id,
+                    lane_count: pending[leaf_items[0].request_idx]
+                        .prepared
+                        .frame
+                        .topology
+                        .lane_count,
+                    branch_id: leaf_idx as u32,
+                    branch_count: leaves.len() as u32,
+                    segment_count: u32::try_from(leaf_items.len()).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "fan WAL leaf request batch exceeds u32",
+                        )
+                    })?,
+                    payload_len: u32::try_from(batch_payload_len).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "fan WAL leaf request batch payload exceeds u32",
+                        )
+                    })?,
+                    ..ZcnblkFanWalFrame::default()
+                },
+                topology_preferred_cpu,
+                topology_numa_node,
+            ),
+            plan,
+        );
+        let mut batch_payloads = Vec::with_capacity(payload_slices.len() + 1);
+        batch_payloads.push(IoSlice::new(&descriptor_bytes));
+        batch_payloads.extend(payload_slices);
+        zcnblk_fan_wal_write_frame_vectored(&mut leaves[leaf_idx], batch, &mut batch_payloads)?;
+    }
+
+    *leaf_submit_batches = leaf_submit_batches
+        .checked_add(
+            leaf_batches
+                .iter()
+                .filter(|batch| !batch.is_empty())
+                .count(),
+        )
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fan WAL leaf submit batch overflow",
+            )
+        })?;
+    *leaf_submit_records = leaf_submit_records
+        .checked_add(submitted_records)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fan WAL leaf submit record overflow",
+            )
+        })?;
+    *max_leaf_submit_records =
+        (*max_leaf_submit_records).max(leaf_batches.iter().map(Vec::len).max().unwrap_or(0));
+
+    let requests = pending
+        .into_iter()
+        .map(|item| ZcnblkFanWalSubmittedRequest {
+            prepared: item.prepared,
+            segments: item.segments,
+        })
+        .collect();
+    Ok(ZcnblkFanWalSubmittedRequestBatch {
+        requests,
+        leaf_batches,
+    })
+}
+
+fn zcnblk_fan_wal_validate_write_batch_result(
+    result: ZcnblkFanWalFrame,
+    batch: &ZcnblkFanWalSubmittedWriteBatch,
+    leaf_item: ZcnblkFanWalLeafBatchItem,
+    leaf_idx: usize,
+) -> io::Result<()> {
+    let item = &batch.writes[leaf_item.request_idx];
+    let frame = item.prepared.frame;
+    let len = item.prepared.len;
+    let sequence = item.prepared.order.seq();
+    let segment = leaf_item.segment;
+    if result.op != ZCNBLK_FAN_WAL_OP_RESULT
+        || result.sequence != sequence
+        || result.branch_id as usize != segment.leaf_idx
+        || result.branch_id as usize != leaf_idx
+        || result.segment_index as usize != leaf_item.segment_idx
+        || result.segment_count as usize != item.segments.len()
+        || result.logical_len as usize != len
+        || result.zcnblk_op != frame.op
+        || result.payload_len != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "fan WAL batched result mismatch op={} seq={} branch={} segment={} count={} logical_len={} zcnblk_op={} payload_len={}",
+                result.op,
+                result.sequence,
+                result.branch_id,
+                result.segment_index,
+                result.segment_count,
+                result.logical_len,
+                result.zcnblk_op,
+                result.payload_len
+            ),
+        ));
+    }
+    if result.status != ZCNBLK_FAN_WAL_STATUS_OK {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "fan WAL leaf branch={} segment={} failed status={}",
+                result.branch_id, result.segment_index, result.status
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn zcnblk_fan_wal_note_write_batch_result(
+    request_results: &mut [usize],
+    leaf_item: ZcnblkFanWalLeafBatchItem,
+    result_records: &mut usize,
+) -> io::Result<()> {
+    *result_records = result_records
+        .checked_add(1)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL result overflow"))?;
+    request_results[leaf_item.request_idx] = request_results[leaf_item.request_idx]
+        .checked_add(1)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fan WAL request result overflow",
+            )
+        })?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_fan_wal_complete_write_batch(
+    upstream: &mut ZcnblkTransport,
+    leaves: &mut [TcpStream],
+    result_receivers: &mut Option<ZcnblkFanWalResultReceiverSet>,
+    spin_result_reads: bool,
+    spin_result_budget: Option<usize>,
+    mut batch: ZcnblkFanWalSubmittedWriteBatch,
+    write_acks: bool,
+    completed: &mut usize,
+    total_write: &mut usize,
+    total_response: &mut usize,
+    frames: &mut usize,
+    write_frames: &mut usize,
+    result_records: &mut usize,
+    result_batches: &mut usize,
+    result_range_batches: &mut usize,
+) -> io::Result<()> {
+    let mut request_results = vec![0usize; batch.writes.len()];
+    for (leaf_idx, leaf_items) in batch.leaf_batches.iter().enumerate() {
+        if leaf_items.is_empty() {
+            continue;
+        }
+        let using_result_arena = result_receivers.is_some();
+        let result_batch = if let Some(receivers) = result_receivers.as_mut() {
+            if receivers.is_inline_leaf(leaf_idx) {
+                if spin_result_reads {
+                    zcnblk_fan_wal_read_frame_spin_then_block(
+                        &mut leaves[leaf_idx],
+                        spin_result_budget,
+                    )?
+                } else {
+                    zcnblk_fan_wal_read_frame(&mut leaves[leaf_idx])?
+                }
+            } else {
+                let header = receivers.consume(leaf_idx)?;
+                ZcnblkFanWalFrame {
+                    op: header.op,
+                    status: header.status,
+                    branch_id: header.branch_id,
+                    segment_count: header.segment_count,
+                    payload_len: header.payload_len,
+                    ..ZcnblkFanWalFrame::default()
+                }
+            }
+        } else if spin_result_reads {
+            zcnblk_fan_wal_read_frame_spin_then_block(&mut leaves[leaf_idx], spin_result_budget)?
+        } else {
+            zcnblk_fan_wal_read_frame(&mut leaves[leaf_idx])?
+        };
+        *result_batches = result_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "fan WAL result batch overflow")
+        })?;
+        if result_batch.branch_id as usize != leaf_idx
+            || result_batch.segment_count as usize != leaf_items.len()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "fan WAL result batch mismatch op={} branch={} count={} expected_branch={} expected_count={}",
+                    result_batch.op,
+                    result_batch.branch_id,
+                    result_batch.segment_count,
+                    leaf_idx,
+                    leaf_items.len()
+                ),
+            ));
+        }
+        if result_batch.status != ZCNBLK_FAN_WAL_STATUS_OK {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "fan WAL result batch branch={} failed status={}",
+                    result_batch.branch_id, result_batch.status
+                ),
+            ));
+        }
+        if result_batch.op == ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH {
+            if result_batch.payload_len != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "fan WAL range result unexpectedly carried payload_len={}",
+                        result_batch.payload_len
+                    ),
+                ));
+            }
+            *result_range_batches = result_range_batches.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL range result batch overflow",
+                )
+            })?;
+            for leaf_item in leaf_items.iter().copied() {
+                zcnblk_fan_wal_note_write_batch_result(
+                    &mut request_results,
+                    leaf_item,
+                    result_records,
+                )?;
+            }
+        } else if using_result_arena {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "fan WAL result arena supports range result batches only, got op={} payload_len={}",
+                    result_batch.op, result_batch.payload_len
+                ),
+            ));
+        } else if result_batch.op == ZCNBLK_FAN_WAL_OP_RESULT_BATCH && result_batch.payload_len > 0
+        {
+            let result_log = if spin_result_reads {
+                zcnblk_fan_wal_read_payload_spin_then_block(
+                    &mut leaves[leaf_idx],
+                    result_batch,
+                    spin_result_budget,
+                )?
+            } else {
+                zcnblk_fan_wal_read_payload(&mut leaves[leaf_idx], result_batch)?
+            };
+            let expected_len = leaf_items
+                .len()
+                .checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fan WAL result payload size overflow",
+                    )
+                })?;
+            if result_log.len() != expected_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "fan WAL result payload length mismatch got={} expected={}",
+                        result_log.len(),
+                        expected_len
+                    ),
+                ));
+            }
+            for (result_idx, leaf_item) in leaf_items.iter().copied().enumerate() {
+                let start = result_idx
+                    .checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "fan WAL result descriptor offset overflow",
+                        )
+                    })?;
+                let end = start
+                    .checked_add(ZCNBLK_FAN_WAL_HEADER_LEN)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "fan WAL result descriptor end overflow",
+                        )
+                    })?;
+                let result = zcnblk_fan_wal_decode_frame_slice(&result_log[start..end])?;
+                zcnblk_fan_wal_validate_write_batch_result(result, &batch, leaf_item, leaf_idx)?;
+                zcnblk_fan_wal_note_write_batch_result(
+                    &mut request_results,
+                    leaf_item,
+                    result_records,
+                )?;
+            }
+        } else if result_batch.op == ZCNBLK_FAN_WAL_OP_RESULT_BATCH {
+            for leaf_item in leaf_items.iter().copied() {
+                let result = zcnblk_fan_wal_read_frame(&mut leaves[leaf_idx])?;
+                zcnblk_fan_wal_validate_write_batch_result(result, &batch, leaf_item, leaf_idx)?;
+                let result_payload = if spin_result_reads {
+                    zcnblk_fan_wal_read_payload_spin_then_block(
+                        &mut leaves[leaf_idx],
+                        result,
+                        spin_result_budget,
+                    )?
+                } else {
+                    zcnblk_fan_wal_read_payload(&mut leaves[leaf_idx], result)?
+                };
+                if !result_payload.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fan WAL write result unexpectedly carried payload",
+                    ));
+                }
+                zcnblk_fan_wal_note_write_batch_result(
+                    &mut request_results,
+                    leaf_item,
+                    result_records,
+                )?;
+            }
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "fan WAL result batch got unsupported op={}",
+                    result_batch.op
+                ),
+            ));
+        }
+    }
+
+    if write_acks {
+        let outer =
+            ZcnblkFrameHeader::with_flags(ZCNBLK_OP_BATCH_RESP, 0, 0, batch.writes.len(), 0)?
+                .encode();
+        let mut ack_bytes = Vec::with_capacity((batch.writes.len() + 1) * ZCNBLK_FRAME_HEADER_LEN);
+        ack_bytes.extend_from_slice(&outer);
+        for item in &batch.writes {
+            let frame = item.prepared.frame;
+            ack_bytes.extend_from_slice(
+                &ZcnblkFrameHeader::with_topology(
+                    ZCNBLK_OP_WRITE_ACK,
+                    frame.flags,
+                    frame.shard as usize,
+                    item.prepared.len,
+                    frame.offset,
+                    frame.topology,
+                )?
+                .encode(),
+            );
+        }
+        upstream.write_all(&ack_bytes)?;
+        *total_response = total_response
+            .checked_add(ack_bytes.len())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL ack overflow"))?;
+    }
+
+    for (request_idx, item) in batch.writes.iter_mut().enumerate() {
+        let len = item.prepared.len;
+        if request_results[request_idx] != item.segments.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "fan WAL request result count mismatch got={} expected={}",
+                    request_results[request_idx],
+                    item.segments.len()
+                ),
+            ));
+        }
+        *total_write = total_write.checked_add(len).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "fan WAL write byte overflow")
+        })?;
+        *write_frames = write_frames.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "fan WAL write frame overflow")
+        })?;
+        item.prepared.order.release();
+        *completed = item.prepared.next_completed;
+        *frames = frames
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL frame overflow"))?;
+    }
+    Ok(())
+}
+
+fn zcnblk_fan_wal_validate_request_batch_result(
+    result: ZcnblkFanWalFrame,
+    batch: &ZcnblkFanWalSubmittedRequestBatch,
+    leaf_item: ZcnblkFanWalLeafBatchItem,
+    leaf_idx: usize,
+) -> io::Result<()> {
+    let item = &batch.requests[leaf_item.request_idx];
+    let frame = item.prepared.frame;
+    let len = item.prepared.len;
+    let sequence = item.prepared.order.seq();
+    let segment = leaf_item.segment;
+    let expected_payload_len = if frame.op == ZCNBLK_OP_READ {
+        segment.len
+    } else {
+        0
+    };
+    if result.op != ZCNBLK_FAN_WAL_OP_RESULT
+        || result.sequence != sequence
+        || result.branch_id as usize != segment.leaf_idx
+        || result.branch_id as usize != leaf_idx
+        || result.segment_index as usize != leaf_item.segment_idx
+        || result.segment_count as usize != item.segments.len()
+        || result.logical_len as usize != len
+        || result.zcnblk_op != frame.op
+        || result.payload_len as usize != expected_payload_len
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "fan WAL request batch result mismatch op={} seq={} branch={} segment={} count={} logical_len={} zcnblk_op={} payload_len={} expected_payload_len={expected_payload_len}",
+                result.op,
+                result.sequence,
+                result.branch_id,
+                result.segment_index,
+                result.segment_count,
+                result.logical_len,
+                result.zcnblk_op,
+                result.payload_len
+            ),
+        ));
+    }
+    if result.status != ZCNBLK_FAN_WAL_STATUS_OK {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "fan WAL leaf branch={} segment={} failed status={}",
+                result.branch_id, result.segment_index, result.status
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_fan_wal_complete_request_batch(
+    upstream: &mut ZcnblkTransport,
+    leaves: &mut [TcpStream],
+    spin_result_reads: bool,
+    spin_result_budget: Option<usize>,
+    mut batch: ZcnblkFanWalSubmittedRequestBatch,
+    write_acks: bool,
+    completed: &mut usize,
+    total_read: &mut usize,
+    total_write: &mut usize,
+    total_response: &mut usize,
+    frames: &mut usize,
+    read_frames: &mut usize,
+    write_frames: &mut usize,
+    result_records: &mut usize,
+    result_batches: &mut usize,
+) -> io::Result<()> {
+    let mut request_results = vec![0usize; batch.requests.len()];
+    let mut read_results = batch
+        .requests
+        .iter()
+        .map(|item| {
+            if item.prepared.frame.op == ZCNBLK_OP_READ {
+                Some(vec![0u8; item.prepared.len])
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    for (leaf_idx, leaf_items) in batch.leaf_batches.iter().enumerate() {
+        if leaf_items.is_empty() {
+            continue;
+        }
+        let result_batch = if spin_result_reads {
+            zcnblk_fan_wal_read_frame_spin_then_block(&mut leaves[leaf_idx], spin_result_budget)?
+        } else {
+            zcnblk_fan_wal_read_frame(&mut leaves[leaf_idx])?
+        };
+        *result_batches = result_batches.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "fan WAL result batch overflow")
+        })?;
+        if result_batch.op != ZCNBLK_FAN_WAL_OP_RESULT_BATCH
+            || result_batch.branch_id as usize != leaf_idx
+            || result_batch.segment_count as usize != leaf_items.len()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "fan WAL request result batch mismatch op={} branch={} count={} expected_branch={} expected_count={}",
+                    result_batch.op,
+                    result_batch.branch_id,
+                    result_batch.segment_count,
+                    leaf_idx,
+                    leaf_items.len()
+                ),
+            ));
+        }
+        if result_batch.status != ZCNBLK_FAN_WAL_STATUS_OK {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "fan WAL request result batch branch={} failed status={}",
+                    result_batch.branch_id, result_batch.status
+                ),
+            ));
+        }
+        let result_log = if spin_result_reads {
+            zcnblk_fan_wal_read_payload_spin_then_block(
+                &mut leaves[leaf_idx],
+                result_batch,
+                spin_result_budget,
+            )?
+        } else {
+            zcnblk_fan_wal_read_payload(&mut leaves[leaf_idx], result_batch)?
+        };
+        let descriptor_bytes_len = leaf_items
+            .len()
+            .checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL result descriptor size overflow",
+                )
+            })?;
+        if result_log.len() < descriptor_bytes_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "fan WAL request result payload too small got={} descriptor_bytes={descriptor_bytes_len}",
+                    result_log.len()
+                ),
+            ));
+        }
+        let mut payload_cursor = descriptor_bytes_len;
+        for (result_idx, leaf_item) in leaf_items.iter().copied().enumerate() {
+            let descriptor_start = result_idx
+                .checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fan WAL result descriptor offset overflow",
+                    )
+                })?;
+            let descriptor_end = descriptor_start
+                .checked_add(ZCNBLK_FAN_WAL_HEADER_LEN)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fan WAL result descriptor end overflow",
+                    )
+                })?;
+            let result =
+                zcnblk_fan_wal_decode_frame_slice(&result_log[descriptor_start..descriptor_end])?;
+            zcnblk_fan_wal_validate_request_batch_result(result, &batch, leaf_item, leaf_idx)?;
+            let payload_len = result.payload_len as usize;
+            let payload_end = payload_cursor.checked_add(payload_len).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL request result payload offset overflow",
+                )
+            })?;
+            let result_payload = result_log.get(payload_cursor..payload_end).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL request result payload out of range",
+                )
+            })?;
+            payload_cursor = payload_end;
+            *result_records = result_records.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL result overflow")
+            })?;
+            request_results[leaf_item.request_idx] = request_results[leaf_item.request_idx]
+                .checked_add(1)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fan WAL request result overflow",
+                    )
+                })?;
+            let item = &batch.requests[leaf_item.request_idx];
+            if item.prepared.frame.op == ZCNBLK_OP_READ {
+                let start = leaf_item.segment.payload_offset;
+                let end = start.checked_add(leaf_item.segment.len).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "fan WAL read segment overflow")
+                })?;
+                read_results[leaf_item.request_idx]
+                    .as_mut()
+                    .expect("read result")
+                    .get_mut(start..end)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "fan WAL read segment out of range",
+                        )
+                    })?
+                    .copy_from_slice(result_payload);
+            } else if !result_payload.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL write result unexpectedly carried payload",
+                ));
+            }
+        }
+        if payload_cursor != result_log.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "fan WAL request result payload trailing bytes got={} consumed={payload_cursor}",
+                    result_log.len()
+                ),
+            ));
+        }
+    }
+
+    let mut response_count = 0usize;
+    let mut response_headers = Vec::with_capacity(batch.requests.len() * ZCNBLK_FRAME_HEADER_LEN);
+    let mut response_payload = Vec::new();
+    for (request_idx, item) in batch.requests.iter_mut().enumerate() {
+        let frame = item.prepared.frame;
+        let len = item.prepared.len;
+        if request_results[request_idx] != item.segments.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "fan WAL request result count mismatch got={} expected={}",
+                    request_results[request_idx],
+                    item.segments.len()
+                ),
+            ));
+        }
+        if frame.op == ZCNBLK_OP_READ {
+            response_headers.extend_from_slice(
+                &ZcnblkFrameHeader::with_topology(
+                    ZCNBLK_OP_READ_RESP,
+                    frame.flags,
+                    frame.shard as usize,
+                    len,
+                    frame.offset,
+                    frame.topology,
+                )?
+                .encode(),
+            );
+            let read_payload = read_results[request_idx].take().expect("read result");
+            response_payload.extend_from_slice(&read_payload);
+            response_count = response_count.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL response count overflow",
+                )
+            })?;
+            *total_read = total_read.checked_add(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL read byte overflow")
+            })?;
+            *read_frames = read_frames.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL read frame overflow")
+            })?;
+        } else {
+            if write_acks {
+                response_headers.extend_from_slice(
+                    &ZcnblkFrameHeader::with_topology(
+                        ZCNBLK_OP_WRITE_ACK,
+                        frame.flags,
+                        frame.shard as usize,
+                        len,
+                        frame.offset,
+                        frame.topology,
+                    )?
+                    .encode(),
+                );
+                response_count = response_count.checked_add(1).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fan WAL response count overflow",
+                    )
+                })?;
+            }
+            *total_write = total_write.checked_add(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL write byte overflow")
+            })?;
+            *write_frames = write_frames.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL write frame overflow")
+            })?;
+        }
+        item.prepared.order.release();
+        *completed = item.prepared.next_completed;
+        *frames = frames
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL frame overflow"))?;
+    }
+    if response_count != 0 {
+        let outer = ZcnblkFrameHeader::with_flags(
+            ZCNBLK_OP_BATCH_RESP,
+            0,
+            0,
+            response_count,
+            response_payload.len() as u64,
+        )?
+        .encode();
+        upstream.write_all(&outer)?;
+        upstream.write_all(&response_headers)?;
+        upstream.write_all(&response_payload)?;
+        *total_response = total_response
+            .checked_add(outer.len() + response_headers.len() + response_payload.len())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL response overflow")
+            })?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_fan_wal_complete_oldest_write_batch(
+    outstanding: &mut VecDeque<ZcnblkFanWalSubmittedWriteBatch>,
+    upstream: &mut ZcnblkTransport,
+    leaves: &mut [TcpStream],
+    result_receivers: &mut Option<ZcnblkFanWalResultReceiverSet>,
+    result_wait_policy: ZcnblkFanWalResultWaitPolicy,
+    write_acks: bool,
+    completed: &mut usize,
+    total_write: &mut usize,
+    total_response: &mut usize,
+    frames: &mut usize,
+    write_frames: &mut usize,
+    result_records: &mut usize,
+    result_batches: &mut usize,
+    result_range_batches: &mut usize,
+) -> io::Result<()> {
+    let spin_result_reads = result_wait_policy.should_spin(outstanding.len());
+    let spin_result_budget = result_wait_policy.spin_budget;
+    let batch = outstanding.pop_front().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "fan WAL tried to complete an empty outstanding batch queue",
+        )
+    })?;
+    zcnblk_fan_wal_complete_write_batch(
+        upstream,
+        leaves,
+        result_receivers,
+        spin_result_reads,
+        spin_result_budget,
+        batch,
+        write_acks,
+        completed,
+        total_write,
+        total_response,
+        frames,
+        write_frames,
+        result_records,
+        result_batches,
+        result_range_batches,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_fan_wal_forward_frame(
+    upstream: &mut ZcnblkTransport,
+    leaves: &mut [TcpStream],
+    prepared: ZcnblkFanPreparedFrame,
+    mode: ZcnblkFanPlacementMode,
+    stripe_bytes: usize,
+    plan: ZcPlanRuntime,
+    spin_result_reads: bool,
+    spin_result_budget: Option<usize>,
+    topology_preferred_cpu: i16,
+    topology_numa_node: i16,
+    write_acks: bool,
+    completed: &mut usize,
+    payload: &mut Vec<u8>,
+    total_read: &mut usize,
+    total_write: &mut usize,
+    total_response: &mut usize,
+    branch_payload_bytes: &mut usize,
+    frames: &mut usize,
+    read_frames: &mut usize,
+    write_frames: &mut usize,
+    leaf_submit_batches: &mut usize,
+    leaf_submit_records: &mut usize,
+    max_leaf_submit_records: &mut usize,
+    result_records: &mut usize,
+) -> io::Result<()> {
+    let frame = prepared.frame;
+    let len = prepared.len;
+    let sequence = prepared.order.seq();
+    let segments = zcnblk_fan_wal_segments(
+        mode,
+        frame.op,
+        frame.offset,
+        len,
+        stripe_bytes,
+        leaves.len(),
+    )?;
+    if frame.op == ZCNBLK_OP_WRITE {
+        payload.resize(len, 0);
+        let header = frame.encode();
+        upstream.read_frame_payload(&header, &mut payload[..], false)?;
+    } else if upstream.uses_payload_crypto() {
+        let header = frame.encode();
+        let mut empty = [];
+        upstream.read_frame_payload(&header, &mut empty, false)?;
+    }
+
+    prepared.order.wait_turn()?;
+    let mut submitted_records = 0usize;
+    for (idx, segment) in segments.iter().enumerate() {
+        let request_op = if frame.op == ZCNBLK_OP_WRITE {
+            ZCNBLK_FAN_WAL_OP_WRITE_DESC
+        } else {
+            ZCNBLK_FAN_WAL_OP_READ_DESC
+        };
+        let descriptor = zcnblk_fan_wal_attach_placement_epoch(
+            zcnblk_fan_wal_attach_local_topology(
+                ZcnblkFanWalFrame::from_zcnblk_request(
+                    request_op,
+                    frame,
+                    prepared.frame.topology.lane_id as usize,
+                    prepared.frame.topology.lane_count as usize,
+                    segment.leaf_idx,
+                    leaves.len(),
+                    idx,
+                    segments.len(),
+                    sequence,
+                    frame
+                        .offset
+                        .checked_add(segment.payload_offset as u64)
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "fan WAL logical offset overflow",
+                            )
+                        })?,
+                    segment.leaf_offset,
+                    segment.len,
+                )?,
+                topology_preferred_cpu,
+                topology_numa_node,
+            ),
+            plan,
+        );
+        if frame.op == ZCNBLK_OP_WRITE {
+            let start = segment.payload_offset;
+            let end = start.checked_add(segment.len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL segment overflow")
+            })?;
+            zcnblk_fan_wal_write_frame(
+                &mut leaves[segment.leaf_idx],
+                descriptor,
+                &payload[start..end],
+            )?;
+            *branch_payload_bytes =
+                branch_payload_bytes
+                    .checked_add(segment.len)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "fan WAL branch byte overflow")
+                    })?;
+        } else {
+            zcnblk_fan_wal_write_frame(&mut leaves[segment.leaf_idx], descriptor, &[])?;
+        }
+        submitted_records = submitted_records.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "fan WAL submit record overflow")
+        })?;
+    }
+    *leaf_submit_batches = leaf_submit_batches.checked_add(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "fan WAL leaf submit batch overflow",
+        )
+    })?;
+    *leaf_submit_records = leaf_submit_records
+        .checked_add(submitted_records)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fan WAL leaf submit record overflow",
+            )
+        })?;
+    *max_leaf_submit_records = (*max_leaf_submit_records).max(submitted_records);
+
+    let mut read_result = if frame.op == ZCNBLK_OP_READ {
+        Some(vec![0u8; len])
+    } else {
+        None
+    };
+    for (idx, segment) in segments.iter().enumerate() {
+        let result = if spin_result_reads {
+            zcnblk_fan_wal_read_frame_spin_then_block(
+                &mut leaves[segment.leaf_idx],
+                spin_result_budget,
+            )?
+        } else {
+            zcnblk_fan_wal_read_frame(&mut leaves[segment.leaf_idx])?
+        };
+        if result.op != ZCNBLK_FAN_WAL_OP_RESULT
+            || result.sequence != sequence
+            || result.branch_id as usize != segment.leaf_idx
+            || result.segment_index as usize != idx
+            || result.segment_count as usize != segments.len()
+            || result.logical_len as usize != len
+            || result.zcnblk_op != frame.op
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "fan WAL result mismatch op={} seq={} branch={} segment={} count={} logical_len={} zcnblk_op={}",
+                    result.op,
+                    result.sequence,
+                    result.branch_id,
+                    result.segment_index,
+                    result.segment_count,
+                    result.logical_len,
+                    result.zcnblk_op
+                ),
+            ));
+        }
+        let result_payload = if spin_result_reads {
+            zcnblk_fan_wal_read_payload_spin_then_block(
+                &mut leaves[segment.leaf_idx],
+                result,
+                spin_result_budget,
+            )?
+        } else {
+            zcnblk_fan_wal_read_payload(&mut leaves[segment.leaf_idx], result)?
+        };
+        *result_records = result_records
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL result overflow"))?;
+        if result.status != ZCNBLK_FAN_WAL_STATUS_OK {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "fan WAL leaf branch={} segment={} failed status={}",
+                    result.branch_id, result.segment_index, result.status
+                ),
+            ));
+        }
+        if frame.op == ZCNBLK_OP_READ {
+            if result_payload.len() != segment.len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "fan WAL read payload mismatch branch={} got={} expected={}",
+                        result.branch_id,
+                        result_payload.len(),
+                        segment.len
+                    ),
+                ));
+            }
+            let start = segment.payload_offset;
+            let end = start.checked_add(segment.len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL read segment overflow")
+            })?;
+            read_result
+                .as_mut()
+                .expect("read result")
+                .get_mut(start..end)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fan WAL read segment out of range",
+                    )
+                })?
+                .copy_from_slice(&result_payload);
+        }
+    }
+
+    if frame.op == ZCNBLK_OP_READ {
+        let response_header = ZcnblkFrameHeader::with_topology(
+            ZCNBLK_OP_READ_RESP,
+            frame.flags,
+            frame.shard as usize,
+            len,
+            frame.offset,
+            frame.topology,
+        )?
+        .encode();
+        let read_payload = read_result.expect("read result");
+        *total_response = total_response
+            .checked_add(upstream.write_frame_payload(&response_header, &read_payload, true)?)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL response overflow")
+            })?;
+        *total_read = total_read.checked_add(len).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "fan WAL read byte overflow")
+        })?;
+        *read_frames = read_frames.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "fan WAL read frame overflow")
+        })?;
+    } else {
+        if write_acks {
+            let ack_header = ZcnblkFrameHeader::with_topology(
+                ZCNBLK_OP_WRITE_ACK,
+                frame.flags,
+                frame.shard as usize,
+                len,
+                frame.offset,
+                frame.topology,
+            )?
+            .encode();
+            *total_response = total_response
+                .checked_add(upstream.write_frame_payload(&ack_header, &[], true)?)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "fan WAL ack overflow")
+                })?;
+        }
+        *total_write = total_write.checked_add(len).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "fan WAL write byte overflow")
+        })?;
+        *write_frames = write_frames.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "fan WAL write frame overflow")
+        })?;
+    }
+    prepared.order.release();
+    *completed = prepared.next_completed;
+    *frames = frames
+        .checked_add(1)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL frame overflow"))?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_fan_wal_handler(
+    handler: usize,
+    accepted: TcpBenchAcceptedStream,
+    leaf_addrs: Arc<Vec<ZcnblkFanLeafSpec>>,
+    order: Arc<ZcnblkFanOrder>,
+    mode: ZcnblkFanPlacementMode,
+    runtime_plan: ZcPlanRuntime,
+    leaf_base_port: u16,
+    ports: usize,
+    _connections_per_port: usize,
+    total_connections: usize,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    stripe_bytes: usize,
+    write_acks: bool,
+    source_ports: TcpSourcePortPlan,
+    pin_handlers: bool,
+    batch_window: usize,
+    result_ranges: bool,
+    result_arena: bool,
+    result_arena_slots: usize,
+    result_arena_spin: bool,
+    result_arena_spin_budget: Option<usize>,
+    result_wait_policy: ZcnblkFanWalResultWaitPolicy,
+    result_arena_inline_primary: bool,
+) -> io::Result<ZcnblkWalFanStats> {
+    let tid = current_tid();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
+    let affinity = pin_current_thread_if_requested("zcnblk-fan-wal-handler", handler, pin_handlers);
+    let (topology_preferred_cpu, topology_numa_node) =
+        zcnblk_fan_wal_local_topology_hints(affinity);
+    let meta = accepted.meta();
+    println!(
+        "zcnblk-fan-wal-upstream: handler={handler} peer={} lane={} port={} conn={} {}",
+        meta.peer_addr,
+        meta.lane,
+        meta.port,
+        meta.conn_index,
+        socket_locality_label(meta.locality)
+    );
+    let mut upstream = ZcnblkTransport::plaintext(accepted.stream);
+    let mut leaves = Vec::with_capacity(leaf_addrs.len());
+    for (leaf_idx, leaf) in leaf_addrs.iter().enumerate() {
+        let port = leaf.connect_port(leaf_base_port, meta.lane)?;
+        let source_index = leaf_idx
+            .checked_mul(total_connections)
+            .and_then(|base| base.checked_add(handler))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "fan WAL source-port index overflow",
+                )
+            })?;
+        let mut stream =
+            tcp_bench_connect(&leaf.addr, port, source_ports.source_port(source_index)?)?;
+        set_tcp_nodelay_from_env(&stream)?;
+        set_tcp_bench_buffers(&stream);
+        let hello = zcnblk_fan_wal_attach_stream_plan(
+            zcnblk_fan_wal_attach_local_topology(
+                ZcnblkFanWalFrame {
+                    op: ZCNBLK_FAN_WAL_OP_HELLO,
+                    flags: if result_ranges {
+                        ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH
+                    } else {
+                        0
+                    },
+                    lane_id: meta.lane as u32,
+                    lane_count: ports as u32,
+                    branch_id: leaf_idx as u32,
+                    branch_count: leaf_addrs.len() as u32,
+                    ..ZcnblkFanWalFrame::default()
+                },
+                topology_preferred_cpu,
+                topology_numa_node,
+            ),
+            runtime_plan,
+        );
+        zcnblk_fan_wal_write_frame(&mut stream, hello, &[])?;
+        println!(
+            "zcnblk-fan-wal-leaf-stream: handler={handler} leaf={leaf_idx} addr={} \
+             port={port} lane={} conn={} source_port={} {}",
+            leaf.addr,
+            meta.lane,
+            meta.conn_index,
+            source_ports
+                .source_port(source_index)?
+                .map(|port| port.to_string())
+                .unwrap_or_else(|| "kernel-ephemeral".to_string()),
+            runtime_plan.label()
+        );
+        leaves.push(stream);
+    }
+    if result_arena && !result_ranges {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "fan WAL result arena requires range result batches; leave URING_PLAY_ZCNBLK_WAL_RESULT_RANGES enabled",
+        ));
+    }
+    let mut result_receivers = if result_arena {
+        println!(
+            "zcnblk-fan-wal-result-arena: handler={handler} lane={} leaves={} slots={} \
+             backend=memfd-mmap-shared spin_reads={} spin_budget={} inline_primary={} \
+             mode=range-result-batches-only",
+            meta.lane,
+            leaves.len(),
+            result_arena_slots,
+            result_arena_spin,
+            result_arena_spin_budget
+                .map(|budget| budget.to_string())
+                .unwrap_or_else(|| "unbounded".to_string()),
+            result_arena_inline_primary,
+        );
+        Some(zcnblk_fan_wal_start_result_receivers(
+            &leaves,
+            result_arena_slots,
+            handler,
+            total_connections,
+            pin_handlers,
+            result_arena_spin,
+            result_arena_spin_budget,
+            if result_arena_inline_primary {
+                Some(0)
+            } else {
+                None
+            },
+        )?)
+    } else {
+        None
+    };
+
+    let mut completed = 0usize;
+    let mut logical_started = 0usize;
+    let mut read_bytes = 0usize;
+    let mut write_bytes = 0usize;
+    let mut response_bytes = 0usize;
+    let mut branch_payload_bytes = 0usize;
+    let mut frames = 0usize;
+    let mut batches = 0usize;
+    let mut read_frames = 0usize;
+    let mut write_frames = 0usize;
+    let mut leaf_submit_batches = 0usize;
+    let mut leaf_submit_records = 0usize;
+    let mut max_leaf_submit_records = 0usize;
+    let mut pipelined_write_batches = 0usize;
+    let mut pipelined_request_batches = 0usize;
+    let mut batch_fallbacks = 0usize;
+    let mut batch_fallback_frames = 0usize;
+    let mut max_upstream_batch_frames = 0usize;
+    let mut max_outstanding_batches = 0usize;
+    let mut upstream_idle_drains = 0usize;
+    let mut result_records = 0usize;
+    let mut result_batches = 0usize;
+    let mut result_range_batches = 0usize;
+    let mut payload = Vec::with_capacity(chunk_bytes);
+    let mut outstanding = VecDeque::<ZcnblkFanWalSubmittedWriteBatch>::new();
+    let started = Instant::now();
+
+    while completed < bytes_per_connection {
+        if !outstanding.is_empty()
+            && (logical_started >= bytes_per_connection || outstanding.len() >= batch_window)
+        {
+            zcnblk_fan_wal_complete_oldest_write_batch(
+                &mut outstanding,
+                &mut upstream,
+                &mut leaves,
+                &mut result_receivers,
+                result_wait_policy,
+                write_acks,
+                &mut completed,
+                &mut write_bytes,
+                &mut response_bytes,
+                &mut frames,
+                &mut write_frames,
+                &mut result_records,
+                &mut result_batches,
+                &mut result_range_batches,
+            )?;
+            continue;
+        }
+        if !outstanding.is_empty() && !zcnblk_fan_wal_upstream_next_request_ready(&upstream)? {
+            upstream_idle_drains = upstream_idle_drains.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL upstream-idle drain count overflow",
+                )
+            })?;
+            zcnblk_fan_wal_complete_oldest_write_batch(
+                &mut outstanding,
+                &mut upstream,
+                &mut leaves,
+                &mut result_receivers,
+                result_wait_policy,
+                write_acks,
+                &mut completed,
+                &mut write_bytes,
+                &mut response_bytes,
+                &mut frames,
+                &mut write_frames,
+                &mut result_records,
+                &mut result_batches,
+                &mut result_range_batches,
+            )?;
+            continue;
+        }
+        let mut header_buf = [0u8; ZCNBLK_FRAME_HEADER_LEN];
+        upstream.read_exact(&mut header_buf)?;
+        let frame = ZcnblkFrameHeader::decode(&header_buf)?;
+        if frame.op == ZCNBLK_OP_BATCH {
+            batches = batches.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL batch count overflow")
+            })?;
+            let count = frame.len as usize;
+            if count == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL got an empty request batch",
+                ));
+            }
+            let batch_frames = zcnblk_read_batch_headers(&mut upstream, count, "zcnblk-fan-wal")?;
+            max_upstream_batch_frames = max_upstream_batch_frames.max(batch_frames.len());
+            let mut projected_completed = logical_started;
+            let mut frame_plans = Vec::with_capacity(batch_frames.len());
+            for batch_frame in batch_frames {
+                let plan = zcnblk_read_fan_plan_frame(
+                    batch_frame,
+                    meta.lane,
+                    ports,
+                    bytes_per_connection,
+                    chunk_bytes,
+                    projected_completed,
+                )?;
+                projected_completed = plan.next_completed;
+                frame_plans.push(plan);
+            }
+            if zcnblk_fan_wal_can_pipeline_write_batch(&frame_plans) {
+                let records = zcnblk_fan_wal_plan_records(&frame_plans)?;
+                while zcnblk_fan_wal_outstanding_overlaps(&records, &outstanding) {
+                    zcnblk_fan_wal_complete_oldest_write_batch(
+                        &mut outstanding,
+                        &mut upstream,
+                        &mut leaves,
+                        &mut result_receivers,
+                        result_wait_policy,
+                        write_acks,
+                        &mut completed,
+                        &mut write_bytes,
+                        &mut response_bytes,
+                        &mut frames,
+                        &mut write_frames,
+                        &mut result_records,
+                        &mut result_batches,
+                        &mut result_range_batches,
+                    )?;
+                }
+                let order_handle =
+                    ZcnblkFanOrderHandle::from_guard(order.reserve_records(records)?);
+                while !outstanding.is_empty() && !order_handle.is_turn()? {
+                    zcnblk_fan_wal_complete_oldest_write_batch(
+                        &mut outstanding,
+                        &mut upstream,
+                        &mut leaves,
+                        &mut result_receivers,
+                        result_wait_policy,
+                        write_acks,
+                        &mut completed,
+                        &mut write_bytes,
+                        &mut response_bytes,
+                        &mut frames,
+                        &mut write_frames,
+                        &mut result_records,
+                        &mut result_batches,
+                        &mut result_range_batches,
+                    )?;
+                }
+                let prepared_frames =
+                    zcnblk_read_fan_prepared_batch_from_plans(frame_plans, order_handle);
+                let submitted = zcnblk_fan_wal_submit_write_batch(
+                    &mut upstream,
+                    &mut leaves,
+                    prepared_frames,
+                    mode,
+                    stripe_bytes,
+                    runtime_plan,
+                    topology_preferred_cpu,
+                    topology_numa_node,
+                    &mut branch_payload_bytes,
+                    &mut leaf_submit_batches,
+                    &mut leaf_submit_records,
+                    &mut max_leaf_submit_records,
+                )?;
+                pipelined_write_batches =
+                    pipelined_write_batches.checked_add(1).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "fan WAL pipelined write batch overflow",
+                        )
+                    })?;
+                logical_started = projected_completed;
+                outstanding.push_back(submitted);
+                max_outstanding_batches = max_outstanding_batches.max(outstanding.len());
+            } else if result_receivers.is_none()
+                && zcnblk_fan_wal_can_pipeline_request_batch(&frame_plans)
+            {
+                while !outstanding.is_empty() {
+                    zcnblk_fan_wal_complete_oldest_write_batch(
+                        &mut outstanding,
+                        &mut upstream,
+                        &mut leaves,
+                        &mut result_receivers,
+                        result_wait_policy,
+                        write_acks,
+                        &mut completed,
+                        &mut write_bytes,
+                        &mut response_bytes,
+                        &mut frames,
+                        &mut write_frames,
+                        &mut result_records,
+                        &mut result_batches,
+                        &mut result_range_batches,
+                    )?;
+                }
+                let records = zcnblk_fan_wal_plan_records(&frame_plans)?;
+                let order_handle =
+                    ZcnblkFanOrderHandle::from_guard(order.reserve_records(records)?);
+                let prepared_frames =
+                    zcnblk_read_fan_prepared_batch_from_plans(frame_plans, order_handle);
+                let submitted = zcnblk_fan_wal_submit_request_batch(
+                    &mut upstream,
+                    &mut leaves,
+                    prepared_frames,
+                    mode,
+                    stripe_bytes,
+                    runtime_plan,
+                    topology_preferred_cpu,
+                    topology_numa_node,
+                    &mut branch_payload_bytes,
+                    &mut leaf_submit_batches,
+                    &mut leaf_submit_records,
+                    &mut max_leaf_submit_records,
+                )?;
+                pipelined_request_batches =
+                    pipelined_request_batches.checked_add(1).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "fan WAL pipelined request batch overflow",
+                        )
+                    })?;
+                logical_started = projected_completed;
+                let request_result_units = submitted
+                    .leaf_batches
+                    .iter()
+                    .filter(|batch| !batch.is_empty())
+                    .count();
+                zcnblk_fan_wal_complete_request_batch(
+                    &mut upstream,
+                    &mut leaves,
+                    result_wait_policy.should_spin(request_result_units),
+                    result_wait_policy.spin_budget,
+                    submitted,
+                    write_acks,
+                    &mut completed,
+                    &mut read_bytes,
+                    &mut write_bytes,
+                    &mut response_bytes,
+                    &mut frames,
+                    &mut read_frames,
+                    &mut write_frames,
+                    &mut result_records,
+                    &mut result_batches,
+                )?;
+            } else {
+                while !outstanding.is_empty() {
+                    zcnblk_fan_wal_complete_oldest_write_batch(
+                        &mut outstanding,
+                        &mut upstream,
+                        &mut leaves,
+                        &mut result_receivers,
+                        result_wait_policy,
+                        write_acks,
+                        &mut completed,
+                        &mut write_bytes,
+                        &mut response_bytes,
+                        &mut frames,
+                        &mut write_frames,
+                        &mut result_records,
+                        &mut result_batches,
+                        &mut result_range_batches,
+                    )?;
+                }
+                if result_receivers.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "fan WAL result arena supports only pipelined write batches in this path",
+                    ));
+                }
+                batch_fallbacks = batch_fallbacks.checked_add(1).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fan WAL batch fallback overflow",
+                    )
+                })?;
+                batch_fallback_frames = batch_fallback_frames
+                    .checked_add(frame_plans.len())
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "fan WAL batch fallback frame overflow",
+                        )
+                    })?;
+                let forward_spin = result_wait_policy.should_spin(frame_plans.len());
+                for plan in frame_plans {
+                    let order_handle = ZcnblkFanOrderHandle::from_guard(
+                        order.reserve_records(plan.records.clone())?,
+                    );
+                    let prepared = zcnblk_read_fan_prepared_from_plan(plan, order_handle);
+                    zcnblk_fan_wal_forward_frame(
+                        &mut upstream,
+                        &mut leaves,
+                        prepared,
+                        mode,
+                        stripe_bytes,
+                        runtime_plan,
+                        forward_spin,
+                        result_wait_policy.spin_budget,
+                        topology_preferred_cpu,
+                        topology_numa_node,
+                        write_acks,
+                        &mut completed,
+                        &mut payload,
+                        &mut read_bytes,
+                        &mut write_bytes,
+                        &mut response_bytes,
+                        &mut branch_payload_bytes,
+                        &mut frames,
+                        &mut read_frames,
+                        &mut write_frames,
+                        &mut leaf_submit_batches,
+                        &mut leaf_submit_records,
+                        &mut max_leaf_submit_records,
+                        &mut result_records,
+                    )?;
+                }
+                logical_started = projected_completed;
+            }
+        } else {
+            let prepared = zcnblk_read_fan_prepare_frame(
+                frame,
+                &order,
+                meta.lane,
+                ports,
+                bytes_per_connection,
+                chunk_bytes,
+                logical_started,
+            )?;
+            logical_started = prepared.next_completed;
+            while !outstanding.is_empty() {
+                zcnblk_fan_wal_complete_oldest_write_batch(
+                    &mut outstanding,
+                    &mut upstream,
+                    &mut leaves,
+                    &mut result_receivers,
+                    result_wait_policy,
+                    write_acks,
+                    &mut completed,
+                    &mut write_bytes,
+                    &mut response_bytes,
+                    &mut frames,
+                    &mut write_frames,
+                    &mut result_records,
+                    &mut result_batches,
+                    &mut result_range_batches,
+                )?;
+            }
+            if result_receivers.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "fan WAL result arena supports only batched write requests in this path",
+                ));
+            }
+            zcnblk_fan_wal_forward_frame(
+                &mut upstream,
+                &mut leaves,
+                prepared,
+                mode,
+                stripe_bytes,
+                runtime_plan,
+                result_wait_policy.should_spin(1),
+                result_wait_policy.spin_budget,
+                topology_preferred_cpu,
+                topology_numa_node,
+                write_acks,
+                &mut completed,
+                &mut payload,
+                &mut read_bytes,
+                &mut write_bytes,
+                &mut response_bytes,
+                &mut branch_payload_bytes,
+                &mut frames,
+                &mut read_frames,
+                &mut write_frames,
+                &mut leaf_submit_batches,
+                &mut leaf_submit_records,
+                &mut max_leaf_submit_records,
+                &mut result_records,
+            )?;
+        }
+    }
+
+    for stream in &mut leaves {
+        let eof = zcnblk_fan_wal_attach_stream_plan(
+            ZcnblkFanWalFrame {
+                op: ZCNBLK_FAN_WAL_OP_EOF,
+                lane_id: meta.lane as u32,
+                lane_count: ports as u32,
+                ..ZcnblkFanWalFrame::default()
+            },
+            runtime_plan,
+        );
+        let _ = zcnblk_fan_wal_write_frame(stream, eof, &[]);
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+    let _ = upstream.shutdown(Shutdown::Both);
+    if let Some(receivers) = result_receivers.take() {
+        receivers.join()?;
+    }
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    Ok(ZcnblkWalFanStats {
+        handler,
+        lane: meta.lane,
+        conn_index: meta.conn_index,
+        read_bytes,
+        write_bytes,
+        response_bytes,
+        branch_payload_bytes,
+        frames,
+        batches,
+        read_frames,
+        write_frames,
+        leaf_submit_batches,
+        leaf_submit_records,
+        max_leaf_submit_records,
+        pipelined_write_batches,
+        pipelined_request_batches,
+        batch_fallbacks,
+        batch_fallback_frames,
+        max_upstream_batch_frames,
+        max_outstanding_batches,
+        upstream_idle_drains,
+        result_records,
+        result_batches,
+        result_range_batches,
+        elapsed: started.elapsed(),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+        voluntary_switches: end_switches
+            .voluntary
+            .saturating_sub(start_switches.voluntary),
+        involuntary_switches: end_switches
+            .involuntary
+            .saturating_sub(start_switches.involuntary),
+        migrations: end_switches
+            .migrations
+            .saturating_sub(start_switches.migrations),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_fan_wal(
+    leaf_spec: &str,
+    bind: &str,
+    base_port: u16,
+    ports: usize,
+    connections_per_port: usize,
+    bytes_per_connection: usize,
+    chunk_bytes: usize,
+    stripe_bytes: usize,
+    leaf_base_port: u16,
+    pin_handlers: bool,
+    mode: ZcnblkFanPlacementMode,
+) -> io::Result<()> {
+    if bytes_per_connection == 0 || chunk_bytes == 0 || stripe_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-fan WAL bytes-per-connection, chunk-bytes, and stripe-bytes must be non-zero",
+        ));
+    }
+    if bytes_per_connection % chunk_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-fan WAL bytes-per-connection must be a multiple of chunk-bytes",
+        ));
+    }
+    ensure_sector_aligned(chunk_bytes, "chunk-bytes")?;
+    ensure_sector_aligned(stripe_bytes, "stripe-bytes")?;
+    let crypto_config = ZcnblkCryptoConfig::from_env()?;
+    if crypto_config.mode != ZcnblkEncryptionMode::None {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-fan --engine wal is plaintext-only in this first implementation; encryption would hide copies and invalidate zero-copy measurements",
+        ));
+    }
+    let leaf_addrs = Arc::new(zcnblk_read_fan_leaf_specs(leaf_spec)?);
+    let total_connections = tcp_bench_total_connections(ports, connections_per_port)?;
+    let source_ports = TcpSourcePortPlan::from_env()?;
+    let source_ip = tcp_bench_source_ip_from_env()?;
+    let write_acks = env_enabled_or("URING_PLAY_ZCNBLK_WRITE_ACKS", false);
+    let batch_window = env_usize_or("URING_PLAY_ZCNBLK_WAL_BATCH_WINDOW", 16).max(1);
+    let result_ranges = zcnblk_fan_wal_result_ranges_enabled();
+    let result_arena = zcnblk_fan_wal_result_arena_enabled();
+    let result_arena_slots = zcnblk_fan_wal_result_arena_slots(batch_window);
+    let result_arena_spin = zcnblk_fan_wal_result_arena_spin_enabled();
+    let result_arena_spin_budget = zcnblk_fan_wal_result_arena_spin_budget();
+    let result_wait_policy =
+        ZcnblkFanWalResultWaitPolicy::from_env(batch_window, result_arena_spin)?;
+    let result_arena_inline_primary = zcnblk_fan_wal_result_arena_inline_primary_enabled();
+    let runtime_plan = zc_plan_runtime_from_env()?;
+    let order = Arc::new(ZcnblkFanOrder::new());
+    if result_arena && !result_ranges {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-fan WAL result arena requires range result batches; leave URING_PLAY_ZCNBLK_WAL_RESULT_RANGES enabled",
+        ));
+    }
+    if !pin_handlers {
+        eprintln!(
+            "PERF WARNING: zcnblk-fan WAL handlers are not pinned; pass pin-handlers=true and set URING_PLAY_PIN_CPU_LIST before trusting topology numbers"
+        );
+    }
+    if pin_handlers && !explicit_affinity_map_configured() {
+        eprintln!(
+            "PERF WARNING: zcnblk-fan WAL handlers are pinned with the implicit CPU map; set URING_PLAY_PIN_CPU_LIST or URING_PLAY_PIN_BASE_CPU/COUNT/STRIDE and state the lane-to-CPU mapping before trusting results"
+        );
+    }
+    if result_wait_policy.mode != ZcnblkFanWalResultWaitMode::Blocking
+        && (!pin_handlers || !explicit_affinity_map_configured())
+    {
+        eprintln!(
+            "PERF WARNING: zcnblk-fan WAL result wait policy {} can burn CPU to avoid context switches; use explicit handler pinning and state the lane-to-CPU map before trusting low-latency numbers",
+            result_wait_policy.mode.label()
+        );
+    }
+    if result_wait_policy.mode == ZcnblkFanWalResultWaitMode::Greedy
+        && result_wait_policy.spin_budget.is_none()
+    {
+        eprintln!(
+            "PERF WARNING: zcnblk-fan WAL greedy result wait has an unbounded spin budget; reserve dedicated CPUs or set URING_PLAY_ZCNBLK_FAN_RESULT_SPIN_BUDGET"
+        );
+    }
+    if env_usize_or("URING_PLAY_ZCNBLK_BATCH_DEPTH", 1) <= 1 {
+        eprintln!(
+            "PERF WARNING: zcnblk-fan WAL needs explicit upstream batching for representative IOPS; set URING_PLAY_ZCNBLK_BATCH_DEPTH=64 or higher before trusting 4K numbers"
+        );
+    }
+    if batch_window <= 1 {
+        eprintln!(
+            "PERF WARNING: zcnblk-fan WAL batch window is 1; this serializes each leaf batch/result round trip and can add one context-switch wakeup per batch"
+        );
+    }
+    println!(
+        "zcnblk-fan-wal: leaves={} bind={bind} base_port={base_port} ports={ports} \
+         connections_per_port={connections_per_port} total_connections={total_connections} \
+         bytes_per_connection={bytes_per_connection} chunk_bytes={chunk_bytes} \
+         stripe_bytes={stripe_bytes} leaf_base_port={leaf_base_port} source_ip={} \
+         source_ports={} pin_handlers={pin_handlers} placement={} order=per-4k-record \
+         order_shards={} write_acks={write_acks} batch_window={batch_window} \
+         result_ranges={result_ranges} result_arena={result_arena} \
+         result_arena_slots={result_arena_slots} result_arena_spin={result_arena_spin} \
+         result_arena_spin_budget={} \
+         result_arena_inline_primary={result_arena_inline_primary} {} {} \
+         protocol=fan-wal-v{ZCNBLK_FAN_WAL_VERSION}",
+        leaf_addrs
+            .iter()
+            .map(|leaf| leaf.label(leaf_base_port))
+            .collect::<Vec<_>>()
+            .join(","),
+        source_ip
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| "kernel-route".to_string()),
+        source_ports.label(),
+        mode.label(),
+        order.shard_count(),
+        result_arena_spin_budget
+            .map(|budget| budget.to_string())
+            .unwrap_or_else(|| "unbounded".to_string()),
+        result_wait_policy.label(),
+        runtime_plan.label(),
+    );
+    eprintln!(
+        "zcnblk-fan-wal-leaf-note: start each edge with zcnblk-wal-leaf; leaf block devices are terminal media only after userspace placement"
+    );
+
+    let listeners = tcp_bench_mux_bind_listeners(bind, base_port, ports)?;
+    let accepted = tcp_bench_mux_accept_tagged_listeners(listeners, ports, connections_per_port)?;
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(accepted.len());
+    for (handler, accepted) in accepted.into_iter().enumerate() {
+        let leaf_addrs = Arc::clone(&leaf_addrs);
+        let order = Arc::clone(&order);
+        handles.push(thread::spawn(move || {
+            let result = zcnblk_fan_wal_handler(
+                handler,
+                accepted,
+                leaf_addrs,
+                order,
+                mode,
+                runtime_plan,
+                leaf_base_port,
+                ports,
+                connections_per_port,
+                total_connections,
+                bytes_per_connection,
+                chunk_bytes,
+                stripe_bytes,
+                write_acks,
+                source_ports,
+                pin_handlers,
+                batch_window,
+                result_ranges,
+                result_arena,
+                result_arena_slots,
+                result_arena_spin,
+                result_arena_spin_budget,
+                result_wait_policy,
+                result_arena_inline_primary,
+            );
+            if let Err(err) = &result {
+                eprintln!("zcnblk-fan-wal-handler-error: handler={handler} error={err}");
+            }
+            result
+        }));
+    }
+
+    let mut total_read = 0usize;
+    let mut total_write = 0usize;
+    let mut total_response = 0usize;
+    let mut total_branch_payload = 0usize;
+    let mut total_frames = 0usize;
+    let mut total_batches = 0usize;
+    let mut total_read_frames = 0usize;
+    let mut total_write_frames = 0usize;
+    let mut total_leaf_submit_batches = 0usize;
+    let mut total_leaf_submit_records = 0usize;
+    let mut total_max_leaf_submit_records = 0usize;
+    let mut total_pipelined_write_batches = 0usize;
+    let mut total_pipelined_request_batches = 0usize;
+    let mut total_batch_fallbacks = 0usize;
+    let mut total_batch_fallback_frames = 0usize;
+    let mut total_max_upstream_batch_frames = 0usize;
+    let mut total_max_outstanding_batches = 0usize;
+    let mut total_upstream_idle_drains = 0usize;
+    let mut total_result_records = 0usize;
+    let mut total_result_batches = 0usize;
+    let mut total_result_range_batches = 0usize;
+    let mut total_voluntary = 0u64;
+    let mut total_involuntary = 0u64;
+    let mut total_migrations = 0u64;
+    let mut elapsed = started.elapsed();
+    for handle in handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other("zcnblk-fan WAL handler panicked"))??;
+        let secs = stats.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        println!(
+            "zcnblk-fan-wal-handler: handler={} lane={} conn={} read_bytes={} write_bytes={} \
+             response_bytes={} branch_payload_bytes={} frames={} batches={} read_frames={} \
+             write_frames={} leaf_submit_batches={} leaf_submit_records={} \
+             max_leaf_submit_records={} pipelined_write_batches={} \
+             pipelined_request_batches={} batch_fallbacks={} batch_fallback_frames={} \
+             max_upstream_batch_frames={} max_outstanding_batches={} result_records={} \
+             upstream_idle_drains={} result_batches={} result_range_batches={} \
+             frames_per_sec={:.0} seconds={secs:.6} logical_MiBps={:.2} target_cpu={} \
+             affinity_applied={} voluntary_ctxt_switches={} involuntary_ctxt_switches={} \
+             migrations={}",
+            stats.handler,
+            stats.lane,
+            stats.conn_index,
+            stats.read_bytes,
+            stats.write_bytes,
+            stats.response_bytes,
+            stats.branch_payload_bytes,
+            stats.frames,
+            stats.batches,
+            stats.read_frames,
+            stats.write_frames,
+            stats.leaf_submit_batches,
+            stats.leaf_submit_records,
+            stats.max_leaf_submit_records,
+            stats.pipelined_write_batches,
+            stats.pipelined_request_batches,
+            stats.batch_fallbacks,
+            stats.batch_fallback_frames,
+            stats.max_upstream_batch_frames,
+            stats.max_outstanding_batches,
+            stats.result_records,
+            stats.upstream_idle_drains,
+            stats.result_batches,
+            stats.result_range_batches,
+            stats.frames as f64 / secs,
+            (stats.read_bytes + stats.write_bytes) as f64 / (1024.0 * 1024.0) / secs,
+            stats.target_cpu,
+            stats.affinity_applied,
+            stats.voluntary_switches,
+            stats.involuntary_switches,
+            stats.migrations
+        );
+        total_read = total_read
+            .checked_add(stats.read_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL read overflow"))?;
+        total_write = total_write
+            .checked_add(stats.write_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL write overflow"))?;
+        total_response = total_response
+            .checked_add(stats.response_bytes)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL response overflow")
+            })?;
+        total_branch_payload = total_branch_payload
+            .checked_add(stats.branch_payload_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL branch overflow"))?;
+        total_frames = total_frames
+            .checked_add(stats.frames)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL frame overflow"))?;
+        total_batches = total_batches
+            .checked_add(stats.batches)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL batch overflow"))?;
+        total_read_frames = total_read_frames
+            .checked_add(stats.read_frames)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL read frame overflow")
+            })?;
+        total_write_frames = total_write_frames
+            .checked_add(stats.write_frames)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL write frame overflow")
+            })?;
+        total_leaf_submit_batches = total_leaf_submit_batches
+            .checked_add(stats.leaf_submit_batches)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL leaf batch overflow")
+            })?;
+        total_leaf_submit_records = total_leaf_submit_records
+            .checked_add(stats.leaf_submit_records)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL leaf record overflow")
+            })?;
+        total_max_leaf_submit_records =
+            total_max_leaf_submit_records.max(stats.max_leaf_submit_records);
+        total_pipelined_write_batches = total_pipelined_write_batches
+            .checked_add(stats.pipelined_write_batches)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL pipelined write overflow",
+                )
+            })?;
+        total_pipelined_request_batches = total_pipelined_request_batches
+            .checked_add(stats.pipelined_request_batches)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL pipelined request overflow",
+                )
+            })?;
+        total_batch_fallbacks = total_batch_fallbacks
+            .checked_add(stats.batch_fallbacks)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL fallback overflow")
+            })?;
+        total_batch_fallback_frames = total_batch_fallback_frames
+            .checked_add(stats.batch_fallback_frames)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL fallback frame overflow",
+                )
+            })?;
+        total_max_upstream_batch_frames =
+            total_max_upstream_batch_frames.max(stats.max_upstream_batch_frames);
+        total_max_outstanding_batches =
+            total_max_outstanding_batches.max(stats.max_outstanding_batches);
+        total_upstream_idle_drains = total_upstream_idle_drains
+            .checked_add(stats.upstream_idle_drains)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL idle drain overflow")
+            })?;
+        total_result_records = total_result_records
+            .checked_add(stats.result_records)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL result overflow"))?;
+        total_result_batches = total_result_batches
+            .checked_add(stats.result_batches)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "fan WAL result batch overflow")
+            })?;
+        total_result_range_batches = total_result_range_batches
+            .checked_add(stats.result_range_batches)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL range result batch overflow",
+                )
+            })?;
+        total_voluntary = total_voluntary.saturating_add(stats.voluntary_switches);
+        total_involuntary = total_involuntary.saturating_add(stats.involuntary_switches);
+        total_migrations = total_migrations.saturating_add(stats.migrations);
+        elapsed = elapsed.max(stats.elapsed);
+    }
+    println!(
+        "zcnblk-fan-wal-summary: read_bytes={total_read} write_bytes={total_write} \
+         response_bytes={total_response} branch_payload_bytes={total_branch_payload} \
+         frames={total_frames} batches={total_batches} read_frames={total_read_frames} \
+         write_frames={total_write_frames} leaf_submit_batches={total_leaf_submit_batches} \
+         leaf_submit_records={total_leaf_submit_records} \
+         max_leaf_submit_records={total_max_leaf_submit_records} \
+         pipelined_write_batches={total_pipelined_write_batches} \
+         pipelined_request_batches={total_pipelined_request_batches} \
+         batch_fallbacks={total_batch_fallbacks} \
+         batch_fallback_frames={total_batch_fallback_frames} \
+         max_upstream_batch_frames={total_max_upstream_batch_frames} \
+         max_outstanding_batches={total_max_outstanding_batches} \
+         upstream_idle_drains={total_upstream_idle_drains} \
+         result_records={total_result_records} result_batches={total_result_batches} \
+         result_range_batches={total_result_range_batches} \
+         voluntary_ctxt_switches={total_voluntary} involuntary_ctxt_switches={total_involuntary} \
+         migrations={total_migrations} frames_per_sec={:.0}",
+        total_frames as f64 / elapsed.as_secs_f64().max(f64::MIN_POSITIVE)
+    );
+    if zcnblk_perf_warnings_enabled()
+        && batch_window > 1
+        && total_batches > 0
+        && total_max_outstanding_batches < batch_window
+        && total_upstream_idle_drains >= total_batches / 2
+    {
+        eprintln!(
+            "PERF WARNING: zcnblk-fan WAL observed max_outstanding_batches={} below \
+             batch_window={} with upstream_idle_drains={}/{}; the upstream sender/window \
+             is not feeding enough disjoint batches to fill the fan pipeline. Align \
+             URING_PLAY_ZCNBLK_WRITE_WINDOW with URING_PLAY_ZCNBLK_BATCH_DEPTH * \
+             URING_PLAY_ZCNBLK_WAL_BATCH_WINDOW and pass the same WAL batch window to \
+             zcnblk-send before trusting IOPS.",
+            total_max_outstanding_batches, batch_window, total_upstream_idle_drains, total_batches
+        );
+    }
+    let configured_batch_depth = env_usize_or("URING_PLAY_ZCNBLK_BATCH_DEPTH", 1).max(1);
+    if zcnblk_perf_warnings_enabled()
+        && configured_batch_depth > 1
+        && total_batches > 0
+        && total_frames / total_batches.max(1) < configured_batch_depth / 2
+    {
+        eprintln!(
+            "PERF WARNING: zcnblk-fan WAL observed effective upstream batch fill \
+             {}/{} frames_per_batch with configured batch_depth={}; investigate sender \
+             windows, mixed read/write response ordering, and batch_fallbacks={} before \
+             trusting IOPS.",
+            total_frames, total_batches, configured_batch_depth, total_batch_fallbacks
+        );
+    }
+    print_tcp_bench_result("zcnblk-fan-wal", total_read + total_write, elapsed);
+    Ok(())
+}
+
+enum ZcnblkWalLeafBackend {
+    DevNull {
+        device_bytes: u64,
+        required_alignment: usize,
+    },
+    Block {
+        label: String,
+        file: fs::File,
+        device_bytes: u64,
+        required_alignment: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZcnblkWalLeafIoMode {
+    Blocking,
+    Uring,
+    Mixed,
+}
+
+impl ZcnblkWalLeafIoMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "" | "blocking" | "sync" | "pwrite" | "pread" => Ok(Self::Blocking),
+            "uring" | "io_uring" | "io-uring" => Ok(Self::Uring),
+            "mixed" | "coexist" | "coexistence" | "both" => Ok(Self::Mixed),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown zcnblk-wal-leaf submit mode {other:?}; use blocking, uring, or mixed"
+                ),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Blocking => "blocking",
+            Self::Uring => "uring",
+            Self::Mixed => "mixed",
+        }
+    }
+
+    fn uses_uring_ring(self) -> bool {
+        matches!(self, Self::Uring | Self::Mixed)
+    }
+
+    fn adapter_for_frame(self, frame: ZcnblkFanWalFrame) -> Self {
+        match self {
+            Self::Mixed => {
+                let selector =
+                    frame.sequence ^ u64::from(frame.lane_id) ^ u64::from(frame.segment_index);
+                if selector & 1 == 0 {
+                    Self::Blocking
+                } else {
+                    Self::Uring
+                }
+            }
+            other => other,
+        }
+    }
+}
+
+impl ZcnblkWalLeafBackend {
+    fn label(&self) -> &str {
+        match self {
+            Self::DevNull { .. } => "zcdevnull",
+            Self::Block { label, .. } => label,
+        }
+    }
+
+    fn device_bytes(&self) -> u64 {
+        match self {
+            Self::DevNull { device_bytes, .. } | Self::Block { device_bytes, .. } => *device_bytes,
+        }
+    }
+
+    fn required_alignment(&self) -> usize {
+        match self {
+            Self::DevNull {
+                required_alignment, ..
+            }
+            | Self::Block {
+                required_alignment, ..
+            } => *required_alignment,
+        }
+    }
+
+    fn validate_range(&self, offset: u64, len: usize) -> io::Result<()> {
+        let alignment = self.required_alignment();
+        if len == 0 || len % alignment != 0 || offset % alignment as u64 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcnblk WAL leaf request offset={offset} len={len} not aligned to {alignment}"
+                ),
+            ));
+        }
+        let end = offset.checked_add(len as u64).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "WAL leaf offset overflow")
+        })?;
+        if end > self.device_bytes() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcnblk WAL leaf range [{offset}..{end}) exceeds device bytes {}",
+                    self.device_bytes()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn write_at(&self, offset: u64, payload: &[u8]) -> io::Result<()> {
+        self.validate_range(offset, payload.len())?;
+        match self {
+            Self::DevNull { .. } => Ok(()),
+            Self::Block { file, .. } => zc_write_all_at(file, payload, offset),
+        }
+    }
+
+    fn read_at(&self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        self.validate_range(offset, len)?;
+        let mut payload = vec![0u8; len];
+        match self {
+            Self::DevNull { .. } => {}
+            Self::Block { file, .. } => zc_read_exact_at(file, &mut payload, offset)?,
+        }
+        Ok(payload)
+    }
+
+    fn write_at_uring(
+        &self,
+        ring: &mut RawRing,
+        mut offset: u64,
+        mut payload: &[u8],
+    ) -> io::Result<()> {
+        self.validate_range(offset, payload.len())?;
+        let Self::Block { file, .. } = self else {
+            return Ok(());
+        };
+        while !payload.is_empty() {
+            let len = u32::try_from(payload.len().min(u32::MAX as usize)).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "WAL leaf write length exceeds u32",
+                )
+            })?;
+            ring.queue_write(file.as_raw_fd(), payload.as_ptr(), len, offset, 1)?;
+            let cqe = ring.wait_cqe()?;
+            if cqe.res < 0 {
+                return Err(io::Error::from_raw_os_error(-cqe.res));
+            }
+            if cqe.res == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "zcnblk-wal-leaf uring write completed zero bytes",
+                ));
+            }
+            let wrote = cqe.res as usize;
+            if wrote > payload.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-wal-leaf uring write over-reported bytes",
+                ));
+            }
+            payload = &payload[wrote..];
+            offset = offset.checked_add(wrote as u64).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "WAL leaf write offset overflow")
+            })?;
+        }
+        Ok(())
+    }
+
+    fn read_at_uring(
+        &self,
+        ring: &mut RawRing,
+        mut offset: u64,
+        len: usize,
+    ) -> io::Result<Vec<u8>> {
+        self.validate_range(offset, len)?;
+        let mut payload = vec![0u8; len];
+        let Self::Block { file, .. } = self else {
+            return Ok(payload);
+        };
+        let mut filled = 0usize;
+        while filled < payload.len() {
+            let request = (payload.len() - filled).min(u32::MAX as usize);
+            let len = u32::try_from(request).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "WAL leaf read length exceeds u32",
+                )
+            })?;
+            let ptr = unsafe { payload.as_mut_ptr().add(filled) };
+            ring.queue_read(file.as_raw_fd(), ptr, len, offset, 2)?;
+            let cqe = ring.wait_cqe()?;
+            if cqe.res < 0 {
+                return Err(io::Error::from_raw_os_error(-cqe.res));
+            }
+            if cqe.res == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "zcnblk-wal-leaf uring read completed zero bytes",
+                ));
+            }
+            let read = cqe.res as usize;
+            if read > payload.len() - filled {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-wal-leaf uring read over-reported bytes",
+                ));
+            }
+            filled += read;
+            offset = offset.checked_add(read as u64).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "WAL leaf read offset overflow")
+            })?;
+        }
+        Ok(payload)
+    }
+
+    fn write_at_mode(
+        &self,
+        mode: ZcnblkWalLeafIoMode,
+        ring: &mut Option<RawRing>,
+        offset: u64,
+        payload: &[u8],
+    ) -> io::Result<()> {
+        match mode {
+            ZcnblkWalLeafIoMode::Blocking => self.write_at(offset, payload),
+            ZcnblkWalLeafIoMode::Uring => {
+                let Some(ring) = ring.as_mut() else {
+                    return self.write_at(offset, payload);
+                };
+                self.write_at_uring(ring, offset, payload)
+            }
+            ZcnblkWalLeafIoMode::Mixed => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcnblk-wal-leaf mixed submit mode must be resolved per frame",
+            )),
+        }
+    }
+
+    fn read_at_mode(
+        &self,
+        mode: ZcnblkWalLeafIoMode,
+        ring: &mut Option<RawRing>,
+        offset: u64,
+        len: usize,
+    ) -> io::Result<Vec<u8>> {
+        match mode {
+            ZcnblkWalLeafIoMode::Blocking => self.read_at(offset, len),
+            ZcnblkWalLeafIoMode::Uring => {
+                let Some(ring) = ring.as_mut() else {
+                    return self.read_at(offset, len);
+                };
+                self.read_at_uring(ring, offset, len)
+            }
+            ZcnblkWalLeafIoMode::Mixed => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcnblk-wal-leaf mixed submit mode must be resolved per frame",
+            )),
+        }
+    }
+}
+
+fn zc_read_exact_at(file: &fs::File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+    while !buf.is_empty() {
+        match file.read_at(buf, offset) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "read_at returned EOF before requested bytes",
+                ));
+            }
+            Ok(n) => {
+                let (_, rest) = buf.split_at_mut(n);
+                buf = rest;
+                offset = offset.checked_add(n as u64).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "read_at offset overflow")
+                })?;
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+fn zcnblk_wal_leaf_open_backend(
+    target_spec: &str,
+    chunk_bytes: usize,
+) -> io::Result<ZcnblkWalLeafBackend> {
+    if zcnblk_is_devnull_target(target_spec) {
+        let device_bytes = env_size_opt("URING_PLAY_ZCNBLK_DEVNULL_BYTES")?
+            .unwrap_or(1024usize * 1024 * 1024 * 1024) as u64;
+        let required_alignment =
+            env_size_opt("URING_PLAY_ZCNBLK_DEVNULL_ALIGNMENT")?.unwrap_or(ZC_WAL_RECORD_SIZE);
+        return Ok(ZcnblkWalLeafBackend::DevNull {
+            device_bytes,
+            required_alignment,
+        });
+    }
+    let target = parse_slot_wal_target(target_spec)?;
+    if matches!(target.kind, SlotWalTargetKind::ZcNetworkBlockClient) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "/dev/zcnblkN is the client block edge and cannot be a zcnblk-wal-leaf terminal backend",
+        ));
+    }
+    let metadata = fs::metadata(target.open_path())?;
+    if !metadata.file_type().is_block_device() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-wal-leaf target must be zcdevnullN, /dev/zcbrdN, /dev/nullbN, /dev/ramN, or allowlisted PARTUUID",
+        ));
+    }
+    validate_slot_wal_write_target_safety(&target, &metadata)?;
+    let required_alignment =
+        validate_slot_wal_geometry_alignment(&metadata, chunk_bytes, chunk_bytes)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_CLOEXEC)
+        .open(target.open_path())?;
+    let device_bytes = block_device_size(file.as_raw_fd())?;
+    Ok(ZcnblkWalLeafBackend::Block {
+        label: target.label().to_string(),
+        file,
+        device_bytes,
+        required_alignment,
+    })
+}
+
+#[derive(Default)]
+struct ZcnblkWalLeafStats {
+    worker: usize,
+    streams: usize,
+    read_bytes: usize,
+    write_bytes: usize,
+    result_records: usize,
+    result_batches: usize,
+    result_range_batches: usize,
+    frames: usize,
+    blocking_io_frames: usize,
+    uring_io_frames: usize,
+    elapsed: Duration,
+    target_cpu: i32,
+    affinity_applied: bool,
+}
+
+#[derive(Default)]
+struct ZcnblkWalLeafStreamStats {
+    read_bytes: usize,
+    write_bytes: usize,
+    result_records: usize,
+    result_batches: usize,
+    result_range_batches: usize,
+    frames: usize,
+    blocking_io_frames: usize,
+    uring_io_frames: usize,
+}
+
+struct ZcnblkWalLeafPendingWrite {
+    frame: ZcnblkFanWalFrame,
+    payload_offset: usize,
+    payload_len: usize,
+    submit_mode: ZcnblkWalLeafIoMode,
+}
+
+fn zcnblk_wal_leaf_pending_payload<'a>(
+    write: &ZcnblkWalLeafPendingWrite,
+    payload_log: &'a [u8],
+) -> io::Result<&'a [u8]> {
+    let end = write
+        .payload_offset
+        .checked_add(write.payload_len)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-wal-leaf pending payload offset overflow",
+            )
+        })?;
+    payload_log.get(write.payload_offset..end).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "zcnblk-wal-leaf pending payload out of range",
+        )
+    })
+}
+
+fn zcnblk_wal_leaf_drain_uring_writes(
+    ring: &mut RawRing,
+    writes: &[ZcnblkWalLeafPendingWrite],
+    completed: &mut [bool],
+    queued_uring: usize,
+) -> io::Result<()> {
+    if queued_uring == 0 {
+        return Ok(());
+    }
+    ring.submit_pending()?;
+    for _ in 0..queued_uring {
+        let cqe = ring.wait_cqe()?;
+        if cqe.res < 0 {
+            return Err(io::Error::from_raw_os_error(-cqe.res));
+        }
+        let idx = usize::try_from(cqe.user_data).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "WAL leaf CQE index overflow")
+        })?;
+        let Some(write) = writes.get(idx) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("WAL leaf CQE index {idx} out of range {}", writes.len()),
+            ));
+        };
+        if cqe.res as usize != write.payload_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcnblk-wal-leaf batched uring write returned {} expected {}",
+                    cqe.res, write.payload_len
+                ),
+            ));
+        }
+        if completed[idx] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-wal-leaf duplicate uring completion",
+            ));
+        }
+        completed[idx] = true;
+    }
+    Ok(())
+}
+
+fn zcnblk_wal_leaf_note_submit_mode(
+    stats: &mut ZcnblkWalLeafStreamStats,
+    submit_mode: ZcnblkWalLeafIoMode,
+) -> io::Result<()> {
+    match submit_mode {
+        ZcnblkWalLeafIoMode::Blocking => {
+            stats.blocking_io_frames =
+                stats.blocking_io_frames.checked_add(1).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "WAL leaf blocking frame overflow",
+                    )
+                })?;
+        }
+        ZcnblkWalLeafIoMode::Uring => {
+            stats.uring_io_frames = stats.uring_io_frames.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "WAL leaf uring frame overflow")
+            })?;
+        }
+        ZcnblkWalLeafIoMode::Mixed => unreachable!("mixed resolved per frame"),
+    }
+    Ok(())
+}
+
+fn zcnblk_wal_leaf_validate_write_batch_descriptor(
+    batch: ZcnblkFanWalFrame,
+    frame: ZcnblkFanWalFrame,
+) -> io::Result<()> {
+    if frame.op != ZCNBLK_FAN_WAL_OP_WRITE_DESC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcnblk-wal-leaf write batch got op {}", frame.op),
+        ));
+    }
+    if frame.lane_id != batch.lane_id
+        || frame.lane_count != batch.lane_count
+        || frame.branch_id != batch.branch_id
+        || frame.branch_count != batch.branch_count
+        || frame.placement_epoch != batch.placement_epoch
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-wal-leaf descriptor topology mismatch batch_lane={} desc_lane={} batch_branch={} desc_branch={} batch_epoch={} desc_epoch={}",
+                batch.lane_id,
+                frame.lane_id,
+                batch.branch_id,
+                frame.branch_id,
+                batch.placement_epoch,
+                frame.placement_epoch
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn zcnblk_wal_leaf_validate_request_batch_descriptor(
+    batch: ZcnblkFanWalFrame,
+    frame: ZcnblkFanWalFrame,
+) -> io::Result<()> {
+    if !matches!(
+        frame.op,
+        ZCNBLK_FAN_WAL_OP_WRITE_DESC | ZCNBLK_FAN_WAL_OP_READ_DESC
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zcnblk-wal-leaf request batch got op {}", frame.op),
+        ));
+    }
+    if frame.lane_id != batch.lane_id
+        || frame.lane_count != batch.lane_count
+        || frame.branch_id != batch.branch_id
+        || frame.branch_count != batch.branch_count
+        || frame.placement_epoch != batch.placement_epoch
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-wal-leaf request descriptor topology mismatch batch_lane={} desc_lane={} batch_branch={} desc_branch={} batch_epoch={} desc_epoch={}",
+                batch.lane_id,
+                frame.lane_id,
+                batch.branch_id,
+                frame.branch_id,
+                batch.placement_epoch,
+                frame.placement_epoch
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn zcnblk_wal_leaf_validate_frame_plan(
+    stream_plan: ZcPlanRuntime,
+    frame: ZcnblkFanWalFrame,
+    label: &str,
+) -> io::Result<()> {
+    if stream_plan.placement_epoch != 0 && frame.placement_epoch != stream_plan.placement_epoch {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-wal-leaf {label} placement epoch mismatch stream_epoch={} frame_epoch={} op={} seq={} lane={} branch={}",
+                stream_plan.placement_epoch,
+                frame.placement_epoch,
+                frame.op,
+                frame.sequence,
+                frame.lane_id,
+                frame.branch_id
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcnblk_wal_leaf_process_request_batch(
+    stream: &mut TcpStream,
+    backend: &ZcnblkWalLeafBackend,
+    ring: &mut Option<RawRing>,
+    io_mode: ZcnblkWalLeafIoMode,
+    batch: ZcnblkFanWalFrame,
+    worker: usize,
+    stream_slot: usize,
+    meta: TcpBenchStreamMeta,
+    affinity: ThreadAffinity,
+    logged_descriptor_topology: &mut bool,
+    stats: &mut ZcnblkWalLeafStreamStats,
+) -> io::Result<()> {
+    let count = batch.segment_count as usize;
+    if count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "zcnblk-wal-leaf got an empty request batch",
+        ));
+    }
+    if batch.lane_id as usize != meta.lane {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-wal-leaf accepted lane {} but got request batch lane {}",
+                meta.lane, batch.lane_id
+            ),
+        ));
+    }
+    let (leaf_preferred_cpu, leaf_numa_node) = zcnblk_fan_wal_local_topology_hints(affinity);
+    let batch_payload = zcnblk_fan_wal_read_payload(stream, batch)?;
+    let descriptor_bytes_len = count
+        .checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-wal-leaf request descriptor byte count overflow",
+            )
+        })?;
+    if batch_payload.len() < descriptor_bytes_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-wal-leaf request batch too small got={} descriptor_bytes={descriptor_bytes_len}",
+                batch_payload.len()
+            ),
+        ));
+    }
+    let payload_area_len = batch_payload.len() - descriptor_bytes_len;
+    let mut payload_cursor = 0usize;
+    let mut requests = Vec::with_capacity(count);
+    for idx in 0..count {
+        let descriptor_start = idx.checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-wal-leaf request descriptor offset overflow",
+            )
+        })?;
+        let descriptor_end = descriptor_start
+            .checked_add(ZCNBLK_FAN_WAL_HEADER_LEN)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-wal-leaf request descriptor end overflow",
+                )
+            })?;
+        let frame =
+            zcnblk_fan_wal_decode_frame_slice(&batch_payload[descriptor_start..descriptor_end])?;
+        zcnblk_wal_leaf_validate_request_batch_descriptor(batch, frame)?;
+        let io_len = frame.payload_len as usize;
+        backend.validate_range(frame.leaf_offset, io_len)?;
+        let (payload_offset, payload_len) = if frame.op == ZCNBLK_FAN_WAL_OP_WRITE_DESC {
+            let next_payload_cursor = payload_cursor.checked_add(io_len).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-wal-leaf request payload offset overflow",
+                )
+            })?;
+            if next_payload_cursor > payload_area_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk-wal-leaf request payload overrun cursor={} len={} payload_area={payload_area_len}",
+                        payload_cursor, io_len
+                    ),
+                ));
+            }
+            let payload_offset = descriptor_bytes_len + payload_cursor;
+            payload_cursor = next_payload_cursor;
+            (payload_offset, io_len)
+        } else {
+            (0, 0)
+        };
+        requests.push(ZcnblkWalLeafPendingWrite {
+            frame,
+            payload_offset,
+            payload_len,
+            submit_mode: io_mode.adapter_for_frame(frame),
+        });
+    }
+    if payload_cursor != payload_area_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-wal-leaf request payload trailing bytes got={payload_area_len} expected={payload_cursor}",
+            ),
+        ));
+    }
+
+    if !*logged_descriptor_topology {
+        if let Some(first) = requests.first() {
+            let frame = first.frame;
+            println!(
+                "zcnblk-wal-leaf-request-batch-topology: worker={worker} slot={stream_slot} \
+                 stream_lane={} branch={} records={} batch_payload_bytes={} desc_lane={} \
+                 desc_queue={} desc_preferred_worker={} desc_preferred_cpu={} \
+                 desc_numa_node={} leaf_target_cpu={} leaf_numa_node={} \
+                 leaf_affinity_applied={} incoming_cpu={}",
+                meta.lane,
+                batch.branch_id,
+                count,
+                batch.payload_len,
+                frame.lane_id,
+                frame.topology_queue_id,
+                frame.topology_preferred_worker,
+                frame.topology_preferred_cpu,
+                frame.topology_numa_node,
+                leaf_preferred_cpu,
+                leaf_numa_node,
+                affinity.applied,
+                current_cpu()
+            );
+        }
+        *logged_descriptor_topology = true;
+    }
+
+    let mut completed = vec![false; requests.len()];
+    let mut read_results = (0..requests.len()).map(|_| None).collect::<Vec<_>>();
+    if let (Some(ring), ZcnblkWalLeafBackend::Block { file, .. }) = (ring.as_mut(), backend) {
+        let mut queued_uring = 0usize;
+        for (idx, request) in requests.iter().enumerate() {
+            match request.submit_mode {
+                ZcnblkWalLeafIoMode::Uring => {
+                    if ring.sq_available() == 0 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "zcnblk-wal-leaf request batch io_uring SQ is full",
+                        ));
+                    }
+                    let len = u32::try_from(request.frame.payload_len as usize).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "WAL leaf request length exceeds u32",
+                        )
+                    })?;
+                    if request.frame.op == ZCNBLK_FAN_WAL_OP_READ_DESC {
+                        read_results[idx] = Some(vec![0u8; request.frame.payload_len as usize]);
+                        let ptr = read_results[idx].as_mut().unwrap().as_mut_ptr();
+                        ring.queue_read(
+                            file.as_raw_fd(),
+                            ptr,
+                            len,
+                            request.frame.leaf_offset,
+                            idx as u64,
+                        )?;
+                    } else {
+                        let payload = zcnblk_wal_leaf_pending_payload(request, &batch_payload)?;
+                        ring.queue_write(
+                            file.as_raw_fd(),
+                            payload.as_ptr(),
+                            len,
+                            request.frame.leaf_offset,
+                            idx as u64,
+                        )?;
+                    }
+                    queued_uring = queued_uring.checked_add(1).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "WAL leaf request uring queue overflow",
+                        )
+                    })?;
+                }
+                ZcnblkWalLeafIoMode::Blocking => {
+                    if request.frame.op == ZCNBLK_FAN_WAL_OP_READ_DESC {
+                        read_results[idx] = Some(backend.read_at(
+                            request.frame.leaf_offset,
+                            request.frame.payload_len as usize,
+                        )?);
+                    } else {
+                        backend.write_at(
+                            request.frame.leaf_offset,
+                            zcnblk_wal_leaf_pending_payload(request, &batch_payload)?,
+                        )?;
+                    }
+                    completed[idx] = true;
+                }
+                ZcnblkWalLeafIoMode::Mixed => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "zcnblk-wal-leaf mixed submit mode must be resolved per frame",
+                    ));
+                }
+            }
+        }
+        ring.submit_pending()?;
+        for _ in 0..queued_uring {
+            let cqe = ring.wait_cqe()?;
+            if cqe.res < 0 {
+                return Err(io::Error::from_raw_os_error(-cqe.res));
+            }
+            let idx = usize::try_from(cqe.user_data).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "WAL leaf request CQE index overflow",
+                )
+            })?;
+            let Some(request) = requests.get(idx) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "WAL leaf request CQE index {idx} out of range {}",
+                        requests.len()
+                    ),
+                ));
+            };
+            let expected = request.frame.payload_len as usize;
+            if cqe.res as usize != expected {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk-wal-leaf request uring op returned {} expected {}",
+                        cqe.res, expected
+                    ),
+                ));
+            }
+            if completed[idx] {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-wal-leaf duplicate request uring completion",
+                ));
+            }
+            completed[idx] = true;
+        }
+    } else {
+        for (idx, request) in requests.iter().enumerate() {
+            if request.frame.op == ZCNBLK_FAN_WAL_OP_READ_DESC {
+                read_results[idx] = Some(backend.read_at_mode(
+                    request.submit_mode,
+                    ring,
+                    request.frame.leaf_offset,
+                    request.frame.payload_len as usize,
+                )?);
+            } else {
+                backend.write_at_mode(
+                    request.submit_mode,
+                    ring,
+                    request.frame.leaf_offset,
+                    zcnblk_wal_leaf_pending_payload(request, &batch_payload)?,
+                )?;
+            }
+            completed[idx] = true;
+        }
+    }
+
+    let mut result_descriptors = Vec::with_capacity(descriptor_bytes_len);
+    let mut read_payload_log = Vec::new();
+    for (idx, request) in requests.iter().enumerate() {
+        if !completed[idx] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-wal-leaf request batch has an incomplete entry",
+            ));
+        }
+        let result_payload_len = if request.frame.op == ZCNBLK_FAN_WAL_OP_READ_DESC {
+            let payload = read_results[idx].as_ref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-wal-leaf request read missing payload",
+                )
+            })?;
+            let len = payload.len();
+            read_payload_log.extend_from_slice(payload);
+            stats.read_bytes = stats.read_bytes.checked_add(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "WAL leaf read overflow")
+            })?;
+            len
+        } else {
+            stats.write_bytes = stats
+                .write_bytes
+                .checked_add(request.payload_len)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "WAL leaf write overflow")
+                })?;
+            0
+        };
+        let result = zcnblk_fan_wal_attach_local_topology(
+            ZcnblkFanWalFrame {
+                op: ZCNBLK_FAN_WAL_OP_RESULT,
+                status: ZCNBLK_FAN_WAL_STATUS_OK,
+                payload_len: u32::try_from(result_payload_len).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "WAL leaf request result payload exceeds u32",
+                    )
+                })?,
+                ..request.frame
+            },
+            leaf_preferred_cpu,
+            leaf_numa_node,
+        );
+        result_descriptors.extend_from_slice(&result.encode());
+        stats.result_records = stats.result_records.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result overflow")
+        })?;
+        stats.frames = stats
+            .frames
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WAL leaf frame overflow"))?;
+        zcnblk_wal_leaf_note_submit_mode(stats, request.submit_mode)?;
+    }
+    stats.result_batches = stats.result_batches.checked_add(1).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result batch overflow")
+    })?;
+    let result_payload_len = result_descriptors
+        .len()
+        .checked_add(read_payload_log.len())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result overflow"))?;
+    let result_batch = zcnblk_fan_wal_attach_local_topology(
+        ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_RESULT_BATCH,
+            lane_id: batch.lane_id,
+            lane_count: batch.lane_count,
+            branch_id: batch.branch_id,
+            branch_count: batch.branch_count,
+            segment_count: batch.segment_count,
+            request_id: batch.request_id,
+            placement_epoch: batch.placement_epoch,
+            payload_len: u32::try_from(result_payload_len).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "WAL leaf request result batch payload exceeds u32",
+                )
+            })?,
+            status: ZCNBLK_FAN_WAL_STATUS_OK,
+            ..ZcnblkFanWalFrame::default()
+        },
+        leaf_preferred_cpu,
+        leaf_numa_node,
+    );
+    let mut payloads = [
+        IoSlice::new(&result_descriptors),
+        IoSlice::new(&read_payload_log),
+    ];
+    zcnblk_fan_wal_write_frame_vectored(stream, result_batch, &mut payloads)?;
+    Ok(())
+}
+
+fn zcnblk_wal_leaf_process_write_batch(
+    stream: &mut TcpStream,
+    backend: &ZcnblkWalLeafBackend,
+    ring: &mut Option<RawRing>,
+    io_mode: ZcnblkWalLeafIoMode,
+    batch: ZcnblkFanWalFrame,
+    worker: usize,
+    stream_slot: usize,
+    meta: TcpBenchStreamMeta,
+    affinity: ThreadAffinity,
+    logged_descriptor_topology: &mut bool,
+    result_ranges: bool,
+    stats: &mut ZcnblkWalLeafStreamStats,
+) -> io::Result<()> {
+    let count = batch.segment_count as usize;
+    if count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "zcnblk-wal-leaf got an empty write batch",
+        ));
+    }
+    if batch.lane_id as usize != meta.lane {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk-wal-leaf accepted lane {} but got write batch lane {}",
+                meta.lane, batch.lane_id
+            ),
+        ));
+    }
+    let (leaf_preferred_cpu, leaf_numa_node) = zcnblk_fan_wal_local_topology_hints(affinity);
+    let mut writes = Vec::with_capacity(count);
+    let mut payload_log = Vec::new();
+    if batch.payload_len > 0 {
+        let batch_payload = zcnblk_fan_wal_read_payload(stream, batch)?;
+        let descriptor_bytes_len =
+            count
+                .checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcnblk-wal-leaf descriptor byte count overflow",
+                    )
+                })?;
+        if batch_payload.len() < descriptor_bytes_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcnblk-wal-leaf coalesced batch too small got={} descriptor_bytes={}",
+                    batch_payload.len(),
+                    descriptor_bytes_len
+                ),
+            ));
+        }
+        let payload_area_len = batch_payload.len() - descriptor_bytes_len;
+        let mut payload_cursor = 0usize;
+        for idx in 0..count {
+            let descriptor_start = idx.checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-wal-leaf descriptor offset overflow",
+                )
+            })?;
+            let descriptor_end = descriptor_start
+                .checked_add(ZCNBLK_FAN_WAL_HEADER_LEN)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcnblk-wal-leaf descriptor end overflow",
+                    )
+                })?;
+            let frame = zcnblk_fan_wal_decode_frame_slice(
+                &batch_payload[descriptor_start..descriptor_end],
+            )?;
+            zcnblk_wal_leaf_validate_write_batch_descriptor(batch, frame)?;
+            let payload_len = frame.payload_len as usize;
+            let next_payload_cursor = payload_cursor.checked_add(payload_len).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcnblk-wal-leaf coalesced payload offset overflow",
+                )
+            })?;
+            if next_payload_cursor > payload_area_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcnblk-wal-leaf coalesced payload overrun cursor={} len={} payload_area={}",
+                        payload_cursor, payload_len, payload_area_len
+                    ),
+                ));
+            }
+            backend.validate_range(frame.leaf_offset, payload_len)?;
+            let submit_mode = io_mode.adapter_for_frame(frame);
+            writes.push(ZcnblkWalLeafPendingWrite {
+                frame,
+                payload_offset: descriptor_bytes_len + payload_cursor,
+                payload_len,
+                submit_mode,
+            });
+            payload_cursor = next_payload_cursor;
+        }
+        if payload_cursor != payload_area_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcnblk-wal-leaf coalesced payload trailing bytes got={} expected={}",
+                    payload_area_len, payload_cursor
+                ),
+            ));
+        }
+        payload_log = batch_payload;
+    } else {
+        for _ in 0..count {
+            let frame = zcnblk_fan_wal_read_frame(stream)?;
+            zcnblk_wal_leaf_validate_write_batch_descriptor(batch, frame)?;
+            let payload = zcnblk_fan_wal_read_payload(stream, frame)?;
+            let submit_mode = io_mode.adapter_for_frame(frame);
+            backend.validate_range(frame.leaf_offset, payload.len())?;
+            let payload_offset = payload_log.len();
+            let payload_len = payload.len();
+            payload_log.extend_from_slice(&payload);
+            writes.push(ZcnblkWalLeafPendingWrite {
+                frame,
+                payload_offset,
+                payload_len,
+                submit_mode,
+            });
+        }
+    }
+
+    if !*logged_descriptor_topology {
+        if let Some(first) = writes.first() {
+            let frame = first.frame;
+            println!(
+                "zcnblk-wal-leaf-batch-topology: worker={worker} slot={stream_slot} \
+                 stream_lane={} branch={} records={} batch_payload_bytes={} desc_lane={} \
+                 desc_queue={} desc_preferred_worker={} desc_preferred_cpu={} \
+                 desc_numa_node={} leaf_target_cpu={} leaf_numa_node={} \
+                 leaf_affinity_applied={} result_ranges={} incoming_cpu={}",
+                meta.lane,
+                batch.branch_id,
+                count,
+                batch.payload_len,
+                frame.lane_id,
+                frame.topology_queue_id,
+                frame.topology_preferred_worker,
+                frame.topology_preferred_cpu,
+                frame.topology_numa_node,
+                leaf_preferred_cpu,
+                leaf_numa_node,
+                affinity.applied,
+                result_ranges,
+                current_cpu()
+            );
+        }
+        *logged_descriptor_topology = true;
+    }
+
+    let mut completed = vec![false; writes.len()];
+    let mut queued_uring = 0usize;
+    if let (Some(ring), ZcnblkWalLeafBackend::Block { file, .. }) = (ring.as_mut(), backend) {
+        for (idx, write) in writes.iter().enumerate() {
+            if write.submit_mode == ZcnblkWalLeafIoMode::Uring {
+                if ring.sq_available() == 0 && queued_uring > 0 {
+                    zcnblk_wal_leaf_drain_uring_writes(
+                        ring,
+                        &writes,
+                        &mut completed,
+                        queued_uring,
+                    )?;
+                    queued_uring = 0;
+                }
+                if ring.sq_available() == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "zcnblk-wal-leaf io_uring SQ has no room for a single write",
+                    ));
+                }
+                let payload = zcnblk_wal_leaf_pending_payload(write, &payload_log)?;
+                let len = u32::try_from(payload.len()).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "WAL leaf batch write length exceeds u32",
+                    )
+                })?;
+                ring.queue_write(
+                    file.as_raw_fd(),
+                    payload.as_ptr(),
+                    len,
+                    write.frame.leaf_offset,
+                    idx as u64,
+                )?;
+                queued_uring = queued_uring.checked_add(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "WAL leaf uring queue overflow")
+                })?;
+            } else {
+                let mut no_ring = None;
+                backend.write_at_mode(
+                    write.submit_mode,
+                    &mut no_ring,
+                    write.frame.leaf_offset,
+                    zcnblk_wal_leaf_pending_payload(write, &payload_log)?,
+                )?;
+                completed[idx] = true;
+            }
+        }
+        zcnblk_wal_leaf_drain_uring_writes(ring, &writes, &mut completed, queued_uring)?;
+    } else {
+        for (idx, write) in writes.iter().enumerate() {
+            backend.write_at_mode(
+                write.submit_mode,
+                ring,
+                write.frame.leaf_offset,
+                zcnblk_wal_leaf_pending_payload(write, &payload_log)?,
+            )?;
+            completed[idx] = true;
+        }
+    }
+
+    let mut result_payload = if result_ranges {
+        Vec::new()
+    } else {
+        let result_payload_len = writes
+            .len()
+            .checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result overflow")
+            })?;
+        Vec::with_capacity(result_payload_len)
+    };
+    for (idx, write) in writes.iter().enumerate() {
+        if !completed[idx] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcnblk-wal-leaf write batch has an incomplete entry",
+            ));
+        }
+        if !result_ranges {
+            let result = zcnblk_fan_wal_attach_local_topology(
+                ZcnblkFanWalFrame {
+                    op: ZCNBLK_FAN_WAL_OP_RESULT,
+                    status: ZCNBLK_FAN_WAL_STATUS_OK,
+                    payload_len: 0,
+                    ..write.frame
+                },
+                leaf_preferred_cpu,
+                leaf_numa_node,
+            );
+            result_payload.extend_from_slice(&result.encode());
+        }
+        stats.write_bytes = stats
+            .write_bytes
+            .checked_add(write.payload_len)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WAL leaf write overflow"))?;
+        stats.result_records = stats.result_records.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result overflow")
+        })?;
+        stats.frames = stats
+            .frames
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WAL leaf frame overflow"))?;
+        zcnblk_wal_leaf_note_submit_mode(stats, write.submit_mode)?;
+    }
+    stats.result_batches = stats.result_batches.checked_add(1).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result batch overflow")
+    })?;
+    if result_ranges {
+        stats.result_range_batches =
+            stats.result_range_batches.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "WAL leaf range result batch overflow",
+                )
+            })?;
+    }
+    let result_batch = zcnblk_fan_wal_attach_local_topology(
+        ZcnblkFanWalFrame {
+            op: if result_ranges {
+                ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH
+            } else {
+                ZCNBLK_FAN_WAL_OP_RESULT_BATCH
+            },
+            lane_id: batch.lane_id,
+            lane_count: batch.lane_count,
+            branch_id: batch.branch_id,
+            branch_count: batch.branch_count,
+            segment_count: batch.segment_count,
+            request_id: batch.request_id,
+            placement_epoch: batch.placement_epoch,
+            payload_len: u32::try_from(result_payload.len()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "WAL leaf result batch payload exceeds u32",
+                )
+            })?,
+            status: ZCNBLK_FAN_WAL_STATUS_OK,
+            ..ZcnblkFanWalFrame::default()
+        },
+        leaf_preferred_cpu,
+        leaf_numa_node,
+    );
+    zcnblk_fan_wal_write_frame(stream, result_batch, &result_payload)?;
+    Ok(())
+}
+
+fn zcnblk_wal_leaf_sqpoll_cpu(affinity_index: usize) -> io::Result<Option<usize>> {
+    let value = env::var("URING_PLAY_ZCNBLK_WAL_LEAF_SQPOLL_CPU_LIST")
+        .ok()
+        .or_else(|| env::var("URING_PLAY_SQPOLL_CPU_LIST").ok());
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    let cpus = parse_cpu_list(&value).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("WAL leaf SQPOLL CPU list {value:?}: {err}"),
+        )
+    })?;
+    if cpus.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(cpus[affinity_index % cpus.len()]))
+}
+
+fn zcnblk_wal_leaf_ring_options(affinity_index: usize) -> io::Result<RawRingOptions> {
+    let sqpoll = env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_SQPOLL", false);
+    let sq_mode = if sqpoll {
+        RawRingSqMode::SqPoll {
+            cpu: zcnblk_wal_leaf_sqpoll_cpu(affinity_index)?,
+            no_sqarray: env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_SQPOLL_NO_SQARRAY", true),
+        }
+    } else {
+        RawRingSqMode::Normal
+    };
+    Ok(RawRingOptions {
+        stats_enabled: env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_RING_STATS", true),
+        sq_mode,
+        registered_ring_fd: env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_REGISTER_RING_FD", false),
+        sq_thread_idle_ms: env_usize_or(
+            "URING_PLAY_ZCNBLK_WAL_LEAF_SQPOLL_IDLE_MS",
+            if sqpoll { 0 } else { 1000 },
+        )
+        .min(u32::MAX as usize) as u32,
+        ..RawRingOptions::default()
+    })
+}
+
+fn zcnblk_wal_leaf_ring_label(options: RawRingOptions) -> String {
+    match options.sq_mode {
+        RawRingSqMode::SqPoll { cpu, no_sqarray } => format!(
+            "sqpoll=true sqpoll_cpu={} sqpoll_no_sqarray={} sqpoll_idle_ms={}",
+            cpu.map(|cpu| cpu.to_string())
+                .unwrap_or_else(|| "kernel-scheduled".to_string()),
+            no_sqarray,
+            options.sq_thread_idle_ms,
+        ),
+        RawRingSqMode::Normal => "sqpoll=false".to_string(),
+        RawRingSqMode::NoSqArray => "sq_mode=no-sqarray".to_string(),
+        RawRingSqMode::SqRewind => "sq_mode=sq-rewind".to_string(),
+    }
+}
+
+fn zcnblk_wal_leaf_spin_reads_enabled() -> bool {
+    env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_SPIN_READS", false)
+        || env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_ULTRA_LOW_LATENCY", false)
+}
+
+fn zcnblk_wal_leaf_spin_budget() -> Option<usize> {
+    env::var("URING_PLAY_ZCNBLK_WAL_LEAF_SPIN_BUDGET")
+        .ok()
+        .or_else(|| env::var("URING_PLAY_SPIN_BUDGET").ok())
+        .and_then(|value| value.trim().parse::<usize>().ok())
+}
+
+fn zcnblk_wal_leaf_process_stream(
+    worker: usize,
+    stream_slot: usize,
+    accepted: TcpBenchAcceptedStream,
+    backend: Arc<ZcnblkWalLeafBackend>,
+    pin_workers: bool,
+    io_mode: ZcnblkWalLeafIoMode,
+    ring_entries: u32,
+    ring_cq_entries: u32,
+) -> io::Result<ZcnblkWalLeafStreamStats> {
+    let affinity = pin_current_thread_if_requested(
+        "zcnblk-wal-leaf-stream",
+        worker.checked_add(stream_slot).unwrap_or(worker),
+        pin_workers,
+    );
+    let meta = accepted.meta();
+    println!(
+        "zcnblk-wal-leaf-stream: worker={worker} slot={stream_slot} peer={} lane={} port={} conn={} {}",
+        meta.peer_addr,
+        meta.lane,
+        meta.port,
+        meta.conn_index,
+        socket_locality_label(meta.locality)
+    );
+    let mut stream = accepted.stream;
+    let mut stats = ZcnblkWalLeafStreamStats::default();
+    let mut logged_descriptor_topology = false;
+    let mut result_ranges = false;
+    let mut stream_plan = ZcPlanRuntime::default();
+    let result_ranges_configured = zcnblk_fan_wal_result_ranges_enabled();
+    let (leaf_preferred_cpu, leaf_numa_node) = zcnblk_fan_wal_local_topology_hints(affinity);
+    let ring_affinity_index = worker.checked_add(stream_slot).unwrap_or(worker);
+    let spin_reads = zcnblk_wal_leaf_spin_reads_enabled();
+    let spin_budget = zcnblk_wal_leaf_spin_budget();
+    let mut ring = if io_mode.uses_uring_ring() {
+        match backend.as_ref() {
+            ZcnblkWalLeafBackend::DevNull { .. } => None,
+            ZcnblkWalLeafBackend::Block { .. } => {
+                let options = zcnblk_wal_leaf_ring_options(ring_affinity_index)?;
+                println!(
+                    "zcnblk-wal-leaf-ring: worker={worker} slot={stream_slot} \
+                     affinity_index={ring_affinity_index} {} cqe_hot_poll={} cqe_spin={}",
+                    zcnblk_wal_leaf_ring_label(options),
+                    env_enabled_or("URING_PLAY_CQE_HOT_POLL", false),
+                    env_usize_or("URING_PLAY_CQE_SPIN", 0),
+                );
+                Some(RawRing::new_with_options(
+                    ring_entries,
+                    ring_cq_entries,
+                    options,
+                )?)
+            }
+        }
+    } else {
+        None
+    };
+    loop {
+        let frame_result = if spin_reads {
+            zcnblk_fan_wal_read_frame_spin_then_block(&mut stream, spin_budget)
+        } else {
+            zcnblk_fan_wal_read_frame(&mut stream)
+        };
+        let frame = match frame_result {
+            Ok(frame) => frame,
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(err) => return Err(err),
+        };
+        match frame.op {
+            ZCNBLK_FAN_WAL_OP_HELLO => {
+                if frame.lane_id as usize != meta.lane {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "zcnblk-wal-leaf accepted lane {} but got hello lane {}",
+                            meta.lane, frame.lane_id
+                        ),
+                    ));
+                }
+                result_ranges = result_ranges_configured
+                    && frame.flags & ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH != 0;
+                stream_plan = ZcPlanRuntime {
+                    plan_hash: frame.request_id,
+                    placement_epoch: frame.placement_epoch,
+                };
+                if stream_plan.is_set() {
+                    println!(
+                        "zcnblk-wal-leaf-plan: worker={worker} slot={stream_slot} lane={} \
+                         branch={} {} result_ranges={result_ranges}",
+                        meta.lane,
+                        frame.branch_id,
+                        stream_plan.label()
+                    );
+                }
+                continue;
+            }
+            ZCNBLK_FAN_WAL_OP_EOF => {
+                zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "eof")?;
+                break;
+            }
+            ZCNBLK_FAN_WAL_OP_WRITE_BATCH => {
+                zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "write batch")?;
+                zcnblk_wal_leaf_process_write_batch(
+                    &mut stream,
+                    backend.as_ref(),
+                    &mut ring,
+                    io_mode,
+                    frame,
+                    worker,
+                    stream_slot,
+                    meta,
+                    affinity,
+                    &mut logged_descriptor_topology,
+                    result_ranges,
+                    &mut stats,
+                )?;
+            }
+            ZCNBLK_FAN_WAL_OP_REQUEST_BATCH => {
+                zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "request batch")?;
+                zcnblk_wal_leaf_process_request_batch(
+                    &mut stream,
+                    backend.as_ref(),
+                    &mut ring,
+                    io_mode,
+                    frame,
+                    worker,
+                    stream_slot,
+                    meta,
+                    affinity,
+                    &mut logged_descriptor_topology,
+                    &mut stats,
+                )?;
+            }
+            ZCNBLK_FAN_WAL_OP_WRITE_DESC => {
+                zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "write descriptor")?;
+                if frame.lane_id as usize != meta.lane {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "zcnblk-wal-leaf accepted lane {} but got write descriptor lane {}",
+                            meta.lane, frame.lane_id
+                        ),
+                    ));
+                }
+                let payload = zcnblk_fan_wal_read_payload(&mut stream, frame)?;
+                let submit_mode = io_mode.adapter_for_frame(frame);
+                backend.write_at_mode(submit_mode, &mut ring, frame.leaf_offset, &payload)?;
+                let result = zcnblk_fan_wal_attach_local_topology(
+                    ZcnblkFanWalFrame {
+                        op: ZCNBLK_FAN_WAL_OP_RESULT,
+                        status: ZCNBLK_FAN_WAL_STATUS_OK,
+                        payload_len: 0,
+                        ..frame
+                    },
+                    leaf_preferred_cpu,
+                    leaf_numa_node,
+                );
+                zcnblk_fan_wal_write_frame(&mut stream, result, &[])?;
+                stats.write_bytes =
+                    stats
+                        .write_bytes
+                        .checked_add(payload.len())
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "WAL leaf write overflow")
+                        })?;
+                stats.result_records = stats.result_records.checked_add(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result overflow")
+                })?;
+                stats.frames = stats.frames.checked_add(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "WAL leaf frame overflow")
+                })?;
+                zcnblk_wal_leaf_note_submit_mode(&mut stats, submit_mode)?;
+            }
+            ZCNBLK_FAN_WAL_OP_READ_DESC => {
+                zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "read descriptor")?;
+                if frame.lane_id as usize != meta.lane {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "zcnblk-wal-leaf accepted lane {} but got read descriptor lane {}",
+                            meta.lane, frame.lane_id
+                        ),
+                    ));
+                }
+                let submit_mode = io_mode.adapter_for_frame(frame);
+                let payload = backend.read_at_mode(
+                    submit_mode,
+                    &mut ring,
+                    frame.leaf_offset,
+                    frame.payload_len as usize,
+                )?;
+                let result = zcnblk_fan_wal_attach_local_topology(
+                    ZcnblkFanWalFrame {
+                        op: ZCNBLK_FAN_WAL_OP_RESULT,
+                        status: ZCNBLK_FAN_WAL_STATUS_OK,
+                        payload_len: frame.payload_len,
+                        ..frame
+                    },
+                    leaf_preferred_cpu,
+                    leaf_numa_node,
+                );
+                zcnblk_fan_wal_write_frame(&mut stream, result, &payload)?;
+                stats.read_bytes =
+                    stats.read_bytes.checked_add(payload.len()).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "WAL leaf read overflow")
+                    })?;
+                stats.result_records = stats.result_records.checked_add(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result overflow")
+                })?;
+                stats.frames = stats.frames.checked_add(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "WAL leaf frame overflow")
+                })?;
+                zcnblk_wal_leaf_note_submit_mode(&mut stats, submit_mode)?;
+            }
+            ZCNBLK_FAN_WAL_OP_SYNC => {
+                zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "sync")?;
+                let result = zcnblk_fan_wal_attach_local_topology(
+                    ZcnblkFanWalFrame {
+                        op: ZCNBLK_FAN_WAL_OP_RESULT,
+                        status: ZCNBLK_FAN_WAL_STATUS_OK,
+                        payload_len: 0,
+                        ..frame
+                    },
+                    leaf_preferred_cpu,
+                    leaf_numa_node,
+                );
+                zcnblk_fan_wal_write_frame(&mut stream, result, &[])?;
+                stats.result_records = stats.result_records.checked_add(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result overflow")
+                })?;
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("zcnblk-wal-leaf got unsupported op {other}"),
+                ));
+            }
+        }
+    }
+    if let Some(ring) = ring.as_ref() {
+        let ring_stats = ring.stats();
+        println!(
+            "zcnblk-wal-leaf-ring-summary: worker={worker} slot={stream_slot} \
+             submit_syscalls={} wait_syscalls={} wait_cqe_calls={} cqes={} \
+             try_pop_empty={} cqe_spin_loops={} cqe_hot_poll_waits={} submit_short={}",
+            ring_stats.submit_syscalls,
+            ring_stats.wait_syscalls,
+            ring_stats.wait_cqe_calls,
+            ring_stats.cqes_popped,
+            ring_stats.try_pop_empty,
+            ring_stats.cqe_spin_loops,
+            ring_stats.cqe_hot_poll_waits,
+            ring_stats.submit_short,
+        );
+    }
+    Ok(stats)
+}
+
+fn zcnblk_wal_leaf_worker(
+    worker: usize,
+    streams: Vec<TcpBenchAcceptedStream>,
+    backend: Arc<ZcnblkWalLeafBackend>,
+    pin_workers: bool,
+    io_mode: ZcnblkWalLeafIoMode,
+    ring_entries: u32,
+    ring_cq_entries: u32,
+) -> io::Result<ZcnblkWalLeafStats> {
+    let affinity = pin_current_thread_if_requested("zcnblk-wal-leaf-worker", worker, pin_workers);
+    let started = Instant::now();
+    let stream_count = streams.len();
+    let mut read_bytes = 0usize;
+    let mut write_bytes = 0usize;
+    let mut result_records = 0usize;
+    let mut result_batches = 0usize;
+    let mut result_range_batches = 0usize;
+    let mut frames = 0usize;
+    let mut blocking_io_frames = 0usize;
+    let mut uring_io_frames = 0usize;
+    let mut handles = Vec::with_capacity(stream_count);
+    for (stream_slot, accepted) in streams.into_iter().enumerate() {
+        let backend = Arc::clone(&backend);
+        handles.push(thread::spawn(move || {
+            zcnblk_wal_leaf_process_stream(
+                worker,
+                stream_slot,
+                accepted,
+                backend,
+                pin_workers,
+                io_mode,
+                ring_entries,
+                ring_cq_entries,
+            )
+        }));
+    }
+    for handle in handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other("zcnblk-wal-leaf stream panicked"))??;
+        read_bytes = read_bytes
+            .checked_add(stats.read_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WAL leaf read overflow"))?;
+        write_bytes = write_bytes
+            .checked_add(stats.write_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WAL leaf write overflow"))?;
+        result_records = result_records
+            .checked_add(stats.result_records)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result overflow")
+            })?;
+        result_batches = result_batches
+            .checked_add(stats.result_batches)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result batch overflow")
+            })?;
+        result_range_batches = result_range_batches
+            .checked_add(stats.result_range_batches)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "WAL leaf range result batch overflow",
+                )
+            })?;
+        frames = frames
+            .checked_add(stats.frames)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WAL leaf frame overflow"))?;
+        blocking_io_frames = blocking_io_frames
+            .checked_add(stats.blocking_io_frames)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "WAL leaf blocking frame overflow",
+                )
+            })?;
+        uring_io_frames = uring_io_frames
+            .checked_add(stats.uring_io_frames)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "WAL leaf uring frame overflow")
+            })?;
+    }
+    Ok(ZcnblkWalLeafStats {
+        worker,
+        streams: stream_count,
+        read_bytes,
+        write_bytes,
+        result_records,
+        result_batches,
+        result_range_batches,
+        frames,
+        blocking_io_frames,
+        uring_io_frames,
+        elapsed: started.elapsed(),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+    })
+}
+
+fn zcnblk_wal_leaf(
+    target_spec: &str,
+    bind: &str,
+    base_port: u16,
+    ports: usize,
+    connections_per_port: usize,
+    chunk_bytes: usize,
+    workers: usize,
+    pin_workers: bool,
+    io_mode: ZcnblkWalLeafIoMode,
+) -> io::Result<()> {
+    if ports == 0 || connections_per_port == 0 || chunk_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcnblk-wal-leaf ports, connections-per-port, and chunk-bytes must be non-zero",
+        ));
+    }
+    ensure_sector_aligned(chunk_bytes, "chunk-bytes")?;
+    let backend = Arc::new(zcnblk_wal_leaf_open_backend(target_spec, chunk_bytes)?);
+    let total_connections = tcp_bench_total_connections(ports, connections_per_port)?;
+    let workers = if workers == 0 { ports.max(1) } else { workers };
+    let result_ranges_configured = zcnblk_fan_wal_result_ranges_enabled();
+    let ring_entries = u32::try_from(
+        env_usize_or("URING_PLAY_ZCNBLK_WAL_LEAF_RING_ENTRIES", 64).max(1),
+    )
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "URING_PLAY_ZCNBLK_WAL_LEAF_RING_ENTRIES exceeds u32",
+        )
+    })?;
+    let default_cq_entries = (ring_entries as usize).saturating_mul(2);
+    let ring_cq_entries = u32::try_from(
+        env_usize_or("URING_PLAY_ZCNBLK_WAL_LEAF_CQ_ENTRIES", default_cq_entries)
+            .max(ring_entries as usize),
+    )
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "URING_PLAY_ZCNBLK_WAL_LEAF_CQ_ENTRIES exceeds u32",
+        )
+    })?;
+    let leaf_spin_reads = zcnblk_wal_leaf_spin_reads_enabled();
+    let leaf_spin_budget = zcnblk_wal_leaf_spin_budget();
+    if !pin_workers {
+        eprintln!(
+            "PERF WARNING: zcnblk-wal-leaf workers are not pinned; pass pin-workers=true and set URING_PLAY_PIN_CPU_LIST before trusting topology numbers"
+        );
+    } else if !explicit_affinity_map_configured() {
+        eprintln!(
+            "PERF WARNING: zcnblk-wal-leaf workers are pinned with the implicit CPU map; set URING_PLAY_PIN_CPU_LIST or URING_PLAY_PIN_BASE_CPU/COUNT/STRIDE and state the lane-to-CPU mapping before trusting results"
+        );
+    }
+    if leaf_spin_reads && (!pin_workers || !explicit_affinity_map_configured()) {
+        eprintln!(
+            "PERF WARNING: zcnblk-wal-leaf spin reads can burn CPU to avoid receive-wait context switches; use explicit worker pinning and state the lane-to-CPU map before trusting low-latency numbers"
+        );
+    }
+    if leaf_spin_reads && leaf_spin_budget.is_none() {
+        eprintln!(
+            "PERF WARNING: zcnblk-wal-leaf spin reads have an unbounded spin budget; reserve dedicated CPUs or set URING_PLAY_ZCNBLK_WAL_LEAF_SPIN_BUDGET"
+        );
+    }
+    if io_mode.uses_uring_ring() && !env_enabled_or("URING_PLAY_CQE_HOT_POLL", false) {
+        eprintln!(
+            "PERF WARNING: zcnblk-wal-leaf io_uring CQ hot polling is disabled; set URING_PLAY_CQE_HOT_POLL=1 for dedicated hot-lane tests that should avoid completion-wait context switches"
+        );
+    }
+    if io_mode.uses_uring_ring()
+        && env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_SQPOLL", false)
+        && env::var("URING_PLAY_ZCNBLK_WAL_LEAF_SQPOLL_CPU_LIST")
+            .ok()
+            .or_else(|| env::var("URING_PLAY_SQPOLL_CPU_LIST").ok())
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true)
+    {
+        eprintln!(
+            "PERF WARNING: zcnblk-wal-leaf SQPOLL requested without URING_PLAY_ZCNBLK_WAL_LEAF_SQPOLL_CPU_LIST or URING_PLAY_SQPOLL_CPU_LIST; SQPOLL kthread placement is not explicit"
+        );
+    }
+    println!(
+        "zcnblk-wal-leaf: target={} bind={bind} base_port={base_port} ports={ports} \
+         connections_per_port={connections_per_port} total_connections={total_connections} \
+         chunk_bytes={chunk_bytes} workers={workers} pin_workers={pin_workers} \
+         submit_mode={} ring_entries={ring_entries} ring_cq_entries={ring_cq_entries} \
+         cqe_hot_poll={} leaf_sqpoll={} leaf_spin_reads={} leaf_spin_budget={} \
+         result_ranges_configured={result_ranges_configured} device_bytes={} \
+         required_alignment={} protocol=fan-wal-v{ZCNBLK_FAN_WAL_VERSION}",
+        backend.label(),
+        io_mode.label(),
+        env_enabled_or("URING_PLAY_CQE_HOT_POLL", false),
+        env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_SQPOLL", false),
+        leaf_spin_reads,
+        leaf_spin_budget
+            .map(|budget| budget.to_string())
+            .unwrap_or_else(|| "unbounded".to_string()),
+        backend.device_bytes(),
+        backend.required_alignment(),
+    );
+    let listeners = tcp_bench_mux_bind_listeners(bind, base_port, ports)?;
+    let accepted = tcp_bench_mux_accept_tagged_listeners(listeners, ports, connections_per_port)?;
+    let shards = zcnblk_partition_accepted_streams(
+        accepted,
+        workers,
+        TcpMuxShardPolicy::PortLane,
+        "zcnblk-wal-leaf",
+        pin_workers,
+    );
+    let started = Instant::now();
+    let mut handles = Vec::with_capacity(shards.len());
+    for (worker, streams) in shards.into_iter().enumerate() {
+        let backend = Arc::clone(&backend);
+        handles.push(thread::spawn(move || {
+            zcnblk_wal_leaf_worker(
+                worker,
+                streams,
+                backend,
+                pin_workers,
+                io_mode,
+                ring_entries,
+                ring_cq_entries,
+            )
+        }));
+    }
+    let mut total_read = 0usize;
+    let mut total_write = 0usize;
+    let mut total_results = 0usize;
+    let mut total_result_batches = 0usize;
+    let mut total_result_range_batches = 0usize;
+    let mut total_frames = 0usize;
+    let mut total_blocking_io_frames = 0usize;
+    let mut total_uring_io_frames = 0usize;
+    let mut total_streams = 0usize;
+    let mut elapsed = started.elapsed();
+    for handle in handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other("zcnblk-wal-leaf worker panicked"))??;
+        let secs = stats.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        println!(
+            "zcnblk-wal-leaf-worker: worker={} streams={} read_bytes={} write_bytes={} \
+             result_records={} result_batches={} result_range_batches={} \
+             frames={} blocking_io_frames={} uring_io_frames={} \
+             frames_per_sec={:.0} seconds={secs:.6} \
+             logical_MiBps={:.2} target_cpu={} affinity_applied={}",
+            stats.worker,
+            stats.streams,
+            stats.read_bytes,
+            stats.write_bytes,
+            stats.result_records,
+            stats.result_batches,
+            stats.result_range_batches,
+            stats.frames,
+            stats.blocking_io_frames,
+            stats.uring_io_frames,
+            stats.frames as f64 / secs,
+            (stats.read_bytes + stats.write_bytes) as f64 / (1024.0 * 1024.0) / secs,
+            stats.target_cpu,
+            stats.affinity_applied
+        );
+        total_streams = total_streams.checked_add(stats.streams).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "WAL leaf stream overflow")
+        })?;
+        total_read = total_read
+            .checked_add(stats.read_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WAL leaf read overflow"))?;
+        total_write = total_write
+            .checked_add(stats.write_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WAL leaf write overflow"))?;
+        total_results = total_results
+            .checked_add(stats.result_records)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result overflow")
+            })?;
+        total_result_batches = total_result_batches
+            .checked_add(stats.result_batches)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result batch overflow")
+            })?;
+        total_result_range_batches = total_result_range_batches
+            .checked_add(stats.result_range_batches)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "WAL leaf range result batch overflow",
+                )
+            })?;
+        total_frames = total_frames
+            .checked_add(stats.frames)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WAL leaf frame overflow"))?;
+        total_blocking_io_frames = total_blocking_io_frames
+            .checked_add(stats.blocking_io_frames)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "WAL leaf blocking frame overflow",
+                )
+            })?;
+        total_uring_io_frames = total_uring_io_frames
+            .checked_add(stats.uring_io_frames)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "WAL leaf uring frame overflow")
+            })?;
+        elapsed = elapsed.max(stats.elapsed);
+    }
+    println!(
+        "zcnblk-wal-leaf-summary: streams={total_streams} read_bytes={total_read} \
+         write_bytes={total_write} result_records={total_results} \
+         result_batches={total_result_batches} \
+         result_range_batches={total_result_range_batches} frames={total_frames} \
+         blocking_io_frames={total_blocking_io_frames} uring_io_frames={total_uring_io_frames} \
+         frames_per_sec={:.0}",
+        total_frames as f64 / elapsed.as_secs_f64().max(f64::MIN_POSITIVE)
+    );
+    print_tcp_bench_result("zcnblk-wal-leaf", total_read + total_write, elapsed);
+    Ok(())
+}
+
+fn zcnblk_wal_leaf_cli(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let mut args = args;
+    let target_spec = args.next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "usage: zcnblk-wal-leaf <zcdevnullN|/dev/zcbrdN|/dev/nullbN|/dev/ramN|PARTUUID=uuid> <bind> [base-port] [ports] [connections-per-port] [chunk-bytes] [workers] [pin-workers] [submit-mode:blocking|uring|mixed]",
+        )
+    })?;
+    let bind = args.next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "usage: zcnblk-wal-leaf <zcdevnullN|/dev/zcbrdN|/dev/nullbN|/dev/ramN|PARTUUID=uuid> <bind> [base-port] [ports] [connections-per-port] [chunk-bytes] [workers] [pin-workers] [submit-mode:blocking|uring|mixed]",
+        )
+    })?;
+    let base_port = args
+        .next()
+        .map(|value| value.parse::<u16>())
+        .transpose()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+        .unwrap_or(24600);
+    let ports = args
+        .next()
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+        .unwrap_or(8);
+    let connections_per_port = args
+        .next()
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+        .unwrap_or(1);
+    let chunk_bytes = args
+        .next()
+        .map(|value| parse_size_arg(&value, "chunk-bytes"))
+        .transpose()?
+        .unwrap_or(4096);
+    let workers = args
+        .next()
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+        .unwrap_or(0);
+    let pin_workers = args
+        .next()
+        .map(|value| parse_bool_arg(&value, "pin-workers"))
+        .transpose()?
+        .unwrap_or(true);
+    let io_mode = match args.next() {
+        Some(value) => ZcnblkWalLeafIoMode::parse(&value)?,
+        None => match env::var("URING_PLAY_ZCNBLK_WAL_LEAF_SUBMIT_MODE")
+            .or_else(|_| env::var("URING_PLAY_ZCNBLK_WAL_LEAF_IO_MODE"))
+        {
+            Ok(value) => ZcnblkWalLeafIoMode::parse(&value)?,
+            Err(env::VarError::NotPresent) => ZcnblkWalLeafIoMode::Blocking,
+            Err(err) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "invalid URING_PLAY_ZCNBLK_WAL_LEAF_SUBMIT_MODE/URING_PLAY_ZCNBLK_WAL_LEAF_IO_MODE: {err}"
+                    ),
+                ));
+            }
+        },
+    };
+    zcnblk_wal_leaf(
+        &target_spec,
+        &bind,
+        base_port,
+        ports,
+        connections_per_port,
+        chunk_bytes,
+        workers,
+        pin_workers,
+        io_mode,
+    )
+}
+
+fn zcnblk_fan_cli(args: impl Iterator<Item = String>) -> io::Result<()> {
+    let args = args.collect::<Vec<_>>();
+    if args.first().is_some_and(|arg| arg.starts_with("--")) {
+        let mut engine = ZcnblkFanEngine::Wal;
+        let mut leaf_spec = None::<String>;
+        let mut bind = None::<String>;
+        let mut base_port = 19600u16;
+        let mut ports = 8usize;
+        let mut connections_per_port = 1usize;
+        let mut bytes_per_connection = 64usize * 1024 * 1024;
+        let mut chunk_bytes = 4096usize;
+        let mut stripe_bytes = None::<usize>;
+        let mut leaf_base_port = None::<u16>;
+        let mut pin_handlers = true;
+        let mut mode = ZcnblkFanPlacementMode::Stripe;
+        let mut idx = 0usize;
+        while idx < args.len() {
+            let arg = &args[idx];
+            let mut next = || -> io::Result<String> {
+                idx += 1;
+                args.get(idx).cloned().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{arg} requires a value"),
+                    )
+                })
+            };
+            match arg.as_str() {
+                "--engine" => engine = ZcnblkFanEngine::parse(&next()?)?,
+                "--leaves" | "--leaf-addrs" => leaf_spec = Some(next()?),
+                "--bind" => bind = Some(next()?),
+                "--base-port" => base_port = parse_u16_value(&next()?, "--base-port")?,
+                "--ports" => ports = parse_usize_value(&next()?, "--ports")?,
+                "--connections-per-port" => {
+                    connections_per_port = parse_usize_value(&next()?, "--connections-per-port")?
+                }
+                "--bytes-per-connection" | "--bytes" => {
+                    bytes_per_connection = parse_size_arg(&next()?, "--bytes-per-connection")?
+                }
+                "--chunk-bytes" | "--chunk" => {
+                    chunk_bytes = parse_size_arg(&next()?, "--chunk-bytes")?
+                }
+                "--stripe-bytes" | "--stripe" => {
+                    stripe_bytes = Some(parse_size_arg(&next()?, "--stripe-bytes")?)
+                }
+                "--leaf-base-port" => {
+                    leaf_base_port = Some(parse_u16_value(&next()?, "--leaf-base-port")?)
+                }
+                "--pin-handlers" => pin_handlers = parse_bool_arg(&next()?, "--pin-handlers")?,
+                "--mode" | "--placement" => mode = ZcnblkFanPlacementMode::parse(&next()?)?,
+                "--help" | "-h" => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: zcnblk-fan --engine wal --leaves A,B --bind IP [--base-port N] [--ports N] [--connections-per-port N] [--bytes-per-connection SIZE] [--chunk-bytes SIZE] [--stripe-bytes SIZE] [--leaf-base-port N] [--pin-handlers true] [--mode stripe|mirror|raid10]",
+                    ));
+                }
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("unknown zcnblk-fan option {other:?}"),
+                    ));
+                }
+            }
+            idx += 1;
+        }
+        let leaf_spec = leaf_spec.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "zcnblk-fan requires --leaves")
+        })?;
+        let bind = bind.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "zcnblk-fan requires --bind")
+        })?;
+        let stripe_bytes = stripe_bytes.unwrap_or(chunk_bytes);
+        let leaf_base_port = leaf_base_port.unwrap_or(base_port);
+        return match engine {
+            ZcnblkFanEngine::Sync => zcnblk_read_fan(
+                &leaf_spec,
+                &bind,
+                base_port,
+                ports,
+                connections_per_port,
+                bytes_per_connection,
+                chunk_bytes,
+                stripe_bytes,
+                leaf_base_port,
+                pin_handlers,
+            ),
+            ZcnblkFanEngine::Wal => zcnblk_fan_wal(
+                &leaf_spec,
+                &bind,
+                base_port,
+                ports,
+                connections_per_port,
+                bytes_per_connection,
+                chunk_bytes,
+                stripe_bytes,
+                leaf_base_port,
+                pin_handlers,
+                mode,
+            ),
+        };
+    }
+
+    let mut args = args.into_iter();
+    let leaf_spec = args.next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "usage: zcnblk-fan <leaf-addr[,addr...]> <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [stripe-bytes] [leaf-base-port] [pin-handlers]",
+        )
+    })?;
+    let bind = args.next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "usage: zcnblk-fan <leaf-addr[,addr...]> <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [stripe-bytes] [leaf-base-port] [pin-handlers]",
+        )
+    })?;
+    let base_port = args
+        .next()
+        .map(|value| value.parse::<u16>())
+        .transpose()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+        .unwrap_or(19600);
+    let ports = args
+        .next()
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+        .unwrap_or(8);
+    let connections_per_port = args
+        .next()
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+        .unwrap_or(1);
+    let bytes_per_connection = args
+        .next()
+        .map(|value| parse_size_arg(&value, "bytes-per-connection"))
+        .transpose()?
+        .unwrap_or(64 * 1024 * 1024);
+    let chunk_bytes = args
+        .next()
+        .map(|value| parse_size_arg(&value, "chunk-bytes"))
+        .transpose()?
+        .unwrap_or(4096);
+    let stripe_bytes = args
+        .next()
+        .map(|value| parse_size_arg(&value, "stripe-bytes"))
+        .transpose()?
+        .unwrap_or(chunk_bytes);
+    let leaf_base_port = args
+        .next()
+        .map(|value| value.parse::<u16>())
+        .transpose()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+        .unwrap_or(base_port);
+    let pin_handlers = args
+        .next()
+        .map(|value| parse_bool_arg(&value, "pin-handlers"))
+        .transpose()?
+        .unwrap_or(true);
+    zcnblk_read_fan(
+        &leaf_spec,
+        &bind,
+        base_port,
+        ports,
+        connections_per_port,
+        bytes_per_connection,
+        chunk_bytes,
+        stripe_bytes,
+        leaf_base_port,
+        pin_handlers,
+    )
 }
 
 struct UdpWalSocketState {
@@ -22506,9 +31340,13 @@ fn parse_cpu_list(value: &str) -> io::Result<Vec<usize>> {
         }
     }
 
-    cpus.sort_unstable();
-    cpus.dedup();
-    Ok(cpus)
+    let mut deduped = Vec::with_capacity(cpus.len());
+    for cpu in cpus {
+        if !deduped.contains(&cpu) {
+            deduped.push(cpu);
+        }
+    }
+    Ok(deduped)
 }
 
 fn format_cpu_list(cpus: &[usize]) -> String {
@@ -23337,10 +32175,10 @@ mod topology_tests {
     use super::*;
 
     #[test]
-    fn cpu_list_parser_handles_ranges_and_dedupes() {
+    fn cpu_list_parser_handles_ranges_dedupes_and_preserves_order() {
         assert_eq!(
-            parse_cpu_list("0-2,4,4,6-7").unwrap(),
-            vec![0, 1, 2, 4, 6, 7]
+            parse_cpu_list("4,0-2,4,6-7,1").unwrap(),
+            vec![4, 0, 1, 2, 6, 7]
         );
     }
 
@@ -23734,6 +32572,340 @@ EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_grou
         assert_eq!(decoded.topology.queue_id, 7);
         assert_eq!(decoded.topology.request_id, 0x1122_3344_5566_7788);
         assert_eq!(decoded.topology.tier_id, 3);
+    }
+
+    #[test]
+    fn zcnblk_fan_wal_frame_round_trips_descriptor_fields() {
+        let topology = ZcnblkFrameTopology {
+            lane_id: 2,
+            lane_count: 8,
+            preferred_worker: 5,
+            queue_id: 2,
+            request_id: 0xaabb_ccdd_0011_2233,
+            tier_id: 0,
+            topology_flags: ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE,
+        };
+        let zcnblk =
+            ZcnblkFrameHeader::with_topology(ZCNBLK_OP_WRITE, 3, 0, 4096, 8192, topology).unwrap();
+        let frame = zcnblk_fan_wal_attach_placement_epoch(
+            zcnblk_fan_wal_attach_local_topology(
+                ZcnblkFanWalFrame::from_zcnblk_request(
+                    ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+                    zcnblk,
+                    2,
+                    8,
+                    1,
+                    4,
+                    0,
+                    2,
+                    99,
+                    8192,
+                    4096,
+                    4096,
+                )
+                .unwrap(),
+                12,
+                1,
+            ),
+            ZcPlanRuntime {
+                plan_hash: 0,
+                placement_epoch: 77,
+            },
+        );
+        let decoded = ZcnblkFanWalFrame::decode(&frame.encode()).unwrap();
+        assert_eq!(decoded.op, ZCNBLK_FAN_WAL_OP_WRITE_DESC);
+        assert_eq!(decoded.lane_id, 2);
+        assert_eq!(decoded.lane_count, 8);
+        assert_eq!(decoded.branch_id, 1);
+        assert_eq!(decoded.branch_count, 4);
+        assert_eq!(decoded.segment_index, 0);
+        assert_eq!(decoded.segment_count, 2);
+        assert_eq!(decoded.payload_len, 4096);
+        assert_eq!(decoded.sequence, 99);
+        assert_eq!(decoded.request_id, 0xaabb_ccdd_0011_2233);
+        assert_eq!(decoded.placement_epoch, 77);
+        assert_eq!(decoded.logical_offset, 8192);
+        assert_eq!(decoded.leaf_offset, 4096);
+        assert_eq!(decoded.logical_len, 4096);
+        assert_eq!(decoded.zcnblk_op, ZCNBLK_OP_WRITE);
+        assert_eq!(decoded.zcnblk_flags, 3);
+        assert_eq!(decoded.topology_preferred_worker, 5);
+        assert_eq!(decoded.topology_queue_id, 2);
+        assert_eq!(decoded.topology_preferred_cpu, 12);
+        assert_eq!(decoded.topology_numa_node, 1);
+        assert_eq!(
+            decoded.topology_flags,
+            ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE
+        );
+    }
+
+    #[test]
+    fn zcnblk_fan_wal_segments_cover_stripe_and_mirror() {
+        let stripe = zcnblk_fan_wal_segments(
+            ZcnblkFanPlacementMode::Stripe,
+            ZCNBLK_OP_READ,
+            0,
+            8192,
+            4096,
+            2,
+        )
+        .unwrap();
+        assert_eq!(stripe.len(), 2);
+        assert_eq!(stripe[0].leaf_idx, 0);
+        assert_eq!(stripe[0].leaf_offset, 0);
+        assert_eq!(stripe[0].payload_offset, 0);
+        assert_eq!(stripe[0].len, 4096);
+        assert_eq!(stripe[1].leaf_idx, 1);
+        assert_eq!(stripe[1].leaf_offset, 0);
+        assert_eq!(stripe[1].payload_offset, 4096);
+        assert_eq!(stripe[1].len, 4096);
+
+        let mirror = zcnblk_fan_wal_segments(
+            ZcnblkFanPlacementMode::Mirror,
+            ZCNBLK_OP_WRITE,
+            16384,
+            4096,
+            4096,
+            2,
+        )
+        .unwrap();
+        assert_eq!(mirror.len(), 2);
+        assert_eq!(mirror[0].leaf_idx, 0);
+        assert_eq!(mirror[0].leaf_offset, 16384);
+        assert_eq!(mirror[0].payload_offset, 0);
+        assert_eq!(mirror[1].leaf_idx, 1);
+        assert_eq!(mirror[1].leaf_offset, 16384);
+        assert_eq!(mirror[1].payload_offset, 0);
+
+        let mirror_read = zcnblk_fan_wal_segments(
+            ZcnblkFanPlacementMode::Mirror,
+            ZCNBLK_OP_READ,
+            0,
+            8192,
+            4096,
+            2,
+        )
+        .unwrap();
+        assert_eq!(mirror_read.len(), 2);
+        assert_eq!(mirror_read[0].leaf_idx, 0);
+        assert_eq!(mirror_read[0].leaf_offset, 0);
+        assert_eq!(mirror_read[0].payload_offset, 0);
+        assert_eq!(mirror_read[1].leaf_idx, 1);
+        assert_eq!(mirror_read[1].leaf_offset, 4096);
+        assert_eq!(mirror_read[1].payload_offset, 4096);
+
+        let raid10_write = zcnblk_fan_wal_segments(
+            ZcnblkFanPlacementMode::Raid10,
+            ZCNBLK_OP_WRITE,
+            0,
+            8192,
+            4096,
+            4,
+        )
+        .unwrap();
+        assert_eq!(raid10_write.len(), 4);
+        assert_eq!(raid10_write[0].leaf_idx, 0);
+        assert_eq!(raid10_write[0].leaf_offset, 0);
+        assert_eq!(raid10_write[0].payload_offset, 0);
+        assert_eq!(raid10_write[1].leaf_idx, 1);
+        assert_eq!(raid10_write[1].leaf_offset, 0);
+        assert_eq!(raid10_write[1].payload_offset, 0);
+        assert_eq!(raid10_write[2].leaf_idx, 2);
+        assert_eq!(raid10_write[2].leaf_offset, 0);
+        assert_eq!(raid10_write[2].payload_offset, 4096);
+        assert_eq!(raid10_write[3].leaf_idx, 3);
+        assert_eq!(raid10_write[3].leaf_offset, 0);
+        assert_eq!(raid10_write[3].payload_offset, 4096);
+
+        let raid10_read = zcnblk_fan_wal_segments(
+            ZcnblkFanPlacementMode::Raid10,
+            ZCNBLK_OP_READ,
+            0,
+            16384,
+            4096,
+            4,
+        )
+        .unwrap();
+        assert_eq!(raid10_read.len(), 4);
+        assert_eq!(raid10_read[0].leaf_idx, 0);
+        assert_eq!(raid10_read[0].leaf_offset, 0);
+        assert_eq!(raid10_read[0].payload_offset, 0);
+        assert_eq!(raid10_read[1].leaf_idx, 2);
+        assert_eq!(raid10_read[1].leaf_offset, 0);
+        assert_eq!(raid10_read[1].payload_offset, 4096);
+        assert_eq!(raid10_read[2].leaf_idx, 1);
+        assert_eq!(raid10_read[2].leaf_offset, 4096);
+        assert_eq!(raid10_read[2].payload_offset, 8192);
+        assert_eq!(raid10_read[3].leaf_idx, 3);
+        assert_eq!(raid10_read[3].leaf_offset, 4096);
+        assert_eq!(raid10_read[3].payload_offset, 12288);
+    }
+
+    #[test]
+    fn zcnblk_fan_wal_write_batch_pipeline_rejects_internal_overlap() {
+        let topology = ZcnblkFrameTopology {
+            lane_id: 0,
+            lane_count: 1,
+            preferred_worker: 0,
+            queue_id: 0,
+            request_id: 1,
+            tier_id: 0,
+            topology_flags: ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE,
+        };
+        let make_plan = |offset: u64, request_id: u64, completed: usize| {
+            let mut topology = topology;
+            topology.request_id = request_id;
+            let frame =
+                ZcnblkFrameHeader::with_topology(ZCNBLK_OP_WRITE, 0, 0, 4096, offset, topology)
+                    .unwrap();
+            let plan = zcnblk_read_fan_plan_frame(frame, 0, 1, 16384, 4096, completed).unwrap();
+            assert_eq!(plan.frame.offset, offset);
+            assert_eq!(plan.len, 4096);
+            plan
+        };
+
+        let non_overlapping = vec![make_plan(0, 1, 0), make_plan(4096, 2, 4096)];
+        assert!(zcnblk_fan_wal_can_pipeline_write_batch(&non_overlapping));
+
+        let overlapping = vec![make_plan(0, 3, 0), make_plan(0, 4, 4096)];
+        assert!(!zcnblk_fan_wal_can_pipeline_write_batch(&overlapping));
+    }
+
+    #[test]
+    fn zcnblk_fan_order_handle_releases_shared_batch_once() {
+        let order = Arc::new(ZcnblkFanOrder::new());
+        let guard = order.reserve_records(vec![0, 1]).unwrap();
+        let handle_a = ZcnblkFanOrderHandle::from_guard(guard);
+        let handle_b = handle_a.clone();
+        assert_eq!(handle_a.seq(), handle_b.seq());
+        assert_eq!(handle_a.records(), &[0, 1]);
+        handle_a.wait_turn().unwrap();
+        handle_b.wait_turn().unwrap();
+        handle_a.release();
+        handle_b.release();
+
+        let next = order.reserve_records(vec![0]).unwrap();
+        assert_eq!(next.records, vec![0]);
+        next.wait_turn().unwrap();
+    }
+
+    #[test]
+    fn zcnblk_fan_order_handle_reports_turn_without_blocking() {
+        let order = Arc::new(ZcnblkFanOrder::new());
+        let first = ZcnblkFanOrderHandle::from_guard(order.reserve_records(vec![7]).unwrap());
+        let second = ZcnblkFanOrderHandle::from_guard(order.reserve_records(vec![7]).unwrap());
+
+        assert!(first.is_turn().unwrap());
+        assert!(!second.is_turn().unwrap());
+        first.release();
+        assert!(second.is_turn().unwrap());
+    }
+
+    #[test]
+    fn zcnblk_fan_order_queue_insert_keeps_global_sequence_order() {
+        let mut queue = VecDeque::new();
+        zcnblk_fan_order_queue_insert(&mut queue, 10);
+        zcnblk_fan_order_queue_insert(&mut queue, 30);
+        zcnblk_fan_order_queue_insert(&mut queue, 20);
+        zcnblk_fan_order_queue_insert(&mut queue, 5);
+        assert_eq!(
+            queue.iter().copied().collect::<Vec<_>>(),
+            vec![5, 10, 20, 30]
+        );
+    }
+
+    #[test]
+    fn zcnblk_fan_wal_batch_wire_len_counts_only_write_payloads() {
+        let topology = ZcnblkFrameTopology {
+            lane_id: 0,
+            lane_count: 1,
+            preferred_worker: 0,
+            queue_id: 0,
+            request_id: 1,
+            tier_id: 0,
+            topology_flags: ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE,
+        };
+        let write =
+            ZcnblkFrameHeader::with_topology(ZCNBLK_OP_WRITE, 0, 0, 4096, 0, topology).unwrap();
+        let read =
+            ZcnblkFrameHeader::with_topology(ZCNBLK_OP_READ, 0, 0, 4096, 4096, topology).unwrap();
+
+        let wire_len = zcnblk_fan_wal_zcnblk_batch_wire_len(&[write, read]).unwrap();
+
+        assert_eq!(wire_len, ZCNBLK_FRAME_HEADER_LEN * 3 + 4096);
+    }
+
+    #[test]
+    fn zcnblk_fan_prepared_batch_shares_one_order_sequence() {
+        let order = Arc::new(ZcnblkFanOrder::new());
+        let topology = ZcnblkFrameTopology {
+            lane_id: 0,
+            lane_count: 1,
+            preferred_worker: 0,
+            queue_id: 0,
+            request_id: 1,
+            tier_id: 0,
+            topology_flags: ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE,
+        };
+        let make_plan = |offset: u64, request_id: u64, completed: usize| {
+            let mut topology = topology;
+            topology.request_id = request_id;
+            let frame =
+                ZcnblkFrameHeader::with_topology(ZCNBLK_OP_WRITE, 0, 0, 4096, offset, topology)
+                    .unwrap();
+            zcnblk_read_fan_plan_frame(frame, 0, 1, 16384, 4096, completed).unwrap()
+        };
+        let plans = vec![make_plan(0, 1, 0), make_plan(4096, 2, 4096)];
+        let records = zcnblk_fan_wal_plan_records(&plans).unwrap();
+        let handle = ZcnblkFanOrderHandle::from_guard(order.reserve_records(records).unwrap());
+        let prepared = zcnblk_read_fan_prepared_batch_from_plans(plans, handle);
+        assert_eq!(prepared.len(), 2);
+        assert_eq!(prepared[0].order.seq(), prepared[1].order.seq());
+        assert_eq!(prepared[0].order.records(), &[0, 1]);
+        prepared[0].order.wait_turn().unwrap();
+        prepared[1].order.wait_turn().unwrap();
+        prepared[0].order.release();
+        prepared[1].order.release();
+    }
+
+    #[test]
+    fn zcnblk_wal_leaf_io_mode_parser_accepts_blocking_and_uring() {
+        assert_eq!(
+            ZcnblkWalLeafIoMode::parse("blocking").unwrap(),
+            ZcnblkWalLeafIoMode::Blocking
+        );
+        assert_eq!(
+            ZcnblkWalLeafIoMode::parse("uring").unwrap(),
+            ZcnblkWalLeafIoMode::Uring
+        );
+        assert_eq!(
+            ZcnblkWalLeafIoMode::parse("mixed").unwrap(),
+            ZcnblkWalLeafIoMode::Mixed
+        );
+        assert!(ZcnblkWalLeafIoMode::parse("kernel-stripe").is_err());
+    }
+
+    #[test]
+    fn zcnblk_wal_leaf_mixed_mode_resolves_per_frame() {
+        let mut frame = ZcnblkFanWalFrame {
+            sequence: 100,
+            lane_id: 0,
+            segment_index: 0,
+            ..ZcnblkFanWalFrame::default()
+        };
+        assert_eq!(
+            ZcnblkWalLeafIoMode::Mixed.adapter_for_frame(frame),
+            ZcnblkWalLeafIoMode::Blocking
+        );
+        frame.sequence = 101;
+        assert_eq!(
+            ZcnblkWalLeafIoMode::Mixed.adapter_for_frame(frame),
+            ZcnblkWalLeafIoMode::Uring
+        );
+        assert_eq!(
+            ZcnblkWalLeafIoMode::Blocking.adapter_for_frame(frame),
+            ZcnblkWalLeafIoMode::Blocking
+        );
     }
 
     #[test]
@@ -27075,6 +36247,10 @@ impl LatencyHistogram {
 
     fn min_ns(&self) -> u64 {
         if self.count == 0 { 0 } else { self.min_ns }
+    }
+
+    fn max_ns(&self) -> u64 {
+        if self.count == 0 { 0 } else { self.max_ns }
     }
 
     fn percentile_ns(&self, numerator: u64, denominator: u64) -> u64 {
@@ -31250,9 +40426,8 @@ impl ZcPrimitiveTopology {
             .or_else(|| self.numa_node.and_then(Self::first_cpu_for_numa_node))
     }
 
-    fn activate_byte_compatible(&self, label: &str) -> io::Result<ZcPrimitiveAppliedTopology> {
+    fn activate_topology_only(&self, label: &str) -> io::Result<ZcPrimitiveAppliedTopology> {
         self.validate_lane_bounds(label)?;
-        self.ensure_byte_compatible_zero_copy(label)?;
 
         let start_cpu = current_cpu();
         let target_cpu = self.target_cpu();
@@ -31307,6 +40482,11 @@ impl ZcPrimitiveTopology {
         }
 
         Ok(applied)
+    }
+
+    fn activate_byte_compatible(&self, label: &str) -> io::Result<ZcPrimitiveAppliedTopology> {
+        self.ensure_byte_compatible_zero_copy(label)?;
+        self.activate_topology_only(label)
     }
 
     fn child_env_pairs(&self) -> Vec<(&'static str, String)> {
@@ -31574,7 +40754,7 @@ fn parse_legacy_recv_tail(
     let mut index = 0usize;
     let mut mode = default_mode;
     let mut explicit_mode = false;
-    let mut must_zero_copy = default_mode != ZcRecvMode::Recv;
+    let mut must_zero_copy = default_mode == ZcRecvMode::Zcrx;
 
     if tail
         .get(index)
@@ -31583,7 +40763,7 @@ fn parse_legacy_recv_tail(
     {
         mode = ZcRecvMode::parse(&tail[index])?;
         explicit_mode = true;
-        must_zero_copy = mode != ZcRecvMode::Recv;
+        must_zero_copy = mode == ZcRecvMode::Zcrx;
         index += 1;
     }
 
@@ -32591,6 +41771,10 @@ fn zctee(args: impl Iterator<Item = String>) -> io::Result<()> {
 struct ZcTierSpillStats {
     bytes: u64,
     chunks: u64,
+    cpu: Duration,
+    voluntary_switches: u64,
+    involuntary_switches: u64,
+    migrations: u64,
 }
 
 #[derive(Default)]
@@ -32671,6 +41855,9 @@ fn zctier_spill_loop<W: Write>(
     rx: mpsc::Receiver<Arc<Vec<u8>>>,
     backpressure: Arc<ZcTierBackpressure>,
 ) -> io::Result<ZcTierSpillStats> {
+    let tid = current_tid();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
     let mut stats = ZcTierSpillStats::default();
     for chunk in rx {
         let len = chunk.len();
@@ -32691,6 +41878,18 @@ fn zctier_spill_loop<W: Write>(
         })?;
     }
     writer.flush()?;
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    stats.cpu = end_thread_cpu.saturating_sub(start_thread_cpu);
+    stats.voluntary_switches = end_switches
+        .voluntary
+        .saturating_sub(start_switches.voluntary);
+    stats.involuntary_switches = end_switches
+        .involuntary
+        .saturating_sub(start_switches.involuntary);
+    stats.migrations = end_switches
+        .migrations
+        .saturating_sub(start_switches.migrations);
     Ok(stats)
 }
 
@@ -32698,6 +41897,7 @@ fn zctier_spawn_path_spill(
     path: PathBuf,
     append: bool,
     queue_depth: usize,
+    buffer_capacity: usize,
     backpressure: Arc<ZcTierBackpressure>,
 ) -> ZcTierSpill {
     let label = format!("file:{}", path.display());
@@ -32717,7 +41917,11 @@ fn zctier_spawn_path_spill(
                     format!("open zctier spill {}: {err}", path.display()),
                 )
             })?;
-        zctier_spill_loop(file, rx, bp_for_thread)
+        zctier_spill_loop(
+            BufWriter::with_capacity(buffer_capacity, file),
+            rx,
+            bp_for_thread,
+        )
     });
     ZcTierSpill {
         label: label_for_thread,
@@ -32730,6 +41934,7 @@ fn zctier_spawn_path_spill(
 fn zctier_spawn_command_spill(
     command: String,
     queue_depth: usize,
+    buffer_capacity: usize,
     primitive: ZcPrimitiveTopology,
     backpressure: Arc<ZcTierBackpressure>,
 ) -> ZcTierSpill {
@@ -32756,7 +41961,11 @@ fn zctier_spawn_command_spill(
                 format!("zctier spill {command:?} has no stdin"),
             )
         })?;
-        let stats_result = zctier_spill_loop(stdin, rx, bp_for_thread);
+        let stats_result = zctier_spill_loop(
+            BufWriter::with_capacity(buffer_capacity, stdin),
+            rx,
+            bp_for_thread,
+        );
         let status = child.wait().map_err(|err| {
             io::Error::new(err.kind(), format!("wait zctier spill {command:?}: {err}"))
         })?;
@@ -32788,11 +41997,12 @@ fn print_zctier_help() {
            --hot PATH                 hot RAM/device/file materialization path\n\
            --spill PATH               asynchronous cold spill file/device path\n\
            --spill-to CMD             asynchronous cold spill command stdin\n\
-           --chunk-bytes N            stdin read and spill chunk size, default 1m\n\
-           --memory-bytes N           queued spill byte limit, default 256m\n\
-           --queue-depth N            queued spill chunk limit, default 128\n\
-           --append-hot               append hot path instead of truncating\n\
-           --append-spill             append spill path instead of truncating"
+	           --chunk-bytes N            stdin read and spill chunk size, default 1m\n\
+	           --memory-bytes N           queued spill byte limit, default 256m\n\
+	           --queue-depth N            queued spill chunk limit, default 128\n\
+	           file/pipe writes use chunk-sized buffering to reduce syscall churn\n\
+	           --append-hot               append hot path instead of truncating\n\
+	           --append-spill             append spill path instead of truncating"
     );
 }
 
@@ -32864,7 +42074,7 @@ fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
         ));
     }
 
-    let mut hot = OpenOptions::new()
+    let hot_file = OpenOptions::new()
         .create(true)
         .write(true)
         .append(append_hot)
@@ -32876,12 +42086,14 @@ fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
                 format!("open zctier hot {}: {err}", hot_path.display()),
             )
         })?;
+    let mut hot = BufWriter::with_capacity(chunk_bytes.clamp(64 * 1024, 8 * 1024 * 1024), hot_file);
     let spill = if let Some(path) = spill_path {
         let backpressure = Arc::new(ZcTierBackpressure::new(memory_bytes));
         Some(zctier_spawn_path_spill(
             path,
             append_spill,
             queue_depth,
+            chunk_bytes.clamp(64 * 1024, 8 * 1024 * 1024),
             backpressure,
         ))
     } else if let Some(command) = spill_command {
@@ -32889,6 +42101,7 @@ fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
         Some(zctier_spawn_command_spill(
             command,
             queue_depth,
+            chunk_bytes.clamp(64 * 1024, 8 * 1024 * 1024),
             primitive.clone(),
             backpressure,
         ))
@@ -32897,6 +42110,9 @@ fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
     };
 
     let started = Instant::now();
+    let tid = current_tid();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
     let mut input = io::stdin().lock();
     let mut hot_bytes = 0u64;
     let mut hot_chunks = 0u64;
@@ -32932,6 +42148,10 @@ fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut spill_label = "-".to_string();
     let mut spill_bytes = 0u64;
     let mut spill_chunks = 0u64;
+    let mut spill_cpu = Duration::ZERO;
+    let mut spill_voluntary_switches = 0u64;
+    let mut spill_involuntary_switches = 0u64;
+    let mut spill_migrations = 0u64;
     let mut final_queued_bytes = 0usize;
     let mut max_queued_bytes = 0usize;
     if let Some(spill) = spill {
@@ -32943,6 +42163,10 @@ fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
             .map_err(|_| io::Error::other(format!("zctier spill {} panicked", spill_label)))??;
         spill_bytes = stats.bytes;
         spill_chunks = stats.chunks;
+        spill_cpu = stats.cpu;
+        spill_voluntary_switches = stats.voluntary_switches;
+        spill_involuntary_switches = stats.involuntary_switches;
+        spill_migrations = stats.migrations;
         (final_queued_bytes, max_queued_bytes) = spill.backpressure.snapshot()?;
         if spill_bytes != hot_bytes {
             return Err(io::Error::new(
@@ -32952,9 +42176,21 @@ fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
         }
     }
 
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    let main_cpu = end_thread_cpu.saturating_sub(start_thread_cpu);
+    let main_voluntary_switches = end_switches
+        .voluntary
+        .saturating_sub(start_switches.voluntary);
+    let main_involuntary_switches = end_switches
+        .involuntary
+        .saturating_sub(start_switches.involuntary);
+    let main_migrations = end_switches
+        .migrations
+        .saturating_sub(start_switches.migrations);
     let secs = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
     eprintln!(
-        "zctier-result: hot={} spill={} hot_bytes={} hot_chunks={} spill_bytes={} spill_chunks={} memory_bytes={} max_queued_bytes={} final_queued_bytes={} seconds={secs:.6} MiBps={:.2} {}",
+        "zctier-result: hot={} spill={} hot_bytes={} hot_chunks={} spill_bytes={} spill_chunks={} memory_bytes={} max_queued_bytes={} final_queued_bytes={} seconds={secs:.6} MiBps={:.2} main_cpu_seconds={:.6} spill_cpu_seconds={:.6} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={} main_voluntary_ctxt_switches={} main_involuntary_ctxt_switches={} main_migrations={} spill_voluntary_ctxt_switches={} spill_involuntary_ctxt_switches={} spill_migrations={} {}",
         hot_path.display(),
         spill_label,
         hot_bytes,
@@ -32965,6 +42201,17 @@ fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
         max_queued_bytes,
         final_queued_bytes,
         hot_bytes as f64 / (1024.0 * 1024.0) / secs,
+        main_cpu.as_secs_f64(),
+        spill_cpu.as_secs_f64(),
+        main_voluntary_switches.saturating_add(spill_voluntary_switches),
+        main_involuntary_switches.saturating_add(spill_involuntary_switches),
+        main_migrations.saturating_add(spill_migrations),
+        main_voluntary_switches,
+        main_involuntary_switches,
+        main_migrations,
+        spill_voluntary_switches,
+        spill_involuntary_switches,
+        spill_migrations,
         primitive.log_fields()
     );
     Ok(())
@@ -35181,6 +44428,1783 @@ struct ZcForwardBranch {
     handle: thread::JoinHandle<io::Result<ZcForwardBranchStats>>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ZcLogZipBenchMode {
+    MirrorWriteAll,
+    MirrorReadFirst,
+    StripeReadAll,
+}
+
+impl ZcLogZipBenchMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "mirror-write" | "write" | "mirror-all" => Ok(Self::MirrorWriteAll),
+            "mirror-read" | "read-first" | "mirror-first" => Ok(Self::MirrorReadFirst),
+            "stripe-read" | "stripe" | "read-all" => Ok(Self::StripeReadAll),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown zcfanout-logzip-bench mode {other:?}; use mirror-write, mirror-read, or stripe-read"
+                ),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::MirrorWriteAll => "mirror-write",
+            Self::MirrorReadFirst => "mirror-read",
+            Self::StripeReadAll => "stripe-read",
+        }
+    }
+
+    fn waits_for_all(self) -> bool {
+        matches!(self, Self::MirrorWriteAll | Self::StripeReadAll)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ZcLogZipSlot {
+    sequence: u64,
+    mask: u64,
+    payload_token: u64,
+    initialized: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ZcLogZipRecord {
+    sequence: u64,
+    payload_token: u64,
+}
+
+impl Default for ZcLogZipSlot {
+    fn default() -> Self {
+        Self {
+            sequence: 0,
+            mask: 0,
+            payload_token: 0,
+            initialized: false,
+        }
+    }
+}
+
+#[derive(Default)]
+struct ZcLogZipWorkerStats {
+    worker: usize,
+    lanes: usize,
+    result_records: u64,
+    emitted: u64,
+    duplicate_results: u64,
+    logical_bytes: u64,
+    branch_bytes: u64,
+    checksum: u64,
+    elapsed: Duration,
+    target_cpu: i32,
+    affinity_applied: bool,
+}
+
+struct ZcLogZipLane {
+    slots: Vec<ZcLogZipSlot>,
+    next_emit: u64,
+    emitted: u64,
+    duplicate_results: u64,
+    checksum: u64,
+}
+
+impl ZcLogZipLane {
+    fn new(window: usize) -> Self {
+        Self {
+            slots: vec![ZcLogZipSlot::default(); window],
+            next_emit: 0,
+            emitted: 0,
+            duplicate_results: 0,
+            checksum: 0,
+        }
+    }
+
+    fn process_result(
+        &mut self,
+        lane: usize,
+        branch: usize,
+        sequence: u64,
+        required_mask: u64,
+        mode: ZcLogZipBenchMode,
+        payload_token: u64,
+    ) -> io::Result<()> {
+        if sequence < self.next_emit {
+            self.duplicate_results = self.duplicate_results.saturating_add(1);
+            self.checksum = self
+                .checksum
+                .wrapping_add(payload_token)
+                .wrapping_add(branch as u64)
+                .wrapping_add(sequence);
+            return Ok(());
+        }
+        let window_len = self.slots.len();
+        let idx = sequence as usize % window_len;
+        let slot = &mut self.slots[idx];
+        if slot.initialized && slot.sequence != sequence {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcfanout-logzip-bench lane={lane} window overflow next_emit={} incoming_sequence={} slot_sequence={} window={}",
+                    self.next_emit, sequence, slot.sequence, window_len
+                ),
+            ));
+        }
+        if !slot.initialized {
+            slot.initialized = true;
+            slot.sequence = sequence;
+            slot.mask = 0;
+            slot.payload_token = payload_token;
+        }
+        let bit = 1u64.checked_shl(branch as u32).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcfanout-logzip-bench supports at most 64 branches",
+            )
+        })?;
+        if slot.mask & bit != 0 {
+            self.duplicate_results = self.duplicate_results.saturating_add(1);
+        }
+        slot.mask |= bit;
+        if mode == ZcLogZipBenchMode::MirrorReadFirst {
+            slot.mask = required_mask;
+        }
+        self.checksum = self
+            .checksum
+            .wrapping_add(slot.payload_token)
+            .wrapping_add(slot.mask)
+            .wrapping_add(sequence)
+            .wrapping_add(branch as u64);
+        self.advance(required_mask);
+        Ok(())
+    }
+
+    fn advance(&mut self, required_mask: u64) {
+        loop {
+            let idx = self.next_emit as usize % self.slots.len();
+            let slot = &mut self.slots[idx];
+            if !slot.initialized
+                || slot.sequence != self.next_emit
+                || slot.mask & required_mask != required_mask
+            {
+                break;
+            }
+            self.checksum = self
+                .checksum
+                .wrapping_add(slot.payload_token)
+                .wrapping_add(self.next_emit);
+            slot.initialized = false;
+            slot.mask = 0;
+            self.next_emit = self.next_emit.saturating_add(1);
+            self.emitted = self.emitted.saturating_add(1);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcfanout_logzip_bench_worker(
+    worker: usize,
+    worker_count: usize,
+    lanes: usize,
+    branches: usize,
+    records_per_lane: u64,
+    payload_bytes: usize,
+    window: usize,
+    skew: u64,
+    mode: ZcLogZipBenchMode,
+    pin: bool,
+    ready_barrier: Arc<Barrier>,
+    start_barrier: Arc<Barrier>,
+) -> io::Result<ZcLogZipWorkerStats> {
+    let affinity = pin_current_thread_if_requested("zcfanout-logzip-worker", worker, pin);
+    let owned_lanes = (worker..lanes).step_by(worker_count).collect::<Vec<_>>();
+    let full_mask = if branches == 64 {
+        u64::MAX
+    } else {
+        (1u64 << branches) - 1
+    };
+    let required_mask = if mode.waits_for_all() { full_mask } else { 1 };
+    let branch_payload_bytes = match mode {
+        ZcLogZipBenchMode::StripeReadAll => payload_bytes / branches,
+        ZcLogZipBenchMode::MirrorWriteAll | ZcLogZipBenchMode::MirrorReadFirst => payload_bytes,
+    };
+    let branch_delay_span = skew.saturating_mul(branches.saturating_sub(1) as u64);
+    if branch_delay_span as usize >= window {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "zcfanout-logzip-bench window={window} must exceed max branch skew span {branch_delay_span}"
+            ),
+        ));
+    }
+    let mut lane_logs = Vec::with_capacity(owned_lanes.len());
+    for lane_id in &owned_lanes {
+        let mut branch_logs = Vec::with_capacity(branches);
+        for branch in 0..branches {
+            let mut records = Vec::with_capacity(records_per_lane as usize);
+            for sequence in 0..records_per_lane {
+                records.push(ZcLogZipRecord {
+                    sequence,
+                    payload_token: ((*lane_id as u64) << 48)
+                        ^ ((branch as u64) << 40)
+                        ^ sequence
+                        ^ payload_bytes as u64,
+                });
+            }
+            branch_logs.push(records);
+        }
+        lane_logs.push((*lane_id, branch_logs));
+    }
+
+    ready_barrier.wait();
+    start_barrier.wait();
+    let started = Instant::now();
+    let mut result_records = 0u64;
+    let mut emitted = 0u64;
+    let mut duplicate_results = 0u64;
+    let mut checksum = 0u64;
+
+    for (lane_id, branch_logs) in &lane_logs {
+        let mut lane = ZcLogZipLane::new(window);
+        let end_tick = records_per_lane.saturating_add(branch_delay_span);
+        for tick in 0..end_tick {
+            for branch in 0..branches {
+                let delay = skew.saturating_mul(branch as u64);
+                if tick < delay {
+                    continue;
+                }
+                let sequence = tick - delay;
+                if sequence >= records_per_lane {
+                    continue;
+                }
+                let record = branch_logs[branch][sequence as usize];
+                black_box(record);
+                lane.process_result(
+                    *lane_id,
+                    branch,
+                    record.sequence,
+                    required_mask,
+                    mode,
+                    record.payload_token,
+                )?;
+                result_records = result_records.saturating_add(1);
+                black_box((record.payload_token, branch_payload_bytes));
+            }
+        }
+        lane.advance(required_mask);
+        if lane.emitted != records_per_lane {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcfanout-logzip-bench lane={} emitted {} of {} records",
+                    lane_id, lane.emitted, records_per_lane
+                ),
+            ));
+        }
+        emitted = emitted.saturating_add(lane.emitted);
+        duplicate_results = duplicate_results.saturating_add(lane.duplicate_results);
+        checksum = checksum.wrapping_add(lane.checksum);
+    }
+
+    let branch_bytes_per_record = match mode {
+        ZcLogZipBenchMode::MirrorWriteAll => payload_bytes.saturating_mul(branches),
+        ZcLogZipBenchMode::MirrorReadFirst => payload_bytes.saturating_mul(branches),
+        ZcLogZipBenchMode::StripeReadAll => payload_bytes,
+    };
+    Ok(ZcLogZipWorkerStats {
+        worker,
+        lanes: owned_lanes.len(),
+        result_records,
+        emitted,
+        duplicate_results,
+        logical_bytes: emitted.saturating_mul(payload_bytes as u64),
+        branch_bytes: emitted.saturating_mul(branch_bytes_per_record as u64),
+        checksum,
+        elapsed: started.elapsed(),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcfanout_logzip_bench(
+    mode: ZcLogZipBenchMode,
+    lanes: usize,
+    branches: usize,
+    records_per_lane: u64,
+    payload_bytes: usize,
+    window: usize,
+    workers: usize,
+    skew: u64,
+    pin: bool,
+) -> io::Result<()> {
+    if lanes == 0 || branches == 0 || records_per_lane == 0 || payload_bytes == 0 || window == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcfanout-logzip-bench lanes, branches, records-per-lane, payload-bytes, and window must be non-zero",
+        ));
+    }
+    if branches > 64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcfanout-logzip-bench supports at most 64 branches",
+        ));
+    }
+    if mode == ZcLogZipBenchMode::StripeReadAll && payload_bytes % branches != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "stripe-read payload-bytes must divide evenly by branches",
+        ));
+    }
+    let worker_count = tcp_bench_auto_workers(workers, lanes);
+    if !pin {
+        eprintln!(
+            "PERF WARNING: zcfanout-logzip-bench running without worker pinning; set URING_PLAY_PIN_CPU_LIST for topology results"
+        );
+    } else if env::var_os("URING_PLAY_PIN_CPU_LIST").is_none()
+        && env::var_os("URING_PLAY_PIN_BASE_CPU").is_none()
+    {
+        eprintln!(
+            "PERF WARNING: zcfanout-logzip-bench pinning uses implicit CPU mapping; state lane-to-CPU mapping before treating numbers as representative"
+        );
+    }
+    println!(
+        "zcfanout-logzip-bench: mode={} lanes={lanes} branches={branches} \
+         records_per_lane={records_per_lane} payload_bytes={payload_bytes} window={window} \
+         workers={worker_count} skew={skew} pin_workers={pin} sort=no global_queue=no \
+         payload_copy=no deep_payload_inspection=no",
+        mode.label()
+    );
+
+    let ready_barrier = Arc::new(Barrier::new(worker_count + 1));
+    let start_barrier = Arc::new(Barrier::new(worker_count + 1));
+    let mut handles = Vec::with_capacity(worker_count);
+    for worker in 0..worker_count {
+        let ready_barrier = Arc::clone(&ready_barrier);
+        let start_barrier = Arc::clone(&start_barrier);
+        handles.push(thread::spawn(move || {
+            zcfanout_logzip_bench_worker(
+                worker,
+                worker_count,
+                lanes,
+                branches,
+                records_per_lane,
+                payload_bytes,
+                window,
+                skew,
+                mode,
+                pin,
+                ready_barrier,
+                start_barrier,
+            )
+        }));
+    }
+    ready_barrier.wait();
+    let started = Instant::now();
+    start_barrier.wait();
+
+    let mut total_result_records = 0u64;
+    let mut total_emitted = 0u64;
+    let mut total_duplicate_results = 0u64;
+    let mut total_logical_bytes = 0u64;
+    let mut total_branch_bytes = 0u64;
+    let mut total_checksum = 0u64;
+    let mut elapsed = started.elapsed();
+    for handle in handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other("zcfanout-logzip-bench worker panicked"))??;
+        let secs = stats.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        println!(
+            "zcfanout-logzip-worker: worker={} lanes={} result_records={} emitted={} \
+             duplicate_results={} logical_bytes={} branch_bytes={} checksum=0x{:016x} \
+             seconds={secs:.6} result_records_per_sec={:.0} emitted_per_sec={:.0} \
+             logical_4k_iops={:.0} branch_Gibitps={:.3} target_cpu={} affinity_applied={}",
+            stats.worker,
+            stats.lanes,
+            stats.result_records,
+            stats.emitted,
+            stats.duplicate_results,
+            stats.logical_bytes,
+            stats.branch_bytes,
+            stats.checksum,
+            stats.result_records as f64 / secs,
+            stats.emitted as f64 / secs,
+            stats.logical_bytes as f64 / 4096.0 / secs,
+            stats.branch_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+            stats.target_cpu,
+            stats.affinity_applied
+        );
+        total_result_records = total_result_records.saturating_add(stats.result_records);
+        total_emitted = total_emitted.saturating_add(stats.emitted);
+        total_duplicate_results = total_duplicate_results.saturating_add(stats.duplicate_results);
+        total_logical_bytes = total_logical_bytes.saturating_add(stats.logical_bytes);
+        total_branch_bytes = total_branch_bytes.saturating_add(stats.branch_bytes);
+        total_checksum = total_checksum.wrapping_add(stats.checksum);
+        elapsed = elapsed.max(stats.elapsed);
+    }
+    let secs = elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+    println!(
+        "zcfanout-logzip-summary: mode={} lanes={lanes} branches={branches} \
+         result_records={total_result_records} emitted={total_emitted} \
+         duplicate_results={total_duplicate_results} logical_bytes={total_logical_bytes} \
+         branch_bytes={total_branch_bytes} checksum=0x{total_checksum:016x} seconds={secs:.6} \
+         result_records_per_sec={:.0} emitted_per_sec={:.0} logical_4k_iops={:.0} \
+         logical_GiBps={:.3} branch_Gibitps={:.3} sort=no global_queue=no \
+         payload_copy=no deep_payload_inspection=no",
+        mode.label(),
+        total_result_records as f64 / secs,
+        total_emitted as f64 / secs,
+        total_logical_bytes as f64 / 4096.0 / secs,
+        total_logical_bytes as f64 / (1024.0 * 1024.0 * 1024.0) / secs,
+        total_branch_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZcLogShmWaitMode {
+    Spin,
+    Condvar,
+}
+
+impl ZcLogShmWaitMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "spin" | "busy" | "busy-spin" => Ok(Self::Spin),
+            "condvar" | "sleep" | "blocking" => Ok(Self::Condvar),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown zcfanout-logshm wait mode {other:?}; use spin or condvar"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Spin => "spin",
+            Self::Condvar => "condvar",
+        }
+    }
+}
+
+struct ZcLogShmProgress {
+    condvar_published: Mutex<u64>,
+    condvar_consumed: Mutex<u64>,
+    published_cv: Condvar,
+    consumed_cv: Condvar,
+}
+
+const ZC_LOGSHM_MAGIC: u64 = 0x7a636c6f6773686d;
+const ZC_LOGSHM_VERSION: u64 = 1;
+
+#[repr(C, align(64))]
+struct ZcLogShmArenaHeader {
+    magic: u64,
+    version: u64,
+    slot_count: u64,
+    payload_bytes: u64,
+    published: AtomicU64,
+    consumed: AtomicU64,
+    _pad: [u64; 2],
+}
+
+#[repr(C, align(64))]
+struct ZcLogShmArenaSlot {
+    sequence_plus_one: AtomicU64,
+    payload_token: AtomicU64,
+    branch: AtomicU64,
+    _pad: [u64; 5],
+}
+
+struct ZcLogShmArenaMap {
+    file: fs::File,
+    ptr: *mut u8,
+    len: usize,
+    slots_offset: usize,
+    slot_count: usize,
+}
+
+unsafe impl Send for ZcLogShmArenaMap {}
+unsafe impl Sync for ZcLogShmArenaMap {}
+
+impl Drop for ZcLogShmArenaMap {
+    fn drop(&mut self) {
+        munmap_if_mapped(self.ptr as *mut libc::c_void, self.len);
+    }
+}
+
+impl ZcLogShmArenaMap {
+    fn create(slot_count: usize, payload_bytes: usize) -> io::Result<Self> {
+        let page_size = page_size()?;
+        let slots_offset = align_up(std::mem::size_of::<ZcLogShmArenaHeader>(), 64);
+        let slots_bytes = slot_count
+            .checked_mul(std::mem::size_of::<ZcLogShmArenaSlot>())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "zcfanout-logshm arena too large",
+                )
+            })?;
+        let len = align_up(
+            slots_offset.checked_add(slots_bytes).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "zcfanout-logshm arena too large",
+                )
+            })?,
+            page_size,
+        );
+        let name = CString::new("zcfanout-logshm-arena")
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+        let fd = unsafe {
+            libc::syscall(
+                libc::SYS_memfd_create,
+                name.as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let file = unsafe { fs::File::from_raw_fd(fd as i32) };
+        file.set_len(len as u64)?;
+        let ptr = mmap_shared(file.as_raw_fd(), len, 0)?;
+        unsafe {
+            let header = ptr as *mut ZcLogShmArenaHeader;
+            ptr::write(
+                header,
+                ZcLogShmArenaHeader {
+                    magic: ZC_LOGSHM_MAGIC,
+                    version: ZC_LOGSHM_VERSION,
+                    slot_count: slot_count as u64,
+                    payload_bytes: payload_bytes as u64,
+                    published: AtomicU64::new(0),
+                    consumed: AtomicU64::new(0),
+                    _pad: [0; 2],
+                },
+            );
+            for slot_idx in 0..slot_count {
+                let slot = ptr.add(slots_offset) as *mut ZcLogShmArenaSlot;
+                ptr::write(
+                    slot.add(slot_idx),
+                    ZcLogShmArenaSlot {
+                        sequence_plus_one: AtomicU64::new(0),
+                        payload_token: AtomicU64::new(0),
+                        branch: AtomicU64::new(0),
+                        _pad: [0; 5],
+                    },
+                );
+            }
+        }
+        Ok(Self {
+            file,
+            ptr,
+            len,
+            slots_offset,
+            slot_count,
+        })
+    }
+
+    fn duplicate_view(&self) -> io::Result<Self> {
+        let file = self.file.try_clone()?;
+        let ptr = mmap_shared(file.as_raw_fd(), self.len, 0)?;
+        let view = Self {
+            file,
+            ptr,
+            len: self.len,
+            slots_offset: self.slots_offset,
+            slot_count: self.slot_count,
+        };
+        view.validate()?;
+        Ok(view)
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        let header = self.header();
+        if header.magic != ZC_LOGSHM_MAGIC
+            || header.version != ZC_LOGSHM_VERSION
+            || header.slot_count as usize != self.slot_count
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcfanout-logshm shared arena header mismatch",
+            ));
+        }
+        Ok(())
+    }
+
+    fn header(&self) -> &ZcLogShmArenaHeader {
+        unsafe { &*(self.ptr as *const ZcLogShmArenaHeader) }
+    }
+
+    fn slot(&self, sequence: u64) -> &ZcLogShmArenaSlot {
+        let idx = sequence as usize % self.slot_count;
+        unsafe { &*((self.ptr.add(self.slots_offset) as *const ZcLogShmArenaSlot).add(idx)) }
+    }
+
+    fn publish_secondary_record(&self, sequence: u64, payload_token: u64) {
+        let slot = self.slot(sequence);
+        slot.payload_token.store(payload_token, Ordering::Relaxed);
+        slot.branch.store(1, Ordering::Relaxed);
+        slot.sequence_plus_one
+            .store(sequence.saturating_add(1), Ordering::Release);
+    }
+
+    fn load_secondary_record(&self, sequence: u64) -> (u64, u64) {
+        let slot = self.slot(sequence);
+        while slot.sequence_plus_one.load(Ordering::Acquire) != sequence.saturating_add(1) {
+            std::hint::spin_loop();
+        }
+        (
+            slot.payload_token.load(Ordering::Relaxed),
+            slot.branch.load(Ordering::Relaxed),
+        )
+    }
+
+    fn published(&self) -> u64 {
+        self.header().published.load(Ordering::Acquire)
+    }
+
+    fn consumed(&self) -> u64 {
+        self.header().consumed.load(Ordering::Acquire)
+    }
+
+    fn set_published(&self, value: u64) {
+        self.header().published.store(value, Ordering::Release);
+    }
+
+    fn set_consumed(&self, value: u64) {
+        self.header().consumed.store(value, Ordering::Release);
+    }
+}
+
+#[derive(Default)]
+struct ZcLogShmThreadStats {
+    role: &'static str,
+    records: u64,
+    batches: u64,
+    emitted: u64,
+    checksum: u64,
+    elapsed: Duration,
+    cpu: Duration,
+    start_cpu: i32,
+    end_cpu: i32,
+    voluntary_switches: u64,
+    involuntary_switches: u64,
+    migrations: u64,
+    target_cpu: i32,
+    affinity_applied: bool,
+}
+
+fn zcfanout_logshm_wait_secondary(
+    progress: &ZcLogShmProgress,
+    arena: &ZcLogShmArenaMap,
+    want: u64,
+    wait_mode: ZcLogShmWaitMode,
+) -> io::Result<()> {
+    match wait_mode {
+        ZcLogShmWaitMode::Spin => {
+            while arena.published() < want {
+                std::hint::spin_loop();
+            }
+            Ok(())
+        }
+        ZcLogShmWaitMode::Condvar => {
+            let mut published = progress
+                .condvar_published
+                .lock()
+                .map_err(|_| io::Error::other("zcfanout-logshm condvar progress lock poisoned"))?;
+            while *published < want {
+                published = progress
+                    .published_cv
+                    .wait(published)
+                    .map_err(|_| io::Error::other("zcfanout-logshm condvar wait poisoned"))?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn zcfanout_logshm_publish_secondary(
+    progress: &ZcLogShmProgress,
+    arena: &ZcLogShmArenaMap,
+    published: u64,
+    wait_mode: ZcLogShmWaitMode,
+) -> io::Result<()> {
+    arena.set_published(published);
+    if wait_mode == ZcLogShmWaitMode::Condvar {
+        let mut guard = progress
+            .condvar_published
+            .lock()
+            .map_err(|_| io::Error::other("zcfanout-logshm condvar progress lock poisoned"))?;
+        *guard = published;
+        progress.published_cv.notify_one();
+    }
+    Ok(())
+}
+
+fn zcfanout_logshm_publish_consumed(
+    progress: &ZcLogShmProgress,
+    arena: &ZcLogShmArenaMap,
+    consumed: u64,
+    wait_mode: ZcLogShmWaitMode,
+) -> io::Result<()> {
+    arena.set_consumed(consumed);
+    if wait_mode == ZcLogShmWaitMode::Condvar {
+        let mut guard = progress
+            .condvar_consumed
+            .lock()
+            .map_err(|_| io::Error::other("zcfanout-logshm condvar consumed lock poisoned"))?;
+        *guard = consumed;
+        progress.consumed_cv.notify_one();
+    }
+    Ok(())
+}
+
+fn zcfanout_logshm_wait_consumed_window(
+    progress: &ZcLogShmProgress,
+    arena: &ZcLogShmArenaMap,
+    published: u64,
+    max_ahead_records: u64,
+    wait_mode: ZcLogShmWaitMode,
+) -> io::Result<()> {
+    match wait_mode {
+        ZcLogShmWaitMode::Spin => {
+            while published.saturating_sub(arena.consumed()) > max_ahead_records {
+                std::hint::spin_loop();
+            }
+            Ok(())
+        }
+        ZcLogShmWaitMode::Condvar => {
+            let mut consumed = progress
+                .condvar_consumed
+                .lock()
+                .map_err(|_| io::Error::other("zcfanout-logshm condvar consumed lock poisoned"))?;
+            while published.saturating_sub(arena.consumed().max(*consumed)) > max_ahead_records {
+                consumed = progress
+                    .consumed_cv
+                    .wait(consumed)
+                    .map_err(|_| io::Error::other("zcfanout-logshm consumed wait poisoned"))?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn zcfanout_logshm_secondary(
+    records: u64,
+    payload_bytes: usize,
+    batch_records: usize,
+    max_ahead_records: u64,
+    wait_mode: ZcLogShmWaitMode,
+    pin: bool,
+    arena: ZcLogShmArenaMap,
+    progress: Arc<ZcLogShmProgress>,
+    ready_barrier: Arc<Barrier>,
+    start_barrier: Arc<Barrier>,
+) -> io::Result<ZcLogShmThreadStats> {
+    let affinity = pin_current_thread_if_requested("zcfanout-logshm-secondary", 1, pin);
+    let tid = current_tid();
+    ready_barrier.wait();
+    start_barrier.wait();
+    let started = Instant::now();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_cpu = current_cpu();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
+    let mut sequence = 0u64;
+    let mut batches = 0u64;
+    let mut checksum = 0u64;
+    while sequence < records {
+        let take = (records - sequence).min(batch_records as u64);
+        zcfanout_logshm_wait_consumed_window(
+            progress.as_ref(),
+            &arena,
+            sequence.saturating_add(take),
+            max_ahead_records,
+            wait_mode,
+        )?;
+        for local in 0..take {
+            let record_sequence = sequence + local;
+            let token = zc_logtcp_payload_token(0, 1, record_sequence, payload_bytes);
+            arena.publish_secondary_record(record_sequence, token);
+            checksum = checksum
+                .wrapping_add(token)
+                .wrapping_add(record_sequence)
+                .wrapping_add(1);
+            black_box(token);
+        }
+        sequence += take;
+        batches = batches.saturating_add(1);
+        zcfanout_logshm_publish_secondary(progress.as_ref(), &arena, sequence, wait_mode)?;
+    }
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_cpu = current_cpu();
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    Ok(ZcLogShmThreadStats {
+        role: "secondary",
+        records,
+        batches,
+        emitted: 0,
+        checksum,
+        elapsed: started.elapsed(),
+        cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
+        start_cpu,
+        end_cpu,
+        voluntary_switches: end_switches
+            .voluntary
+            .saturating_sub(start_switches.voluntary),
+        involuntary_switches: end_switches
+            .involuntary
+            .saturating_sub(start_switches.involuntary),
+        migrations: end_switches
+            .migrations
+            .saturating_sub(start_switches.migrations),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+    })
+}
+
+fn zcfanout_logshm_primary(
+    records: u64,
+    payload_bytes: usize,
+    batch_records: usize,
+    window: usize,
+    wait_mode: ZcLogShmWaitMode,
+    pin: bool,
+    arena: ZcLogShmArenaMap,
+    progress: Arc<ZcLogShmProgress>,
+    ready_barrier: Arc<Barrier>,
+    start_barrier: Arc<Barrier>,
+) -> io::Result<ZcLogShmThreadStats> {
+    let affinity = pin_current_thread_if_requested("zcfanout-logshm-primary", 0, pin);
+    let tid = current_tid();
+    let required_mask = 0b11u64;
+    let mut lane = ZcLogZipLane::new(window);
+    ready_barrier.wait();
+    start_barrier.wait();
+    let started = Instant::now();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_cpu = current_cpu();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
+    let mut checksum = 0u64;
+    for sequence in 0..records {
+        let primary_token = zc_logtcp_payload_token(0, 0, sequence, payload_bytes);
+        lane.process_result(
+            0,
+            0,
+            sequence,
+            required_mask,
+            ZcLogZipBenchMode::MirrorWriteAll,
+            primary_token,
+        )?;
+        zcfanout_logshm_wait_secondary(progress.as_ref(), &arena, sequence + 1, wait_mode)?;
+        let (secondary_token, secondary_branch) = arena.load_secondary_record(sequence);
+        if secondary_branch != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("zcfanout-logshm expected secondary branch 1, got {secondary_branch}"),
+            ));
+        }
+        lane.process_result(
+            0,
+            1,
+            sequence,
+            required_mask,
+            ZcLogZipBenchMode::MirrorWriteAll,
+            secondary_token,
+        )?;
+        checksum = checksum
+            .wrapping_add(primary_token)
+            .wrapping_add(secondary_token)
+            .wrapping_add(sequence);
+        black_box((primary_token, secondary_token));
+        if (sequence + 1) % batch_records as u64 == 0 || sequence + 1 == records {
+            zcfanout_logshm_publish_consumed(progress.as_ref(), &arena, sequence + 1, wait_mode)?;
+        }
+    }
+    lane.advance(required_mask);
+    if lane.emitted != records {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcfanout-logshm emitted {} of {} records",
+                lane.emitted, records
+            ),
+        ));
+    }
+    checksum = checksum.wrapping_add(lane.checksum);
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_cpu = current_cpu();
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    Ok(ZcLogShmThreadStats {
+        role: "primary",
+        records,
+        batches: 0,
+        emitted: lane.emitted,
+        checksum,
+        elapsed: started.elapsed(),
+        cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
+        start_cpu,
+        end_cpu,
+        voluntary_switches: end_switches
+            .voluntary
+            .saturating_sub(start_switches.voluntary),
+        involuntary_switches: end_switches
+            .involuntary
+            .saturating_sub(start_switches.involuntary),
+        migrations: end_switches
+            .migrations
+            .saturating_sub(start_switches.migrations),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+    })
+}
+
+fn zcfanout_logshm_bench(
+    records: u64,
+    payload_bytes: usize,
+    batch_records: usize,
+    window: usize,
+    wait_mode: ZcLogShmWaitMode,
+    pin: bool,
+) -> io::Result<()> {
+    if records == 0 || payload_bytes == 0 || batch_records == 0 || window == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcfanout-logshm-bench records, payload-bytes, batch-records, and window must be non-zero",
+        ));
+    }
+    if window < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcfanout-logshm-bench window must be at least 2 result records",
+        ));
+    }
+    if !pin {
+        eprintln!(
+            "PERF WARNING: zcfanout-logshm-bench running without worker pinning; set URING_PLAY_PIN_CPU_LIST for topology results"
+        );
+    } else if env::var_os("URING_PLAY_PIN_CPU_LIST").is_none()
+        && env::var_os("URING_PLAY_PIN_BASE_CPU").is_none()
+    {
+        eprintln!(
+            "PERF WARNING: zcfanout-logshm-bench pinning uses implicit CPU mapping; state primary/secondary CPU mapping before treating numbers as representative"
+        );
+    }
+    println!(
+        "zcfanout-logshm-bench: records={records} payload_bytes={payload_bytes} \
+         batch_records={batch_records} window={window} wait_mode={} pin_workers={pin} \
+         lanes=1 branches=2 primary_leg=inline secondary_leg=shared-memory \
+         sort=no global_queue=no transport=no block_devices=no payload_copy=no \
+         arena=memfd-mmap-shared mapped_views=2",
+        wait_mode.label()
+    );
+    let arena_owner = ZcLogShmArenaMap::create(window, payload_bytes)?;
+    let primary_arena = arena_owner.duplicate_view()?;
+    let secondary_arena = arena_owner.duplicate_view()?;
+    println!(
+        "zcfanout-logshm-arena: backend=memfd map=MAP_SHARED bytes={} slots={} \
+         slot_bytes={} payload_bytes={} owner_fd={} primary_secondary_views=separate",
+        arena_owner.len,
+        arena_owner.slot_count,
+        std::mem::size_of::<ZcLogShmArenaSlot>(),
+        payload_bytes,
+        arena_owner.file.as_raw_fd(),
+    );
+    let progress = Arc::new(ZcLogShmProgress {
+        condvar_published: Mutex::new(0),
+        condvar_consumed: Mutex::new(0),
+        published_cv: Condvar::new(),
+        consumed_cv: Condvar::new(),
+    });
+    let ready_barrier = Arc::new(Barrier::new(3));
+    let start_barrier = Arc::new(Barrier::new(3));
+    let secondary_handle = {
+        let progress = Arc::clone(&progress);
+        let ready_barrier = Arc::clone(&ready_barrier);
+        let start_barrier = Arc::clone(&start_barrier);
+        thread::spawn(move || {
+            zcfanout_logshm_secondary(
+                records,
+                payload_bytes,
+                batch_records,
+                window as u64,
+                wait_mode,
+                pin,
+                secondary_arena,
+                progress,
+                ready_barrier,
+                start_barrier,
+            )
+        })
+    };
+    let primary_handle = {
+        let progress = Arc::clone(&progress);
+        let ready_barrier = Arc::clone(&ready_barrier);
+        let start_barrier = Arc::clone(&start_barrier);
+        thread::spawn(move || {
+            zcfanout_logshm_primary(
+                records,
+                payload_bytes,
+                batch_records,
+                window,
+                wait_mode,
+                pin,
+                primary_arena,
+                progress,
+                ready_barrier,
+                start_barrier,
+            )
+        })
+    };
+    ready_barrier.wait();
+    let started = Instant::now();
+    start_barrier.wait();
+    let primary = primary_handle
+        .join()
+        .map_err(|_| io::Error::other("zcfanout-logshm primary panicked"))??;
+    let secondary = secondary_handle
+        .join()
+        .map_err(|_| io::Error::other("zcfanout-logshm secondary panicked"))??;
+    let elapsed = started
+        .elapsed()
+        .max(primary.elapsed)
+        .max(secondary.elapsed);
+    for stats in [&primary, &secondary] {
+        let secs = stats.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        println!(
+            "zcfanout-logshm-thread: role={} records={} batches={} emitted={} checksum=0x{:016x} \
+             seconds={secs:.6} records_per_sec={:.0} cpu_seconds={:.6} start_cpu={} end_cpu={} \
+             target_cpu={} affinity_applied={} voluntary_ctxt_switches={} \
+             involuntary_ctxt_switches={} migrations={}",
+            stats.role,
+            stats.records,
+            stats.batches,
+            stats.emitted,
+            stats.checksum,
+            stats.records as f64 / secs,
+            stats.cpu.as_secs_f64(),
+            stats.start_cpu,
+            stats.end_cpu,
+            stats.target_cpu,
+            stats.affinity_applied,
+            stats.voluntary_switches,
+            stats.involuntary_switches,
+            stats.migrations
+        );
+    }
+    let secs = elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+    let logical_bytes = records.saturating_mul(payload_bytes as u64);
+    let branch_bytes = logical_bytes.saturating_mul(2);
+    let total_voluntary = primary
+        .voluntary_switches
+        .saturating_add(secondary.voluntary_switches);
+    let total_involuntary = primary
+        .involuntary_switches
+        .saturating_add(secondary.involuntary_switches);
+    let total_migrations = primary.migrations.saturating_add(secondary.migrations);
+    println!(
+        "zcfanout-logshm-summary: records={records} emitted={} payload_bytes={payload_bytes} \
+         logical_bytes={logical_bytes} branch_bytes={branch_bytes} wait_mode={} seconds={secs:.6} \
+         logical_4k_iops={:.0} logical_GiBps={:.3} branch_Gibitps={:.3} \
+         voluntary_ctxt_switches={total_voluntary} involuntary_ctxt_switches={total_involuntary} \
+         migrations={total_migrations} primary_cpu={} secondary_cpu={} \
+         primary_secondary=memfd-mmap-shared primary_interleaves=yes copy_bytes=0 \
+         mapped_slots={} mapped_bytes={}",
+        primary.emitted,
+        wait_mode.label(),
+        logical_bytes as f64 / 4096.0 / secs,
+        logical_bytes as f64 / (1024.0 * 1024.0 * 1024.0) / secs,
+        branch_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+        primary.target_cpu,
+        secondary.target_cpu,
+        arena_owner.slot_count,
+        arena_owner.len,
+    );
+    Ok(())
+}
+
+const ZC_LOGTCP_RECORD_LEN: usize = 32;
+
+#[derive(Default)]
+struct ZcLogTcpSendStats {
+    lane: usize,
+    branch: usize,
+    port: u16,
+    records: u64,
+    wire_bytes: u64,
+    checksum: u64,
+    elapsed: Duration,
+    cpu: Duration,
+    start_cpu: i32,
+    end_cpu: i32,
+    voluntary_switches: u64,
+    involuntary_switches: u64,
+    migrations: u64,
+    target_cpu: i32,
+    affinity_applied: bool,
+}
+
+#[derive(Default)]
+struct ZcLogTcpRecvStats {
+    worker: usize,
+    lanes: usize,
+    result_records: u64,
+    emitted: u64,
+    duplicate_results: u64,
+    logical_bytes: u64,
+    branch_bytes: u64,
+    wire_bytes: u64,
+    checksum: u64,
+    elapsed: Duration,
+    cpu: Duration,
+    start_cpu: i32,
+    end_cpu: i32,
+    voluntary_switches: u64,
+    involuntary_switches: u64,
+    migrations: u64,
+    target_cpu: i32,
+    affinity_applied: bool,
+}
+
+fn zc_logtcp_store_u16_le(out: &mut [u8], offset: usize, value: u16) {
+    out[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+fn zc_logtcp_store_u32_le(out: &mut [u8], offset: usize, value: u32) {
+    out[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn zc_logtcp_store_u64_le(out: &mut [u8], offset: usize, value: u64) {
+    out[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+fn zc_logtcp_load_u64_le(input: &[u8], offset: usize) -> u64 {
+    debug_assert!(offset + 8 <= input.len());
+    unsafe { u64::from_le(ptr::read_unaligned(input.as_ptr().add(offset) as *const u64)) }
+}
+
+fn zc_logtcp_payload_token(lane: usize, branch: usize, sequence: u64, payload_bytes: usize) -> u64 {
+    ((lane as u64) << 48) ^ ((branch as u64) << 40) ^ sequence ^ payload_bytes as u64
+}
+
+fn zc_logtcp_encode_record(
+    out: &mut [u8],
+    lane: usize,
+    branch: usize,
+    sequence: u64,
+    payload_bytes: usize,
+) -> io::Result<u64> {
+    let lane_u32 = u32::try_from(lane).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcfanout-logtcp-bench lane exceeds u32",
+        )
+    })?;
+    let branch_u16 = u16::try_from(branch).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcfanout-logtcp-bench branch exceeds u16",
+        )
+    })?;
+    let payload_u32 = u32::try_from(payload_bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcfanout-logtcp-bench payload-bytes exceeds u32",
+        )
+    })?;
+    let token = zc_logtcp_payload_token(lane, branch, sequence, payload_bytes);
+    zc_logtcp_store_u64_le(out, 0, sequence);
+    zc_logtcp_store_u64_le(out, 8, token);
+    zc_logtcp_store_u32_le(out, 16, lane_u32);
+    zc_logtcp_store_u16_le(out, 20, branch_u16);
+    zc_logtcp_store_u16_le(out, 22, 0);
+    zc_logtcp_store_u32_le(out, 24, payload_u32);
+    zc_logtcp_store_u32_le(out, 28, 0);
+    Ok(token)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcfanout_logtcp_send_worker(
+    affinity_index: usize,
+    lane: usize,
+    branch: usize,
+    addr: String,
+    port: u16,
+    records_per_lane: u64,
+    payload_bytes: usize,
+    batch_records: usize,
+    pin: bool,
+    ready_barrier: Arc<Barrier>,
+    start_barrier: Arc<Barrier>,
+) -> io::Result<ZcLogTcpSendStats> {
+    let affinity = pin_current_thread_if_requested("zcfanout-logtcp-send", affinity_index, pin);
+    let tid = current_tid();
+    let mut stream = tcp_bench_connect(&addr, port, None).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("zcfanout-logtcp-bench connect lane={lane} branch={branch} port={port}: {err}"),
+        )
+    })?;
+    set_tcp_nodelay_from_env(&stream)?;
+    set_tcp_bench_buffers(&stream);
+    ready_barrier.wait();
+    start_barrier.wait();
+
+    let started = Instant::now();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_cpu = current_cpu();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
+    let batch_bytes = batch_records
+        .checked_mul(ZC_LOGTCP_RECORD_LEN)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "batch-records too large"))?;
+    let mut buffer = vec![0u8; batch_bytes];
+    let mut sequence = 0u64;
+    let mut checksum = 0u64;
+    let mut wire_bytes = 0u64;
+    while sequence < records_per_lane {
+        let remaining = records_per_lane - sequence;
+        let take = remaining.min(batch_records as u64) as usize;
+        for index in 0..take {
+            let record_offset = index * ZC_LOGTCP_RECORD_LEN;
+            let record_sequence = sequence + index as u64;
+            let token = zc_logtcp_encode_record(
+                &mut buffer[record_offset..record_offset + ZC_LOGTCP_RECORD_LEN],
+                lane,
+                branch,
+                record_sequence,
+                payload_bytes,
+            )?;
+            checksum = checksum
+                .wrapping_add(token)
+                .wrapping_add(record_sequence)
+                .wrapping_add(branch as u64);
+        }
+        let bytes = take * ZC_LOGTCP_RECORD_LEN;
+        stream.write_all(&buffer[..bytes])?;
+        wire_bytes = wire_bytes.saturating_add(bytes as u64);
+        sequence += take as u64;
+    }
+    let _ = stream.shutdown(Shutdown::Write);
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_cpu = current_cpu();
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+
+    Ok(ZcLogTcpSendStats {
+        lane,
+        branch,
+        port,
+        records: records_per_lane,
+        wire_bytes,
+        checksum,
+        elapsed: started.elapsed(),
+        cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
+        start_cpu,
+        end_cpu,
+        voluntary_switches: end_switches
+            .voluntary
+            .saturating_sub(start_switches.voluntary),
+        involuntary_switches: end_switches
+            .involuntary
+            .saturating_sub(start_switches.involuntary),
+        migrations: end_switches
+            .migrations
+            .saturating_sub(start_switches.migrations),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcfanout_logtcp_recv_worker(
+    worker: usize,
+    affinity_index: usize,
+    lane_streams: Vec<(usize, Vec<TcpStream>)>,
+    branches: usize,
+    records_per_lane: u64,
+    payload_bytes: usize,
+    batch_records: usize,
+    window: usize,
+    mode: ZcLogZipBenchMode,
+    pin: bool,
+    ready_barrier: Arc<Barrier>,
+    start_barrier: Arc<Barrier>,
+) -> io::Result<ZcLogTcpRecvStats> {
+    let affinity = pin_current_thread_if_requested("zcfanout-logtcp-recv", affinity_index, pin);
+    let tid = current_tid();
+    let full_mask = if branches == 64 {
+        u64::MAX
+    } else {
+        (1u64 << branches) - 1
+    };
+    let required_mask = if mode.waits_for_all() { full_mask } else { 1 };
+    let branch_bytes_per_record = match mode {
+        ZcLogZipBenchMode::MirrorWriteAll => payload_bytes.saturating_mul(branches),
+        ZcLogZipBenchMode::MirrorReadFirst => payload_bytes.saturating_mul(branches),
+        ZcLogZipBenchMode::StripeReadAll => payload_bytes,
+    };
+    let batch_bytes = batch_records
+        .checked_mul(ZC_LOGTCP_RECORD_LEN)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "batch-records too large"))?;
+
+    ready_barrier.wait();
+    start_barrier.wait();
+    let started = Instant::now();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_cpu = current_cpu();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
+    let mut result_records = 0u64;
+    let mut emitted = 0u64;
+    let mut duplicate_results = 0u64;
+    let mut checksum = 0u64;
+    let mut wire_bytes = 0u64;
+
+    for (lane_id, mut streams) in lane_streams {
+        if streams.len() != branches {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "zcfanout-logtcp-bench lane={lane_id} has {} streams, expected {branches}",
+                    streams.len()
+                ),
+            ));
+        }
+        let mut lane = ZcLogZipLane::new(window);
+        let mut branch_buffers = (0..branches)
+            .map(|_| vec![0u8; batch_bytes])
+            .collect::<Vec<_>>();
+        let mut sequence = 0u64;
+        while sequence < records_per_lane {
+            let remaining = records_per_lane - sequence;
+            let take = remaining.min(batch_records as u64) as usize;
+            let bytes = take * ZC_LOGTCP_RECORD_LEN;
+            for branch in 0..branches {
+                streams[branch].read_exact(&mut branch_buffers[branch][..bytes])?;
+                wire_bytes = wire_bytes.saturating_add(bytes as u64);
+            }
+            for index in 0..take {
+                let expected_sequence = sequence + index as u64;
+                let record_offset = index * ZC_LOGTCP_RECORD_LEN;
+                for branch in 0..branches {
+                    let record = &branch_buffers[branch]
+                        [record_offset..record_offset + ZC_LOGTCP_RECORD_LEN];
+                    let record_sequence = zc_logtcp_load_u64_le(record, 0);
+                    if record_sequence != expected_sequence {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "zcfanout-logtcp-bench lane={lane_id} branch={branch} expected_sequence={expected_sequence} got_sequence={record_sequence}"
+                            ),
+                        ));
+                    }
+                    let payload_token = zc_logtcp_load_u64_le(record, 8);
+                    lane.process_result(
+                        lane_id,
+                        branch,
+                        record_sequence,
+                        required_mask,
+                        mode,
+                        payload_token,
+                    )?;
+                    result_records = result_records.saturating_add(1);
+                    black_box((payload_token, record_sequence));
+                }
+            }
+            sequence += take as u64;
+        }
+        lane.advance(required_mask);
+        if lane.emitted != records_per_lane {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcfanout-logtcp-bench lane={} emitted {} of {} records",
+                    lane_id, lane.emitted, records_per_lane
+                ),
+            ));
+        }
+        emitted = emitted.saturating_add(lane.emitted);
+        duplicate_results = duplicate_results.saturating_add(lane.duplicate_results);
+        checksum = checksum.wrapping_add(lane.checksum);
+    }
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_cpu = current_cpu();
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+
+    Ok(ZcLogTcpRecvStats {
+        worker,
+        lanes: emitted
+            .checked_div(records_per_lane)
+            .unwrap_or(0)
+            .try_into()
+            .unwrap_or(usize::MAX),
+        result_records,
+        emitted,
+        duplicate_results,
+        logical_bytes: emitted.saturating_mul(payload_bytes as u64),
+        branch_bytes: emitted.saturating_mul(branch_bytes_per_record as u64),
+        wire_bytes,
+        checksum,
+        elapsed: started.elapsed(),
+        cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
+        start_cpu,
+        end_cpu,
+        voluntary_switches: end_switches
+            .voluntary
+            .saturating_sub(start_switches.voluntary),
+        involuntary_switches: end_switches
+            .involuntary
+            .saturating_sub(start_switches.involuntary),
+        migrations: end_switches
+            .migrations
+            .saturating_sub(start_switches.migrations),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+    })
+}
+
+fn zcfanout_logtcp_connect_addr(bind: &str) -> &str {
+    match bind {
+        "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+        _ => bind,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcfanout_logtcp_bench(
+    mode: ZcLogZipBenchMode,
+    bind: String,
+    base_port: u16,
+    lanes: usize,
+    branches: usize,
+    records_per_lane: u64,
+    payload_bytes: usize,
+    batch_records: usize,
+    workers: usize,
+    pin: bool,
+    window: usize,
+) -> io::Result<()> {
+    if lanes == 0
+        || branches == 0
+        || records_per_lane == 0
+        || payload_bytes == 0
+        || batch_records == 0
+        || window == 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcfanout-logtcp-bench lanes, branches, records-per-lane, payload-bytes, batch-records, and window must be non-zero",
+        ));
+    }
+    if branches > 64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcfanout-logtcp-bench supports at most 64 branches",
+        ));
+    }
+    if mode == ZcLogZipBenchMode::StripeReadAll && payload_bytes % branches != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "stripe-read payload-bytes must divide evenly by branches",
+        ));
+    }
+    let total_connections = lanes.checked_mul(branches).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcfanout-logtcp-bench lanes*branches overflowed",
+        )
+    })?;
+    if window < batch_records {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcfanout-logtcp-bench window must be at least batch-records",
+        ));
+    }
+    let receiver_workers = tcp_bench_auto_workers(workers, lanes);
+    let active_receiver_workers = receiver_workers.min(lanes);
+    let start_participants = total_connections + active_receiver_workers + 1;
+    let connect_addr = zcfanout_logtcp_connect_addr(&bind).to_string();
+    let last_port = tcp_bench_port(base_port, total_connections.saturating_sub(1))?;
+    let active_threads = total_connections + active_receiver_workers;
+    let online_cpus = online_cpu_count();
+
+    if !pin {
+        eprintln!(
+            "PERF WARNING: zcfanout-logtcp-bench running without sender/receiver pinning; set URING_PLAY_PIN_CPU_LIST for topology results"
+        );
+    } else if env::var_os("URING_PLAY_PIN_CPU_LIST").is_none()
+        && env::var_os("URING_PLAY_PIN_BASE_CPU").is_none()
+    {
+        eprintln!(
+            "PERF WARNING: zcfanout-logtcp-bench pinning uses implicit CPU mapping; state lane-to-worker and lane-to-CPU mapping before treating numbers as representative"
+        );
+    }
+    if active_threads > online_cpus {
+        eprintln!(
+            "PERF WARNING: zcfanout-logtcp-bench active_threads={active_threads} exceeds online_cpus={online_cpus}; this topology is locally oversubscribed and should not be treated as representative"
+        );
+    }
+    println!(
+        "zcfanout-logtcp-bench: mode={} bind={} connect_addr={} ports={}..{} lanes={lanes} branches={branches} \
+         records_per_lane={records_per_lane} payload_bytes={payload_bytes} batch_records={batch_records} \
+         window={window} receiver_workers={receiver_workers} sender_streams={total_connections} \
+         pin_workers={pin} transport=tcp result_record_bytes={} sort=no global_queue=no payload_copy=no \
+         deep_payload_inspection=no block_devices=no",
+        mode.label(),
+        bind,
+        connect_addr,
+        base_port,
+        last_port,
+        ZC_LOGTCP_RECORD_LEN
+    );
+
+    let mut listeners = Vec::with_capacity(lanes);
+    for lane in 0..lanes {
+        let mut lane_listeners = Vec::with_capacity(branches);
+        let first_port = tcp_bench_port(base_port, lane * branches)?;
+        let last_lane_port = tcp_bench_port(base_port, lane * branches + branches - 1)?;
+        println!(
+            "zcfanout-logtcp-topology: lane={lane} recv_worker={} sender_affinity_indices={}..{} ports={}..{}",
+            lane % receiver_workers,
+            lane * branches,
+            lane * branches + branches - 1,
+            first_port,
+            last_lane_port
+        );
+        for branch in 0..branches {
+            let port = tcp_bench_port(base_port, lane * branches + branch)?;
+            lane_listeners.push(tcp_listener_reuseaddr(&bind, port)?);
+        }
+        listeners.push(lane_listeners);
+    }
+
+    let ready_barrier = Arc::new(Barrier::new(start_participants));
+    let start_barrier = Arc::new(Barrier::new(start_participants));
+    let mut sender_handles = Vec::with_capacity(total_connections);
+    for lane in 0..lanes {
+        for branch in 0..branches {
+            let port = tcp_bench_port(base_port, lane * branches + branch)?;
+            let ready_barrier = Arc::clone(&ready_barrier);
+            let start_barrier = Arc::clone(&start_barrier);
+            let addr = connect_addr.clone();
+            let affinity_index = lane * branches + branch;
+            sender_handles.push(thread::spawn(move || {
+                zcfanout_logtcp_send_worker(
+                    affinity_index,
+                    lane,
+                    branch,
+                    addr,
+                    port,
+                    records_per_lane,
+                    payload_bytes,
+                    batch_records,
+                    pin,
+                    ready_barrier,
+                    start_barrier,
+                )
+            }));
+        }
+    }
+
+    let mut accepted_by_lane = (0..lanes)
+        .map(|_| Vec::with_capacity(branches))
+        .collect::<Vec<_>>();
+    for (lane, lane_listeners) in listeners.into_iter().enumerate() {
+        for (branch, listener) in lane_listeners.into_iter().enumerate() {
+            let port = tcp_bench_port(base_port, lane * branches + branch)?;
+            let (stream, peer_addr) = listener.accept()?;
+            let local_addr = stream.local_addr().ok();
+            set_tcp_nodelay_from_env(&stream)?;
+            set_tcp_bench_buffers(&stream);
+            zc_maybe_warn_route_alignment("zcfanout-logtcp-accept", peer_addr, local_addr);
+            accepted_by_lane[lane].push(stream);
+            println!(
+                "zcfanout-logtcp-accept: lane={lane} branch={branch} port={port} peer={peer_addr}"
+            );
+        }
+    }
+
+    let mut assignments = (0..receiver_workers)
+        .map(|_| Vec::new())
+        .collect::<Vec<_>>();
+    for (lane, streams) in accepted_by_lane.into_iter().enumerate() {
+        assignments[lane % receiver_workers].push((lane, streams));
+    }
+    let mut receiver_handles = Vec::with_capacity(active_receiver_workers);
+    for (worker, lane_streams) in assignments.into_iter().enumerate() {
+        if lane_streams.is_empty() {
+            continue;
+        }
+        let ready_barrier = Arc::clone(&ready_barrier);
+        let start_barrier = Arc::clone(&start_barrier);
+        let affinity_index = total_connections + worker;
+        receiver_handles.push(thread::spawn(move || {
+            zcfanout_logtcp_recv_worker(
+                worker,
+                affinity_index,
+                lane_streams,
+                branches,
+                records_per_lane,
+                payload_bytes,
+                batch_records,
+                window,
+                mode,
+                pin,
+                ready_barrier,
+                start_barrier,
+            )
+        }));
+    }
+
+    ready_barrier.wait();
+    let started = Instant::now();
+    start_barrier.wait();
+
+    let mut total_send_records = 0u64;
+    let mut total_send_wire_bytes = 0u64;
+    let mut total_send_checksum = 0u64;
+    let mut total_send_cpu = Duration::ZERO;
+    let mut total_send_voluntary_switches = 0u64;
+    let mut total_send_involuntary_switches = 0u64;
+    let mut total_send_migrations = 0u64;
+    for handle in sender_handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other("zcfanout-logtcp-bench sender panicked"))??;
+        let secs = stats.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        let cpu_secs = stats.cpu.as_secs_f64();
+        println!(
+            "zcfanout-logtcp-sender: lane={} branch={} port={} records={} wire_bytes={} checksum=0x{:016x} \
+             seconds={secs:.6} cpu_seconds={cpu_secs:.6} records_per_sec={:.0} wire_Gbitps={:.3} \
+             voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={} start_cpu={} end_cpu={} \
+             target_cpu={} affinity_applied={}",
+            stats.lane,
+            stats.branch,
+            stats.port,
+            stats.records,
+            stats.wire_bytes,
+            stats.checksum,
+            stats.records as f64 / secs,
+            stats.wire_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+            stats.voluntary_switches,
+            stats.involuntary_switches,
+            stats.migrations,
+            stats.start_cpu,
+            stats.end_cpu,
+            stats.target_cpu,
+            stats.affinity_applied
+        );
+        total_send_records = total_send_records.saturating_add(stats.records);
+        total_send_wire_bytes = total_send_wire_bytes.saturating_add(stats.wire_bytes);
+        total_send_checksum = total_send_checksum.wrapping_add(stats.checksum);
+        total_send_cpu += stats.cpu;
+        total_send_voluntary_switches =
+            total_send_voluntary_switches.saturating_add(stats.voluntary_switches);
+        total_send_involuntary_switches =
+            total_send_involuntary_switches.saturating_add(stats.involuntary_switches);
+        total_send_migrations = total_send_migrations.saturating_add(stats.migrations);
+    }
+
+    let mut total_result_records = 0u64;
+    let mut total_emitted = 0u64;
+    let mut total_duplicate_results = 0u64;
+    let mut total_logical_bytes = 0u64;
+    let mut total_branch_bytes = 0u64;
+    let mut total_recv_wire_bytes = 0u64;
+    let mut total_recv_checksum = 0u64;
+    let mut recv_elapsed = Duration::ZERO;
+    let mut total_recv_cpu = Duration::ZERO;
+    let mut total_recv_voluntary_switches = 0u64;
+    let mut total_recv_involuntary_switches = 0u64;
+    let mut total_recv_migrations = 0u64;
+    for handle in receiver_handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other("zcfanout-logtcp-bench receiver panicked"))??;
+        let secs = stats.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+        let cpu_secs = stats.cpu.as_secs_f64();
+        println!(
+            "zcfanout-logtcp-receiver: worker={} lanes={} result_records={} emitted={} \
+             duplicate_results={} wire_bytes={} logical_bytes={} branch_bytes={} checksum=0x{:016x} \
+             seconds={secs:.6} cpu_seconds={cpu_secs:.6} result_records_per_sec={:.0} emitted_per_sec={:.0} \
+             logical_4k_iops={:.0} wire_Gbitps={:.3} branch_Gibitps={:.3} voluntary_ctxt_switches={} \
+             involuntary_ctxt_switches={} migrations={} start_cpu={} end_cpu={} target_cpu={} affinity_applied={}",
+            stats.worker,
+            stats.lanes,
+            stats.result_records,
+            stats.emitted,
+            stats.duplicate_results,
+            stats.wire_bytes,
+            stats.logical_bytes,
+            stats.branch_bytes,
+            stats.checksum,
+            stats.result_records as f64 / secs,
+            stats.emitted as f64 / secs,
+            stats.logical_bytes as f64 / 4096.0 / secs,
+            stats.wire_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+            stats.branch_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+            stats.voluntary_switches,
+            stats.involuntary_switches,
+            stats.migrations,
+            stats.start_cpu,
+            stats.end_cpu,
+            stats.target_cpu,
+            stats.affinity_applied
+        );
+        total_result_records = total_result_records.saturating_add(stats.result_records);
+        total_emitted = total_emitted.saturating_add(stats.emitted);
+        total_duplicate_results = total_duplicate_results.saturating_add(stats.duplicate_results);
+        total_logical_bytes = total_logical_bytes.saturating_add(stats.logical_bytes);
+        total_branch_bytes = total_branch_bytes.saturating_add(stats.branch_bytes);
+        total_recv_wire_bytes = total_recv_wire_bytes.saturating_add(stats.wire_bytes);
+        total_recv_checksum = total_recv_checksum.wrapping_add(stats.checksum);
+        recv_elapsed = recv_elapsed.max(stats.elapsed);
+        total_recv_cpu += stats.cpu;
+        total_recv_voluntary_switches =
+            total_recv_voluntary_switches.saturating_add(stats.voluntary_switches);
+        total_recv_involuntary_switches =
+            total_recv_involuntary_switches.saturating_add(stats.involuntary_switches);
+        total_recv_migrations = total_recv_migrations.saturating_add(stats.migrations);
+    }
+    let elapsed = started.elapsed().max(recv_elapsed);
+    let secs = elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+    let total_cpu = total_send_cpu + total_recv_cpu;
+    let total_voluntary_switches =
+        total_send_voluntary_switches.saturating_add(total_recv_voluntary_switches);
+    let total_involuntary_switches =
+        total_send_involuntary_switches.saturating_add(total_recv_involuntary_switches);
+    let total_migrations = total_send_migrations.saturating_add(total_recv_migrations);
+    println!(
+        "zcfanout-logtcp-summary: mode={} lanes={lanes} branches={branches} receiver_workers={receiver_workers} \
+         sender_streams={total_connections} send_records={total_send_records} result_records={total_result_records} \
+         emitted={total_emitted} duplicate_results={total_duplicate_results} send_wire_bytes={total_send_wire_bytes} \
+         recv_wire_bytes={total_recv_wire_bytes} logical_bytes={total_logical_bytes} branch_bytes={total_branch_bytes} \
+         send_checksum=0x{total_send_checksum:016x} recv_checksum=0x{total_recv_checksum:016x} seconds={secs:.6} \
+         cpu_seconds={:.6} send_cpu_seconds={:.6} recv_cpu_seconds={:.6} result_records_per_sec={:.0} \
+         emitted_per_sec={:.0} logical_4k_iops={:.0} wire_Gbitps={:.3} logical_GiBps={:.3} \
+         branch_Gibitps={:.3} voluntary_ctxt_switches={total_voluntary_switches} \
+         involuntary_ctxt_switches={total_involuntary_switches} migrations={total_migrations} \
+         send_voluntary_ctxt_switches={total_send_voluntary_switches} \
+         send_involuntary_ctxt_switches={total_send_involuntary_switches} send_migrations={total_send_migrations} \
+         recv_voluntary_ctxt_switches={total_recv_voluntary_switches} \
+         recv_involuntary_ctxt_switches={total_recv_involuntary_switches} recv_migrations={total_recv_migrations} \
+         transport=tcp sort=no global_queue=no payload_copy=no deep_payload_inspection=no block_devices=no",
+        mode.label(),
+        total_cpu.as_secs_f64(),
+        total_send_cpu.as_secs_f64(),
+        total_recv_cpu.as_secs_f64(),
+        total_result_records as f64 / secs,
+        total_emitted as f64 / secs,
+        total_logical_bytes as f64 / 4096.0 / secs,
+        total_recv_wire_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+        total_logical_bytes as f64 / (1024.0 * 1024.0 * 1024.0) / secs,
+        total_branch_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+    );
+    Ok(())
+}
+
 #[derive(Default)]
 struct ZcForwardBranchStats {
     bytes: u64,
@@ -35766,6 +46790,11 @@ const ZCRAID_FLAG_EOF: u16 = 1 << 0;
 const ZCRAID_FLAG_CHECKSUM: u16 = 1 << 1;
 const ZCRAID_CHECKSUM_NONE: u16 = 0;
 const ZCRAID_CHECKSUM_SUM64: u16 = 1;
+const ZCRAID_DESCRIPTOR_MAGIC: &[u8; 8] = b"ZCRDESC1";
+const ZCRAID_DESCRIPTOR_VERSION: u16 = 1;
+const ZCRAID_DESCRIPTOR_RECORD_LEN: usize = 128;
+const ZCRAID_DESCRIPTOR_FLAG_EOF: u32 = 1 << 0;
+const ZCRAID_DESCRIPTOR_FLAG_CHECKSUM: u32 = 1 << 1;
 
 #[derive(Clone, Copy, Debug)]
 struct ZcRaidFrameHeader {
@@ -35781,6 +46810,25 @@ struct ZcRaidFrameHeader {
     total_len: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ZcRaidDescriptorRecord {
+    flags: u32,
+    branch_id: u32,
+    branch_count: u32,
+    copy_id: u16,
+    checksum_kind: u16,
+    payload_len: u32,
+    chunk_index: u64,
+    logical_offset: u64,
+    payload_wal_offset: u64,
+    total_len: u64,
+    checksum: u64,
+    descriptor_id: u64,
+    lane_id: u32,
+    lane_count: u32,
+    placement_epoch: u64,
+}
+
 #[derive(Clone)]
 struct ZcRaidBranchItem {
     header: ZcRaidFrameHeader,
@@ -35792,6 +46840,22 @@ struct ZcRaidBranchStats {
     logical_bytes: u64,
     wire_bytes: u64,
     frames: u64,
+    zero_copy_payload_bytes: u64,
+    copy_payload_bytes: u64,
+    zc_notifications: u64,
+    zc_copied_notifications: u64,
+    cpu: Duration,
+    voluntary_switches: u64,
+    involuntary_switches: u64,
+    migrations: u64,
+}
+
+#[derive(Clone)]
+struct ZcRaidTcpmuxTarget {
+    peer_address: String,
+    port: u16,
+    local_data_address: Option<String>,
+    token: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36221,6 +47285,31 @@ fn zcraid_encode_header(header: ZcRaidFrameHeader) -> [u8; ZCRAID_FRAME_HEADER_L
     out
 }
 
+fn zcraid_encode_descriptor_record(
+    record: ZcRaidDescriptorRecord,
+) -> [u8; ZCRAID_DESCRIPTOR_RECORD_LEN] {
+    let mut out = [0u8; ZCRAID_DESCRIPTOR_RECORD_LEN];
+    out[..8].copy_from_slice(ZCRAID_DESCRIPTOR_MAGIC);
+    out[8..10].copy_from_slice(&ZCRAID_DESCRIPTOR_VERSION.to_le_bytes());
+    out[10..12].copy_from_slice(&(ZCRAID_DESCRIPTOR_RECORD_LEN as u16).to_le_bytes());
+    out[12..16].copy_from_slice(&record.flags.to_le_bytes());
+    out[16..20].copy_from_slice(&record.branch_id.to_le_bytes());
+    out[20..24].copy_from_slice(&record.branch_count.to_le_bytes());
+    out[24..26].copy_from_slice(&record.copy_id.to_le_bytes());
+    out[26..28].copy_from_slice(&record.checksum_kind.to_le_bytes());
+    out[28..32].copy_from_slice(&record.payload_len.to_le_bytes());
+    out[32..40].copy_from_slice(&record.chunk_index.to_le_bytes());
+    out[40..48].copy_from_slice(&record.logical_offset.to_le_bytes());
+    out[48..56].copy_from_slice(&record.payload_wal_offset.to_le_bytes());
+    out[56..64].copy_from_slice(&record.total_len.to_le_bytes());
+    out[64..72].copy_from_slice(&record.checksum.to_le_bytes());
+    out[72..80].copy_from_slice(&record.descriptor_id.to_le_bytes());
+    out[80..84].copy_from_slice(&record.lane_id.to_le_bytes());
+    out[84..88].copy_from_slice(&record.lane_count.to_le_bytes());
+    out[88..96].copy_from_slice(&record.placement_epoch.to_le_bytes());
+    out
+}
+
 fn zcraid_decode_header(bytes: &[u8; ZCRAID_FRAME_HEADER_LEN]) -> io::Result<ZcRaidFrameHeader> {
     if &bytes[..8] != ZCRAID_FRAME_MAGIC {
         return Err(io::Error::new(
@@ -36287,6 +47376,94 @@ fn zcraid_write_frame<W: Write>(
     Ok(())
 }
 
+fn zcraid_send_zc_all(
+    ring: &mut RawRing,
+    fd: i32,
+    mut data: &[u8],
+    label: &str,
+) -> io::Result<(u64, u64)> {
+    const ZCRAID_SEND_ZC_USER_DATA: u64 = 0x7a63726169645a43;
+    let mut notifications = 0u64;
+    let mut copied_notifications = 0u64;
+    while !data.is_empty() {
+        let len = data.len().min(u32::MAX as usize);
+        ring.queue_send_zc(
+            fd,
+            data.as_ptr(),
+            len as u32,
+            0,
+            None,
+            true,
+            ZCRAID_SEND_ZC_USER_DATA,
+        )?;
+        ring.submit_pending()?;
+
+        let mut send_done = false;
+        let mut sent = 0usize;
+        let mut notif_expected = false;
+        let mut notif_done = false;
+        while !send_done || (notif_expected && !notif_done) {
+            let cqe = ring.wait_cqe()?;
+            if (cqe.flags & IORING_CQE_F_NOTIF) != 0 {
+                notifications = notifications.checked_add(1).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcraid send-zc notification count overflow",
+                    )
+                })?;
+                if (cqe.res & IORING_NOTIF_USAGE_ZC_COPIED) != 0 {
+                    copied_notifications =
+                        copied_notifications.checked_add(1).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "zcraid send-zc copied notification count overflow",
+                            )
+                        })?;
+                }
+                notif_done = true;
+                continue;
+            }
+            if cqe.user_data != ZCRAID_SEND_ZC_USER_DATA {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcraid tcpmux branch {label} got unexpected send-zc CQE user_data={}",
+                        cqe.user_data
+                    ),
+                ));
+            }
+            if send_done {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("zcraid tcpmux branch {label} got duplicate send-zc completion"),
+                ));
+            }
+            if cqe.res < 0 {
+                return Err(io::Error::from_raw_os_error(-cqe.res));
+            }
+            if cqe.res == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    format!("zcraid tcpmux branch {label} send-zc wrote zero bytes"),
+                ));
+            }
+            sent = cqe.res as usize;
+            if sent > len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcraid tcpmux branch {label} send-zc completed {sent} bytes for {len} byte send"
+                    ),
+                ));
+            }
+            send_done = true;
+            notif_expected = (cqe.flags & IORING_CQE_F_MORE) != 0;
+        }
+        data = &data[sent..];
+    }
+    Ok((notifications, copied_notifications))
+}
+
 fn zcraid_read_frame<R: Read>(reader: &mut R) -> io::Result<Option<(ZcRaidFrameHeader, Vec<u8>)>> {
     let mut header_bytes = [0u8; ZCRAID_FRAME_HEADER_LEN];
     match reader.read_exact(&mut header_bytes) {
@@ -36337,9 +47514,189 @@ fn zcraid_writer_loop<W: Write>(
     mut writer: W,
     rx: mpsc::Receiver<ZcRaidBranchItem>,
 ) -> io::Result<ZcRaidBranchStats> {
+    let tid = current_tid();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
     let mut stats = ZcRaidBranchStats::default();
     for item in rx {
         zcraid_write_frame(&mut writer, item.header, &item.data)?;
+        stats.logical_bytes = stats
+            .logical_bytes
+            .checked_add(item.header.payload_len as u64)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcraid logical byte overflow")
+            })?;
+        stats.copy_payload_bytes = stats
+            .copy_payload_bytes
+            .checked_add(item.header.payload_len as u64)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcraid copied byte overflow")
+            })?;
+        let wire = ZCRAID_FRAME_HEADER_LEN as u64 + item.header.payload_len as u64;
+        stats.wire_bytes = stats.wire_bytes.checked_add(wire).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraid wire byte overflow")
+        })?;
+        stats.frames = stats.frames.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraid frame count overflow")
+        })?;
+    }
+    writer.flush()?;
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    stats.cpu = end_thread_cpu.saturating_sub(start_thread_cpu);
+    stats.voluntary_switches = end_switches
+        .voluntary
+        .saturating_sub(start_switches.voluntary);
+    stats.involuntary_switches = end_switches
+        .involuntary
+        .saturating_sub(start_switches.involuntary);
+    stats.migrations = end_switches
+        .migrations
+        .saturating_sub(start_switches.migrations);
+    Ok(stats)
+}
+
+fn zcraid_tcpmux_send_mode(policy: ZcZeroCopyPolicy, label: &str) -> io::Result<UringSendMode> {
+    match policy {
+        ZcZeroCopyPolicy::Off => Ok(UringSendMode::Send),
+        ZcZeroCopyPolicy::Required => {
+            match kernel_supports_request_opcode(IORING_OP_SEND_ZC) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        format!("{label} requires send-zc but IORING_OP_SEND_ZC is unavailable"),
+                    ));
+                }
+                Err(err) => {
+                    return Err(io::Error::new(
+                        err.kind(),
+                        format!("{label} requires send-zc but opcode query failed: {err}"),
+                    ));
+                }
+            }
+            validate_uring_send_mode_location(UringSendMode::SendZc)?;
+            Ok(UringSendMode::SendZc)
+        }
+        ZcZeroCopyPolicy::Auto => {
+            match kernel_supports_request_opcode(IORING_OP_SEND_ZC) {
+                Ok(true) => {}
+                Ok(false) => {
+                    eprintln!(
+                        "PERF WARNING: {label}: IORING_OP_SEND_ZC unavailable; falling back to copied TCP send"
+                    );
+                    return Ok(UringSendMode::Send);
+                }
+                Err(err) => {
+                    eprintln!(
+                        "PERF WARNING: {label}: send-zc opcode query failed ({err}); falling back to copied TCP send"
+                    );
+                    return Ok(UringSendMode::Send);
+                }
+            }
+            if let Err(err) = validate_uring_send_mode_location(UringSendMode::SendZc) {
+                eprintln!(
+                    "PERF WARNING: {label}: send-zc not enabled ({err}); falling back to copied TCP send"
+                );
+                return Ok(UringSendMode::Send);
+            }
+            Ok(UringSendMode::SendZc)
+        }
+    }
+}
+
+fn zcraid_tcpmux_writer_loop(
+    mut stream: TcpStream,
+    rx: mpsc::Receiver<ZcRaidBranchItem>,
+    label: &str,
+    zero_copy_policy: ZcZeroCopyPolicy,
+    ring_entries: u32,
+) -> io::Result<ZcRaidBranchStats> {
+    let tid = current_tid();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
+    let send_mode = zcraid_tcpmux_send_mode(zero_copy_policy, label)?;
+    let mut ring = if send_mode.uses_zc() {
+        match RawRing::new(
+            ring_entries.max(64),
+            ring_entries.saturating_mul(2).max(128),
+        ) {
+            Ok(ring) => Some(ring),
+            Err(err) if zero_copy_policy == ZcZeroCopyPolicy::Auto => {
+                eprintln!(
+                    "PERF WARNING: {label}: could not create io_uring send-zc ring ({err}); falling back to copied TCP send"
+                );
+                None
+            }
+            Err(err) => return Err(err),
+        }
+    } else {
+        None
+    };
+    let mut stats = ZcRaidBranchStats::default();
+    for item in rx {
+        let header = zcraid_encode_header(item.header);
+        stream.write_all(&header)?;
+        let payload_len = item.header.payload_len as usize;
+        if payload_len != item.data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "zcraid tcpmux branch {label} payload length mismatch header={} actual={}",
+                    payload_len,
+                    item.data.len()
+                ),
+            ));
+        }
+        if payload_len != 0 {
+            if let Some(ring) = ring.as_mut() {
+                let (notifications, copied_notifications) =
+                    zcraid_send_zc_all(ring, stream.as_raw_fd(), &item.data, label)?;
+                if copied_notifications != 0 && zero_copy_policy == ZcZeroCopyPolicy::Required {
+                    return Err(io::Error::other(format!(
+                        "zcraid tcpmux branch {label} required zero-copy but kernel reported {copied_notifications} copied send-zc completions"
+                    )));
+                }
+                stats.zc_notifications = stats
+                    .zc_notifications
+                    .checked_add(notifications)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "zcraid send-zc notification overflow",
+                        )
+                    })?;
+                stats.zc_copied_notifications = stats
+                    .zc_copied_notifications
+                    .checked_add(copied_notifications)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "zcraid send-zc copied notification overflow",
+                        )
+                    })?;
+                stats.zero_copy_payload_bytes = stats
+                    .zero_copy_payload_bytes
+                    .checked_add(payload_len as u64)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "zcraid zero-copy payload byte overflow",
+                        )
+                    })?;
+            } else {
+                stream.write_all(&item.data)?;
+                stats.copy_payload_bytes = stats
+                    .copy_payload_bytes
+                    .checked_add(payload_len as u64)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "zcraid copied payload byte overflow",
+                        )
+                    })?;
+            }
+        }
         stats.logical_bytes = stats
             .logical_bytes
             .checked_add(item.header.payload_len as u64)
@@ -36354,13 +47711,32 @@ fn zcraid_writer_loop<W: Write>(
             io::Error::new(io::ErrorKind::InvalidData, "zcraid frame count overflow")
         })?;
     }
-    writer.flush()?;
+    stream.shutdown(Shutdown::Write)?;
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    stats.cpu = end_thread_cpu.saturating_sub(start_thread_cpu);
+    stats.voluntary_switches = end_switches
+        .voluntary
+        .saturating_sub(start_switches.voluntary);
+    stats.involuntary_switches = end_switches
+        .involuntary
+        .saturating_sub(start_switches.involuntary);
+    stats.migrations = end_switches
+        .migrations
+        .saturating_sub(start_switches.migrations);
     Ok(stats)
+}
+
+fn zcraid_io_buffer_capacity(chunk_bytes: usize) -> usize {
+    chunk_bytes
+        .saturating_add(ZCRAID_FRAME_HEADER_LEN)
+        .clamp(64 * 1024, 8 * 1024 * 1024)
 }
 
 fn zcraid_spawn_command_branch(
     command: String,
     queue_depth: usize,
+    buffer_capacity: usize,
     primitive: ZcPrimitiveTopology,
 ) -> ZcRaidBranch {
     let label = format!("cmd:{command}");
@@ -36388,7 +47764,7 @@ fn zcraid_spawn_command_branch(
                 format!("zcraid branch {command:?} has no stdin"),
             )
         })?;
-        let stats = zcraid_writer_loop(stdin, rx)?;
+        let stats = zcraid_writer_loop(BufWriter::with_capacity(buffer_capacity, stdin), rx)?;
         let status = child.wait().map_err(|err| {
             io::Error::new(err.kind(), format!("wait zcraid branch {command:?}: {err}"))
         })?;
@@ -36438,29 +47814,440 @@ fn zcraid_spawn_file_branch_with_capacity(
 }
 
 fn zcraid_spawn_file_branch(path: PathBuf, append: bool, queue_depth: usize) -> ZcRaidBranch {
-    zcraid_spawn_file_branch_with_capacity(path, append, queue_depth, 8 * 1024)
+    zcraid_spawn_file_branch_with_capacity(path, append, queue_depth, 1024 * 1024)
 }
 
-fn zcraid_spawn_stdout_branch(queue_depth: usize) -> ZcRaidBranch {
+fn zcraid_spawn_stdout_branch(queue_depth: usize, buffer_capacity: usize) -> ZcRaidBranch {
     let label = "stdout".to_string();
     let (tx, rx) = mpsc::sync_channel::<ZcRaidBranchItem>(queue_depth);
-    let handle = thread::spawn(move || zcraid_writer_loop(io::stdout().lock(), rx));
+    let handle = thread::spawn(move || {
+        zcraid_writer_loop(
+            BufWriter::with_capacity(buffer_capacity, io::stdout().lock()),
+            rx,
+        )
+    });
     ZcRaidBranch { label, tx, handle }
+}
+
+fn zcraid_spawn_tcpmux_branch(
+    target: ZcRaidTcpmuxTarget,
+    queue_depth: usize,
+    zero_copy_policy: ZcZeroCopyPolicy,
+    ring_entries: u32,
+) -> ZcRaidBranch {
+    let label = format!(
+        "tcpmux:{}:{}:zero_copy={}",
+        target.peer_address,
+        target.port,
+        zero_copy_policy.label()
+    );
+    let label_for_thread = label.clone();
+    let (tx, rx) = mpsc::sync_channel::<ZcRaidBranchItem>(queue_depth);
+    let handle = thread::spawn(move || {
+        let mut stream = zc_tcpmux_connect_tcp(
+            &target.peer_address,
+            target.port,
+            target.local_data_address.as_deref(),
+            &format!("connect zcraid tcpmux branch {label}"),
+        )?;
+        stream.set_nodelay(true)?;
+        if let Some(token) = target.token.as_deref() {
+            zc_tcpmux_validate_token(token)?;
+            stream.write_all(zc_tcpmux_token_auth_line(token).as_bytes())?;
+        }
+        zcraid_tcpmux_writer_loop(stream, rx, &label, zero_copy_policy, ring_entries)
+    });
+    ZcRaidBranch {
+        label: label_for_thread,
+        tx,
+        handle,
+    }
+}
+
+fn zcraid_parse_tcpmux_endpoint(value: &str, flag: &str) -> io::Result<(String, u16)> {
+    let (host, port) = value.rsplit_once(':').ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{flag} requires HOST:PORT"),
+        )
+    })?;
+    if host.is_empty() || port.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{flag} requires HOST:PORT"),
+        ));
+    }
+    Ok((host.to_string(), parse_u16_value(port, flag)?))
+}
+
+fn zcraid_write_descriptor_wal_manifest(
+    dir: &Path,
+    mode: ZcRaidMode,
+    branch_count: usize,
+    replica_count: usize,
+    layout_label: &str,
+    layout_writes_per_chunk: usize,
+    chunk_bytes: usize,
+    checksum: bool,
+    total: u64,
+    chunks: u64,
+    route_entries: u64,
+    payload_wal_bytes: u64,
+    descriptor_records: u64,
+    eof_records: u64,
+) -> io::Result<()> {
+    let manifest_path = dir.join("manifest.txt");
+    let mut manifest = BufWriter::new(
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&manifest_path)
+            .map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!(
+                        "open zcraid descriptor WAL manifest {}: {err}",
+                        manifest_path.display()
+                    ),
+                )
+            })?,
+    );
+    writeln!(manifest, "format=zcraid-descriptor-wal")?;
+    writeln!(manifest, "version={ZCRAID_DESCRIPTOR_VERSION}")?;
+    writeln!(
+        manifest,
+        "record_magic={}",
+        String::from_utf8_lossy(ZCRAID_DESCRIPTOR_MAGIC)
+    )?;
+    writeln!(manifest, "record_len={ZCRAID_DESCRIPTOR_RECORD_LEN}")?;
+    writeln!(manifest, "endianness=little")?;
+    writeln!(manifest, "payload_wal=payload.wal")?;
+    writeln!(manifest, "mode={}", mode.label())?;
+    writeln!(manifest, "branches={branch_count}")?;
+    writeln!(manifest, "replicas={replica_count}")?;
+    writeln!(manifest, "layout={layout_label}")?;
+    writeln!(
+        manifest,
+        "layout_writes_per_chunk={layout_writes_per_chunk}"
+    )?;
+    writeln!(manifest, "chunk_bytes={chunk_bytes}")?;
+    writeln!(manifest, "checksum={}", yes(checksum))?;
+    writeln!(manifest, "logical_bytes={total}")?;
+    writeln!(manifest, "chunks={chunks}")?;
+    writeln!(manifest, "route_entries={route_entries}")?;
+    writeln!(manifest, "payload_wal_bytes={payload_wal_bytes}")?;
+    writeln!(manifest, "descriptor_records={descriptor_records}")?;
+    writeln!(manifest, "eof_records={eof_records}")?;
+    for branch_idx in 0..branch_count {
+        writeln!(
+            manifest,
+            "branch_log_{branch_idx:04}=branch-{branch_idx:04}.zcraid-desc"
+        )?;
+    }
+    manifest.flush()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcraid_split_descriptor_wal(
+    wal_dir: PathBuf,
+    mode: ZcRaidMode,
+    branch_count: usize,
+    replica_count: usize,
+    layout: Option<ZcRaidLayout>,
+    layout_label: String,
+    layout_writes_per_chunk: usize,
+    chunk_bytes: usize,
+    io_buffer_bytes: usize,
+    checksum: bool,
+    primitive: &ZcPrimitiveTopology,
+) -> io::Result<()> {
+    if branch_count == 0 || branch_count > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraid descriptor WAL branch count must fit in u32 and be non-zero",
+        ));
+    }
+    if layout_writes_per_chunk > u16::MAX as usize + 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zcraid descriptor WAL writes per chunk must fit in a copy_id u16",
+        ));
+    }
+    fs::create_dir_all(&wal_dir).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!(
+                "create zcraid descriptor WAL directory {}: {err}",
+                wal_dir.display()
+            ),
+        )
+    })?;
+    let payload_path = wal_dir.join("payload.wal");
+    let mut payload = BufWriter::with_capacity(
+        io_buffer_bytes,
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&payload_path)
+            .map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!(
+                        "open zcraid descriptor payload WAL {}: {err}",
+                        payload_path.display()
+                    ),
+                )
+            })?,
+    );
+    let mut branch_logs = Vec::with_capacity(branch_count);
+    for branch_idx in 0..branch_count {
+        let path = wal_dir.join(format!("branch-{branch_idx:04}.zcraid-desc"));
+        let writer = BufWriter::with_capacity(
+            zcraid_io_buffer_capacity(ZCRAID_DESCRIPTOR_RECORD_LEN * 1024),
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&path)
+                .map_err(|err| {
+                    io::Error::new(
+                        err.kind(),
+                        format!(
+                            "open zcraid descriptor branch log {}: {err}",
+                            path.display()
+                        ),
+                    )
+                })?,
+        );
+        branch_logs.push(writer);
+    }
+
+    let started = Instant::now();
+    let mut input = io::stdin().lock();
+    let mut total = 0u64;
+    let mut payload_wal_offset = 0u64;
+    let mut chunk_index = 0u64;
+    let mut descriptor_records = 0u64;
+    let mut route_entries = 0u64;
+    let mut first_chunk_at = None::<Instant>;
+    let checksum_kind = if checksum {
+        ZCRAID_CHECKSUM_SUM64
+    } else {
+        ZCRAID_CHECKSUM_NONE
+    };
+
+    loop {
+        let data = zc_read_coalesced_chunk(&mut input, chunk_bytes)?;
+        if data.is_empty() {
+            break;
+        }
+        first_chunk_at.get_or_insert_with(Instant::now);
+        let data_len = data.len();
+        let data_len_u32 = u32::try_from(data_len).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraid descriptor WAL payload length must fit in u32",
+            )
+        })?;
+        let route = if let Some(layout) = layout.as_ref() {
+            layout.route(chunk_index)?
+        } else {
+            let primary = (chunk_index as usize) % branch_count;
+            (0..replica_count)
+                .map(|copy_id| (primary + copy_id) % branch_count)
+                .collect::<Vec<_>>()
+        };
+        if route.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraid descriptor WAL route produced no branch outputs",
+            ));
+        }
+        let checksum_value = checksum.then(|| checksum_bytes_scalar(&data)).unwrap_or(0);
+        payload.write_all(&data)?;
+        let wal_offset_for_chunk = payload_wal_offset;
+        payload_wal_offset = payload_wal_offset
+            .checked_add(data_len as u64)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraid descriptor WAL payload offset overflow",
+                )
+            })?;
+        let flags = if checksum {
+            ZCRAID_DESCRIPTOR_FLAG_CHECKSUM
+        } else {
+            0
+        };
+        for (copy_id, branch_idx) in route.into_iter().enumerate() {
+            if branch_idx >= branch_count {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "zcraid descriptor WAL route branch {branch_idx} exceeds branch_count={branch_count}"
+                    ),
+                ));
+            }
+            let record = ZcRaidDescriptorRecord {
+                flags,
+                branch_id: branch_idx as u32,
+                branch_count: branch_count as u32,
+                copy_id: copy_id as u16,
+                checksum_kind,
+                payload_len: data_len_u32,
+                chunk_index,
+                logical_offset: total,
+                payload_wal_offset: wal_offset_for_chunk,
+                total_len: 0,
+                checksum: checksum_value,
+                descriptor_id: descriptor_records,
+                lane_id: branch_idx as u32,
+                lane_count: branch_count as u32,
+                placement_epoch: 0,
+            };
+            branch_logs[branch_idx].write_all(&zcraid_encode_descriptor_record(record))?;
+            descriptor_records = descriptor_records.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraid descriptor record count overflow",
+                )
+            })?;
+            route_entries = route_entries.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "zcraid route entry overflow")
+            })?;
+        }
+        total = total.checked_add(data_len as u64).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraid descriptor WAL byte count overflow",
+            )
+        })?;
+        chunk_index = chunk_index.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraid descriptor WAL chunk count overflow",
+            )
+        })?;
+    }
+    let input_done = Instant::now();
+
+    let mut eof_records = 0u64;
+    for (branch_idx, branch) in branch_logs.iter_mut().enumerate() {
+        let record = ZcRaidDescriptorRecord {
+            flags: ZCRAID_DESCRIPTOR_FLAG_EOF,
+            branch_id: branch_idx as u32,
+            branch_count: branch_count as u32,
+            copy_id: 0,
+            checksum_kind: ZCRAID_CHECKSUM_NONE,
+            payload_len: 0,
+            chunk_index,
+            logical_offset: total,
+            payload_wal_offset,
+            total_len: total,
+            checksum: 0,
+            descriptor_id: descriptor_records,
+            lane_id: branch_idx as u32,
+            lane_count: branch_count as u32,
+            placement_epoch: 0,
+        };
+        branch.write_all(&zcraid_encode_descriptor_record(record))?;
+        descriptor_records = descriptor_records.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraid descriptor EOF record count overflow",
+            )
+        })?;
+        eof_records = eof_records.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "zcraid EOF record overflow")
+        })?;
+    }
+    payload.flush()?;
+    for branch in &mut branch_logs {
+        branch.flush()?;
+    }
+    let flushed = Instant::now();
+
+    zcraid_write_descriptor_wal_manifest(
+        &wal_dir,
+        mode,
+        branch_count,
+        replica_count,
+        &layout_label,
+        layout_writes_per_chunk,
+        chunk_bytes,
+        checksum,
+        total,
+        chunk_index,
+        route_entries,
+        payload_wal_offset,
+        descriptor_records,
+        eof_records,
+    )?;
+
+    let total_elapsed = started.elapsed();
+    let secs = total_elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+    let first_chunk_wait = first_chunk_at
+        .map(|first| first.saturating_duration_since(started))
+        .unwrap_or(total_elapsed);
+    let active_elapsed = total_elapsed.saturating_sub(first_chunk_wait);
+    let input_elapsed = first_chunk_at
+        .map(|first| input_done.saturating_duration_since(first))
+        .unwrap_or_default();
+    let flush_elapsed = flushed.saturating_duration_since(input_done);
+    let active_secs = active_elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+    let descriptor_bytes = descriptor_records
+        .checked_mul(ZCRAID_DESCRIPTOR_RECORD_LEN as u64)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraid descriptor byte count overflow",
+            )
+        })?;
+    let logical_4k_records = total / 4096;
+    eprintln!(
+        "zcraid-descriptor-wal-result: mode={} branches={} replicas={} layout={} layout_writes_per_chunk={} bytes={total} chunks={chunk_index} route_entries={route_entries} payload_wal_bytes={} descriptor_records={descriptor_records} eof_records={eof_records} descriptor_bytes={descriptor_bytes} checksum={} chunk_bytes={} io_buffer_bytes={} seconds={secs:.6} active_seconds={:.6} first_chunk_wait_seconds={:.6} input_seconds={:.6} flush_seconds={:.6} logical_MiBps={:.2} active_logical_MiBps={:.2} logical_4k_iops={:.0} wal_dir={} payload_copy=once branch_payload_copy=none {}",
+        mode.label(),
+        branch_count,
+        replica_count,
+        layout_label,
+        layout_writes_per_chunk,
+        payload_wal_offset,
+        checksum,
+        chunk_bytes,
+        io_buffer_bytes,
+        active_elapsed.as_secs_f64(),
+        first_chunk_wait.as_secs_f64(),
+        input_elapsed.as_secs_f64(),
+        flush_elapsed.as_secs_f64(),
+        total as f64 / (1024.0 * 1024.0) / secs,
+        total as f64 / (1024.0 * 1024.0) / active_secs,
+        logical_4k_records as f64 / secs,
+        wal_dir.display(),
+        primitive.log_fields()
+    );
+    Ok(())
 }
 
 fn zcraid_split_usage() {
     eprintln!(
         "usage: zcraid-split [--mode stripe|mirror|raid10 | --shape EXPR] [--chunk-bytes N]\n\
-         \t[--to CMD ...] [--output PATH ...] [--checksum]\n\
+         \t[--to CMD ...] [--to-tcpmux HOST:PORT ...] [--output PATH ...] [--checksum]\n\
+         \tzcraid-split --descriptor-wal-dir DIR [--branches N | --shape EXPR]\n\
          \n\
-         Userspace RAID/fanout stand-in. Use block devices only as edge command\n\
-         endpoints; routing, mirroring, and striping stay in userspace.\n\
-         shape examples: stripe(4), mirror(4), raid10(4,2), stripe(4,mirror(2))"
+	         Userspace RAID/fanout stand-in. Use block devices only as edge command\n\
+	         endpoints; routing, mirroring, and striping stay in userspace.\n\
+	         shape examples: stripe(4), mirror(4), raid10(4,2), stripe(4,mirror(2))\n\
+	         --to-tcpmux streams zcraid frames directly and can send payloads with send-zc\n\
+	         --descriptor-wal-dir writes payload once plus per-branch descriptor logs\n\
+	         --io-buffer-bytes N sets branch file/pipe/WAL buffering; default follows chunk size"
     );
 }
 
 fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut commands = Vec::<String>::new();
+    let mut tcpmux_endpoints = Vec::<(String, u16)>::new();
     let mut outputs = Vec::<PathBuf>::new();
     let mut append = false;
     let mut write_stdout = false;
@@ -36470,12 +48257,40 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut replicas = None::<usize>;
     let mut checksum = false;
     let mut layout = None::<ZcRaidLayout>;
+    let mut io_buffer_bytes = None::<usize>;
+    let mut descriptor_wal_dir = None::<PathBuf>;
+    let mut descriptor_branch_count = None::<usize>;
+    let mut tcpmux_local_data_address = None::<String>;
+    let mut token = None::<String>;
+    let mut disable_authentication = false;
+    let mut encryption = ZcTcpmuxEncryption::None;
+    let mut zero_copy_send = None::<ZcZeroCopyPolicy>;
+    let mut send_ring_entries = 64u32;
     let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             _ if primitive.parse_common_flag(&mut args, &arg)? => {}
             "--to" => commands.push(next_flag_value(&mut args, "--to")?),
+            "--to-tcpmux" => tcpmux_endpoints.push(zcraid_parse_tcpmux_endpoint(
+                &next_flag_value(&mut args, "--to-tcpmux")?,
+                "--to-tcpmux",
+            )?),
+            "--local-data-address" | "--send-local-address" | "--source-address" => {
+                tcpmux_local_data_address = Some(next_flag_value(&mut args, &arg)?)
+            }
+            "--token" => token = Some(next_flag_value(&mut args, &arg)?),
+            "--disable-authentication" => disable_authentication = true,
+            "--encryption" => {
+                encryption = ZcTcpmuxEncryption::parse(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--zero-copy-send" => {
+                zero_copy_send = Some(ZcZeroCopyPolicy::parse(&next_flag_value(&mut args, &arg)?)?)
+            }
+            "--send-ring-entries" | "--send-zc-ring-entries" => {
+                send_ring_entries =
+                    parse_u32_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(64)
+            }
             "--output" | "-o" => outputs.push(PathBuf::from(next_flag_value(&mut args, &arg)?)),
             "--append" => append = true,
             "--stdout" => {
@@ -36487,9 +48302,19 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
             "--queue-depth" => {
                 queue_depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
             }
+            "--io-buffer-bytes" | "--file-buffer-bytes" | "--pipe-buffer-bytes" => {
+                io_buffer_bytes = Some(parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?)
+            }
             "--mode" => mode = ZcRaidMode::parse(&next_flag_value(&mut args, "--mode")?)?,
             "--shape" | "--layout" | "--raid-layout" => {
                 layout = Some(ZcRaidLayout::parse(&next_flag_value(&mut args, &arg)?)?)
+            }
+            "--descriptor-wal-dir" | "--wal-dir" => {
+                descriptor_wal_dir = Some(PathBuf::from(next_flag_value(&mut args, &arg)?))
+            }
+            "--branches" | "--leaves" => {
+                descriptor_branch_count =
+                    Some(parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1))
             }
             "--replicas" => {
                 replicas = Some(parse_usize_value(
@@ -36511,7 +48336,6 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
             }
         }
     }
-    primitive.activate_byte_compatible("zcraid-split")?;
     if chunk_bytes == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -36524,13 +48348,134 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
             "--chunk-bytes must fit in a zcraid frame payload_len u32",
         ));
     }
+    let io_buffer_bytes = io_buffer_bytes.unwrap_or_else(|| zcraid_io_buffer_capacity(chunk_bytes));
+    if io_buffer_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--io-buffer-bytes must be non-zero",
+        ));
+    }
 
-    let branch_count = commands.len() + outputs.len() + usize::from(write_stdout);
+    if let Some(wal_dir) = descriptor_wal_dir {
+        primitive.activate_byte_compatible("zcraid-split")?;
+        if append
+            || write_stdout
+            || !commands.is_empty()
+            || !outputs.is_empty()
+            || !tcpmux_endpoints.is_empty()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--descriptor-wal-dir is a descriptor fanout mode; do not combine it with --to, --to-tcpmux, --output, --stdout, or --append",
+            ));
+        }
+        let branch_count = if let Some(layout) = layout.as_ref() {
+            let leaves = layout.leaf_count()?;
+            if let Some(explicit) = descriptor_branch_count
+                && explicit != leaves
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "zcraid-split --shape {} has {leaves} leaves but --branches {explicit} was requested",
+                        layout.describe()
+                    ),
+                ));
+            }
+            leaves
+        } else {
+            descriptor_branch_count.unwrap_or(2)
+        };
+        let replica_count = match mode {
+            ZcRaidMode::Stripe => replicas.unwrap_or(1),
+            ZcRaidMode::Mirror => branch_count,
+            ZcRaidMode::Raid10 => replicas.unwrap_or(2),
+        }
+        .clamp(1, branch_count);
+        let layout_label = layout
+            .as_ref()
+            .map(ZcRaidLayout::describe)
+            .unwrap_or_else(|| "-".to_string());
+        let layout_writes_per_chunk = if let Some(layout) = layout.as_ref() {
+            layout.writes_per_chunk()?
+        } else {
+            replica_count
+        };
+        if chunk_bytes < 256 * 1024 {
+            eprintln!(
+                "PERF WARNING: zcraid-split descriptor WAL chunk_bytes={chunk_bytes} is small for high-IOPS topology work; use megabyte WAL extents or descriptor batches before treating results as representative"
+            );
+        }
+        return zcraid_split_descriptor_wal(
+            wal_dir,
+            mode,
+            branch_count,
+            replica_count,
+            layout,
+            layout_label,
+            layout_writes_per_chunk,
+            chunk_bytes,
+            io_buffer_bytes,
+            checksum,
+            &primitive,
+        );
+    }
+
+    let direct_tcpmux = !tcpmux_endpoints.is_empty();
+    let zero_copy_send = zero_copy_send.unwrap_or(primitive.zero_copy);
+    if direct_tcpmux {
+        primitive.activate_topology_only("zcraid-split")?;
+        if disable_authentication && token.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot combine --token and --disable-authentication",
+            ));
+        }
+        if encryption != ZcTcpmuxEncryption::None {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "zcraid-split --to-tcpmux is the direct streaming path and currently requires --encryption none; use byte-compatible --to \"zc-tcpmux-send ...\" for encrypted compatibility tests",
+            ));
+        }
+        if !disable_authentication && token.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraid-split --to-tcpmux requires --token or --disable-authentication",
+            ));
+        }
+        if zero_copy_send == ZcZeroCopyPolicy::Required {
+            zcraid_tcpmux_send_mode(zero_copy_send, "zcraid-split --to-tcpmux")?;
+            eprintln!(
+                "zcraid-split-zero-copy-contract: direct tcpmux branches will hold the shared input chunk until each send-zc completion notification; any kernel copied notification is a hard error"
+            );
+        }
+    } else {
+        primitive.activate_byte_compatible("zcraid-split")?;
+    }
+
+    let branch_count =
+        commands.len() + tcpmux_endpoints.len() + outputs.len() + usize::from(write_stdout);
     if branch_count == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "zcraid-split requires --to, --output, or --stdout true",
+            "zcraid-split requires --to, --to-tcpmux, --output, --stdout true, or --descriptor-wal-dir",
         ));
+    }
+    if descriptor_branch_count.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--branches/--leaves is only used with --descriptor-wal-dir; byte fanout branch count comes from --to/--output/--stdout",
+        ));
+    }
+    if !commands.is_empty() {
+        eprintln!(
+            "PERF WARNING: zcraid-split command branches use child processes and pipes; this is a compatibility/tcpmux composition path, not the final high-IOPS descriptor fanout path unless branches are pre-warmed, pinned, and lane-mapped"
+        );
+    }
+    if chunk_bytes < 256 * 1024 {
+        eprintln!(
+            "PERF WARNING: zcraid-split chunk_bytes={chunk_bytes} is small for high-IOPS topology work; use megabyte WAL extents or descriptor batches before treating results as representative"
+        );
     }
     if branch_count > u32::MAX as usize {
         return Err(io::Error::new(
@@ -36575,25 +48520,46 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
         branches.push(zcraid_spawn_command_branch(
             command,
             queue_depth,
+            io_buffer_bytes,
             primitive.clone(),
         ));
     }
+    for (peer_address, port) in tcpmux_endpoints {
+        branches.push(zcraid_spawn_tcpmux_branch(
+            ZcRaidTcpmuxTarget {
+                peer_address,
+                port,
+                local_data_address: tcpmux_local_data_address.clone(),
+                token: token.clone(),
+            },
+            queue_depth,
+            zero_copy_send,
+            send_ring_entries,
+        ));
+    }
     for output in outputs {
-        branches.push(zcraid_spawn_file_branch(output, append, queue_depth));
+        branches.push(zcraid_spawn_file_branch_with_capacity(
+            output,
+            append,
+            queue_depth,
+            io_buffer_bytes,
+        ));
     }
     if write_stdout {
-        branches.push(zcraid_spawn_stdout_branch(queue_depth));
+        branches.push(zcraid_spawn_stdout_branch(queue_depth, io_buffer_bytes));
     }
 
     let started = Instant::now();
     let mut input = io::stdin().lock();
     let mut total = 0u64;
     let mut chunk_index = 0u64;
+    let mut first_chunk_at = None::<Instant>;
     loop {
         let data = zc_read_coalesced_chunk(&mut input, chunk_bytes)?;
         if data.is_empty() {
             break;
         }
+        first_chunk_at.get_or_insert_with(Instant::now);
         let data_len = data.len();
         let route = if let Some(layout) = layout.as_ref() {
             layout.route(chunk_index)?
@@ -36659,6 +48625,7 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
             )
         })?;
     }
+    let input_done = Instant::now();
 
     let eof_data = Arc::new(Vec::new());
     for (branch_idx, branch) in branches.iter().enumerate() {
@@ -36690,6 +48657,7 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
                 )
             })?;
     }
+    let eof_sent = Instant::now();
 
     let labels = branches
         .iter()
@@ -36702,13 +48670,28 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
     }
     let mut branch_logical = 0u64;
     let mut branch_wire = 0u64;
+    let mut branch_zero_copy_payload = 0u64;
+    let mut branch_copy_payload = 0u64;
+    let mut branch_zc_notifications = 0u64;
+    let mut branch_zc_copied_notifications = 0u64;
     for (label, handle) in branch_handles {
         let stats = handle
             .join()
             .map_err(|_| io::Error::other(format!("zcraid branch {label} panicked")))??;
         eprintln!(
-            "zcraid-split-branch-result: branch={} logical_bytes={} wire_bytes={} frames={}",
-            label, stats.logical_bytes, stats.wire_bytes, stats.frames
+            "zcraid-split-branch-result: branch={} logical_bytes={} wire_bytes={} frames={} zero_copy_payload_bytes={} copy_payload_bytes={} zc_notifications={} zc_copied_notifications={} cpu_seconds={:.6} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
+            label,
+            stats.logical_bytes,
+            stats.wire_bytes,
+            stats.frames,
+            stats.zero_copy_payload_bytes,
+            stats.copy_payload_bytes,
+            stats.zc_notifications,
+            stats.zc_copied_notifications,
+            stats.cpu.as_secs_f64(),
+            stats.voluntary_switches,
+            stats.involuntary_switches,
+            stats.migrations
         );
         branch_logical = branch_logical
             .checked_add(stats.logical_bytes)
@@ -36718,17 +48701,69 @@ fn zcraid_split(args: impl Iterator<Item = String>) -> io::Result<()> {
         branch_wire = branch_wire.checked_add(stats.wire_bytes).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "zcraid branch wire overflow")
         })?;
+        branch_zero_copy_payload = branch_zero_copy_payload
+            .checked_add(stats.zero_copy_payload_bytes)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraid branch zero-copy payload overflow",
+                )
+            })?;
+        branch_copy_payload = branch_copy_payload
+            .checked_add(stats.copy_payload_bytes)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraid branch copied payload overflow",
+                )
+            })?;
+        branch_zc_notifications = branch_zc_notifications
+            .checked_add(stats.zc_notifications)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraid branch send-zc notification overflow",
+                )
+            })?;
+        branch_zc_copied_notifications = branch_zc_copied_notifications
+            .checked_add(stats.zc_copied_notifications)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zcraid branch send-zc copied notification overflow",
+                )
+            })?;
     }
-    let secs = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    let total_elapsed = started.elapsed();
+    let secs = total_elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
+    let first_chunk_wait = first_chunk_at
+        .map(|first| first.saturating_duration_since(started))
+        .unwrap_or(total_elapsed);
+    let active_elapsed = total_elapsed.saturating_sub(first_chunk_wait);
+    let input_elapsed = first_chunk_at
+        .map(|first| input_done.saturating_duration_since(first))
+        .unwrap_or_default();
+    let eof_enqueue_elapsed = eof_sent.saturating_duration_since(input_done);
+    let branch_drain_elapsed =
+        total_elapsed.saturating_sub(eof_sent.saturating_duration_since(started));
+    let active_secs = active_elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
     eprintln!(
-        "zcraid-split-result: mode={} branches={} replicas={} layout={} layout_writes_per_chunk={} bytes={total} chunks={chunk_index} branch_logical_bytes={branch_logical} branch_wire_bytes={branch_wire} checksum={} seconds={secs:.6} MiBps={:.2} branch_labels={} {}",
+        "zcraid-split-result: mode={} branches={} replicas={} layout={} layout_writes_per_chunk={} bytes={total} chunks={chunk_index} branch_logical_bytes={branch_logical} branch_wire_bytes={branch_wire} branch_zero_copy_payload_bytes={branch_zero_copy_payload} branch_copy_payload_bytes={branch_copy_payload} branch_zc_notifications={branch_zc_notifications} branch_zc_copied_notifications={branch_zc_copied_notifications} checksum={} io_buffer_bytes={} zero_copy_send={} seconds={secs:.6} active_seconds={:.6} first_chunk_wait_seconds={:.6} input_seconds={:.6} eof_enqueue_seconds={:.6} branch_drain_seconds={:.6} MiBps={:.2} active_MiBps={:.2} branch_labels={} {}",
         mode.label(),
         labels.len(),
         replica_count,
         layout_label,
         layout_writes_per_chunk,
         checksum,
+        io_buffer_bytes,
+        zero_copy_send.label(),
+        active_elapsed.as_secs_f64(),
+        first_chunk_wait.as_secs_f64(),
+        input_elapsed.as_secs_f64(),
+        eof_enqueue_elapsed.as_secs_f64(),
+        branch_drain_elapsed.as_secs_f64(),
         total as f64 / (1024.0 * 1024.0) / secs,
+        total as f64 / (1024.0 * 1024.0) / active_secs,
         labels.join(","),
         primitive.log_fields()
     );
@@ -36753,6 +48788,10 @@ struct ZcRaidSourceStats {
     data_frames: u64,
     bytes: u64,
     eof: bool,
+    cpu: Duration,
+    voluntary_switches: u64,
+    involuntary_switches: u64,
+    migrations: u64,
 }
 
 fn zcraid_source_reader_loop<R: Read>(
@@ -36761,6 +48800,9 @@ fn zcraid_source_reader_loop<R: Read>(
     verify_checksum: bool,
     tx: mpsc::SyncSender<ZcRaidMergeEvent>,
 ) -> io::Result<ZcRaidSourceStats> {
+    let tid = current_tid();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
     let mut stats = ZcRaidSourceStats::default();
     loop {
         let Some((header, data)) = zcraid_read_frame(&mut reader)? else {
@@ -36826,12 +48868,25 @@ fn zcraid_source_reader_loop<R: Read>(
             )
         })?;
     }
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    stats.cpu = end_thread_cpu.saturating_sub(start_thread_cpu);
+    stats.voluntary_switches = end_switches
+        .voluntary
+        .saturating_sub(start_switches.voluntary);
+    stats.involuntary_switches = end_switches
+        .involuntary
+        .saturating_sub(start_switches.involuntary);
+    stats.migrations = end_switches
+        .migrations
+        .saturating_sub(start_switches.migrations);
     Ok(stats)
 }
 
 fn zcraid_spawn_input_source(
     path: PathBuf,
     verify_checksum: bool,
+    buffer_capacity: usize,
     tx: mpsc::SyncSender<ZcRaidMergeEvent>,
 ) -> thread::JoinHandle<io::Result<(String, ZcRaidSourceStats)>> {
     let label = format!("file:{}", path.display());
@@ -36842,8 +48897,12 @@ fn zcraid_spawn_input_source(
                 format!("open zcraid input {}: {err}", path.display()),
             )
         })?;
-        let stats =
-            zcraid_source_reader_loop(label.clone(), BufReader::new(file), verify_checksum, tx)?;
+        let stats = zcraid_source_reader_loop(
+            label.clone(),
+            BufReader::with_capacity(buffer_capacity, file),
+            verify_checksum,
+            tx,
+        )?;
         Ok((label, stats))
     })
 }
@@ -36851,6 +48910,7 @@ fn zcraid_spawn_input_source(
 fn zcraid_spawn_command_source(
     command: String,
     verify_checksum: bool,
+    buffer_capacity: usize,
     tx: mpsc::SyncSender<ZcRaidMergeEvent>,
     primitive: ZcPrimitiveTopology,
 ) -> thread::JoinHandle<io::Result<(String, ZcRaidSourceStats)>> {
@@ -36876,8 +48936,12 @@ fn zcraid_spawn_command_source(
                 format!("zcraid source {command:?} has no stdout"),
             )
         })?;
-        let stats =
-            zcraid_source_reader_loop(label.clone(), BufReader::new(stdout), verify_checksum, tx)?;
+        let stats = zcraid_source_reader_loop(
+            label.clone(),
+            BufReader::with_capacity(buffer_capacity, stdout),
+            verify_checksum,
+            tx,
+        )?;
         let status = child.wait().map_err(|err| {
             io::Error::new(err.kind(), format!("wait zcraid source {command:?}: {err}"))
         })?;
@@ -36907,8 +48971,9 @@ fn zcraid_merge_usage() {
         "usage: zcraid-merge [--from CMD ...] [--input PATH ...] [--output PATH]\n\
          \t[--verify-checksum true|false]\n\
          \n\
-         Userspace RAID/fanin stand-in. It reassembles framed branches and keeps\n\
-         block devices at the edge rather than in the fanin topology."
+	         Userspace RAID/fanin stand-in. It reassembles framed branches and keeps\n\
+	         block devices at the edge rather than in the fanin topology.\n\
+	         --io-buffer-bytes N sets input/output buffering, default 1m."
     );
 }
 
@@ -36918,6 +48983,7 @@ fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
     let mut output = PathBuf::from("-");
     let mut verify_checksum = true;
     let mut queue_depth = 128usize;
+    let mut io_buffer_bytes = 1024 * 1024usize;
     let mut primitive = ZcPrimitiveTopology::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -36935,6 +49001,9 @@ fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
             "--no-verify-checksum" => verify_checksum = false,
             "--queue-depth" => {
                 queue_depth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?.max(1)
+            }
+            "--io-buffer-bytes" | "--file-buffer-bytes" | "--pipe-buffer-bytes" => {
+                io_buffer_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
             }
             "--help" | "-h" => {
                 zcraid_merge_usage();
@@ -36955,6 +49024,12 @@ fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
             "zcraid-merge requires --from or --input",
         ));
     }
+    if io_buffer_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--io-buffer-bytes must be non-zero",
+        ));
+    }
 
     let started = Instant::now();
     let (tx, rx) = mpsc::sync_channel::<ZcRaidMergeEvent>(queue_depth);
@@ -36963,6 +49038,7 @@ fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
         handles.push(zcraid_spawn_input_source(
             input,
             verify_checksum,
+            io_buffer_bytes,
             tx.clone(),
         ));
     }
@@ -36970,6 +49046,7 @@ fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
         handles.push(zcraid_spawn_command_source(
             command,
             verify_checksum,
+            io_buffer_bytes,
             tx.clone(),
             primitive.clone(),
         ));
@@ -36977,7 +49054,7 @@ fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
     drop(tx);
 
     let mut writer: Box<dyn Write> = if output.as_os_str() == "-" {
-        Box::new(BufWriter::new(io::stdout()))
+        Box::new(BufWriter::with_capacity(io_buffer_bytes, io::stdout()))
     } else {
         if let Some(parent) = output.parent()
             && !parent.as_os_str().is_empty()
@@ -36989,7 +49066,8 @@ fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
                 )
             })?;
         }
-        Box::new(BufWriter::new(
+        Box::new(BufWriter::with_capacity(
+            io_buffer_bytes,
             OpenOptions::new()
                 .create(true)
                 .write(true)
@@ -37118,13 +49196,20 @@ fn zcraid_merge(args: impl Iterator<Item = String>) -> io::Result<()> {
             .join()
             .map_err(|_| io::Error::other("zcraid source panicked"))??;
         eprintln!(
-            "zcraid-merge-source-result: source={label} bytes={} frames={} data_frames={} eof={}",
-            stats.bytes, stats.frames, stats.data_frames, stats.eof
+            "zcraid-merge-source-result: source={label} bytes={} frames={} data_frames={} eof={} cpu_seconds={:.6} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
+            stats.bytes,
+            stats.frames,
+            stats.data_frames,
+            stats.eof,
+            stats.cpu.as_secs_f64(),
+            stats.voluntary_switches,
+            stats.involuntary_switches,
+            stats.migrations
         );
     }
     let secs = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
     eprintln!(
-        "zcraid-merge-result: bytes={next_offset} data_frames={data_frames} duplicate_frames={duplicate_frames} eof_frames={eof_frames} verify_checksum={verify_checksum} seconds={secs:.6} MiBps={:.2} output={} {}",
+        "zcraid-merge-result: bytes={next_offset} data_frames={data_frames} duplicate_frames={duplicate_frames} eof_frames={eof_frames} verify_checksum={verify_checksum} io_buffer_bytes={io_buffer_bytes} seconds={secs:.6} MiBps={:.2} output={} {}",
         next_offset as f64 / (1024.0 * 1024.0) / secs,
         output.display(),
         primitive.log_fields()
@@ -39884,10 +51969,12 @@ fn zcraidd_bench_fanin(
     );
     let (tx, rx) = mpsc::sync_channel::<ZcRaidMergeEvent>(queue_depth);
     let mut handles = Vec::with_capacity(shard_paths.len());
+    let io_buffer_bytes = zcraid_io_buffer_capacity(chunk_bytes);
     for path in shard_paths {
         handles.push(zcraid_spawn_input_source(
             path.clone(),
             verify_checksum,
+            io_buffer_bytes,
             tx.clone(),
         ));
     }
@@ -40842,6 +52929,8 @@ struct ZcTcpmuxTopologyHint {
     numa_node: i32,
     flags: u32,
     chunk_bytes: u32,
+    plan_hash: u64,
+    placement_epoch: u64,
 }
 
 impl ZcTcpmuxTopologyHint {
@@ -40855,12 +52944,14 @@ impl ZcTcpmuxTopologyHint {
             numa_node: -1,
             flags: 0,
             chunk_bytes: 0,
+            plan_hash: 0,
+            placement_epoch: 0,
         }
     }
 
     fn log_fields(self) -> String {
         format!(
-            "lane_id={} lane_count={} preferred_worker={} queue_id={} preferred_cpu={} numa_node={} flags=0x{:x} chunk_bytes={}",
+            "lane_id={} lane_count={} preferred_worker={} queue_id={} preferred_cpu={} numa_node={} flags=0x{:x} chunk_bytes={} plan_hash=0x{:016x} placement_epoch={}",
             self.lane_id,
             self.lane_count,
             self.preferred_worker,
@@ -40868,7 +52959,9 @@ impl ZcTcpmuxTopologyHint {
             self.preferred_cpu,
             self.numa_node,
             self.flags,
-            self.chunk_bytes
+            self.chunk_bytes,
+            self.plan_hash,
+            self.placement_epoch
         )
     }
 }
@@ -41125,6 +53218,7 @@ fn zc_tcpmux_topology_hint(
         -1
     };
     let mut flags = 0u32;
+    let plan = zc_plan_runtime_from_env()?;
     if affinity.applied {
         flags |= ZC_TCPMUX_TOPOLOGY_F_AFFINITY_APPLIED;
     }
@@ -41143,6 +53237,8 @@ fn zc_tcpmux_topology_hint(
         numa_node,
         flags,
         chunk_bytes,
+        plan_hash: plan.plan_hash,
+        placement_epoch: plan.placement_epoch,
     })
 }
 
@@ -41205,7 +53301,7 @@ fn zc_tcpmux_write_parallel_header(
 ) -> io::Result<()> {
     stream.write_all(ZC_TCPMUX_PARALLEL_MAGIC)?;
     stream.write_all(&ZC_TCPMUX_TOPOLOGY_DESC_VERSION.to_be_bytes())?;
-    stream.write_all(&ZC_TCPMUX_TOPOLOGY_DESC_BODY_LEN.to_be_bytes())?;
+    stream.write_all(&ZC_TCPMUX_TOPOLOGY_DESC_EXTENDED_BODY_LEN.to_be_bytes())?;
     stream.write_all(&topology.lane_id.to_be_bytes())?;
     stream.write_all(&topology.lane_count.to_be_bytes())?;
     stream.write_all(&topology.preferred_worker.to_be_bytes())?;
@@ -41215,6 +53311,8 @@ fn zc_tcpmux_write_parallel_header(
     stream.write_all(&topology.flags.to_be_bytes())?;
     stream.write_all(&topology.chunk_bytes.to_be_bytes())?;
     stream.write_all(nonce_base)?;
+    stream.write_all(&topology.plan_hash.to_be_bytes())?;
+    stream.write_all(&topology.placement_epoch.to_be_bytes())?;
     Ok(())
 }
 
@@ -41259,9 +53357,10 @@ fn zc_tcpmux_read_parallel_header<R: Read>(
     }
     let mut body = vec![0u8; ZC_TCPMUX_TOPOLOGY_DESC_BODY_LEN as usize];
     reader.read_exact(&mut body)?;
+    let mut extension = Vec::new();
     if body_len > ZC_TCPMUX_TOPOLOGY_DESC_BODY_LEN {
-        let mut skip = vec![0u8; (body_len - ZC_TCPMUX_TOPOLOGY_DESC_BODY_LEN) as usize];
-        reader.read_exact(&mut skip)?;
+        extension.resize((body_len - ZC_TCPMUX_TOPOLOGY_DESC_BODY_LEN) as usize, 0);
+        reader.read_exact(&mut extension)?;
     }
     let read_u32 = |start: usize| -> u32 {
         u32::from_be_bytes([
@@ -41288,6 +53387,16 @@ fn zc_tcpmux_read_parallel_header<R: Read>(
         numa_node: read_i32(20),
         flags: read_u32(24),
         chunk_bytes: read_u32(28),
+        plan_hash: if extension.len() >= 8 {
+            u64::from_be_bytes(extension[0..8].try_into().expect("u64"))
+        } else {
+            0
+        },
+        placement_epoch: if extension.len() >= 16 {
+            u64::from_be_bytes(extension[8..16].try_into().expect("u64"))
+        } else {
+            0
+        },
     };
     let mut nonce_base = [0u8; 12];
     nonce_base.copy_from_slice(&body[32..44]);
@@ -44656,11 +56765,1346 @@ fn zcnc(args: impl Iterator<Item = String>) -> io::Result<()> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZcPlanMode {
+    Stripe,
+    Mirror,
+    Raid10,
+    Spill,
+    Passthrough,
+}
+
+impl ZcPlanMode {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "stripe" | "raid0" => Ok(Self::Stripe),
+            "mirror" | "raid1" => Ok(Self::Mirror),
+            "raid10" | "raid-10" | "raid1+0" => Ok(Self::Raid10),
+            "spill" | "tier-spill" => Ok(Self::Spill),
+            "passthrough" | "pass" => Ok(Self::Passthrough),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown plan mode {other:?}; use stripe, mirror, raid10, spill, or passthrough"
+                ),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Stripe => "stripe",
+            Self::Mirror => "mirror",
+            Self::Raid10 => "raid10",
+            Self::Spill => "spill",
+            Self::Passthrough => "passthrough",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZcPlanOperationMix {
+    Read,
+    Write,
+    Mixed,
+}
+
+impl ZcPlanOperationMix {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "read" | "reads" => Ok(Self::Read),
+            "write" | "writes" => Ok(Self::Write),
+            "mixed" | "readwrite" | "read-write" | "rw" => Ok(Self::Mixed),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown operation mix {other:?}; use read, write, or mixed"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Mixed => "mixed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZcPlanObjective {
+    LowLatency,
+    MaxIops,
+    MaxGbit,
+    Balanced,
+}
+
+impl ZcPlanObjective {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "low-latency" | "latency" | "low_latency" => Ok(Self::LowLatency),
+            "max-iops" | "iops" | "max_iops" => Ok(Self::MaxIops),
+            "max-gbit" | "gbit" | "bandwidth" | "throughput" | "max_gbit" => Ok(Self::MaxGbit),
+            "balanced" | "balance" => Ok(Self::Balanced),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown objective {other:?}; use low-latency, max-iops, max-gbit, or balanced"
+                ),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::LowLatency => "low-latency",
+            Self::MaxIops => "max-iops",
+            Self::MaxGbit => "max-gbit",
+            Self::Balanced => "balanced",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZcPlanTransport {
+    TcpMux,
+    LibfabricSockets,
+    LibfabricTcp,
+    LibfabricEfa,
+    LibfabricEfaDirect,
+    LibfabricVerbs,
+    LibfabricShm,
+}
+
+impl ZcPlanTransport {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "" | "tcp" | "tcp-mux" | "tcpmux" | "mux" => Ok(Self::TcpMux),
+            "libfabric" | "ofi" | "libfabric-sockets" | "ofi-sockets" | "sockets" => {
+                Ok(Self::LibfabricSockets)
+            }
+            "libfabric-tcp" | "ofi-tcp" => Ok(Self::LibfabricTcp),
+            "libfabric-efa" | "ofi-efa" | "efa" => Ok(Self::LibfabricEfa),
+            "libfabric-efa-direct" | "ofi-efa-direct" | "efa-direct" => {
+                Ok(Self::LibfabricEfaDirect)
+            }
+            "libfabric-verbs" | "ofi-verbs" | "verbs" | "roce" | "rdma-roce" => {
+                Ok(Self::LibfabricVerbs)
+            }
+            "libfabric-shm" | "ofi-shm" | "shm" => Ok(Self::LibfabricShm),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown transport {other:?}; use tcp-mux, libfabric-sockets, \
+                     libfabric-tcp, libfabric-efa, libfabric-efa-direct, \
+                     libfabric-verbs, or libfabric-shm"
+                ),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::TcpMux => "tcp-mux",
+            Self::LibfabricSockets => "libfabric-sockets",
+            Self::LibfabricTcp => "libfabric-tcp",
+            Self::LibfabricEfa => "libfabric-efa",
+            Self::LibfabricEfaDirect => "libfabric-efa-direct",
+            Self::LibfabricVerbs => "libfabric-verbs",
+            Self::LibfabricShm => "libfabric-shm",
+        }
+    }
+
+    fn is_libfabric(self) -> bool {
+        !matches!(self, Self::TcpMux)
+    }
+
+    fn provider(self) -> Option<&'static str> {
+        match self {
+            Self::TcpMux => None,
+            Self::LibfabricSockets => Some("sockets"),
+            Self::LibfabricTcp => Some("tcp"),
+            Self::LibfabricEfa | Self::LibfabricEfaDirect => Some("efa"),
+            Self::LibfabricVerbs => Some("verbs"),
+            Self::LibfabricShm => Some("shm"),
+        }
+    }
+
+    fn endpoint(self) -> &'static str {
+        match self {
+            Self::TcpMux => "stream",
+            Self::LibfabricSockets
+            | Self::LibfabricTcp
+            | Self::LibfabricEfa
+            | Self::LibfabricEfaDirect
+            | Self::LibfabricVerbs
+            | Self::LibfabricShm => "rdm",
+        }
+    }
+
+    fn fi_endpoint(self) -> &'static str {
+        match self.endpoint() {
+            "rdm" => "FI_EP_RDM",
+            "msg" => "FI_EP_MSG",
+            "dgram" => "FI_EP_DGRAM",
+            _ => "stream",
+        }
+    }
+
+    fn lane_object(self) -> &'static str {
+        match self {
+            Self::TcpMux => "tcp_5tuple",
+            Self::LibfabricSockets => "fi_endpoint_sockets",
+            Self::LibfabricTcp => "fi_endpoint_tcp",
+            Self::LibfabricEfa => "fi_endpoint_efa",
+            Self::LibfabricEfaDirect => "fi_endpoint_efa_direct",
+            Self::LibfabricVerbs => "fi_endpoint_verbs",
+            Self::LibfabricShm => "fi_endpoint_shm",
+        }
+    }
+
+    fn completion_model(self) -> &'static str {
+        match self {
+            Self::TcpMux => "io_uring_or_blocking_socket_completion",
+            Self::LibfabricSockets | Self::LibfabricTcp => "ofi_cq_polled_by_lane_leader",
+            Self::LibfabricEfa | Self::LibfabricEfaDirect => "efa_srd_cq_polled_by_lane_leader",
+            Self::LibfabricVerbs => "verbs_cq_polled_by_lane_leader",
+            Self::LibfabricShm => "ofi_shm_cq_polled_by_lane_leader",
+        }
+    }
+
+    fn registered_memory_model(self) -> &'static str {
+        match self {
+            Self::TcpMux => "zcrx/send-zc-or-userspace-pool",
+            Self::LibfabricSockets | Self::LibfabricTcp | Self::LibfabricShm => {
+                "fi_mr_registered_pool_for_api_shape"
+            }
+            Self::LibfabricEfa | Self::LibfabricEfaDirect | Self::LibfabricVerbs => {
+                "fi_mr_registered_hugetlb_or_pinned_pool"
+            }
+        }
+    }
+
+    fn fallback(self) -> &'static str {
+        match self {
+            Self::TcpMux => "none",
+            Self::LibfabricSockets | Self::LibfabricTcp | Self::LibfabricShm => {
+                "tcp-mux-for-non-ofi-peers"
+            }
+            Self::LibfabricEfa | Self::LibfabricEfaDirect | Self::LibfabricVerbs => {
+                "tcp-mux-until-provider-smoke-and-route-checks-pass"
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ZcPlanOptions {
+    role: String,
+    node_id: String,
+    nics: Option<Vec<String>>,
+    cpu_list: Option<Vec<usize>>,
+    caps_paths: Vec<PathBuf>,
+    plan_id: Option<String>,
+    placement_epoch: u64,
+    mode: ZcPlanMode,
+    operation_mix: ZcPlanOperationMix,
+    objective: ZcPlanObjective,
+    transport: ZcPlanTransport,
+    zero_copy: ZcZeroCopyPolicy,
+    lanes: usize,
+    workers: Option<usize>,
+    branches: usize,
+    record_bytes: usize,
+    extent_bytes: usize,
+    batch_window: usize,
+    result_window: usize,
+    expected_qdepth: usize,
+    durability: String,
+    sync_contract: String,
+    libfabric_domain: Option<String>,
+    libfabric_smoke_ok: bool,
+    strict: bool,
+}
+
+impl Default for ZcPlanOptions {
+    fn default() -> Self {
+        Self {
+            role: "planner".to_string(),
+            node_id: hostname_label(),
+            nics: None,
+            cpu_list: None,
+            caps_paths: Vec::new(),
+            plan_id: None,
+            placement_epoch: 1,
+            mode: ZcPlanMode::Stripe,
+            operation_mix: ZcPlanOperationMix::Write,
+            objective: ZcPlanObjective::MaxIops,
+            transport: ZcPlanTransport::TcpMux,
+            zero_copy: ZcZeroCopyPolicy::Auto,
+            lanes: 0,
+            workers: None,
+            branches: 2,
+            record_bytes: 4096,
+            extent_bytes: 384 * 1024,
+            batch_window: 16,
+            result_window: 4096,
+            expected_qdepth: 0,
+            durability: "ack-on-leaf-commit".to_string(),
+            sync_contract: "global-high-water".to_string(),
+            libfabric_domain: None,
+            libfabric_smoke_ok: false,
+            strict: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ZcPlanNicInfo {
+    name: String,
+    ifindex: Option<usize>,
+    address: Option<String>,
+    operstate: Option<String>,
+    speed_mbps: Option<i64>,
+    numa_node: Option<i32>,
+    rx_queues: usize,
+    tx_queues: usize,
+    card_id: Option<String>,
+}
+
+fn hostname_label() -> String {
+    read_trimmed_path("/proc/sys/kernel/hostname").unwrap_or_else(|| "local".to_string())
+}
+
+fn parse_csv_values(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn zcplan_read_caps(paths: &[PathBuf]) -> io::Result<Vec<serde_json::Value>> {
+    let mut out = Vec::new();
+    for path in paths {
+        let bytes = fs::read(path)?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        match value {
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    zcplan_validate_caps_value(&value, path)?;
+                    out.push(value);
+                }
+            }
+            value => {
+                zcplan_validate_caps_value(&value, path)?;
+                out.push(value);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn zcplan_validate_caps_value(value: &serde_json::Value, path: &Path) -> io::Result<()> {
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("ZC_CAPS_V1") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is not a ZC_CAPS_V1 document", path.display()),
+        ));
+    }
+    Ok(())
+}
+
+fn zcplan_caps_role(value: &serde_json::Value) -> Option<&str> {
+    value.get("role").and_then(serde_json::Value::as_str)
+}
+
+fn zcplan_primary_caps<'a>(
+    caps: &'a [serde_json::Value],
+    preferred_role: &str,
+) -> Option<&'a serde_json::Value> {
+    caps.iter()
+        .find(|value| zcplan_caps_role(value) == Some(preferred_role))
+        .or_else(|| {
+            caps.iter()
+                .find(|value| zcplan_caps_role(value) == Some("fan"))
+        })
+        .or_else(|| caps.first())
+}
+
+fn zcplan_caps_cpu_list(value: &serde_json::Value) -> Option<Vec<usize>> {
+    let cpus = value.get("cpus")?.get("online")?.as_array()?;
+    let mut out = Vec::with_capacity(cpus.len());
+    for cpu in cpus {
+        out.push(usize::try_from(cpu.as_u64()?).ok()?);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn zcplan_caps_nics(value: &serde_json::Value) -> Option<Vec<ZcPlanNicInfo>> {
+    let nics = value.get("nics")?.as_array()?;
+    let mut out = Vec::with_capacity(nics.len());
+    for nic in nics {
+        let name = nic.get("name")?.as_str()?.to_string();
+        let ifindex = nic
+            .get("ifindex")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok());
+        let address = nic
+            .get("address")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let operstate = nic
+            .get("operstate")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let speed_mbps = nic
+            .get("speed_mbps")
+            .and_then(serde_json::Value::as_i64)
+            .filter(|value| *value > 0);
+        let numa_node = nic
+            .get("numa_node")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+            .filter(|node| *node >= 0);
+        let rx_queues = nic
+            .get("rx_queues")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0);
+        let tx_queues = nic
+            .get("tx_queues")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0);
+        let card_id = nic
+            .get("card_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        out.push(ZcPlanNicInfo {
+            name,
+            ifindex,
+            address,
+            operstate,
+            speed_mbps,
+            numa_node,
+            rx_queues,
+            tx_queues,
+            card_id,
+        });
+    }
+    if out.is_empty() {
+        None
+    } else {
+        let physical_up = out
+            .iter()
+            .filter(|nic| nic.card_id.is_some() && nic.operstate.as_deref() == Some("up"))
+            .cloned()
+            .collect::<Vec<_>>();
+        Some(if physical_up.is_empty() {
+            out
+        } else {
+            physical_up
+        })
+    }
+}
+
+fn zcplan_caps_summary_json(value: &serde_json::Value) -> serde_json::Value {
+    let cpu_count = value
+        .get("cpus")
+        .and_then(|cpus| cpus.get("online_count"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let nic_count = value
+        .get("nics")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    serde_json::json!({
+        "type": "ZC_CAPS_V1",
+        "node_id": value.get("node_id").and_then(serde_json::Value::as_str).unwrap_or("unknown"),
+        "role": value.get("role").and_then(serde_json::Value::as_str).unwrap_or("unknown"),
+        "cpu_count": cpu_count,
+        "nic_count": nic_count,
+        "hugetlb_bytes": value.get("memory").and_then(|memory| memory.get("hugetlb_bytes")).and_then(serde_json::Value::as_u64),
+        "memlock_soft_bytes": value.get("memory").and_then(|memory| memory.get("memlock_soft_bytes")).and_then(serde_json::Value::as_u64),
+    })
+}
+
+fn zcplan_caps_memory_u64(value: &serde_json::Value, name: &str) -> Option<u64> {
+    value
+        .get("memory")
+        .and_then(|memory| memory.get(name))
+        .and_then(serde_json::Value::as_u64)
+}
+
+fn zcplan_meminfo_value_kb(name: &str) -> Option<u64> {
+    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+    for line in meminfo.lines() {
+        let Some(rest) = line.strip_prefix(name) else {
+            continue;
+        };
+        let value = rest
+            .trim_start_matches(':')
+            .split_whitespace()
+            .next()?
+            .parse::<u64>()
+            .ok()?;
+        return Some(value);
+    }
+    None
+}
+
+fn zcplan_memlock_limit() -> Option<(u64, u64)> {
+    let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+    let ret = unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut limit) };
+    (ret == 0).then_some((limit.rlim_cur as u64, limit.rlim_max as u64))
+}
+
+fn zcplan_nic_card_id(iface_dir: &Path) -> Option<String> {
+    let device = fs::canonicalize(iface_dir.join("device")).ok()?;
+    device
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .or_else(|| Some(device.display().to_string()))
+}
+
+fn zcplan_count_net_queues(iface_dir: &Path, prefix: &str) -> usize {
+    let queues_dir = iface_dir.join("queues");
+    let Ok(entries) = fs::read_dir(queues_dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with(prefix))
+        .count()
+}
+
+fn zcplan_discover_nics(selected: Option<&[String]>) -> io::Result<Vec<ZcPlanNicInfo>> {
+    let explicit = selected.is_some();
+    let names = if let Some(selected) = selected {
+        selected.to_vec()
+    } else {
+        list_dir_entry_names(Path::new("/sys/class/net"))
+            .into_iter()
+            .filter(|name| name != "lo")
+            .collect()
+    };
+
+    let mut nics = Vec::new();
+    for name in names {
+        let iface_dir = Path::new("/sys/class/net").join(&name);
+        if !iface_dir.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("netdev {name:?} does not exist"),
+            ));
+        }
+        let ifindex = read_trimmed_path(iface_dir.join("ifindex"))
+            .and_then(|value| value.parse::<usize>().ok());
+        let address = read_trimmed_path(iface_dir.join("address"));
+        let operstate = read_trimmed_path(iface_dir.join("operstate"));
+        let speed_mbps = read_trimmed_path(iface_dir.join("speed"))
+            .and_then(|value| value.parse::<i64>().ok())
+            .filter(|speed| *speed > 0);
+        let numa_node = read_trimmed_path(iface_dir.join("device/numa_node"))
+            .and_then(|value| value.parse::<i32>().ok())
+            .filter(|node| *node >= 0);
+        let rx_queues = zcplan_count_net_queues(&iface_dir, "rx-");
+        let tx_queues = zcplan_count_net_queues(&iface_dir, "tx-");
+        let card_id = zcplan_nic_card_id(&iface_dir);
+        nics.push(ZcPlanNicInfo {
+            name,
+            ifindex,
+            address,
+            operstate,
+            speed_mbps,
+            numa_node,
+            rx_queues,
+            tx_queues,
+            card_id,
+        });
+    }
+    nics.sort_by(|a, b| a.name.cmp(&b.name));
+    if !explicit {
+        let physical_up = nics
+            .iter()
+            .filter(|nic| nic.card_id.is_some() && nic.operstate.as_deref() == Some("up"))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !physical_up.is_empty() {
+            nics = physical_up;
+        }
+    }
+    Ok(nics)
+}
+
+fn zcplan_nics_json(nics: &[ZcPlanNicInfo]) -> Vec<serde_json::Value> {
+    nics.iter()
+        .map(|nic| {
+            serde_json::json!({
+                "name": nic.name,
+                "ifindex": nic.ifindex,
+                "address": nic.address,
+                "operstate": nic.operstate,
+                "speed_mbps": nic.speed_mbps,
+                "numa_node": nic.numa_node,
+                "rx_queues": nic.rx_queues,
+                "tx_queues": nic.tx_queues,
+                "card_id": nic.card_id,
+            })
+        })
+        .collect()
+}
+
+fn zcplan_cpu_json(cpus: &[usize]) -> serde_json::Value {
+    let mut numa = BTreeMap::<String, Vec<usize>>::new();
+    let mut smt = Vec::new();
+    for cpu in cpus {
+        let node = cpu_numa_node(*cpu)
+            .map(|node| node.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        numa.entry(node).or_default().push(*cpu);
+        let siblings = thread_siblings(*cpu)
+            .into_iter()
+            .filter(|sibling| cpus.contains(sibling))
+            .collect::<Vec<_>>();
+        if siblings.len() > 1 && siblings[0] == *cpu {
+            smt.push(serde_json::json!({
+                "leader": cpu,
+                "siblings": siblings,
+            }));
+        }
+    }
+
+    serde_json::json!({
+        "online_count": cpus.len(),
+        "online_list": format_cpu_list(cpus),
+        "online": cpus,
+        "numa_groups": numa,
+        "smt_sibling_groups": smt,
+    })
+}
+
+fn zcplan_caps_json(opts: &ZcPlanOptions) -> io::Result<serde_json::Value> {
+    let cpus = opts.cpu_list.clone().unwrap_or_else(online_cpu_ids);
+    let nics = zcplan_discover_nics(opts.nics.as_deref())?;
+    let huge_pages_total = zcplan_meminfo_value_kb("HugePages_Total").unwrap_or(0);
+    let huge_page_kb = zcplan_meminfo_value_kb("Hugepagesize").unwrap_or(0);
+    let (memlock_soft, memlock_hard) = zcplan_memlock_limit().unwrap_or((0, 0));
+
+    Ok(serde_json::json!({
+        "type": "ZC_CAPS_V1",
+        "role": opts.role,
+        "node_id": opts.node_id,
+        "cpus": zcplan_cpu_json(&cpus),
+        "nics": zcplan_nics_json(&nics),
+        "memory": {
+            "huge_pages_total": huge_pages_total,
+            "huge_page_kb": huge_page_kb,
+            "hugetlb_bytes": huge_pages_total.saturating_mul(huge_page_kb).saturating_mul(1024),
+            "memlock_soft_bytes": memlock_soft,
+            "memlock_hard_bytes": memlock_hard,
+        },
+        "transport": {
+            "tcp": true,
+            "send_zc": "probe-with-zcprobe",
+            "zcrx": "probe-with-zcprobe",
+            "liburing": "available-if-kernel-supports-requested-op",
+            "libfabric": "external-provider-capability",
+            "fallback_copy": true,
+        },
+        "limits": {
+            "max_lanes": cpus.len().max(1),
+            "batch_min": 1,
+            "batch_max": 8192,
+        }
+    }))
+}
+
+fn zcplan_parse_options<I>(args: I) -> io::Result<ZcPlanOptions>
+where
+    I: Iterator<Item = String>,
+{
+    let mut opts = ZcPlanOptions::default();
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--role" => opts.role = next_flag_value(&mut args, &arg)?,
+            "--node-id" => opts.node_id = next_flag_value(&mut args, &arg)?,
+            "--nics" | "--netdevs" => {
+                let nics = parse_csv_values(&next_flag_value(&mut args, &arg)?);
+                opts.nics = Some(nics);
+            }
+            "--cpu-list" | "--cpus" => {
+                opts.cpu_list = Some(parse_cpu_list(&next_flag_value(&mut args, &arg)?)?);
+            }
+            "--caps" | "--caps-file" => {
+                for path in parse_csv_values(&next_flag_value(&mut args, &arg)?) {
+                    opts.caps_paths.push(PathBuf::from(path));
+                }
+            }
+            "--plan-id" => opts.plan_id = Some(next_flag_value(&mut args, &arg)?),
+            "--placement-epoch" => {
+                opts.placement_epoch = parse_u64_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--mode" => opts.mode = ZcPlanMode::parse(&next_flag_value(&mut args, &arg)?)?,
+            "--operation-mix" | "--mix" => {
+                opts.operation_mix = ZcPlanOperationMix::parse(&next_flag_value(&mut args, &arg)?)?
+            }
+            "--objective" => {
+                opts.objective = ZcPlanObjective::parse(&next_flag_value(&mut args, &arg)?)?
+            }
+            "--transport" => {
+                opts.transport = ZcPlanTransport::parse(&next_flag_value(&mut args, &arg)?)?
+            }
+            "--libfabric-domain" | "--ofi-domain" | "--fabric-domain" => {
+                opts.libfabric_domain = Some(next_flag_value(&mut args, &arg)?)
+            }
+            "--libfabric-smoke-ok" | "--ofi-smoke-ok" | "--fabric-smoke-ok" => {
+                opts.libfabric_smoke_ok = true
+            }
+            "--zero-copy" => {
+                opts.zero_copy = ZcZeroCopyPolicy::parse(&next_flag_value(&mut args, &arg)?)?
+            }
+            "--must-zero-copy" => opts.zero_copy = ZcZeroCopyPolicy::Required,
+            "--lanes" | "--lane-count" => {
+                opts.lanes = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--workers" => {
+                opts.workers = Some(parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?)
+            }
+            "--branches" | "--leafs" | "--leaves" => {
+                opts.branches = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--record-bytes" | "--record-size" => {
+                opts.record_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--extent-bytes" | "--extent-size" => {
+                opts.extent_bytes = parse_size_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--batch-window" => {
+                opts.batch_window = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--result-window" => {
+                opts.result_window = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--expected-qdepth" | "--qdepth" => {
+                opts.expected_qdepth = parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
+            "--durability" => opts.durability = next_flag_value(&mut args, &arg)?,
+            "--sync-contract" => opts.sync_contract = next_flag_value(&mut args, &arg)?,
+            "--strict" => opts.strict = true,
+            "--help" | "-h" => {
+                zcplan_help();
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "help requested"));
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcplan option {other:?}"),
+                ));
+            }
+        }
+    }
+
+    if opts.cpu_list.as_ref().is_some_and(Vec::is_empty) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--cpu-list must not be empty",
+        ));
+    }
+    if opts.nics.as_ref().is_some_and(Vec::is_empty) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--nics must not be empty",
+        ));
+    }
+    Ok(opts)
+}
+
+fn zcplan_branch_json(mode: ZcPlanMode, lane: usize, branches: usize) -> serde_json::Value {
+    match mode {
+        ZcPlanMode::Mirror => {
+            let branch_set = (0..branches).collect::<Vec<_>>();
+            serde_json::json!({
+                "lane": lane,
+                "policy": "mirror",
+                "branches": branch_set,
+                "ack": "all-branches",
+                "payload": "same-descriptor-lease",
+            })
+        }
+        ZcPlanMode::Stripe => {
+            let branch = lane % branches;
+            serde_json::json!({
+                "lane": lane,
+                "policy": "stripe",
+                "branch": branch,
+                "segment_index": branch,
+                "stripe_count": branches,
+                "payload": "planned-slice-descriptor",
+            })
+        }
+        ZcPlanMode::Raid10 => {
+            let stripe_count = (branches / 2).max(1);
+            let first = lane % stripe_count;
+            let second = (first + stripe_count).min(branches - 1);
+            serde_json::json!({
+                "lane": lane,
+                "policy": "raid10",
+                "stripe": first,
+                "branches": [first, second],
+                "ack": "replica-pair",
+                "payload": "same-descriptor-lease-per-replica",
+            })
+        }
+        ZcPlanMode::Spill => {
+            let hot = lane % branches;
+            let cold = (hot + 1) % branches;
+            serde_json::json!({
+                "lane": lane,
+                "policy": "spill",
+                "hot_branch": hot,
+                "spill_branch": cold,
+                "ack": "hot-commit-plus-spill-admit",
+                "payload": "descriptor-lease-with-cold-copy-credit",
+            })
+        }
+        ZcPlanMode::Passthrough => serde_json::json!({
+            "lane": lane,
+            "policy": "passthrough",
+            "branch": 0,
+            "payload": "descriptor-lease",
+        }),
+    }
+}
+
+fn zcplan_descriptor_projection_json(
+    plan_id: &str,
+    placement_epoch: u64,
+    opts: &ZcPlanOptions,
+    lanes: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "control_stream": {
+            "required_frames": ["ZC_CAPS_V1", "ZC_INTENT_V1", "ZC_PLAN_V1"],
+            "telemetry_frames": ["ZC_STATS_V1", "ZC_REPLAN_V1"],
+            "data_frames_carry": ["plan_id", "placement_epoch", "lane_id", "sequence"],
+        },
+        "record_descriptor": {
+            "plan_id": plan_id,
+            "placement_epoch": placement_epoch,
+            "lane_id": "compiled.lane_map[].lane",
+            "preferred_worker": "compiled.lane_map[].worker",
+            "sequence": "per-lane monotonic",
+            "group_id": "sync_epoch or collection id",
+            "release_token": "owned by source pool authority",
+        },
+        "slice_descriptor": {
+            "queue_id": "compiled.lane_map[].rx_queue or tx_queue",
+            "preferred_cpu": "compiled.lane_map[].cpu",
+            "numa_node": "compiled.lane_map[].numa_node",
+            "payload": "leased pool slice; mirror branches share the same lease",
+        },
+        "tcpmux_topology_header": {
+            "lane_id": "compiled.lane_map[].lane",
+            "lane_count": lanes,
+            "preferred_worker": "compiled.lane_map[].worker",
+            "queue_id": "compiled.lane_map[].tx_queue",
+            "preferred_cpu": "compiled.lane_map[].cpu",
+            "chunk_bytes": opts.extent_bytes,
+            "active_when": "compiled.transport.name == tcp-mux",
+        },
+        "libfabric_endpoint": {
+            "active_when": "compiled.transport.name starts with libfabric",
+            "provider": opts.transport.provider(),
+            "fabric": opts.transport.label(),
+            "endpoint_type": opts.transport.fi_endpoint(),
+            "domain": opts.libfabric_domain.as_deref().unwrap_or("auto"),
+            "endpoint": "compiled.lane_map[].fabric_endpoint",
+            "completion_cq": "compiled.lane_map[].completion_cq",
+            "mr_region": "compiled.lane_map[].mr_region",
+            "poller_cpu": "compiled.lane_map[].leader_cpu",
+            "payload": "registered descriptor lease; no placement decision in transport",
+        },
+        "wal_extent": {
+            "lane_id": "compiled.lane_map[].lane",
+            "shard_id": "compiled.lane_map[].wal_shard",
+            "record_size": opts.record_bytes,
+            "record_count": opts.extent_bytes / opts.record_bytes,
+            "extent_sequence": "per-lane monotonic",
+            "zero_copy_descriptor": matches!(opts.zero_copy, ZcZeroCopyPolicy::Required | ZcZeroCopyPolicy::Auto),
+        },
+        "zcnblk_topology_header": {
+            "lane_id": "compiled.lane_map[].lane",
+            "lane_count": lanes,
+            "preferred_worker": "compiled.lane_map[].worker",
+            "queue_id": "compiled.lane_map[].wal_shard",
+            "tier_id": "userspace placement output; not a block RAID primitive",
+        },
+    })
+}
+
+fn zcplan_libfabric_probe(transport: ZcPlanTransport, domain: Option<&str>) -> (bool, String) {
+    let Some(provider) = transport.provider() else {
+        return (
+            true,
+            "tcp-mux transport does not require fi_info".to_string(),
+        );
+    };
+    let fi_info = program_in_path("fi_info").or_else(|| {
+        let path = PathBuf::from("/opt/amazon/efa/bin/fi_info");
+        path.exists().then_some(path)
+    });
+    let Some(fi_info) = fi_info else {
+        return (
+            false,
+            "fi_info not found in PATH or /opt/amazon/efa/bin".to_string(),
+        );
+    };
+    let mut args = vec![
+        "-p".to_string(),
+        provider.to_string(),
+        "-t".to_string(),
+        transport.fi_endpoint().to_string(),
+    ];
+    if let Some(domain) = domain.filter(|value| !value.is_empty() && *value != "auto") {
+        args.push("-d".to_string());
+        args.push(domain.to_string());
+    }
+    let path = fi_info.to_string_lossy().to_string();
+    match command_report_strings(&path, &args) {
+        Ok(report) if report.status == Some(0) && !report.stdout.trim().is_empty() => (
+            true,
+            format!(
+                "{} reported provider={} endpoint={}",
+                fi_info.display(),
+                provider,
+                transport.fi_endpoint()
+            ),
+        ),
+        Ok(report) => (
+            false,
+            format!(
+                "{} failed for provider={} endpoint={} status={:?} stderr={}",
+                fi_info.display(),
+                provider,
+                transport.fi_endpoint(),
+                report.status,
+                report.stderr
+            ),
+        ),
+        Err(err) => (
+            false,
+            format!(
+                "{} could not run for provider={} endpoint={}: {err}",
+                fi_info.display(),
+                provider,
+                transport.fi_endpoint()
+            ),
+        ),
+    }
+}
+
+fn zcplan_build_json(opts: &ZcPlanOptions) -> io::Result<(serde_json::Value, Vec<String>)> {
+    if opts.branches == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "branches must be greater than zero",
+        ));
+    }
+    if opts.record_bytes == 0 || opts.extent_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "record-bytes and extent-bytes must be greater than zero",
+        ));
+    }
+    if opts.batch_window == 0 || opts.result_window == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "batch-window and result-window must be greater than zero",
+        ));
+    }
+
+    let caps = zcplan_read_caps(&opts.caps_paths)?;
+    let primary_caps = zcplan_primary_caps(&caps, &opts.role);
+    let cpus_from_caps = primary_caps.and_then(zcplan_caps_cpu_list);
+    let cpu_source_is_planned = opts.cpu_list.is_some() || cpus_from_caps.is_some();
+    let cpus = opts
+        .cpu_list
+        .clone()
+        .or(cpus_from_caps)
+        .unwrap_or_else(online_cpu_ids);
+    if cpus.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no online CPUs discovered for zcplan",
+        ));
+    }
+    let nics = if opts.nics.is_some() {
+        zcplan_discover_nics(opts.nics.as_deref())?
+    } else if let Some(nics) = primary_caps.and_then(zcplan_caps_nics) {
+        nics
+    } else {
+        zcplan_discover_nics(None)?
+    };
+    let lanes = if opts.lanes == 0 {
+        match opts.objective {
+            ZcPlanObjective::LowLatency => cpus.len().min(4).max(1),
+            ZcPlanObjective::MaxIops | ZcPlanObjective::MaxGbit => cpus.len(),
+            ZcPlanObjective::Balanced => (cpus.len() / 2).max(1),
+        }
+    } else {
+        opts.lanes
+    };
+    let workers = opts.workers.unwrap_or_else(|| lanes.min(cpus.len()).max(1));
+    if workers == 0 || lanes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "lanes and workers must be greater than zero",
+        ));
+    }
+
+    let mut warnings = Vec::new();
+    if !cpu_source_is_planned && !env_truthy("URING_PLAY_PIN_CPUS") {
+        warnings.push(
+            "PERF WARNING: no explicit --cpu-list, --caps CPU map, or URING_PLAY_PIN_CPUS setting; representative high-IOPS runs must pin lane workers".to_string(),
+        );
+    }
+    if nics.is_empty() {
+        warnings.push(
+            "PERF WARNING: no non-loopback NICs discovered; this plan can only be a local smoke"
+                .to_string(),
+        );
+    }
+    for nic in &nics {
+        if nic.operstate.as_deref() != Some("up") {
+            warnings.push(format!(
+                "PERF WARNING: planned NIC {} operstate={} is not up",
+                nic.name,
+                nic.operstate.as_deref().unwrap_or("unknown")
+            ));
+        }
+        if nic.card_id.is_none() {
+            warnings.push(format!(
+                "PERF WARNING: planned NIC {} has no physical card_id; pass --nics with the real data interface for representative runs",
+                nic.name
+            ));
+        }
+        if nic.rx_queues == 0 || nic.tx_queues == 0 {
+            warnings.push(format!(
+                "PERF WARNING: planned NIC {} has rx_queues={} tx_queues={}; lane-to-queue mapping is incomplete",
+                nic.name, nic.rx_queues, nic.tx_queues
+            ));
+        }
+    }
+    if lanes > cpus.len() {
+        warnings.push(format!(
+            "PERF WARNING: lane_count={lanes} exceeds cpu_count={}; expect scheduler churn unless lanes are deliberately sharing CPUs",
+            cpus.len()
+        ));
+    }
+    if lanes > workers.saturating_mul(2) {
+        warnings.push(format!(
+            "PERF WARNING: lane_count={lanes} is more than 2x worker_count={workers}; validate context switches before trusting IOPS",
+        ));
+    }
+    if opts.extent_bytes % opts.record_bytes != 0 {
+        warnings.push(format!(
+            "PERF WARNING: extent_bytes={} is not a multiple of record_bytes={}; logical 4K accounting will need a record table",
+            opts.extent_bytes, opts.record_bytes
+        ));
+    }
+    if matches!(
+        opts.objective,
+        ZcPlanObjective::MaxIops | ZcPlanObjective::MaxGbit
+    ) && opts.extent_bytes < 64 * 1024
+    {
+        warnings.push(format!(
+            "PERF WARNING: extent_bytes={} is below 64KiB for {}; this risks 4K descriptor chatter through TCP",
+            opts.extent_bytes,
+            opts.objective.label()
+        ));
+    }
+    let (transport_probe_ok, transport_probe_detail) =
+        zcplan_libfabric_probe(opts.transport, opts.libfabric_domain.as_deref());
+    if opts.transport.is_libfabric() {
+        if !transport_probe_ok {
+            warnings.push(format!(
+                "PERF WARNING: transport={} selected but libfabric provider probe failed: {}",
+                opts.transport.label(),
+                transport_probe_detail
+            ));
+        }
+        if !opts.libfabric_smoke_ok {
+            warnings.push(format!(
+                "PERF WARNING: transport={} selected without --libfabric-smoke-ok; run a real cross-host fi_pingpong/libfabric-smoke data transfer before treating this plan as representative",
+                opts.transport.label()
+            ));
+        }
+    }
+    if matches!(
+        opts.objective,
+        ZcPlanObjective::MaxIops | ZcPlanObjective::MaxGbit
+    ) && opts.batch_window < 4
+    {
+        warnings.push(format!(
+            "PERF WARNING: batch_window={} is low for {}; expect wakeup-per-batch behavior",
+            opts.batch_window,
+            opts.objective.label()
+        ));
+    }
+    if matches!(
+        opts.objective,
+        ZcPlanObjective::MaxIops | ZcPlanObjective::MaxGbit
+    ) && !matches!(opts.zero_copy, ZcZeroCopyPolicy::Required)
+    {
+        warnings.push(format!(
+            "PERF WARNING: zero_copy={} allows copied fallback; use --zero-copy required for representative {} runs",
+            opts.zero_copy.label(),
+            opts.objective.label()
+        ));
+    }
+    let hugetlb_bytes = primary_caps
+        .and_then(|caps| zcplan_caps_memory_u64(caps, "hugetlb_bytes"))
+        .unwrap_or_else(|| {
+            let huge_pages_total = zcplan_meminfo_value_kb("HugePages_Total").unwrap_or(0);
+            let huge_page_kb = zcplan_meminfo_value_kb("Hugepagesize").unwrap_or(0);
+            huge_pages_total
+                .saturating_mul(huge_page_kb)
+                .saturating_mul(1024)
+        });
+    if hugetlb_bytes == 0 {
+        warnings.push(
+            "PERF WARNING: HugePages_Total is zero; zcrx/registered-buffer plans may fall back or churn page mappings".to_string(),
+        );
+    }
+    let memlock_soft = primary_caps
+        .and_then(|caps| zcplan_caps_memory_u64(caps, "memlock_soft_bytes"))
+        .or_else(|| zcplan_memlock_limit().map(|(soft, _hard)| soft));
+    if let Some(soft) = memlock_soft {
+        let needed = (lanes as u128)
+            .saturating_mul(opts.extent_bytes as u128)
+            .saturating_mul(opts.batch_window as u128)
+            .saturating_mul(2);
+        if needed > soft as u128 {
+            warnings.push(format!(
+                "PERF WARNING: memlock soft limit {soft} bytes is below estimated hot-pool need {needed} bytes",
+            ));
+        }
+    }
+
+    let mut lane_map = Vec::new();
+    let nic_count = nics.len().max(1);
+    for lane in 0..lanes {
+        let cpu = cpus[lane % cpus.len()];
+        let worker = lane % workers;
+        let nic = nics.get(lane % nic_count);
+        let tx_queues = nic.map(|nic| nic.tx_queues.max(1)).unwrap_or(1);
+        let rx_queues = nic.map(|nic| nic.rx_queues.max(1)).unwrap_or(1);
+        lane_map.push(serde_json::json!({
+            "lane": lane,
+            "worker": worker,
+            "cpu": cpu,
+            "leader_cpu": cpu,
+            "numa_node": cpu_numa_node(cpu),
+            "nic": nic.map(|nic| nic.name.as_str()),
+            "nic_ifindex": nic.and_then(|nic| nic.ifindex),
+            "rx_queue": lane % rx_queues,
+            "tx_queue": lane % tx_queues,
+            "wal_shard": lane,
+            "zipper_owner": worker,
+            "ack_lane": lane,
+            "transport": opts.transport.label(),
+            "transport_object": opts.transport.lane_object(),
+            "fabric_endpoint": opts.transport.is_libfabric().then_some(lane),
+            "completion_cq": opts.transport.is_libfabric().then_some(worker),
+            "mr_region": opts.transport.is_libfabric().then_some(worker),
+            "tcp_port_lane": (!opts.transport.is_libfabric()).then_some(lane),
+        }));
+    }
+
+    let branch_map = (0..lanes)
+        .map(|lane| zcplan_branch_json(opts.mode, lane, opts.branches))
+        .collect::<Vec<_>>();
+    let plan_id = format!(
+        "zcp-{}-{}-{}-{}l-{}b-{}e-{}r",
+        opts.mode.label(),
+        opts.objective.label(),
+        opts.transport.label(),
+        lanes,
+        opts.branches,
+        opts.extent_bytes,
+        opts.record_bytes
+    );
+    let plan_id = opts.plan_id.clone().unwrap_or(plan_id);
+    let descriptor_projection =
+        zcplan_descriptor_projection_json(&plan_id, opts.placement_epoch, opts, lanes);
+
+    let representative = warnings.is_empty();
+    let plan = serde_json::json!({
+        "type": "ZC_PLAN_V1",
+        "schema_version": 1,
+        "plan_id": plan_id,
+        "placement_epoch": opts.placement_epoch,
+        "required_features": {
+            "preserve_lanes": true,
+            "userspace_raid_only": true,
+            "global_high_water_sync": opts.sync_contract == "global-high-water",
+            "zero_copy_required": matches!(opts.zero_copy, ZcZeroCopyPolicy::Required),
+            "registered_memory_required": opts.transport.is_libfabric(),
+            "provider_data_smoke_required": opts.transport.is_libfabric(),
+        },
+        "descriptor_projection": descriptor_projection,
+        "representative": representative,
+        "intent": {
+            "mode": opts.mode.label(),
+            "operation_mix": opts.operation_mix.label(),
+            "objective": opts.objective.label(),
+            "record_bytes": opts.record_bytes,
+            "expected_qdepth": opts.expected_qdepth,
+            "durability": opts.durability,
+            "sync_contract": opts.sync_contract,
+            "zero_copy": opts.zero_copy.label(),
+            "transport": opts.transport.label(),
+        },
+        "compiled": {
+            "transport": {
+                "name": opts.transport.label(),
+                "provider": opts.transport.provider(),
+                "endpoint_type": opts.transport.fi_endpoint(),
+                "domain": opts.libfabric_domain.as_deref().unwrap_or("auto"),
+                "lane_object": opts.transport.lane_object(),
+                "completion_model": opts.transport.completion_model(),
+                "registered_memory": opts.transport.registered_memory_model(),
+                "fallback": opts.transport.fallback(),
+                "provider_probe_ok": transport_probe_ok,
+                "provider_probe_detail": transport_probe_detail,
+                "data_smoke_ok": opts.libfabric_smoke_ok || !opts.transport.is_libfabric(),
+            },
+            "lane_count": lanes,
+            "worker_count": workers,
+            "branch_count": opts.branches,
+            "coalescing": {
+                "extent_bytes": opts.extent_bytes,
+                "record_count": opts.extent_bytes / opts.record_bytes,
+                "batch_window": opts.batch_window,
+                "age_budget_ns": if matches!(opts.objective, ZcPlanObjective::LowLatency) { 50_000 } else { 500_000 },
+            },
+            "zipper": {
+                "model": "lane-local-o1-window",
+                "result_window": opts.result_window,
+                "primary_branch": 0,
+                "handoff": "shared-arena-or-socket-result-log",
+            },
+            "backpressure": {
+                "descriptor_credit": opts.batch_window.saturating_mul(lanes),
+                "byte_credit": opts.batch_window.saturating_mul(lanes).saturating_mul(opts.extent_bytes),
+                "branch_credit": opts.batch_window,
+                "wal_credit": opts.batch_window.saturating_mul(lanes),
+            },
+            "lane_map": lane_map,
+            "branch_map": branch_map,
+        },
+        "capabilities_snapshot": {
+            "node_id": opts.node_id,
+            "role": opts.role,
+            "cpus": zcplan_cpu_json(&cpus),
+            "nics": zcplan_nics_json(&nics),
+            "participants": caps.iter().map(zcplan_caps_summary_json).collect::<Vec<_>>(),
+        },
+        "warnings": warnings.clone(),
+    });
+    Ok((plan, warnings))
+}
+
+fn zcplan_help() {
+    println!(
+        "usage:\n\
+         zcplan caps [--role ROLE] [--node-id ID] [--cpu-list LIST] [--nics IF0,IF1]\n\
+         zcplan plan [--mode stripe|mirror|raid10|spill] [--lanes N] [--workers N]\n\
+                    [--branches N] [--cpu-list LIST] [--nics IF0,IF1]\n\
+                    [--caps FILE[,FILE]] [--plan-id ID] [--placement-epoch N]\n\
+                    [--objective low-latency|max-iops|max-gbit|balanced]\n\
+                    [--transport tcp-mux|libfabric-sockets|libfabric-efa|libfabric-verbs]\n\
+                    [--libfabric-domain DOMAIN] [--libfabric-smoke-ok]\n\
+                    [--record-bytes 4K] [--extent-bytes 384K] [--batch-window N]\n\
+                    [--zero-copy required|auto|off] [--strict]\n\
+         zcplan validate <same flags as plan> [--strict]\n\
+         \n\
+         zcplan emits descriptor-fabric capability and plan JSON. It never plans\n\
+         mirror, stripe, tier, or spill inside a block device."
+    );
+}
+
+fn zcplan<I>(mut args: I) -> io::Result<()>
+where
+    I: Iterator<Item = String>,
+{
+    let Some(subcommand) = args.next() else {
+        zcplan_help();
+        return Ok(());
+    };
+    if subcommand == "--help" || subcommand == "-h" || subcommand == "help" {
+        zcplan_help();
+        return Ok(());
+    }
+
+    match subcommand.as_str() {
+        "caps" => {
+            let opts = match zcplan_parse_options(args) {
+                Ok(opts) => opts,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => return Ok(()),
+                Err(err) => return Err(err),
+            };
+            let value = zcplan_caps_json(&opts)?;
+            let encoded = serde_json::to_string_pretty(&value)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            println!("{encoded}");
+            Ok(())
+        }
+        "plan" | "validate" => {
+            let mut opts = match zcplan_parse_options(args) {
+                Ok(opts) => opts,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => return Ok(()),
+                Err(err) => return Err(err),
+            };
+            if subcommand == "validate" {
+                opts.strict = true;
+            }
+            let (value, warnings) = zcplan_build_json(&opts)?;
+            let encoded = serde_json::to_string_pretty(&value)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            println!("{encoded}");
+            if opts.strict && !warnings.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!(
+                        "zcplan strict validation failed with {} warning(s)",
+                        warnings.len()
+                    ),
+                ));
+            }
+            Ok(())
+        }
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unknown zcplan subcommand {other:?}; use caps, plan, or validate"),
+        )),
+    }
+}
+
 fn print_zcutils_help() {
     println!(
         "zcutils commands:\n\
          \n\
          zcprobe                 inspect io_uring/ZCRX/send-zc capabilities\n\
+         zcplan                  emit topology-aware descriptor capability and plan JSON\n\
          zcnc                    simple TCP listen/connect/probe frontend\n\
          zc-tcpmux-send          send stdin/file over AES-256-GCM TCP by default\n\
          zc-tcpmux-receive       receive AES-256-GCM TCP into a file by default\n\
@@ -44673,9 +58117,12 @@ fn print_zcutils_help() {
          zcrun                   compatibility alias for zcflow\n\
          zcmap                   transform descriptor metadata/views; byte passthrough today\n\
          zcforward               fused fanout for encrypted forward/local-consume paths\n\
-         zcmaptee                map/fan out descriptors; byte fanout today\n\
-         zctee                   fan out descriptors; file/stdout byte fanout today\n\
-         zctier                  hot-write plus bounded asynchronous spill endpoint\n\
+	         zcmaptee                map/fan out descriptors; byte fanout today\n\
+	         zctee                   fan out descriptors; file/stdout byte fanout today\n\
+		        zcfanout-logzip-bench   benchmark lane-local result-log zipper mechanics\n\
+		        zcfanout-logtcp-bench   benchmark result-log zipper over real local TCP\n\
+		        zcfanout-logshm-bench   benchmark primary/secondary shared-memory result zipping\n\
+	         zctier                  hot-write plus bounded asynchronous spill endpoint\n\
          zcfanplan               derive sparse lane/NIC/port fanout execution plans\n\
          zcjournal               emit/join/sink plus mem-combine descriptor benches\n\
          zcjournal-join          direct descriptor fan-in alias for zcjournal join\n\
@@ -44694,6 +58141,9 @@ fn print_zcutils_help() {
 		         zcwritebench            benchmark receive-side pwrite materialization\n\
 		         zcblockbench            multithreaded 4K random read/write IOPS bench\n\
 		         zcnblk-target           mux-aligned block/read target, including zcdevnullN\n\
+		         zcnblk-fan              ordered userspace read/write fan; --engine wal uses descriptor result logs\n\
+		         zcnblk-wal-leaf         terminal leaf media server for zcnblk-fan --engine wal\n\
+		         zcnblk-read-fan         compatibility alias for zcnblk-fan\n\
 	         zcnblk-send             zcnblk 4K write/read/mixed client generator\n\
 	         zcwal-extent-send       lane-local WAL extent sender smoke test\n\
 	         zcwal-extent-recv       lane-local WAL extent receiver smoke test\n\
@@ -44710,6 +58160,7 @@ fn zc_argv0_command(argv0: &str) -> Option<&'static str> {
         .unwrap_or(argv0)
     {
         "zcprobe" => Some("zcprobe"),
+        "zcplan" => Some("zcplan"),
         "zcnc" => Some("zcnc"),
         "zc-tcpmux-send" => Some("zc-tcpmux-send"),
         "zc-tcpmux-receive" => Some("zc-tcpmux-receive"),
@@ -44723,6 +58174,9 @@ fn zc_argv0_command(argv0: &str) -> Option<&'static str> {
         "zcforward" | "zcfwd" => Some("zcforward"),
         "zcmaptee" => Some("zcmaptee"),
         "zctee" => Some("zctee"),
+        "zcfanout-logzip-bench" | "zclogzip-bench" => Some("zcfanout-logzip-bench"),
+        "zcfanout-logtcp-bench" | "zclogtcp-bench" => Some("zcfanout-logtcp-bench"),
+        "zcfanout-logshm-bench" | "zclogshm-bench" => Some("zcfanout-logshm-bench"),
         "zctier" => Some("zctier"),
         "zcfanplan" => Some("zcfanplan"),
         "zcjournal" => Some("zcjournal"),
@@ -44740,6 +58194,8 @@ fn zc_argv0_command(argv0: &str) -> Option<&'static str> {
         "zcwritebench" => Some("zcwritebench"),
         "zcblockbench" | "block-iops-bench" | "zc-iops-bench" => Some("zcblockbench"),
         "zcnblk-target" => Some("zcnblk-target"),
+        "zcnblk-fan" | "zcnblk-read-fan" => Some("zcnblk-fan"),
+        "zcnblk-wal-leaf" => Some("zcnblk-wal-leaf"),
         "zcnblk-send" => Some("zcnblk-send"),
         "zcwal-extent-send" => Some("zcwal-extent-send"),
         "zcwal-extent-recv" => Some("zcwal-extent-recv"),
@@ -44759,6 +58215,7 @@ pub fn main_entry() -> io::Result<()> {
             Ok(())
         }
         Some("zcprobe") => probe(),
+        Some("zcplan") => zcplan(args),
         Some("zcnc") => zcnc(args),
         Some("zc-tcpmux-send") => zc_tcpmux_send(args),
         Some("zc-tcpmux-receive") => zc_tcpmux_receive(args),
@@ -44772,6 +58229,170 @@ pub fn main_entry() -> io::Result<()> {
         Some("zcforward") | Some("zcfwd") => zcforward(args),
         Some("zcmaptee") => zcmaptee(args),
         Some("zctee") => zctee(args),
+        Some("zcfanout-logzip-bench") | Some("zclogzip-bench") => {
+            let mode = args
+                .next()
+                .map(|value| ZcLogZipBenchMode::parse(&value))
+                .transpose()?
+                .unwrap_or(ZcLogZipBenchMode::MirrorWriteAll);
+            let lanes = args
+                .next()
+                .map(|value| parse_usize_value(&value, "lanes"))
+                .transpose()?
+                .unwrap_or(32);
+            let branches = args
+                .next()
+                .map(|value| parse_usize_value(&value, "branches"))
+                .transpose()?
+                .unwrap_or(2);
+            let records_per_lane = args
+                .next()
+                .map(|value| parse_u64_value(&value, "records-per-lane"))
+                .transpose()?
+                .unwrap_or(1_000_000);
+            let payload_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "payload-bytes"))
+                .transpose()?
+                .unwrap_or(4096);
+            let window = args
+                .next()
+                .map(|value| parse_usize_value(&value, "window"))
+                .transpose()?
+                .unwrap_or(4096);
+            let workers = args
+                .next()
+                .map(|value| parse_usize_value(&value, "workers"))
+                .transpose()?
+                .unwrap_or(0);
+            let skew = args
+                .next()
+                .map(|value| parse_u64_value(&value, "skew"))
+                .transpose()?
+                .unwrap_or(64);
+            let pin = args
+                .next()
+                .map(|value| parse_bool_arg(&value, "pin-workers"))
+                .transpose()?
+                .unwrap_or(true);
+            zcfanout_logzip_bench(
+                mode,
+                lanes,
+                branches,
+                records_per_lane,
+                payload_bytes,
+                window,
+                workers,
+                skew,
+                pin,
+            )
+        }
+        Some("zcfanout-logtcp-bench") | Some("zclogtcp-bench") => {
+            let mode = args
+                .next()
+                .map(|value| ZcLogZipBenchMode::parse(&value))
+                .transpose()?
+                .unwrap_or(ZcLogZipBenchMode::MirrorWriteAll);
+            let bind = args.next().unwrap_or_else(|| "127.0.0.1".to_string());
+            let base_port = args
+                .next()
+                .map(|value| parse_u16_value(&value, "base-port"))
+                .transpose()?
+                .unwrap_or(24000);
+            let lanes = args
+                .next()
+                .map(|value| parse_usize_value(&value, "lanes"))
+                .transpose()?
+                .unwrap_or(16);
+            let branches = args
+                .next()
+                .map(|value| parse_usize_value(&value, "branches"))
+                .transpose()?
+                .unwrap_or(2);
+            let records_per_lane = args
+                .next()
+                .map(|value| parse_u64_value(&value, "records-per-lane"))
+                .transpose()?
+                .unwrap_or(250_000);
+            let payload_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "payload-bytes"))
+                .transpose()?
+                .unwrap_or(4096);
+            let batch_records = args
+                .next()
+                .map(|value| parse_usize_value(&value, "batch-records"))
+                .transpose()?
+                .unwrap_or(1024);
+            let workers = args
+                .next()
+                .map(|value| parse_usize_value(&value, "workers"))
+                .transpose()?
+                .unwrap_or(0);
+            let pin = args
+                .next()
+                .map(|value| parse_bool_arg(&value, "pin-workers"))
+                .transpose()?
+                .unwrap_or(true);
+            let window = args
+                .next()
+                .map(|value| parse_usize_value(&value, "window"))
+                .transpose()?
+                .unwrap_or_else(|| batch_records.max(4096));
+            zcfanout_logtcp_bench(
+                mode,
+                bind,
+                base_port,
+                lanes,
+                branches,
+                records_per_lane,
+                payload_bytes,
+                batch_records,
+                workers,
+                pin,
+                window,
+            )
+        }
+        Some("zcfanout-logshm-bench") | Some("zclogshm-bench") => {
+            let records = args
+                .next()
+                .map(|value| parse_u64_value(&value, "records"))
+                .transpose()?
+                .unwrap_or(1_000_000);
+            let payload_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "payload-bytes"))
+                .transpose()?
+                .unwrap_or(4096);
+            let batch_records = args
+                .next()
+                .map(|value| parse_usize_value(&value, "batch-records"))
+                .transpose()?
+                .unwrap_or(2048);
+            let window = args
+                .next()
+                .map(|value| parse_usize_value(&value, "window"))
+                .transpose()?
+                .unwrap_or_else(|| batch_records.max(4096));
+            let wait_mode = args
+                .next()
+                .map(|value| ZcLogShmWaitMode::parse(&value))
+                .transpose()?
+                .unwrap_or(ZcLogShmWaitMode::Spin);
+            let pin = args
+                .next()
+                .map(|value| parse_bool_arg(&value, "pin-workers"))
+                .transpose()?
+                .unwrap_or(true);
+            zcfanout_logshm_bench(
+                records,
+                payload_bytes,
+                batch_records,
+                window,
+                wait_mode,
+                pin,
+            )
+        }
         Some("zctier") => zctier(args),
         Some("zcfanplan") => fanout::cli(args),
         Some("zcjournal") => zcjournal(args),
@@ -44887,6 +58508,8 @@ pub fn main_entry() -> io::Result<()> {
                 pin_workers,
             )
         }
+        Some("zcnblk-fan") | Some("zcnblk-read-fan") => zcnblk_fan_cli(args),
+        Some("zcnblk-wal-leaf") => zcnblk_wal_leaf_cli(args),
         Some("zcnblk-send") => {
             let addr = args.next().ok_or_else(|| {
                 io::Error::new(
@@ -46808,7 +60431,7 @@ pub fn main_entry() -> io::Result<()> {
                  tcp-bench-server, tcp-bench-mux-send, tcp-bench-mux-server, \
                  tcp-bench-uring-mux-send, tcp-bench-uring-mux-server, \
                  tcp-wal-mux-server, udp-wal-mux-server, udp-bench-mux-send, \
-	                 zcraidd, zcblockbench, zcnblk-target, zcnblk-send, zcwal-extent-send, zcwal-extent-recv, \
+	                 zcraidd, zcblockbench, zcnblk-target, zcnblk-fan, zcnblk-wal-leaf, zcnblk-send, zcwal-extent-send, zcwal-extent-recv, \
                  zcjournal, zcjournal-join, zcsnap, \
                  uring-baton-bench, uring-write-bench, \
                  cache-copy-microbench, cache-smt-microbench, \

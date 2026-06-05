@@ -66,7 +66,178 @@ that block device is only the last hop. That boundary is why recipes may use
 topology itself is still expressed with `zcraid-*`, `zcfanplan`, `zcforward`,
 `zctier`, `zcmux`, and `zcdemux`.
 
+### zcnblk-fan
+
+`zcnblk-fan` is the userspace ordered fan target for the block fabric. It sits
+between `/dev/zcnblk0` or `zcnblk-send` and userspace leaf processes. It owns
+stripe/mirror placement, splits large logical requests at placement switch
+points, forwards each descriptor to the selected leaf stream, and reassembles
+read responses with the original zcnblk header metadata. `zcnblk-read-fan`
+remains a compatibility alias for the older synchronous stripe path.
+
+Same-sector ordering is part of the contract. The fan reserves per-4K order
+slots when request headers arrive; batch headers are all reserved before any
+payload is forwarded. Writes wait for leaf `ZCNBLK_OP_WRITE_ACK` before that
+sector order is released, so leaf targets must run with
+`URING_PLAY_ZCNBLK_WRITE_ACKS=1`.
+
+The WAL engine is selected with `--engine wal`. It speaks fixed 128-byte fan WAL
+descriptor/result frames to `zcnblk-wal-leaf`, supports `--mode stripe|mirror`,
+and keeps block devices only as terminal leaf media. Blocking and io_uring
+callers share the same ordered descriptor/result contract; the selected leaf
+submit adapter must not change placement, ack, sync, or freshness semantics.
+
+```bash
+zcnblk-wal-leaf zcdevnull0 127.0.0.1 24600 1 1 4K 1 false mixed
+zcnblk-wal-leaf zcdevnull1 127.0.0.2 24600 1 1 4K 1 false mixed
+
+URING_PLAY_ZCNBLK_WRITE_ACKS=1 \
+URING_PLAY_ZCNBLK_BATCH_DEPTH=64 \
+URING_PLAY_ZCNBLK_WAL_BATCH_WINDOW=16 \
+zcnblk-fan --engine wal --leaves 127.0.0.1,127.0.0.2 --bind 127.0.0.1 \
+  --base-port 23600 --ports 1 --connections-per-port 1 \
+  --bytes-per-connection 4M --chunk-bytes 4K --stripe-bytes 4K \
+  --leaf-base-port 24600 --pin-handlers false --mode stripe
+```
+
+The final optional `zcnblk-wal-leaf` argument is leaf submit mode:
+`blocking` uses `pread`/`pwrite`, `uring` queues terminal block-device
+reads/writes through io_uring, and `mixed` intentionally sends some frames
+through each adapter while still emitting the same fan WAL `RESULT` records.
+That mixed mode exists because a real `/dev/zcnblk0` client can receive
+conventional and io_uring requests over its lifetime. `zcdevnull` has no kernel
+block I/O, so the `uring` side of `mixed` is only a control-path check there; use
+a real terminal leaf such as `/dev/zcbrdN` or an allowlisted raw `PARTUUID` for
+actual io_uring block submission.
+
+For write IOPS tests, `URING_PLAY_ZCNBLK_BATCH_DEPTH` is required. The fan
+preserves per-4K ordering, but explicit upstream write batches are forwarded to
+each leaf as coalesced `WRITE_BATCH` WAL chunks with a descriptor array followed
+by one payload area. Leaves return coalesced `RESULT_BATCH` descriptor arrays,
+and the fan interleaves those leaf result logs in the lane-local handler before
+answering the client with a `BATCH_RESP` containing the write ACK headers. Treat
+unbatched 4K WAL fan numbers as a topology smoke only.
+`URING_PLAY_ZCNBLK_WAL_BATCH_WINDOW` controls how many disjoint leaf write
+batches the fan can keep outstanding before draining result batches; `1`
+intentionally exposes the serialized wakeup-per-batch path. For terminal
+io_uring leaves, `URING_PLAY_ZCNBLK_WAL_LEAF_RING_ENTRIES` and
+`URING_PLAY_ZCNBLK_WAL_LEAF_CQ_ENTRIES` override the leaf ring size and are
+printed by `zcnblk-wal-leaf`.
+
+Experimental fan result zipping knobs are available for locality tests.
+`URING_PLAY_ZCNBLK_FAN_RESULT_ARENA=1` starts per-leaf result receiver threads
+that publish range result-batch headers into `memfd`/`MAP_SHARED` rings for the
+lane handler to consume. It requires `URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1` and
+only supports the pipelined batched write path. `URING_PLAY_ZCNBLK_FAN_RESULT_ARENA_SLOTS`
+sizes each ring, defaulting to `max(2 * URING_PLAY_ZCNBLK_WAL_BATCH_WINDOW, 64)`.
+`URING_PLAY_ZCNBLK_FAN_RESULT_ARENA_INLINE_PRIMARY=1` keeps leaf 0 result reads
+on the handler lane and uses the arena only for secondary leaves.
+`URING_PLAY_ZCNBLK_FAN_RESULT_ARENA_SPIN=1` makes arena receivers poll result
+headers with `recv(MSG_DONTWAIT)` for experiments on dedicated cores. These are
+userspace fan/interleave mechanisms; they are not block-device RAID primitives.
+
+Fan handler result waits default to ordinary blocking reads for everyday
+traffic. `URING_PLAY_ZCNBLK_FAN_RESULT_WAIT_POLICY=adaptive` makes the handler
+spin with `recv(MSG_DONTWAIT)` only once the lane has enough queued result work;
+`URING_PLAY_ZCNBLK_FAN_RESULT_SPIN_MIN_OUTSTANDING` overrides that threshold,
+defaulting to roughly one quarter of `URING_PLAY_ZCNBLK_WAL_BATCH_WINDOW`.
+`URING_PLAY_ZCNBLK_FAN_RESULT_WAIT_POLICY=greedy` or
+`URING_PLAY_ZCNBLK_FAN_ULTRA_LOW_LATENCY=1` spins before every result wait for
+dedicated-core, ultra-low-latency deployments. Bound it with
+`URING_PLAY_ZCNBLK_FAN_RESULT_SPIN_BUDGET` unless the fan lanes have isolated
+CPUs. Non-blocking wait policies print warnings when handler pinning or an
+explicit lane-to-CPU map is missing.
+
+For high-IOPS runs, size `URING_PLAY_ZCNBLK_BATCH_DEPTH` so each leaf gets
+multi-MiB WAL chunks rather than 4K descriptor chatter, and record the
+lane-to-worker and lane-to-CPU mapping with the result.
+
+`zcfanout-logzip-bench` isolates that zipper. It consumes materialized monotonic
+branch result logs in memory and reports descriptor-equivalent IOPS without
+claiming TCP or block-device throughput:
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-31 \
+  zcfanout-logzip-bench mirror-write 32 2 1000000 4K 8192 32 64 true
+```
+
+`zcfanout-logtcp-bench` puts the same result-log zipper behind real TCP streams
+on each lane and branch. It still sends compact result descriptors, not payload
+blocks, and it does not use block devices as mirror or stripe primitives. Its
+summary includes worker CPU time, voluntary context switches, involuntary
+context switches, and migrations so local oversubscription is visible:
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-31 \
+  zcfanout-logtcp-bench mirror-write 127.0.0.1 24000 16 2 250000 4K 1024 16 true
+```
+
+`zcfanout-logshm-bench` isolates the primary/secondary shared-memory handoff.
+It allocates a `memfd` arena, maps it with `MAP_SHARED` into separate primary
+and secondary views, and stores secondary result descriptors in cache-line
+aligned ring slots. The primary leg is processed inline by the zipper thread,
+the secondary leg publishes descriptor progress through mapped atomics, and the
+primary interleaves the two ordered result streams. Use `spin` to prove the
+handoff can avoid voluntary context switches and `condvar` to model a blocking
+batch handoff.
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=4,5 \
+  zcfanout-logshm-bench 2000000 4K 2048 2048 spin true
+```
+
+```bash
+URING_PLAY_ZCNBLK_WRITE_ACKS=1 \
+URING_PLAY_EXPECT_ROUTE_DEV=ens146 \
+URING_PLAY_EXPECT_ROUTE_SRC=10.0.1.20 \
+zcnblk-fan --engine wal --leaves 10.0.1.31,10.0.1.32 --bind 10.0.1.20 \
+  --base-port 23600 --ports 64 --connections-per-port 1 \
+  --bytes-per-connection 64G --chunk-bytes 4K --stripe-bytes 4K \
+  --leaf-base-port 24600 --pin-handlers true --mode stripe
+```
+
 ## Descriptor Commands
+
+### zcplan
+
+`zcplan` emits the topology-aware descriptor contract used by high-IOPS mux,
+WAL, and userspace RAID planning. `zcplan caps` reports local `ZC_CAPS_V1`
+state: CPUs, NUMA grouping, SMT sibling groups, physical NIC queues, hugetlb,
+memlock, and transport capability placeholders. `zcplan plan` compiles a
+`ZC_PLAN_V1` from workload intent into lane, worker, CPU, NIC queue, WAL shard,
+branch, zipper, coalescing, and backpressure maps.
+
+The command plans only userspace fabric topology. It never implements mirror,
+stripe, tier, or spill inside a block device. Terminal leaves can still be
+reported as capabilities or used behind a userspace leaf writer after placement
+has already been decided.
+
+```bash
+zcplan caps --role fan --node-id fan-a --cpu-list 0-31 --nics ens34
+
+zcplan plan \
+  --mode mirror \
+  --operation-mix write \
+  --objective max-iops \
+  --lanes 32 \
+  --workers 32 \
+  --branches 2 \
+  --cpu-list 0-31 \
+  --nics ens34 \
+  --extent-bytes 384K \
+  --batch-window 16 \
+  --zero-copy required
+```
+
+`zcplan plan --caps client.json,fan.json,leaf0.json,leaf1.json` uses previously
+advertised `ZC_CAPS_V1` documents instead of guessing from the local host. The
+emitted `descriptor_projection` shows how the plan maps to `ZcRecordDesc`,
+`ZcSliceDesc`, tcpmux topology headers, WAL extent fields, and zcnblk topology
+headers.
+
+`zcplan validate` is the strict form. It prints the same plan JSON and exits
+nonzero when the result is not representative because pinning, hugetlb, memlock,
+route/NIC selection, batching, or zero-copy requirements are missing.
 
 ### zcflow
 
@@ -364,6 +535,25 @@ commands. These commands are userspace RAID stand-ins: block devices may appear
 behind a branch command as an edge target, but branch selection and reassembly
 stay in userspace.
 
+Both conventional syscall leaves and `io_uring` leaves fit this contract. The
+RAID primitive cares about the ordered frame/result-log record; the leaf adapter
+decides whether local writes are blocking `write`/`pwrite` calls or `io_uring`
+submissions. Mixed devices are expected: do not fork placement, ordering, ack,
+sync, freshness, or backpressure logic by I/O API.
+
+For the hot streaming path, prefer direct tcpmux branches:
+`zcraid-split --to-tcpmux HOST:PORT --encryption none --zero-copy-send auto`.
+This keeps the shared input chunk alive until each branch send completes and can
+send payload bytes with io_uring `SEND_ZC`; the zcraid frame header is tiny and
+is still written normally. Use `--zero-copy-send required` when benchmark
+results must fail instead of falling back to copied TCP sends.
+
+`zcraid-split --descriptor-wal-dir DIR` is only the materialized local
+descriptor prototype. It writes payload once to `DIR/payload.wal`, then writes
+fixed 128-byte little-endian append descriptors to
+`DIR/branch-NNNN.zcraid-desc`. It is useful for validating placement metadata,
+but it is not the fast tcpmux fanout path.
+
 ```bash
 zccat --generate --bytes 8g |
 zcraid-split --mode raid10 --replicas 2 --chunk-bytes 1m \
@@ -374,7 +564,30 @@ zcraid-merge \
   --from "zc-tcpmux-receive --output - --port 44000 --encryption none --disable-authentication" \
   --from "zc-tcpmux-receive --output - --port 44001 --encryption none --disable-authentication" \
   --output /tmp/reassembled
+
+zccat --generate --bytes 8g --chunk-bytes 1m |
+zcraid-split --mode mirror --branches 4 --chunk-bytes 1m \
+  --descriptor-wal-dir /dev/shm/zcraid-desc-mirror
+
+zcraid-split --mode mirror --chunk-bytes 1m \
+  --to-tcpmux nodeB:44000 \
+  --to-tcpmux nodeC:44000 \
+  --encryption none --disable-authentication \
+  --zero-copy-send required
 ```
+
+For performance work, use megabyte-class chunks or WAL segments, state the
+lane-to-worker mapping, and inspect `zcraid-*-result`/`zcraidd-wal-result`.
+`zcraid-split` and `zcraid-merge` expose `--io-buffer-bytes` for file/pipe/WAL
+buffering and now print branch CPU/context-switch counters where byte branches
+are used so scheduler churn is visible.
+
+For a local multi-machine topology smoke, run
+`qemu-zcrx/fan-topology-qemu-kvm.sh`. It starts four KVM guests with dedicated
+socket-backed virtio NIC links and runs `client -> tcpmux -> fan
+zcraid-split -> tcpmux -> edge zcsink`. It is intentionally a userspace RAID
+composition test; terminal edge media can be swapped later without moving
+placement into a block device.
 
 ### zctier
 
@@ -382,6 +595,8 @@ zcraid-merge \
 chunk to the hot path synchronously, then queues the same bytes to an optional
 cold spill path or spill command. `--memory-bytes` bounds queued spill data, so
 the upstream pipeline gets backpressure when the cold tier falls behind.
+File and pipe writes are chunk-buffered, and the result line reports main/spill
+CPU time plus context-switch counters.
 
 This composes with `zcraid-split` for RAID1-style fanout without putting the
 tier policy into every fanout command. Spill remains userspace work:
@@ -625,6 +840,13 @@ kthreads, keep `hctx_affinity=1`, and state the lane-to-CPU mapping. The
 zcnblk tools intentionally print `PERF WARNING` lines when these assumptions
 are missing; treat those warnings as benchmark blockers unless the run is only a
 functional smoke test.
+
+For multi-NIC tests, set `URING_PLAY_EXPECT_ROUTE_DEV=IFACE` and
+`URING_PLAY_EXPECT_ROUTE_SRC=IP` on the client, fan, and edge processes. The
+TCP mux/zcnblk/WAL tools source-probe established sockets with
+`ip route get <peer> from <socket-local-ip>` and warn if Linux would route a peer
+through a different interface or source address. Set `URING_PLAY_ROUTE_PROBE=1`
+to log the chosen route without enforcing an expected device/source.
 
 `zcwal-extent-send` and `zcwal-extent-recv` are isolated tcpmux-compatible
 WAL extent smoke tools. They preserve lane/shard identity in a fixed extent

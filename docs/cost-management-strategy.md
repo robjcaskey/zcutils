@@ -67,6 +67,9 @@ For high-bandwidth metal searches, prefer:
 
 ## Allowed Network Shape
 
+For the current four-node forest/fan high-IOPS workflow, use the concrete
+checklist in `docs/ec2-forest-high-iops-runbook.md`.
+
 Control path:
 
 - SSH from Rob's current public IP to each worker's public IPv4 address.
@@ -80,8 +83,11 @@ Bulk Raft path:
 - All benchmark nodes must be in one Availability Zone and one subnet.
 - Raft replication, TCP mux, libfabric/EFA, RDMA-style experiments, and WAL
   benchmark traffic must use private IPv4 addresses from the EC2 inventory.
-- No public IP, Elastic IP, NAT Gateway, load balancer, cross-AZ path, VPC
-  peering, Transit Gateway, or cross-region path is allowed for bulk traffic.
+- No public IP, NAT Gateway, load balancer, cross-AZ path, VPC peering,
+  Transit Gateway, or cross-region path is allowed for bulk traffic. For
+  multi-ENI workers that also need direct SSH, the helper may allocate tagged
+  temporary Elastic IPs for card-0 control addresses only; teardown must release
+  them.
 - For instance types advertised above 200 Gbit/s, usually launch the run with
   at least two private NICs from the start. The ad hoc helper supports this
   with `launch --network-card-count 2`, which avoids stop/start disruption and
@@ -235,7 +241,9 @@ it with the run.
 ## Things That Can Accidentally Cost Money
 
 - Public IPv4 addresses: billed hourly while attached.
-- Elastic IPs: billed whether in use or idle; do not allocate them for this.
+- Elastic IPs: billed whether in use or idle; do not allocate them manually.
+  Helper-managed temporary EIPs are allowed only for multi-ENI direct SSH
+  control and must be released by helper teardown.
 - NAT Gateways: hourly charge plus per-GB processing; do not use them.
 - Cross-AZ traffic: avoid by keeping all nodes in one subnet/AZ.
 - Public-IP instance-to-instance traffic: can be billed as regional/internet

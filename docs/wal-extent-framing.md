@@ -168,6 +168,22 @@ the c8gn two-node RAM WAL tests showed:
 The frame therefore carries both `lane_id` and `shard_id`; receivers should not
 guess placement from connection order.
 
+On June 3, 2026, the two-node `c8gn.48xlarge` adhoc pair moved from one-card
+smoke tests to a two-card WAL transport sweep. With two ENIs per node, card0
+pinned to CPUs `0-95`, card1 pinned to CPUs `96-191`, 384 KiB extents, stream
+uring framing, and explicit source-IP route checks, the best standard TCP/WAL
+shape was 256 lanes per card:
+
+- card0: 273.9 Gbit/s, 8.36M logical 4K records/s
+- card1: 261.3 Gbit/s, 7.97M logical 4K records/s
+- aggregate over the slower leg's wall time: 522.6 Gbit/s, 15.95M logical 4K
+  records/s
+
+The result did not use any block-device mirror or stripe primitive. It measured
+WAL extent transport capacity only. See
+[`ec2-c8gn-pair-wal-transport-benchmark.md`](ec2-c8gn-pair-wal-transport-benchmark.md)
+for the full runbook, lane sweep, and libfabric/EFA status.
+
 ## Local Segmentation Matrix
 
 Use the local matrix before spending cluster time:

@@ -65,6 +65,13 @@ wants one process to supervise the whole graph directly.
 Required stream frame families:
 
 - `STREAM_START`: protocol version, flags, topology, and limits.
+- `ZC_CAPS_V1`: participant capability advertisement before hot lanes open.
+- `ZC_INTENT_V1`: workload policy, objective, durability, sync, and zero-copy
+  requirements.
+- `ZC_PLAN_V1`: compiled lane, CPU, queue, WAL shard, branch, zipper,
+  coalescing, and backpressure contract for one placement epoch.
+- `ZC_STATS_V1` and `ZC_REPLAN_V1`: telemetry and explicit epoch-boundary
+  replanning.
 - `POOL_ATTACH`: attach a shared memory, mapped file, ZCRX, registered-buffer,
   or device-backed pool.
 - `CREDIT`: grant bounded descriptor/byte capacity to an upstream producer.
@@ -187,6 +194,58 @@ fixed prefix.
 
 ## Topology Hints
 
+## Plan Control Frames
+
+Topology-aware descriptors use a control-plane handshake before data frames
+start moving. The control frames are not an optimizer side channel; they are
+the descriptor contract that tells each stage how to preserve zero-copy
+lifetimes, ordering, lane locality, and backpressure.
+
+```text
+ZC_CAPS_V1  -> every participant advertises CPUs, NUMA, NIC queues, memory
+               pools, ZCRX/send-zc/liburing/libfabric support, and limits
+ZC_INTENT_V1 -> the workload declares mirror/stripe/raid10/spill/passthrough,
+                read/write mix, objective, durability, sync, and zero-copy policy
+ZC_PLAN_V1  -> the planner compiles lane -> worker -> CPU -> queue -> WAL shard
+               and lane -> branch/replica/stripe mappings for one epoch
+ZC_STATS_V1 -> stages report copies, context switches, migrations, branch lag,
+               pool pressure, and queue/ring overflows
+ZC_REPLAN_V1 -> a new epoch with explicit lane/worker/queue/branch remaps
+```
+
+The hot data plane should not re-run placement policy. It validates
+`plan_id`, `placement_epoch`, `lane_id`, and sequence, then executes the
+compiled map. A descriptor-native data frame therefore carries a compact plan
+reference, not the full plan:
+
+```text
+plan_id
+placement_epoch
+lane_id
+sequence
+descriptor lease(s)
+```
+
+`ZC_PLAN_V1` projects onto existing descriptor fields:
+
+- `ZcRecordDesc.lane_id`: compiled lane id and ordering lane.
+- `ZcRecordDesc.preferred_worker`: planned local worker or zipper owner.
+- `ZcSliceDesc.queue_id`: planned RX/TX queue, WAL shard, or block hctx owner.
+- `ZcSliceDesc.preferred_cpu` and `numa_node`: planned locality target.
+- tcpmux topology header: lane, lane count, worker, queue, CPU, and chunk size.
+- WAL extent header: lane, shard, record size, record count, and sequence.
+- zcnblk topology header: lane, lane count, worker, queue, request id, and
+  userspace tier/shard identity.
+
+Plan changes happen only through `ZC_REPLAN_V1` at a placement epoch boundary.
+Silent remapping is forbidden because it breaks release accounting, same-sector
+ordering, result-log zipping, sync high-water marks, and benchmark attribution.
+
+The `zcplan` command is the current executable prototype. `zcplan caps` emits
+local `ZC_CAPS_V1` JSON, and `zcplan plan --caps A.json,B.json` emits a
+`ZC_PLAN_V1` JSON document plus a `descriptor_projection` section showing how
+the compiled topology maps onto descriptor, tcpmux, WAL, and zcnblk fields.
+
 ## Encryption Hint
 
 Transport descriptors should distinguish encrypted and plaintext payloads.
@@ -248,6 +307,12 @@ and sequence range covered by the extent. Cross-lane coalescing requires an
 explicit barrier or sequence map so consumers do not infer false per-lane order.
 See `docs/wal-extent-framing.md` for the proposed fixed 4K logical record
 extent format.
+
+The zcnblk fan WAL prototype follows that rule for batched 4K block writes:
+`WRITE_BATCH` carries one descriptor array followed by one coalesced payload
+area, and `RESULT_BATCH` carries one result descriptor array. The fan interleaves
+leaf result streams in the lane-local handler aligned to the upstream output
+lane; leaf socket return order is never the placement or freshness contract.
 
 ## TCP Mux Topology Header
 

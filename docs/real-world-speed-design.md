@@ -36,6 +36,34 @@ same transport abstraction across AWS EFA, ConnectX, and fallback environments.
 Direct verbs or mlx5-specific APIs can be considered later only if libfabric is
 measurably blocking the target.
 
+Current EC2 evidence favors a first-class TCP mux fallback, not a single-flow
+design. On June 3, 2026, a two-node `c8gn.48xlarge` run in one cluster placement
+group reached 522.6 Gbit/s and 15.95M logical 4K WAL records/s by using both
+network cards and 256 TCP lanes per card. AWS libfabric installed and the
+`sockets` provider completed a cross-host smoke, but the `efa` provider did not
+complete even a one-message RDM data test on that launch. Treat EFA as a
+planned transport implementation until `fi_pingpong` succeeds independently.
+
+The transport abstraction should therefore have at least these implementations:
+
+- `tcp_mux`, where one lane is a source-bound TCP 5-tuple with route probes and
+  port-lane worker identity.
+- `libfabric_sockets`, useful for OFI API compatibility tests but not a
+  high-throughput target.
+- `libfabric_efa`, gated behind a successful EFA RDM data-path smoke and then
+  mapped as lane-to-endpoint/CQ/MR locality.
+
+For planning, `fi_info` provider discovery is necessary but not sufficient.
+The planner should require a recorded cross-host data smoke for the exact
+provider, endpoint type, domain, and private fabric path. A June 5, 2026
+`c8gn.16xlarge` pair proved this distinction: both nodes exposed AWS libfabric
+`2.4.0amzn3.0` and EFA RDM domains, and the sockets provider moved data over
+the private IPs, but `fi_pingpong -p efa` timed out for RDM and DGRAM data.
+Treat that as a hard gate, not a tuning problem inside the WAL path.
+
+Userspace RAID/fanout consumes this abstraction. It owns mirror, stripe, spill,
+placement, lane selection, ordering, and backpressure above the transport layer.
+
 ## Kernel And io_uring Use
 
 Linux 7-era io_uring APIs are part of the design:

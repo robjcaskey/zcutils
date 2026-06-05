@@ -6,6 +6,7 @@ Striping is userspace mapping: route logical offsets to stripe members.
 Never use a block device to implement mirroring or striping.
 Stripe lanes should be dedicated so lane N stays close to shard/device N.
 Spill is userspace tiering: write hot first, then queue bounded cold copies.
+Conventional and io_uring writes may hit one device and share one result log.
 Backpressure belongs at the mirror, stripe, and spill queues, not in blk-mq.
 Target block devices such as `/dev/zcbrdN` are terminal leaf media only.
 fio should see one `/dev/zcnblk0`; topology is proven by target/gateway logs.

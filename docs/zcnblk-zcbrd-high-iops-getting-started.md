@@ -102,6 +102,8 @@ sudo env \
   URING_PLAY_CQE_SPIN=64 \
   URING_PLAY_PIN_CPUS=1 \
   URING_PLAY_PIN_CPU_LIST=128-191 \
+  URING_PLAY_EXPECT_ROUTE_DEV=ens146 \
+  URING_PLAY_EXPECT_ROUTE_SRC="$TARGET_LISTEN_IP" \
   ./target/release/zcutils zcnblk-target \
     /dev/zcbrd0 "$TARGET_LISTEN_IP" "$BASE" \
     64 1 2048G 4K 256 64 4096 hugetlb true
