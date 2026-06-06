@@ -127,6 +127,11 @@ both paths coexist under the same ordered result-log contract. The adapter
 replaces only the leaf submit/completion internals and keeps emitting identical
 `RESULT` records.
 
+For RAM-backed fan development, use `zcnblk-wal-leaf zcmem:SIZE`. It is a
+NUMA-placeable userspace mmap arena with real read-after-write behavior and no
+terminal block subsystem hop. `/dev/zcbrdN` remains useful as a terminal
+block-media debug/control leaf, but it is not the fast RAM design point.
+
 ## Read Path
 
 Reads also use logs. A read request log record is placed to the branches that
@@ -189,6 +194,117 @@ That preserves conventional block-device expectations without forcing total
 ordering of unrelated writes in the hot path. Multiple application threads can
 issue writes concurrently; sync observes the whole device up to the global
 epoch, while ordinary write ACKs remain per request.
+
+Current fan-WAL code maps the zcnblk client `REQ_OP_FLUSH` path to
+`ZCNBLK_OP_SYNC`/`ZCNBLK_OP_SYNC_ACK`. In admission-ACK mode, ordinary write ACKs
+mean the write was accepted into the bounded local writeback/WAL pipeline and
+submitted to the userspace leaf streams. A sync drains the handler's local
+outstanding queue, waits for the shared dirty budget to reach zero across all
+handlers, sends a WAL sync to every leaf, and only then ACKs the flush upstream.
+That makes sync the global high-water mark for the volatile window.
+
+## Write-Back Buffer Budget
+
+The high-performance mirror path assumes a bounded volatile write-back buffer
+between ordinary writes and explicit sync/flush/FUA barriers. Ordinary write
+ACKs mean accepted, ordered, and visible to later reads. They do not mean
+durable media commit unless the request carries sync/FUA semantics or crosses an
+explicit protocol sync.
+
+Performance benchmarks should include at least one large-cache profile with
+2 GiB or more of dirty payload capacity, and preferably larger pools on 400G+
+hosts. At 600 Gbit/s, the logical ingress rate is about 75 GB/s, so 2 GiB covers
+only about 27 ms of dirty data before backpressure must engage. This is enough
+to prove batching, lane-local arenas, mirror fanout, and result zipping without
+turning every 4K write into a remote durability round trip.
+
+## WAL Combine And Reduce Blockstore
+
+The simple local problem is:
+
+```text
+4K logical ops -> lane-local WAL combiner -> dirty latest-value map
+               -> separate topology-aware reduce blockstore
+```
+
+The WAL combiner owns hot admission. It appends payload into large lane-local
+WAL extents, updates a compact `logical_record -> WAL slot` dirty map, and can
+ACK ordinary writes once local admission and placement policy are satisfied.
+It must not make RAID placement decisions inside the block client. Placement,
+mirror, stripe, spill, lane choice, and backpressure still belong to userspace
+RAID stages.
+
+The reduce blockstore is a separate userspace layer. It is a NUMA/topology-aware
+memory image that represents the compact latest reduced view. Reads first check
+the dirty map and copy from the WAL slot if the record has not been reduced yet;
+otherwise they read from the reduced blockstore. Sync/FUA waits for the reducer
+high-water mark, not for every ordinary write to make a remote round trip.
+
+Descriptor-native reads should not have to copy that 4 KiB payload. The dirty
+map can return a descriptor reference to the retained WAL slot, and the normal
+release path should retire the slot by lane HWM once replica, reducer, and active
+read/snapshot pins have all advanced. `zcwal-reduce-bench --read-access ref`
+models that descriptor-return path separately from forced materialization.
+
+This is the intended fast mirror shape: the frontend is optimized for random
+IOPS and freshness, while the backend reducer and transport are optimized for
+large WAL extents and ordered high-water marks.
+
+`zcwal-reduce-bench` isolates that shape without `/dev/zcnblk0`, TCP, RDMA, or a
+terminal block device:
+
+```bash
+target/release/zcwal-reduce-bench \
+  --mode mixed --pattern random \
+  --lanes 8 --workers 8 \
+  --records-per-lane 262144 \
+  --block-records-per-lane 32768 \
+  --extent-records 256 \
+  --read-pct 50 \
+  --pin --cpu-list 0-7
+```
+
+Local 2026-06-06 serial runs on one NUMA node, 8 lanes, 8 pinned workers,
+4 KiB records, and 256-record/1 MiB extents showed:
+
+| mode | logical IOPS | WAL Gbit/s | reduce Gbit/s | read Gbit/s | total touched Gbit/s | context switches |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| combine, sequential | 5.13M | 168.0 | 0 | 0 | 168.0 | 2 vol / 4 invol |
+| reduce, sequential | 2.41M | 79.1 | 79.1 | 0 | 158.2 | 1 vol / 13 invol |
+| mixed random, no forced reduce | 6.85M | 112.2 | 0 | 112.4 | 224.6 | 4 vol / 1 invol |
+| mixed random, reduce every extent | 3.88M | 63.4 | 63.4 | 63.8 | 190.5 | 1 vol / 1 invol |
+
+The result is the current architectural target for the zcnblk fan path. If the
+end-to-end block/network run is far below this, look for tiny batch/result ACK
+churn, misplaced context switches, or leaf/network serialization before blaming
+the dirty WAL model itself.
+
+Restricted-memory profiles are also required. The implementation must continue
+to behave correctly with small dirty budgets such as 64 MiB, 256 MiB, and
+512 MiB. Those runs are allowed to throttle sooner and produce lower IOPS, but
+they must preserve:
+
+- read-after-write from the local dirty range map;
+- same-sector ordering;
+- global sync/FUA high-water fencing;
+- explicit hard-limit backpressure before payload leases are exhausted;
+- accurate dirty-bytes, dirty-age, throttle, and sync-wait counters.
+
+Use separate soft and hard limits. Below the soft limit, coalesce writes into
+large lane-local WAL extents and ACK after local visibility plus mirror queue
+admission. Between soft and hard limits, prefer draining and batching over new
+admission. At the hard limit, stop ACKing new ordinary writes until durable or
+replicated high-water marks advance enough to release buffer space.
+
+Representative cache benchmark points:
+
+```text
+64 MiB    restricted/container smoke; should throttle quickly but stay correct
+256 MiB   small-host profile; proves bounded dirty maps and eviction
+512 MiB   moderate profile; enough for short low-QD/mixed tests
+2 GiB     minimum high-performance profile for local fan/mirror tuning
+8-128 GiB 400G/600G host profile for long bulk-streaming write tests
+```
 
 ## Fast-Path Rules
 

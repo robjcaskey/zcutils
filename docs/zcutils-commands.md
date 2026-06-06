@@ -88,8 +88,8 @@ callers share the same ordered descriptor/result contract; the selected leaf
 submit adapter must not change placement, ack, sync, or freshness semantics.
 
 ```bash
-zcnblk-wal-leaf zcdevnull0 127.0.0.1 24600 1 1 4K 1 false mixed
-zcnblk-wal-leaf zcdevnull1 127.0.0.2 24600 1 1 4K 1 false mixed
+zcnblk-wal-leaf zcmem:1G 127.0.0.1 24600 1 1 4K 1 false blocking
+zcnblk-wal-leaf zcmem:1G 127.0.0.2 24600 1 1 4K 1 false blocking
 
 URING_PLAY_ZCNBLK_WRITE_ACKS=1 \
 URING_PLAY_ZCNBLK_BATCH_DEPTH=64 \
@@ -99,6 +99,15 @@ zcnblk-fan --engine wal --leaves 127.0.0.1,127.0.0.2 --bind 127.0.0.1 \
   --bytes-per-connection 4M --chunk-bytes 4K --stripe-bytes 4K \
   --leaf-base-port 24600 --pin-handlers false --mode stripe
 ```
+
+`zcmem:SIZE` is the preferred local correctness/performance leaf for early
+fan work. It is a userspace mmap-backed block image, so it preserves
+read-after-write data without adding a terminal kernel block-device hop.
+It logs NUMA placement and supports `URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_NUMA_NODE`,
+`URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_HUGETLB`,
+`URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_THP`, and
+`URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_FIRST_TOUCH`. Use `/dev/zcbrdN` only as
+a terminal block-media control after userspace placement has already happened.
 
 The final optional `zcnblk-wal-leaf` argument is leaf submit mode:
 `blocking` uses `pread`/`pwrite`, `uring` queues terminal block-device
@@ -152,6 +161,29 @@ For high-IOPS runs, size `URING_PLAY_ZCNBLK_BATCH_DEPTH` so each leaf gets
 multi-MiB WAL chunks rather than 4K descriptor chatter, and record the
 lane-to-worker and lane-to-CPU mapping with the result.
 
+The WAL fan also has a bounded volatile write-back dirty budget. It is enabled
+by default and accounts logical payload bytes admitted into the outstanding
+write-batch pipeline until the corresponding leaf result batch advances the
+replicated high-water mark. Configure it with
+`URING_PLAY_ZCNBLK_FAN_WAL_MAX_DIRTY_BYTES`,
+`URING_PLAY_ZCNBLK_WAL_MAX_DIRTY_BYTES`, or
+`URING_PLAY_ZCNBLK_WAL_DIRTY_BYTES`; the soft limit defaults to 70% of the hard
+limit and can be set with `URING_PLAY_ZCNBLK_FAN_WAL_SOFT_DIRTY_BYTES` or
+`URING_PLAY_ZCNBLK_WAL_SOFT_DIRTY_BYTES`. Use `2G` or more for high-performance
+fan/mirror benchmarks. Restricted runs such as `64M`, `256M`, or `512M` are
+valid correctness/backpressure profiles, but they should be expected to
+throttle. The fan summary prints dirty admit/release, current, max-observed,
+pressure, and wait counters so benchmark logs show whether the run was
+cache-sized correctly.
+
+When `URING_PLAY_ZCNBLK_WRITE_ACKS=1`, `zcnblk-fan --engine wal` defaults to
+`URING_PLAY_ZCNBLK_WAL_WRITE_ACK_MODE=admit`: pure write batches ACK after local
+dirty-budget admission and leaf-stream submission, while explicit block flushes
+travel as `ZCNBLK_OP_SYNC` and return `ZCNBLK_OP_SYNC_ACK` only after the global
+fan-WAL dirty HWM drains and leaf sync results return. Set
+`URING_PLAY_ZCNBLK_WAL_WRITE_ACK_MODE=remote` to make ordinary write ACKs wait
+for leaf result batches too.
+
 `zcfanout-logzip-bench` isolates that zipper. It consumes materialized monotonic
 branch result logs in memory and reports descriptor-equivalent IOPS without
 claiming TCP or block-device throughput:
@@ -159,6 +191,65 @@ claiming TCP or block-device throughput:
 ```bash
 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-31 \
   zcfanout-logzip-bench mirror-write 32 2 1000000 4K 8192 32 64 true
+```
+
+`zcwal-reduce-bench` isolates the local WAL-combination and reduce-blockstore
+problem without using a block device, TCP, RDMA, or terminal media. It measures
+lane-local WAL append, dirty read freshness, and a separate userspace reduced
+blockstore view:
+
+```bash
+target/release/zcwal-reduce-bench \
+  --mode mixed --pattern random \
+  --lanes 8 --workers 8 \
+  --records-per-lane 262144 \
+  --block-records-per-lane 32768 \
+  --extent-records 256 \
+  --read-pct 50 \
+  --pin --cpu-list 0-7
+```
+
+Use `--mode combine` for WAL append only, `--mode reduce` for WAL append plus
+reduction into the userspace blockstore, `--mode read` for reduced-view reads,
+and `--mode mixed` for dirty-map read/write freshness. `--reduce-every-extents`
+adds a sync-like reducer high-water-mark profile. The output always prints
+lane-to-worker and worker-to-CPU mapping plus context switches.
+
+Use `--read-access copy` to force 4 KiB payload materialization on reads, or
+`--read-access ref` to model descriptor/native dirty-cache reads where the read
+returns a WAL/blockstore slot reference instead of copying the payload. In ref
+mode, copied read traffic stays at `read_Gbitps=0` and logical referenced read
+traffic is reported as `read_ref_Gbitps`.
+
+For large ordered read streams, benchmark the range-HWM zipper instead of
+per-4K result descriptors. Each branch publishes contiguous result-log HWMs, and
+the zipper emits the minimum contiguous range across branches:
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-31 \
+  zcfanout-logzip-bench stripe-read-hwm 32 8 10000000 4K 32768 32 0 true
+```
+
+For the lowest-overhead descriptor hot-loop, build the standalone C variant.
+It generates branch result descriptors analytically, avoids pre-materialized
+branch vectors, and still reports explicit lane-to-worker and worker-to-CPU
+mapping:
+
+```bash
+cc -O3 -march=native -Wall -Wextra -pthread \
+  -o /tmp/zcfanout_logzip_fast_bench tools/zcfanout_logzip_fast_bench.c
+
+URING_PLAY_PIN_CPU_LIST=0-31 \
+  /tmp/zcfanout_logzip_fast_bench \
+    --mode mirror-write \
+    --lanes 32 \
+    --branches 2 \
+    --records-per-lane 1000000 \
+    --payload-bytes 4K \
+    --window 8192 \
+    --workers 32 \
+    --skew 64 \
+    --pin true
 ```
 
 `zcfanout-logtcp-bench` puts the same result-log zipper behind real TCP streams
@@ -309,6 +400,15 @@ zcraid-mirror-send ofi 172.31.40.44,172.31.37.202 \
 That form keeps placement in userspace RAID: branch 0 and branch 1 are separate
 userspace mirror legs, not block-device RAID primitives.
 
+`zcraid-mirror-send` supports three ACK policies. The default
+`URING_PLAY_RAID_MIRROR_ACK_POLICY=remote` is a conservative commit benchmark:
+ordinary extents wait for every mirror branch HWM in each ACK window. Use
+`URING_PLAY_RAID_MIRROR_ACK_POLICY=sync` to model writeback block semantics:
+ordinary writes are treated as locally admitted and the sender waits for remote
+branch HWMs only at `URING_PLAY_RAID_MIRROR_SYNC_EVERY_EXTENTS` or at the end of
+the lane by default. Use `disabled` only as a transport ceiling; it does not
+measure committed or sync-safe writes.
+
 Zlane coordination is part of the mirror contract. By default
 `URING_PLAY_RAID_ZLANE_COORD=lane-owner` maps each `(lane, sequence)` to a
 disjoint logical range, so same-sector ordering is preserved by lane ownership
@@ -342,6 +442,12 @@ Use `tcp` instead of `ofi` to run the same userspace mirror contract over
 lane-aware TCP sockets. Every run prints branch domains, lanes, leader CPUs,
 workers, logical commit IOPS, branch wire Gbit/s, ACK latency, context switches,
 and migrations.
+
+For dual-ENI TCP mirror runs where both private addresses are in the same subnet,
+bind the sender source address per branch with
+`URING_PLAY_RAID_MIRROR_TCP_SOURCE_IPS=addr0,addr1`. Without that, Linux may
+route both branch destinations through one interface and the run is not
+topologically aligned.
 
 `zcplan plan --caps client.json,fan.json,leaf0.json,leaf1.json` uses previously
 advertised `ZC_CAPS_V1` documents instead of guessing from the local host. The
@@ -974,6 +1080,33 @@ pipeline and receive buffers up to 4 MiB; override with
 `URING_PLAY_ZCWAL_RECV_BYTES` when tuning. They intentionally do not implement
 RAID, tiering, spill, or any block-device striping/mirroring path; those remain
 userspace topology decisions outside this primitive.
+
+`zcwal-ofi-relay` is the libfabric head/fan point for userspace RAID1 WAL
+traffic. It receives one upstream extent stream per lane, forwards the same
+slot to every configured tail, waits for every tail ACK for that logical range,
+and then sends one upstream HWM ACK. `tail-addr` and `out-base-service` accept
+CSV lists; a single value is expanded across all tails. Example local shape:
+
+```bash
+zcwal-ofi-recv tcp rdm 127.0.0.1 30600 2 8M 64K 2 true
+zcwal-ofi-recv tcp rdm 127.0.0.1 31600 2 8M 64K 2 true
+zcwal-ofi-relay tcp rdm 127.0.0.1 127.0.0.1 29600 30600,31600 2 8M 64K 2 true
+zcwal-ofi-send tcp rdm 127.0.0.1 29600 2 8M 64K 2 true
+```
+
+The relay summary prints `tail_count`, logical payload throughput, branch wire
+throughput, tail-gated ACK latency, context switches, and migrations. It is a
+userspace RAID primitive; it must not be replaced by a block-device mirror.
+Use `URING_PLAY_OFI_ACK_WINDOW=N` to let senders, relays, and terminal OFI WAL
+receivers exchange one HWM/range ACK per contiguous batch instead of one ACK per
+extent; the startup banners print `ack_window`, `range_ack_send`, and
+`range_acks`. `URING_PLAY_OFI_RELAY_BRANCH_POST_NOWAIT=1` enables an
+experimental mirror fanout mode that posts a batch to all tails before draining
+completions; keep it off unless a benchmark shows it helps on the target
+provider/topology. On the local `tcp;rdm` provider, direct one-hop numbers and
+mirrored relay numbers must be interpreted by total data touches: a two-tail
+mirror does one upstream receive plus two downstream sends, so equal aggregate
+copy bandwidth appears as roughly one third of the direct one-hop logical IOPS.
 
 AES-256-GCM is optional and off by default for zcnblk so existing plaintext
 benchmarks remain comparable. Enable it on both sides with:
