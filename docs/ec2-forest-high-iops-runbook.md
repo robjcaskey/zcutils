@@ -95,6 +95,8 @@ Read the printed dry-run request. Confirm:
   `AssociatePublicIpAddress` field because AWS rejects that field with multiple
   network interfaces.
 - Card 1 has no public IP request or public association.
+- For EFA/RDMA runs, the security group allows all traffic both inbound from
+  and outbound to itself; default `0.0.0.0/0` egress alone is not enough.
 
 Then rerun the exact command with `--yes`.
 

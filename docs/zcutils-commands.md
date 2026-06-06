@@ -229,6 +229,120 @@ zcplan plan \
   --zero-copy required
 ```
 
+For a dual-card EFA mirror plan, pass the provider domains explicitly so each
+mirror leg owns a separate userspace branch topology:
+
+```bash
+zcplan plan \
+  --mode mirror \
+  --transport libfabric-efa \
+  --libfabric-domains efa_0-rdm,efa_1-rdm \
+  --libfabric-smoke-ok \
+  --lanes 32 \
+  --workers 32 \
+  --branches 2 \
+  --cpu-list 0-31,96-127 \
+  --extent-bytes 384K \
+  --batch-window 16 \
+  --zero-copy required
+```
+
+The emitted `compiled.parallel_raid.branch_topology` maps each mirror leg or
+stripe shard to a fabric domain, CPU slice, lane set, ACK policy, result-log
+contract, and `block_device_raid_primitive=false`.
+
+### zcraid-mirror-send / zcraid-mirror-recv
+
+Run a branch-topology-aware mirror commit benchmark. With an extent size of
+`4K`, the sender writes each logical 4 KiB WAL record to every userspace mirror
+branch and counts the record as committed only after all branch ACKs arrive.
+With larger ordered extents such as `384K` or `1M`, each extent is still
+accounted as logical 4 KiB records, but data and ACKs move as WAL ranges. This
+benchmark does not use a block device as a mirror primitive; block devices may
+only sit behind a terminal leaf writer after userspace placement has already
+happened.
+
+For the TCP path, every branch/lane extent is sent as a `ZcWalExtentHeader`
+followed by its payload. Receivers validate branch, lane, sequence, logical
+range, payload length, and WAL offset before sending an ACK. The sender counts a
+mirror extent as committed only when every branch ACK matches that ordered
+tail-accepted range.
+
+Receiver, one process per mirror branch:
+
+```bash
+URING_PLAY_PIN_CPUS=1 \
+URING_PLAY_PIN_CPU_LIST=0-31 \
+URING_PLAY_RAID_MIRROR_ACK_WINDOW=32 \
+URING_PLAY_OFI_COMPACT_4K=1 \
+URING_PLAY_OFI_PAYLOAD_INJECT=1 \
+URING_PLAY_OFI_ACK_INJECT=1 \
+URING_PLAY_OFI_CQ_SLEEP_NS=0 \
+FI_EFA_USE_DEVICE_RDMA=1 \
+zcraid-mirror-recv ofi auto 42000 0 64M 4K 32 plan.json efa rdm true
+```
+
+Sender:
+
+```bash
+URING_PLAY_PIN_CPUS=1 \
+URING_PLAY_PIN_CPU_LIST=0-31,96-127 \
+URING_PLAY_RAID_MIRROR_ACK_WINDOW=32 \
+URING_PLAY_OFI_COMPACT_4K=1 \
+URING_PLAY_OFI_PAYLOAD_INJECT=1 \
+URING_PLAY_OFI_ACK_INJECT=1 \
+URING_PLAY_OFI_CQ_SLEEP_NS=0 \
+FI_EFA_USE_DEVICE_RDMA=1 \
+zcraid-mirror-send ofi 172.31.38.204 42000,44000 64M 4K 32 plan.json efa rdm true
+```
+
+`zcraid-mirror-send` accepts either one peer address for same-host smoke tests
+or one address per branch for real userspace RAID1 leaves. For a two-leaf,
+dual-NIC EFA run, use `addr0,addr1` with matching branch base ports, for
+example:
+
+```bash
+zcraid-mirror-send ofi 172.31.40.44,172.31.37.202 \
+  62100,62200 64M 4K 32 plan.json efa rdm true
+```
+
+That form keeps placement in userspace RAID: branch 0 and branch 1 are separate
+userspace mirror legs, not block-device RAID primitives.
+
+Zlane coordination is part of the mirror contract. By default
+`URING_PLAY_RAID_ZLANE_COORD=lane-owner` maps each `(lane, sequence)` to a
+disjoint logical range, so same-sector ordering is preserved by lane ownership
+without a hot global lock. To stress overlapping logical ranges, use
+`URING_PLAY_RAID_ZLANE_COORD=range-lock`; the sender then uses a shared logical
+sequence namespace and holds sorted batch range locks until all branch ACKs for
+the batch have arrived. `URING_PLAY_RAID_ZLANE_COORD=none` is diagnostic only
+and prints a warning because overlapping zlanes may reorder same-sector writes.
+
+For high-IOPS local TCP mirror runs, `URING_PLAY_RAID_MIRROR_TCP_RECV_SPIN=1`
+enables bounded `MSG_DONTWAIT` receive spinning before the receiver falls back
+to blocking reads. Tune the bounded spin with
+`URING_PLAY_RAID_MIRROR_TCP_RECV_SPIN_BUDGET`; the receiver startup line prints
+the active spin setting so context-switch numbers are topology-explicit.
+Use `URING_PLAY_SOCKET_BUFFER_BYTES` for the TCP socket buffer request, and
+raise `net.core.wmem_max`, `net.core.rmem_max`, `tcp_wmem`, and `tcp_rmem` if
+the benchmark warns that the kernel clamped the requested buffers.
+
+Bulk ordered WAL mirror shape for throughput-oriented testing:
+
+```bash
+URING_PLAY_PIN_CPUS=1 \
+URING_PLAY_PIN_CPU_LIST=0-31,96-127 \
+URING_PLAY_RAID_MIRROR_ACK_WINDOW=1 \
+URING_PLAY_OFI_CQ_SLEEP_NS=0 \
+FI_EFA_USE_DEVICE_RDMA=1 \
+zcraid-mirror-send ofi 172.31.38.204 42000,44000 24G 384K 64 plan.json efa rdm false
+```
+
+Use `tcp` instead of `ofi` to run the same userspace mirror contract over
+lane-aware TCP sockets. Every run prints branch domains, lanes, leader CPUs,
+workers, logical commit IOPS, branch wire Gbit/s, ACK latency, context switches,
+and migrations.
+
 `zcplan plan --caps client.json,fan.json,leaf0.json,leaf1.json` uses previously
 advertised `ZC_CAPS_V1` documents instead of guessing from the local host. The
 emitted `descriptor_projection` shows how the plan maps to `ZcRecordDesc`,

@@ -69,6 +69,9 @@ ZC_PLAN_V1
   lane_map: lane -> node -> nic_queue or fabric_endpoint -> cq -> mr_region
             -> cpu -> worker -> wal_shard
   branch_map: lane -> branch set, replica set, stripe segment map
+  parallel_raid.branch_topology:
+    branch -> role -> fabric_domain/NIC -> lane set -> CPU slice
+           -> ACK policy -> result-log contract
   coalescing: extent_bytes, record_count, age_budget_ns, batch_window
   zipper: owner lane, primary branch, secondary handoff, reorder_window
   backpressure: descriptor credits, byte credits, wal credits, branch credits
@@ -142,6 +145,14 @@ For mirror writes, branch records reference the same payload lease. They do not
 copy payload per branch. For striped writes, branch records point at explicit
 payload slices chosen by the userspace placement plan. For reads, result records
 return descriptors and the zipper produces the ordered upstream view.
+
+For parallel EFA or multi-NIC TCP, the plan must name branch ownership rather
+than relying on a process-local default. Example: a two-leg mirror can map
+branch 0 to `efa_0-rdm` and CPUs `0-31`, branch 1 to `efa_1-rdm` and CPUs
+`96-127`, while both branches reference the same payload lease. A two-shard
+stripe can use the same branch topology but each branch owns only its planned
+lane set and payload slices. In both cases the emitted branch record must say
+`block_device_raid_primitive=false`.
 
 ## Correctness Contract
 

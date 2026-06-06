@@ -11,6 +11,9 @@ CTL="${CTL:-${ROOT}/ebpf/target/zc_raft_bpf_ctl}"
 PREF="${PREF:-10}"
 NETNS="${NETNS:-}"
 XDP_MODE="${XDP_MODE:-xdpgeneric}"
+BPF_FS_ROOT="${BPF_FS_ROOT:-/sys/fs/bpf/tc/globals}"
+PIN_XDP_MAPS="${PIN_XDP_MAPS:-1}"
+PIN_XDP_REPLACE="${PIN_XDP_REPLACE:-0}"
 
 usage()
 {
@@ -21,12 +24,17 @@ usage:
   IFACE=eth0 scripts/zc-raft-ebpf detach-tc
   IFACE=eth0 scripts/zc-raft-ebpf attach-xdp
   IFACE=eth0 scripts/zc-raft-ebpf detach-xdp
+  IFACE=eth0 scripts/zc-raft-ebpf pin-xdp-maps
+  IFACE=eth0 scripts/zc-raft-ebpf unpin-xdp-maps
   IFACE=eth0 scripts/zc-raft-ebpf status
   scripts/zc-raft-ebpf stats
   scripts/zc-raft-ebpf policy [--ports CSV] [--shards N] [--mark --mark-base N]
 
 Set NETNS=name to run ip/tc commands inside a network namespace.
 Set XDP_MODE=xdpgeneric, xdpdrv, or xdpoffload for attach-xdp.
+Set BPF_FS_ROOT=/sys/fs/bpf/... to choose where zc_raft maps are pinned.
+Set PIN_XDP_MAPS=0 to attach XDP without pinning maps.
+Set PIN_XDP_REPLACE=1 to replace existing pinned zc_raft maps at BPF_FS_ROOT.
 EOF
 }
 
@@ -70,16 +78,174 @@ detach_tc()
 	run_net tc filter del dev "${IFACE}" egress pref "${PREF}" 2>/dev/null || true
 }
 
+xdp_prog_id()
+{
+	run_net ip -details link show dev "${IFACE}" | awk '
+		/prog\/xdp/ {
+			for (i = 1; i <= NF; i++) {
+				if ($i == "id") {
+					print $(i + 1)
+					exit
+				}
+			}
+		}
+	'
+}
+
+bpftool_prog_map_ids()
+{
+	local prog_id="$1"
+
+	bpftool prog show id "${prog_id}" | awk '
+		/map_ids/ {
+			for (i = 1; i <= NF; i++) {
+				if ($i == "map_ids") {
+					print $(i + 1)
+					exit
+				}
+			}
+		}
+	' | tr ',' ' '
+}
+
+bpftool_map_name()
+{
+	local map_id="$1"
+
+	bpftool map show id "${map_id}" | awk '
+		/ name / {
+			for (i = 1; i <= NF; i++) {
+				if ($i == "name") {
+					print $(i + 1)
+					exit
+				}
+			}
+		}
+	'
+}
+
+bpftool_pinned_map_id()
+{
+	local path="$1"
+
+	bpftool map show pinned "${path}" 2>/dev/null | awk -F: 'NR == 1 { print $1; exit }'
+}
+
+pin_one_map()
+{
+	local map_id="$1"
+	local name="$2"
+	local path="${BPF_FS_ROOT}/${name}"
+	local existing_id
+
+	mkdir -p "${BPF_FS_ROOT}"
+	if [ -e "${path}" ]; then
+		existing_id="$(bpftool_pinned_map_id "${path}")"
+		if [ "${existing_id}" = "${map_id}" ]; then
+			echo "xdp-map-pin: ${name} already pinned id=${map_id} path=${path}"
+			return 0
+		fi
+		if [ "${PIN_XDP_REPLACE}" != "1" ]; then
+			echo "ERROR: refusing to replace ${path}; existing map id=${existing_id:-unknown}, new map id=${map_id}. Set BPF_FS_ROOT to an empty bpffs directory or PIN_XDP_REPLACE=1." >&2
+			return 1
+		fi
+		rm -f "${path}"
+	fi
+
+	bpftool map pin id "${map_id}" "${path}"
+	echo "xdp-map-pin: ${name} id=${map_id} path=${path}"
+}
+
+pin_xdp_maps()
+{
+	local prog_id map_ids map_id name pinned=0
+
+	need_iface
+	if [ "${PIN_XDP_MAPS}" = "0" ]; then
+		echo "xdp-map-pin: disabled by PIN_XDP_MAPS=0"
+		return 0
+	fi
+	if ! command -v bpftool >/dev/null 2>&1; then
+		echo "ERROR: bpftool is required to pin XDP maps for policy/stats; install bpftool or set PIN_XDP_MAPS=0." >&2
+		return 1
+	fi
+
+	prog_id="$(xdp_prog_id)"
+	if [ -z "${prog_id}" ]; then
+		echo "ERROR: no attached XDP program id found on IFACE=${IFACE}" >&2
+		return 1
+	fi
+	map_ids="$(bpftool_prog_map_ids "${prog_id}")"
+	if [ -z "${map_ids}" ]; then
+		echo "ERROR: no maps found for XDP program id=${prog_id}" >&2
+		return 1
+	fi
+
+	for map_id in ${map_ids}; do
+		name="$(bpftool_map_name "${map_id}")"
+		case "${name}" in
+			zc_raft_policy|zc_raft_stats|zc_raft_shards|zc_raft_cpu)
+				pin_one_map "${map_id}" "${name}"
+				pinned=$((pinned + 1))
+				;;
+		esac
+	done
+	if [ "${pinned}" -ne 4 ]; then
+		echo "ERROR: expected to pin 4 zc_raft XDP maps for program id=${prog_id}, pinned=${pinned}" >&2
+		return 1
+	fi
+}
+
+unpin_xdp_maps()
+{
+	local prog_id map_ids map_id name path existing_id
+
+	need_iface
+	if ! command -v bpftool >/dev/null 2>&1; then
+		echo "xdp-map-unpin: bpftool missing; skipping map cleanup" >&2
+		return 0
+	fi
+	prog_id="$(xdp_prog_id)"
+	if [ -z "${prog_id}" ]; then
+		echo "xdp-map-unpin: no attached XDP program id found on IFACE=${IFACE}; skipping map cleanup"
+		return 0
+	fi
+	map_ids="$(bpftool_prog_map_ids "${prog_id}")"
+	for map_id in ${map_ids}; do
+		name="$(bpftool_map_name "${map_id}")"
+		case "${name}" in
+			zc_raft_policy|zc_raft_stats|zc_raft_shards|zc_raft_cpu)
+				path="${BPF_FS_ROOT}/${name}"
+				if [ -e "${path}" ]; then
+					existing_id="$(bpftool_pinned_map_id "${path}")"
+					if [ "${existing_id}" = "${map_id}" ]; then
+						rm -f "${path}"
+						echo "xdp-map-unpin: ${name} id=${map_id} path=${path}"
+					else
+						echo "xdp-map-unpin: leaving ${path}; pinned id=${existing_id:-unknown} does not match attached XDP map id=${map_id}"
+					fi
+				fi
+				;;
+		esac
+	done
+}
+
 attach_xdp()
 {
 	need_iface
 	build
 	run_net ip link set dev "${IFACE}" "${XDP_MODE}" obj "${OBJ}" sec xdp
+	if ! pin_xdp_maps; then
+		unpin_xdp_maps || true
+		run_net ip link set dev "${IFACE}" xdp off 2>/dev/null || true
+		return 1
+	fi
 }
 
 detach_xdp()
 {
 	need_iface
+	unpin_xdp_maps || true
 	run_net ip link set dev "${IFACE}" xdp off
 }
 
@@ -108,17 +274,32 @@ case "${cmd}" in
 	detach-xdp)
 		detach_xdp
 		;;
+	pin-xdp-maps)
+		pin_xdp_maps
+		;;
+	unpin-xdp-maps)
+		unpin_xdp_maps
+		;;
 	status)
 		status
 		;;
 	stats)
 		build
-		"${CTL}" stats
+		shift
+		if [ "$#" -eq 0 ]; then
+			"${CTL}" stats "${BPF_FS_ROOT}"
+		else
+			"${CTL}" stats "$@"
+		fi
 		;;
 	policy)
 		build
 		shift
-		"${CTL}" policy "$@"
+		if [ "$#" -gt 0 ] && [[ "${1}" != --* ]]; then
+			"${CTL}" policy "$@"
+		else
+			"${CTL}" policy "${BPF_FS_ROOT}" "$@"
+		fi
 		;;
 	""|-h|--help|help)
 		usage

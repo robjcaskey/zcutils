@@ -245,6 +245,147 @@ The payload may already live in a registered buffer, ZCRX area, shared memory
 window, or mapped WAL region. In that case the frame is the durable append
 contract and the descriptor supplies the bytes.
 
+## OFI WAL Transport Prototype
+
+`zcwal-ofi-send` and `zcwal-ofi-recv` carry the same `ZcWalExtentV1` and
+`ZcWalAckV1` records over libfabric RDM endpoints. This is the RDMA/fabric
+parallel to the TCP mux WAL path: lane id, shard id, extent sequence, logical
+record count, and ack range stay in the WAL frame, while libfabric supplies the
+per-lane endpoint, CQ, address vector, and registered-memory semantics.
+
+The current prototype opens one libfabric endpoint per lane and uses a small
+TCP control exchange on `service + URING_PLAY_OFI_CONTROL_PORT_OFFSET` to swap
+provider endpoint names. Bind the data endpoint to the private fabric IP on
+real hosts; keep public IPs for SSH/control only. On EFA, do not treat
+`fi_info` as proof. Require a successful cross-host `fi_pingpong` or
+`libfabric-smoke` for the exact provider, endpoint, domain, security group, and
+private route before accepting results.
+
+Local functional smoke, receiver:
+
+```bash
+URING_PLAY_PIN_CPUS=1 \
+URING_PLAY_PIN_CPU_LIST=4,5,6,7 \
+URING_PLAY_OFI_TIMEOUT_MS=5000 \
+target/release/zcutils zcwal-ofi-recv tcp rdm 127.0.0.1 30100 4 8M 4K 4 true
+```
+
+Local functional smoke, sender:
+
+```bash
+URING_PLAY_PIN_CPUS=1 \
+URING_PLAY_PIN_CPU_LIST=20,21,22,23 \
+URING_PLAY_OFI_TIMEOUT_MS=5000 \
+target/release/zcutils zcwal-ofi-send tcp rdm 127.0.0.1 30100 4 8M 4K 4 true
+```
+
+For ultra-low-latency ACK experiments, the shim can spin on empty CQs instead
+of sleeping:
+
+```bash
+URING_PLAY_OFI_BUSY_POLL_ITERS=1000000
+URING_PLAY_OFI_CQ_SLEEP_NS=0
+```
+
+That mode is intentionally not the everyday default. It burns CPU to avoid
+scheduler handoff while a lane is hot. The command header prints
+`busy_poll_iters` and `cq_sleep_ns`; benchmark notes must include those values.
+
+### OFI RMA Direct Memory Prototype
+
+`zcwal-ofi-rma-target` and `zcwal-ofi-rma-write` are the first direct remote
+memory write smoke for the WAL/fabric path. The target opens one libfabric RDM
+endpoint per lane, registers a lane-local arena with `FI_REMOTE_WRITE`, and
+sends a 64-byte metadata message containing lane id, lane count, arena size,
+extent size, remote address, and remote key. The writer receives that metadata
+and issues `fi_write` calls directly into the remote arena, then sends one
+64-byte commit doorbell message for the lane.
+
+This is a transport primitive, not RAID placement. Userspace RAID still owns
+mirror, stripe, spill, placement, lane selection, locality, and backpressure.
+The RMA command only proves that a selected lane can place bytes directly into a
+selected remote registered memory slice.
+
+Local functional smoke, target:
+
+```bash
+URING_PLAY_OFI_TIMEOUT_MS=20000 \
+URING_PLAY_OFI_CQ_SLEEP_NS=0 \
+URING_PLAY_OFI_BUSY_POLL_ITERS=100000 \
+URING_PLAY_PIN_CPUS=1 \
+URING_PLAY_PIN_CPU_LIST=0-3 \
+target/release/zcutils zcwal-ofi-rma-target tcp rdm 127.0.0.1 31700 4 64M 1M 4
+```
+
+Local functional smoke, writer:
+
+```bash
+URING_PLAY_OFI_TIMEOUT_MS=20000 \
+URING_PLAY_OFI_CQ_SLEEP_NS=0 \
+URING_PLAY_OFI_BUSY_POLL_ITERS=100000 \
+URING_PLAY_PIN_CPUS=1 \
+URING_PLAY_PIN_CPU_LIST=4-7 \
+target/release/zcutils zcwal-ofi-rma-write tcp rdm 127.0.0.1 31700 4 64M 1M 4
+```
+
+On June 5, 2026, local release-mode loopback with libfabric `tcp` RDM showed:
+
+| mode | lanes | lane CPU map | payload | extent | writer payload Gbit/s | writer logical IOPS | target payload Gbit/s | target logical IOPS |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| RMA write + one doorbell | 1 | target `0`, writer `1` | 16 MiB/lane | 1 MiB | 59.3 | 1.81M | 48.1 | 1.47M |
+| RMA write + one doorbell | 4 | target `0-3`, writer `4-7` | 64 MiB/lane | 1 MiB | 98.0 | 2.99M | 90.4 | 2.76M |
+| RMA write + one doorbell | 4 | target `0-3`, writer `4-7` | 64 MiB/lane | 64 MiB | 53.4 | 1.63M | 37.5 | 1.14M |
+
+For local `tcp` RDM, `fi_info` reports `mr_mode=[]`, so peers target registered
+memory with an offset from the start of the region; `remote_addr=0` is expected.
+For providers with `FI_MR_VIRT_ADDR`, peers target the registered virtual
+address. Do not compare these local TCP values to EFA/RDMA line-rate claims; use
+them only to validate the API contract, lane pinning, and RMA visibility story.
+
+The next step is a descriptor-ring/HWM doorbell so the target can poll committed
+remote WAL progress without receiving one control message per lane. If the
+initiator completion level does not imply target visibility for a provider, use
+a fenced delivery-complete doorbell or provider-supported remote CQ data before
+advancing the high-water mark.
+
+On June 5, 2026, local release-mode loopback with libfabric `tcp` RDM, receiver
+CPUs `4,5,6,7`, sender CPUs `20,21,22,23`, 4 lanes, and 4 KiB logical records
+showed:
+
+| mode | payload | sender logical IOPS | receiver logical IOPS | context switches | migrations |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| no ACK | 64 MiB/lane | 2.50M | 2.46M | 442/0 send, 358/0 recv | 0 |
+| per-extent ACK, busy poll | 8 MiB/lane | 454k | 452k | 19/0 send, 25/1 recv | 0 |
+
+These are OFI API and lane-contract smokes, not EFA performance claims. The hot
+path still posts one message at a time and needs registered per-lane buffers,
+batched extents, CQ draining, and provider-specific max-message handling before
+it can be judged against the TCP mux on 400G+ hosts.
+
+On June 5, 2026, the same commands were validated cross-host on two
+`c8gn.16xlarge` adhoc instances with one EFA ENI each. The receiver used
+`bind=auto`, the sender used the peer private IP, and the security group allowed
+self-referenced all traffic in both directions. AWS `fi_pingpong -p efa`
+reported roughly 6.3-7.5 us per transfer for 64B-4K messages, proving provider
+data movement before running the WAL transport.
+
+With `URING_PLAY_OFI_BUSY_POLL_ITERS=1000000` and
+`URING_PLAY_OFI_CQ_SLEEP_NS=0`, the WAL-over-OFI EFA provider path showed:
+
+| mode | shape | sender logical IOPS | receiver logical IOPS | sender ACK latency | context switches |
+| --- | --- | ---: | ---: | --- | ---: |
+| per-extent ACK | 4 lanes, 1 MiB/lane, 4 KiB records | 50k | 45k | p50 16 us, p95 26 us, p99 72 us, max 9.6 ms | 169 send, 185 recv |
+| no ACK | 4 lanes, 8 MiB/lane, 4 KiB records | 207k | 193k | n/a | 155 send, 186 recv |
+
+The matching TCP WAL extent sync-ACK run over the same private EC2 path, same
+4 lanes, same CPUs, and same 1 MiB/lane payload showed 50k sender logical IOPS,
+51k receiver logical IOPS, p50 70 us, p95 131 us, p99 245 us, and 322 us max
+ACK latency. EFA is already materially better on median/tail ACK latency in
+busy-poll mode, but this shim is still throughput-limited by one-message-at-a-
+time send/recv and EFA per-message memory registration. The next throughput
+step is persistent registered lane buffers, posted receive rings, batched send
+submission, and CQ draining across batches.
+
 ## Current Prototype Mapping
 
 `tcp-wal-mux-server` and `tcp-bench-uring-mux-send` approximate extent framing

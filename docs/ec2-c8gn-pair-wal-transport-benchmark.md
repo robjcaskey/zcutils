@@ -175,10 +175,114 @@ EFA provider data did not complete:
 - `-e dgram -d rdmap71s0-dgrm`: timed out.
 
 The debug trace showed EFA endpoints were created and peer EFA addresses were
-inserted, but no transfer completion arrived before timeout. Therefore
-`libfabric_efa` remains gated: a plan may name the provider and endpoint/CQ/MR
-layout, but benchmarks must not mark it representative until a cross-host EFA
-data smoke succeeds.
+inserted, but no transfer completion arrived before timeout. For that run,
+`libfabric_efa` stayed gated: a plan could name the provider and endpoint/CQ/MR
+layout, but benchmarks could not mark it representative until a cross-host EFA
+data smoke succeeded.
+
+### Follow-up EFA Validation: June 5, 2026
+
+Run id `zc-efa-direct-adhoc-c8gn16-20260605T104515Z` launched two
+`c8gn.16xlarge` adhoc nodes in `us-east-2c` with one EFA ENI each:
+
+- node0 private `172.31.47.142`, public `3.144.173.172`
+- node1 private `172.31.42.237`, public `18.222.187.9`
+- AWS libfabric `2.4.0amzn3.0`, EFA device `rdmap71s0`
+- security group had self-referenced all-traffic ingress and egress
+
+This run validated real EFA provider data movement:
+
+```text
+/opt/amazon/efa/bin/fi_pingpong -p efa 172.31.47.142
+64B-4K messages: about 6.3-7.5 us/xfer
+```
+
+The WAL-over-OFI commands also completed over the private EFA path. Receiver
+commands used `bind=auto`; sender commands used the peer private IP. The current
+shim works with libfabric `provider=efa` and `fabric=efa`. Forcing
+`efa-direct` still returns `fi_getinfo` `ENODATA` in this shim and should stay
+gated until the address/fabric hints are corrected.
+
+Representative WAL-over-OFI EFA smoke results:
+
+| mode | shape | sender logical IOPS | receiver logical IOPS | sender ACK latency | context switches |
+| --- | --- | ---: | ---: | --- | ---: |
+| per-extent ACK | 4 lanes, 1 MiB/lane, 4 KiB records | 50k | 45k | p50 16 us, p95 26 us, p99 72 us, max 9.6 ms | 169 send, 185 recv |
+| no ACK | 4 lanes, 8 MiB/lane, 4 KiB records | 207k | 193k | n/a | 155 send, 186 recv |
+
+The same two hosts, same private path, same four CPUs, and TCP WAL extent
+sync-ACK mode measured 50k sender logical IOPS, 51k receiver logical IOPS,
+p50 70 us, p95 131 us, p99 245 us, and 322 us max ACK latency. The current
+conclusion is that EFA busy-poll gives lower ACK latency, but the prototype is
+not yet a high-throughput OFI data path because it posts one message at a time
+and registers message buffers per transfer on EFA.
+
+### Dual-NIC WAL-over-OFI EFA: June 5, 2026
+
+Run id `zc-dualnic-adhoc-c8gn48-20260605T135900Z` launched two
+`c8gn.48xlarge` adhoc nodes with two EFA ENIs each and one public IPv4 on
+card0 only. Bulk EFA traffic used the selected provider domain, not the public
+interface:
+
+- node0: card0 `172.31.38.204` / `efa_0-rdm`, card1 `172.31.44.250` /
+  `efa_1-rdm`
+- node1: card0 `172.31.47.214` / `efa_0-rdm`, card1 `172.31.41.234` /
+  `efa_1-rdm`
+- card0 workers pinned to CPUs `0-31`; card1 workers pinned to CPUs `96-127`
+- compact 4 KiB WAL records, payload and ACK inject, CQ busy-poll, and ACK
+  window as shown
+
+| shape | sender IOPS | receiver IOPS | sender ACK latency | sender ctx switches | recv ctx switches |
+| --- | ---: | ---: | --- | ---: | ---: |
+| card0, 32 lanes, window 16 | 4.84M | 4.71M | p50 52 us, p99 140 us | 2.3k | 2.1k |
+| card1, 32 lanes, window 16 | 5.09M | 5.08M | p50 52 us, p99 137 us | 2.2k | 2.1k |
+| dual card, 32 lanes/card, window 16 | 8.45M aggregate | 8.45M aggregate | p50 48-51 us, p99 235-375 us | 4.5k aggregate | 4.2k aggregate |
+| dual card, 64 lanes/card, window 16 | 7.99M aggregate | 10.98M aggregate | p50 55 us, p99 496-497 us | 9.3k aggregate | 8.4k aggregate |
+| dual card, 64 lanes/card, window 32 | 8.26M aggregate | 11.55M aggregate | p50 95-107 us, p99 736-868 us | 9.6k aggregate | 8.9k aggregate |
+
+The best client-side ACKed point in this pass was the 32-lane/card,
+window-16 topology. Higher lane/window settings let receivers drain faster but
+made the sender ACK loop and latency tails worse. Use the 32-lane/card shape as
+the first parallel mirror/stripe baseline until the ACK provider message path is
+batched further.
+
+### Userspace Mirror Commit over EFA and TCP: June 5, 2026
+
+The next pass used the same dual-NIC `c8gn.48xlarge` pair and the
+`compiled.parallel_raid.branch_topology` plan as the benchmark contract. The
+sender fanned each logical 4 KiB WAL record to two userspace mirror branches and
+only counted a commit after both branch ACKs arrived. This is not block-device
+mirroring or striping; the mirror primitive is entirely userspace.
+
+Common topology:
+
+- client/sender: node1, private control/data peer `172.31.38.204`
+- mirror branches: node0 branch 0 on CPUs `0-31`, branch 1 on CPUs `96-127`
+- lanes/workers: 32 logical lanes, 32 workers, 64 MiB per lane for steady runs
+- EFA branch domains: `efa_0-rdm` and `efa_1-rdm`
+- saved logs: `bench-results/zcraid-mirror-remote-20260605T1445/`
+
+| transport | ACK window | sender logical IOPS | branch wire Gbit/s | sender ACK latency | sender ctx switches | receiver branch IOPS |
+| --- | ---: | ---: | ---: | --- | ---: | --- |
+| libfabric EFA RDM | 16 | 2.32M | 152.4 | p50 77 us, p99 734 us, p999 2.0 ms | 5.0k | 2.38M / 2.56M |
+| libfabric EFA RDM | 32 | 1.80M | 117.7 | p50 136 us, p99 2.0 ms, p999 20 ms | 4.3k | 1.80M / 1.88M |
+| TCP lane sockets | 16 | 1.16M | 76.3 | p50 191 us, p99 494 us, p999 2.0 ms | 120k | 1.17M / 1.19M |
+| TCP lane sockets | 64 | 1.48M | 96.8 | p50 330 us, p99 2.0 ms, p999 12 ms | 43k | 1.48M / 1.52M |
+
+The EFA path is now meaningfully faster for this mirror commit benchmark when
+throughput is weighted, mostly because it avoids the TCP sender context-switch
+rate. These corrected sender numbers exclude endpoint/control setup from the
+timed region. The current bottleneck is still sender-side mirror fanout and
+ACK joining: one lane worker serially sends the same record to both branches and
+then waits for the all-branch commit condition. Window 16 is the current
+throughput and latency point for this implementation.
+
+Do not compare this table directly to the 522.6 Gbit/s TCP/WAL bulk transport
+result above. That run used large ordered WAL extents and measured data-plane
+capacity, while this table used 4 KiB mirror commit records. The mirror tools
+now also accept large ordered extents, for example `384K` or `1M`, and count
+the logical 4 KiB records inside each extent; use that mode when validating the
+dual-card EFA path against the 600 Gbit/s instance envelope.
 
 ## Transport Abstraction
 
@@ -198,8 +302,9 @@ Implementations:
   identity is the stable mapping, route checks are mandatory.
 - `libfabric_sockets`: functional fallback for OFI API shape only, not a
   high-throughput result.
-- `libfabric_efa`: planned; do not enable as a benchmark path until EFA RDM data
-  messages complete independently.
+- `libfabric_efa`: validated for EFA RDM data and ACKed WAL messages. Treat a
+  plan as representative only when it names the selected domain, pins the
+  domain-local CPU slice, and records the lane-to-worker/lane-to-CPU map.
 
 Userspace RAID, fanout, mirror, spill, placement, and backpressure sit above
 this transport. Block devices are terminal leaf media only after userspace

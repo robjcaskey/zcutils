@@ -38,7 +38,16 @@ Attach XDP when the driver supports it:
 
 ```sh
 sudo IFACE=eth0 scripts/zc-raft-ebpf attach-xdp
+sudo scripts/zc-raft-ebpf policy --ports 19401,9100,9200 --shards 16
+sudo scripts/zc-raft-ebpf stats
 ```
+
+`attach-xdp` pins the loaded XDP program's `zc_raft_policy`,
+`zc_raft_stats`, `zc_raft_shards`, and `zc_raft_cpu` maps under
+`/sys/fs/bpf/tc/globals` by default so the same `policy` and `stats` commands
+work for TC and XDP. Set `BPF_FS_ROOT=/sys/fs/bpf/...` to use a different map
+pin directory, `PIN_XDP_MAPS=0` to attach without pinning, or
+`PIN_XDP_REPLACE=1` to replace existing pinned zc_raft maps.
 
 The default policy watches ports `19401`, `9100`, and `9200`, uses 64 logical
 shards, and does not mutate packet marks. Use `--mark` to write `mark_base +
