@@ -230,6 +230,22 @@ Minimum benchmark metadata to record in every run directory:
 - Whether the leaf backend is `zcdevnull`, terminal `/dev/zcbrdN`, or another
   explicitly allowed terminal leaf.
 
+Minimum benchmark measurements for judging an architectural change:
+
+- Low-queue-depth random mixed read/write IOPS and latency. Record QD1, QD2,
+  QD4, QD8, and QD16 when possible, plus read/write ratio, sync/FUA policy,
+  and whether the run entered through `/dev/zcnblk0` or a userspace harness.
+- Context switches for each hot process and worker: voluntary, involuntary,
+  migrations, CPU time, lane-to-worker map, and lane-to-CPU map. Report
+  switches per second and per 1,000 logical 4K I/O.
+- Bulk throughput for the intended multi-NIC path: per-NIC, per-branch, and
+  aggregate Gbit/s, route checks, card ids, private IPs, lane count, extent
+  size, batch window, zero-copy fallback counts, and ACK/high-water policy.
+
+If any of those three measurement families is missing, the result is a smoke
+test. Do not use it to decide that a topology, zero-copy, batching, RAID, fan,
+or transport architecture is better.
+
 Keep raw logs under `qemu-zcrx/${RUN_ID}-.../` or `bench-results/${RUN_ID}-.../`
 so teardown does not lose the result trail.
 

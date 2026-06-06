@@ -212,6 +212,30 @@ zero_copy_observed=... copied_fallbacks=...
 ctx_switches=vol/invol migrations=...
 ```
 
+Do not call an architectural change good from a single headline IOPS or Gbit/s
+number. The required acceptance input is a before/after benchmark set on the
+same hardware and explicit topology that includes all of these:
+
+- Random mixed read/write IOPS at low queue depths. At minimum record QD1,
+  QD2, QD4, QD8, and QD16, with read/write ratio, sync/FUA policy, latency
+  percentiles, and whether requests entered through `/dev/zcnblk0` or a
+  userspace-only harness.
+- Context-switch cost for every hot role. Record voluntary and involuntary
+  context switches, migrations, CPU time, worker CPU, lane-to-worker map, and
+  lane-to-CPU map. Report switches per second and per 1,000 logical 4K I/O so
+  batching changes cannot hide scheduler churn.
+- Bulk throughput across the intended multi-NIC topology. Record per-NIC,
+  per-branch, and aggregate Gbit/s, source and destination private IPs, route
+  checks, NIC/card ids, CPU pinning, lane count, extent size, batch window,
+  zero-copy fallback counts, and ACK/high-water policy.
+
+An architecture experiment is only representative if it improves the intended
+axis without regressing the others beyond the plan budget. For example, a
+throughput-oriented WAL coalescing change still needs low-QD mixed I/O and
+context-switch data, and a low-latency change still needs bulk multi-NIC
+throughput data. Missing data means the result is a smoke test, not an
+architecture decision.
+
 If hugetlb, memlock headroom, worker pinning, hctx affinity, batching, route
 checks, or io_uring fast-path knobs are missing, the benchmark should warn
 loudly and mark the result as a smoke run.
