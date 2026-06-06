@@ -1,0 +1,59 @@
++ . /home/ubuntu/.cargo/env
+++ case ":${PATH}:" in
+++ export PATH=/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+++ PATH=/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
++ cd /home/ubuntu/zcutils
++ export PATH=/opt/amazon/efa/bin:/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
++ PATH=/opt/amazon/efa/bin:/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
++ export LD_LIBRARY_PATH=/opt/amazon/efa/lib:
++ LD_LIBRARY_PATH=/opt/amazon/efa/lib:
++ cargo build --release --bin zcutils
+   Compiling zcutils v1.0.0 (/home/ubuntu/zcutils)
+warning: value assigned to `rq_region` is never read
+    --> src/lib.rs:1972:13
+     |
+1972 |             rq_region.id = 0;
+     |             ^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `rq_region` is never read
+    --> src/lib.rs:1973:13
+     |
+1973 |             rq_region.mmap_offset = 0;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+
+warning: associated function `open_rma_on_domain` is never used
+    --> src/lib.rs:9208:8
+     |
+9165 | impl ZcOfiEndpoint {
+     | ------------------ associated function in this implementation
+...
+9208 |     fn open_rma_on_domain(
+     |        ^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `zcnblk_fan_wal_recv_exact_dontwait_spin` is never used
+     --> src/lib.rs:23681:4
+      |
+23681 | fn zcnblk_fan_wal_recv_exact_dontwait_spin(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `zcnblk_fan_wal_read_frame_dontwait_spin` is never used
+     --> src/lib.rs:23762:4
+      |
+23762 | fn zcnblk_fan_wal_read_frame_dontwait_spin(stream: &TcpStream) -> io::Result<ZcnblkFanWalFrame> {
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `zcnblk_fan_wal_read_payload_dontwait_spin` is never used
+     --> src/lib.rs:23788:4
+      |
+23788 | fn zcnblk_fan_wal_read_payload_dontwait_spin(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `zcutils` (lib) generated 6 warnings
+    Finished `release` profile [optimized] target(s) in 33.46s

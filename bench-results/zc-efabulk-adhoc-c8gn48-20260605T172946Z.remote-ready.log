@@ -1,0 +1,12 @@
+ip-172-31-35-134
+Linux ip-172-31-35-134 6.17.0-1017-aws #17~24.04.1-Ubuntu SMP Tue May 26 21:09:53 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens68            UP             172.31.35.134/20 metric 100 fe80::840:8bff:fe7c:46ed/64 
+ens146           UP             172.31.38.60/20 fe80::8c4:45ff:fef2:1ae7/64 
+ip-172-31-45-48
+Linux ip-172-31-45-48 6.17.0-1017-aws #17~24.04.1-Ubuntu SMP Tue May 26 21:09:53 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens68            UP             172.31.45.48/20 metric 100 fe80::809:64ff:fe25:b71/64 
+ens146           UP             172.31.44.118/20 fe80::802:97ff:fe31:3285/64 
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.151.24.0 'URING_NODE_INDEX=1 URING_RUN_ID=zc-efabulk-adhoc-c8gn48-20260605T172946Z URING_PRIVATE_IPS=172.31.35.134,172.31.45.48 hostname; uname -a; ip -brief addr'
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.130.114.18 'URING_NODE_INDEX=2 URING_RUN_ID=zc-efabulk-adhoc-c8gn48-20260605T172946Z URING_PRIVATE_IPS=172.31.35.134,172.31.45.48 hostname; uname -a; ip -brief addr'

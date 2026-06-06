@@ -1,0 +1,14 @@
+Warning: Permanently added '3.144.173.172' (ED25519) to the list of known hosts.
+zcwal-extent-recv: bind=0.0.0.0 base_port=35100 lanes=2 connections_per_lane=1 total_connections=2 bytes_per_connection=16777216 extent_bytes=4096 record_size=4096 records_per_extent=1 workers=2 framing=extent data_path=blocking ack_enabled=yes socket_buffer_bytes=16777216 uring_recv_bytes=4096 uring_entries=64
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 425984 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+tcp-bench-uring-mux-server: accepted peer=172.31.42.237:47224 lane=0 port=35100 conn=0 incoming_cpu=16 incoming_napi_id=525
+tcp-bench-uring-mux-server: accepted peer=172.31.42.237:51232 lane=1 port=35101 conn=0 incoming_cpu=58 incoming_napi_id=522
+zcwal-extent-recv-mux-assignment: worker=0 policy=port-lane peer=172.31.42.237:47224 listener_lane=0 listener_port=35100 conn=0 incoming_cpu=16 incoming_napi_id=525
+zcwal-extent-recv-mux-assignment: worker=1 policy=port-lane peer=172.31.42.237:51232 listener_lane=1 listener_port=35101 conn=0 incoming_cpu=58 incoming_napi_id=522
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 425984 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcwal-extent-recv-mux-assignment-summary: policy=port-lane workers=2 streams_by_worker=0:1,1:1
+zcwal-extent-recv-worker: affinity_index=0 target_cpu=4 status=ok
+zcwal-extent-recv-worker: affinity_index=1 target_cpu=5 status=ok
+zcwal-extent-recv-worker: worker=0 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.324343 payload_Gbitps=0.414 logical_iops=12629 thread_cpu_seconds=0.028555 cpu_wall_pct=8.8 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=8139 involuntary_ctxt_switches=0 migrations=0
+zcwal-extent-recv-worker: worker=1 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.214834 payload_Gbitps=0.625 logical_iops=19066 thread_cpu_seconds=0.027327 cpu_wall_pct=12.7 target_cpu=5 affinity_applied=true start_cpu=5 end_cpu=5 voluntary_ctxt_switches=7605 involuntary_ctxt_switches=0 migrations=0
+zcwal-extent-recv-summary: payload_bytes=33554432 wire_bytes=34603008 extents=8192 logical_records=8192 acks=8192 seconds=0.324505 payload_Gbitps=0.827 logical_iops=25245 voluntary_ctxt_switches=15744 involuntary_ctxt_switches=0 migrations=0

@@ -1,0 +1,33 @@
+zcraid-mirror-send-branch-topology: branch=0 domain=none lanes=0-3 leader_cpus=0-3 workers=0-3 block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches
+zcraid-mirror-send-branch-topology: branch=1 domain=none lanes=0-3 leader_cpus=4-7 workers=0-3 block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches
+zcraid-mirror-send-branch-port: branch=0 base_port=35000 domain=auto
+zcraid-mirror-send-branch-port: branch=1 base_port=36000 domain=auto
+zcraid-mirror-send: transport=tcp-mux-compatible addr=127.0.0.1 branches=2 lanes=0-3 lane_count=4 bytes_per_lane=16777216 record_bytes=4096 records_per_lane=4096 workers=4 ack_enabled=yes ack_window=16 provider=tcp endpoint=rdm plan_json=yes compact_4k=no payload_inject=no ack_inject=no tx_nowait=no prepost_ack=no
+zcraid-mirror-tcp-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=1 target_cpu=1 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=3 target_cpu=3 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=2 target_cpu=2 status=ok
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcraid-mirror-tcp-send-lane: worker=0 branch=0 lane=0 addr=127.0.0.1 port=35000
+zcraid-mirror-tcp-send-lane: worker=0 branch=1 lane=0 addr=127.0.0.1 port=36000
+zcraid-mirror-tcp-send-lane: worker=1 branch=0 lane=1 addr=127.0.0.1 port=35001
+zcraid-mirror-tcp-send-lane: worker=3 branch=0 lane=3 addr=127.0.0.1 port=35003
+zcraid-mirror-tcp-send-lane: worker=2 branch=0 lane=2 addr=127.0.0.1 port=35002
+zcraid-mirror-tcp-send-lane: worker=1 branch=1 lane=1 addr=127.0.0.1 port=36001
+zcraid-mirror-tcp-send-lane: worker=3 branch=1 lane=3 addr=127.0.0.1 port=36003
+zcraid-mirror-tcp-send-lane: worker=2 branch=1 lane=2 addr=127.0.0.1 port=36002
+zcraid-mirror-send-worker: worker=0 streams=2 payload_bytes=16777216 wire_bytes=33554432 extents=4096 logical_records=4096 acks=4096 seconds=0.031434 payload_Gbitps=4.270 logical_iops=130306 thread_cpu_seconds=0.020671 cpu_wall_pct=65.8 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=25 involuntary_ctxt_switches=4001 migrations=0
+zcraid-mirror-send-worker-latency: worker=0 ack_count=4096 ack_avg_ns=65312 ack_min_ns=11070 ack_p50_ns=66000 ack_p95_ns=116000 ack_p99_ns=135000 ack_p999_ns=262000 ack_max_ns=265472
+zcraid-mirror-send-worker-wire: worker=0 branch_wire_bytes=33554432 branch_wire_Gbitps=8.540
+zcraid-mirror-send-worker: worker=1 streams=2 payload_bytes=16777216 wire_bytes=33554432 extents=4096 logical_records=4096 acks=4096 seconds=0.031634 payload_Gbitps=4.243 logical_iops=129480 thread_cpu_seconds=0.020924 cpu_wall_pct=66.1 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=9 involuntary_ctxt_switches=4038 migrations=0
+zcraid-mirror-send-worker-latency: worker=1 ack_count=4096 ack_avg_ns=65385 ack_min_ns=11090 ack_p50_ns=66000 ack_p95_ns=117000 ack_p99_ns=129000 ack_p999_ns=210000 ack_max_ns=268682
+zcraid-mirror-send-worker-wire: worker=1 branch_wire_bytes=33554432 branch_wire_Gbitps=8.486
+zcraid-mirror-send-worker: worker=2 streams=2 payload_bytes=16777216 wire_bytes=33554432 extents=4096 logical_records=4096 acks=4096 seconds=0.031600 payload_Gbitps=4.247 logical_iops=129620 thread_cpu_seconds=0.021015 cpu_wall_pct=66.5 target_cpu=2 affinity_applied=true start_cpu=2 end_cpu=2 voluntary_ctxt_switches=7 involuntary_ctxt_switches=4025 migrations=0
+zcraid-mirror-send-worker-latency: worker=2 ack_count=4096 ack_avg_ns=65458 ack_min_ns=10890 ack_p50_ns=66000 ack_p95_ns=116000 ack_p99_ns=153000 ack_p999_ns=300000 ack_max_ns=361302
+zcraid-mirror-send-worker-wire: worker=2 branch_wire_bytes=33554432 branch_wire_Gbitps=8.495
+zcraid-mirror-send-worker: worker=3 streams=2 payload_bytes=16777216 wire_bytes=33554432 extents=4096 logical_records=4096 acks=4096 seconds=0.032068 payload_Gbitps=4.185 logical_iops=127728 thread_cpu_seconds=0.021175 cpu_wall_pct=66.0 target_cpu=3 affinity_applied=true start_cpu=3 end_cpu=3 voluntary_ctxt_switches=22 involuntary_ctxt_switches=4022 migrations=0
+zcraid-mirror-send-worker-latency: worker=3 ack_count=4096 ack_avg_ns=66358 ack_min_ns=11130 ack_p50_ns=68000 ack_p95_ns=118000 ack_p99_ns=150000 ack_p999_ns=252000 ack_max_ns=265602
+zcraid-mirror-send-worker-wire: worker=3 branch_wire_bytes=33554432 branch_wire_Gbitps=8.371
+zcraid-mirror-send-summary: transport=tcp-mux-compatible branches=2 lanes=4 workers=4 record_bytes=4096 ack_window=16 logical_payload_bytes=67108864 branch_wire_bytes=134217728 extents=16384 logical_records=16384 committed_acks=16384 seconds=0.032068 logical_payload_Gbitps=16.742 branch_wire_Gbitps=33.483 logical_iops=510912 voluntary_ctxt_switches=63 involuntary_ctxt_switches=16086 migrations=0
+zcraid-mirror-send-latency-summary: mirror_commit_ack_count=16384 mirror_commit_ack_avg_ns=65628 mirror_commit_ack_min_ns=10890 mirror_commit_ack_p50_ns=66000 mirror_commit_ack_p95_ns=117000 mirror_commit_ack_p99_ns=141000 mirror_commit_ack_p999_ns=258000 mirror_commit_ack_max_ns=361302

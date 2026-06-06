@@ -1,0 +1,64 @@
+run_dir=bench-results/local-xdp-smoke-20260605T215609Z-xdpdrv
+--- attach xdpdrv ---
+make: Entering directory '/home/rob/zcutils/ebpf'
+make: Nothing to be done for 'all'.
+make: Leaving directory '/home/rob/zcutils/ebpf'
+--- status after attach ---
+141: zcxdp_a0@if140: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 xdp qdisc noqueue state UP mode DEFAULT group default qlen 1000
+    link/ether da:5e:ff:e8:cd:40 brd ff:ff:ff:ff:ff:ff link-netns zcxdp_b_3614611 promiscuity 0 allmulti 0 minmtu 68 maxmtu 65535 
+    veth addrgenmode eui64 numtxqueues 32 numrxqueues 32 gso_max_size 65536 gso_max_segs 65535 tso_max_size 524280 tso_max_segs 65535 gro_max_size 65536 gso_ipv4_max_size 65536 gro_ipv4_max_size 65536 
+    prog/xdp id 9788 name zc_raft_xdp tag 332a2da2d2323055 jited load_time 79276945288619 created_by_uid 0 btf_id 5246 
+--- pin maps ---
+map_ids=2079 2080 2081 2082
+pinned zc_raft_policy id=2079
+pinned zc_raft_stats id=2080
+pinned zc_raft_shards id=2081
+pinned zc_raft_cpu id=2082
+policy flags=0x4 shards=8 mark_base=0 ports=19401
+--- stats before ---
+stats[0:total] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[1:tcp] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[2:udp] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[3:raft_port] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[4:append] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[5:ack] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[6:unknown_magic] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[7:drop] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[8:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[9:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[10:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[11:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[12:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[13:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[14:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[15:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+--- send packets ---
+--- stats after ---
+stats[0:total] packets=1000 bytes=66000 appends=1000 acks=0 unknown_magic=0 drops=0
+stats[1:tcp] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[2:udp] packets=1000 bytes=66000 appends=1000 acks=0 unknown_magic=0 drops=0
+stats[3:raft_port] packets=1000 bytes=66000 appends=1000 acks=0 unknown_magic=0 drops=0
+stats[4:append] packets=1000 bytes=66000 appends=1000 acks=0 unknown_magic=0 drops=0
+stats[5:ack] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[6:unknown_magic] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[7:drop] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[8:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[9:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[10:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[11:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[12:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[13:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[14:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+stats[15:reserved] packets=0 bytes=0 appends=0 acks=0 unknown_magic=0 drops=0
+shards[0:shard] packets=124 bytes=8184 appends=124 acks=0 unknown_magic=0 drops=0
+shards[1:shard] packets=123 bytes=8118 appends=123 acks=0 unknown_magic=0 drops=0
+shards[2:shard] packets=125 bytes=8250 appends=125 acks=0 unknown_magic=0 drops=0
+shards[3:shard] packets=126 bytes=8316 appends=126 acks=0 unknown_magic=0 drops=0
+shards[4:shard] packets=128 bytes=8448 appends=128 acks=0 unknown_magic=0 drops=0
+shards[5:shard] packets=125 bytes=8250 appends=125 acks=0 unknown_magic=0 drops=0
+shards[6:shard] packets=130 bytes=8580 appends=130 acks=0 unknown_magic=0 drops=0
+shards[7:shard] packets=119 bytes=7854 appends=119 acks=0 unknown_magic=0 drops=0
+--- detach xdpdrv ---
+141: zcxdp_a0@if140: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000
+    link/ether da:5e:ff:e8:cd:40 brd ff:ff:ff:ff:ff:ff link-netns zcxdp_b_3614611 promiscuity 0 allmulti 0 minmtu 68 maxmtu 65535 
+    veth addrgenmode eui64 numtxqueues 32 numrxqueues 32 gso_max_size 65536 gso_max_segs 65535 tso_max_size 524280 tso_max_segs 65535 gro_max_size 65536 gso_ipv4_max_size 65536 gro_ipv4_max_size 65536 

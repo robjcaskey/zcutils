@@ -1,0 +1,134 @@
+{
+  "ami_id": "ami-0e03e3a55ecc62f7d",
+  "az": "us-east-2c",
+  "cost_ceiling": {
+    "duration_hours": 1.9997222222222222,
+    "public_ipv4_ceiling_usd": 0.019997222222222222,
+    "root_ebs_ceiling_usd": 0.1683053881278539,
+    "spot_ceiling_usd": 7.998888888888889,
+    "total_ceiling_usd": 8.187191499238965
+  },
+  "drop_dead_utc": "2026-06-05T19:27:38Z",
+  "ena_express": false,
+  "enable_efa": true,
+  "instance_type": "c8gn.48xlarge",
+  "network_card_count": 2,
+  "nodes": 2,
+  "public_ip_mode": "tagged-eip-post-launch",
+  "region": "us-east-2",
+  "request": {
+    "BlockDeviceMappings": [
+      {
+        "DeviceName": "/dev/sda1",
+        "Ebs": {
+          "DeleteOnTermination": true,
+          "VolumeSize": 256,
+          "VolumeType": "gp3"
+        }
+      }
+    ],
+    "ImageId": "ami-0e03e3a55ecc62f7d",
+    "InstanceMarketOptions": {
+      "MarketType": "spot",
+      "SpotOptions": {
+        "InstanceInterruptionBehavior": "terminate",
+        "MaxPrice": "2.00",
+        "SpotInstanceType": "one-time"
+      }
+    },
+    "InstanceType": "c8gn.48xlarge",
+    "KeyName": "adhocMasterKeypair",
+    "MaxCount": 2,
+    "MetadataOptions": {
+      "HttpEndpoint": "enabled",
+      "HttpTokens": "required"
+    },
+    "MinCount": 2,
+    "NetworkInterfaces": [
+      {
+        "DeviceIndex": 0,
+        "Groups": [
+          "sg-025a50a35d3073a8a"
+        ],
+        "InterfaceType": "efa",
+        "NetworkCardIndex": 0,
+        "SubnetId": "subnet-c66ddd8b"
+      },
+      {
+        "DeviceIndex": 1,
+        "Groups": [
+          "sg-025a50a35d3073a8a"
+        ],
+        "InterfaceType": "efa",
+        "NetworkCardIndex": 1,
+        "SubnetId": "subnet-c66ddd8b"
+      }
+    ],
+    "Placement": {
+      "AvailabilityZone": "us-east-2c",
+      "GroupName": "up-zc-ramtarget-us-east-2a"
+    },
+    "TagSpecifications": [
+      {
+        "ResourceType": "instance",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "zc-efabulk-adhoc-c8gn48-20260605T172738Z"
+          },
+          {
+            "Key": "Project",
+            "Value": "uring-play"
+          },
+          {
+            "Key": "Purpose",
+            "Value": "adhoc-performance-compute"
+          },
+          {
+            "Key": "uringPlayRunId",
+            "Value": "zc-efabulk-adhoc-c8gn48-20260605T172738Z"
+          },
+          {
+            "Key": "adhocKeepaliveModeAction",
+            "Value": "terminate"
+          },
+          {
+            "Key": "adhocKeepalive",
+            "Value": "2026-06-05T19:27:38Z"
+          }
+        ]
+      },
+      {
+        "ResourceType": "volume",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "zc-efabulk-adhoc-c8gn48-20260605T172738Z"
+          },
+          {
+            "Key": "Project",
+            "Value": "uring-play"
+          },
+          {
+            "Key": "Purpose",
+            "Value": "adhoc-performance-compute"
+          },
+          {
+            "Key": "uringPlayRunId",
+            "Value": "zc-efabulk-adhoc-c8gn48-20260605T172738Z"
+          },
+          {
+            "Key": "adhocKeepaliveModeAction",
+            "Value": "terminate"
+          },
+          {
+            "Key": "adhocKeepalive",
+            "Value": "2026-06-05T19:27:38Z"
+          }
+        ]
+      }
+    ]
+  },
+  "run_id": "zc-efabulk-adhoc-c8gn48-20260605T172738Z",
+  "subnet_id": "subnet-c66ddd8b"
+}

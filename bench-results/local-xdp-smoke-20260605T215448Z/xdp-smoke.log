@@ -1,0 +1,23 @@
+run_dir=bench-results/local-xdp-smoke-20260605T215448Z
+ns_a=zcxdp_a_3610329 ns_b=zcxdp_b_3610329 if_a=zcxdp_a0 if_b=zcxdp_b0
+--- attach xdp ---
+make: Entering directory '/home/rob/zcutils/ebpf'
+make: Nothing to be done for 'all'.
+make: Leaving directory '/home/rob/zcutils/ebpf'
+--- status after attach ---
+137: zcxdp_a0@if136: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 xdpgeneric qdisc noqueue state UP mode DEFAULT group default qlen 1000
+    link/ether da:5e:ff:e8:cd:40 brd ff:ff:ff:ff:ff:ff link-netns zcxdp_b_3610329 promiscuity 0 allmulti 0 minmtu 68 maxmtu 65535 
+    veth addrgenmode eui64 numtxqueues 32 numrxqueues 32 gso_max_size 65536 gso_max_segs 65535 tso_max_size 524280 tso_max_segs 65535 gro_max_size 65536 gso_ipv4_max_size 65536 gro_ipv4_max_size 65536 
+    prog/xdp id 9776 name zc_raft_xdp tag 332a2da2d2323055 jited load_time 79195458450342 created_by_uid 0 btf_id 5224 
+--- pinned zc maps ---
+ls: cannot access '/sys/fs/bpf/tc/globals/zc_raft_*': No such file or directory
+--- policy ---
+--- stats before ---
+--- send packets ---
+--- stats after ---
+--- detach xdp ---
+--- status after detach ---
+137: zcxdp_a0@if136: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 xdpgeneric qdisc noqueue state UP mode DEFAULT group default qlen 1000
+    link/ether da:5e:ff:e8:cd:40 brd ff:ff:ff:ff:ff:ff link-netns zcxdp_b_3610329 promiscuity 0 allmulti 0 minmtu 68 maxmtu 65535 
+    veth addrgenmode eui64 numtxqueues 32 numrxqueues 32 gso_max_size 65536 gso_max_segs 65535 tso_max_size 524280 tso_max_segs 65535 gro_max_size 65536 gso_ipv4_max_size 65536 gro_ipv4_max_size 65536 
+    prog/xdp id 9776 name zc_raft_xdp tag 332a2da2d2323055 jited load_time 79195458450342 created_by_uid 0 btf_id 5224 

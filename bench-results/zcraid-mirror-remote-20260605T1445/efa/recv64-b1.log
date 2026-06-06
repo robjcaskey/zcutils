@@ -1,0 +1,164 @@
+zcraid-mirror-recv-branch-topology: branch=0 domain=efa_0-rdm lanes=0-31 leader_cpus=0-31 workers=0-31 block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches
+zcraid-mirror-recv-branch-topology: branch=1 domain=efa_1-rdm lanes=0-31 leader_cpus=96-127 workers=0-31 block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches
+zcraid-mirror-recv: transport=libfabric-rdm bind=auto base_port=44000 branch=1 lanes=0-31 lane_count=32 bytes_per_lane=67108864 record_bytes=4096 records_per_lane=16384 workers=32 ack_enabled=yes ack_window=16 provider=efa endpoint=rdm branch_domain=efa_1-rdm plan_json=yes
+zcraid-mirror-ofi-recv-worker: affinity_index=0 target_cpu=96 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=1 target_cpu=97 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=2 target_cpu=98 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=3 target_cpu=99 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=4 target_cpu=100 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=5 target_cpu=101 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=13 target_cpu=109 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=8 target_cpu=104 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=16 target_cpu=112 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=7 target_cpu=103 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=15 target_cpu=111 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=12 target_cpu=108 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=10 target_cpu=106 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=18 target_cpu=114 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=19 target_cpu=115 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=9 target_cpu=105 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=17 target_cpu=113 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=6 target_cpu=102 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=20 target_cpu=116 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=21 target_cpu=117 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=14 target_cpu=110 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=11 target_cpu=107 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=22 target_cpu=118 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=23 target_cpu=119 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=24 target_cpu=120 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=25 target_cpu=121 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=26 target_cpu=122 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=27 target_cpu=123 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=28 target_cpu=124 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=29 target_cpu=125 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=30 target_cpu=126 status=ok
+zcraid-mirror-ofi-recv-worker: affinity_index=31 target_cpu=127 status=ok
+zcofi-control-server: listen=0.0.0.0:45006 peer=172.31.47.214:58986 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=6 branch=1 lane=6 provider=efa endpoint=rdm bind=auto service=44006 control_port=45006 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45003 peer=172.31.47.214:38634 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=3 branch=1 lane=3 provider=efa endpoint=rdm bind=auto service=44003 control_port=45003 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45001 peer=172.31.47.214:36556 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=1 branch=1 lane=1 provider=efa endpoint=rdm bind=auto service=44001 control_port=45001 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45000 peer=172.31.47.214:54646 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=0 branch=1 lane=0 provider=efa endpoint=rdm bind=auto service=44000 control_port=45000 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45002 peer=172.31.47.214:33946 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=2 branch=1 lane=2 provider=efa endpoint=rdm bind=auto service=44002 control_port=45002 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45004 peer=172.31.47.214:42158 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=4 branch=1 lane=4 provider=efa endpoint=rdm bind=auto service=44004 control_port=45004 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45005 peer=172.31.47.214:54456 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=5 branch=1 lane=5 provider=efa endpoint=rdm bind=auto service=44005 control_port=45005 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45012 peer=172.31.47.214:33864 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=12 branch=1 lane=12 provider=efa endpoint=rdm bind=auto service=44012 control_port=45012 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45021 peer=172.31.47.214:39406 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=21 branch=1 lane=21 provider=efa endpoint=rdm bind=auto service=44021 control_port=45021 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45008 peer=172.31.47.214:35414 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=8 branch=1 lane=8 provider=efa endpoint=rdm bind=auto service=44008 control_port=45008 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45007 peer=172.31.47.214:60416 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=7 branch=1 lane=7 provider=efa endpoint=rdm bind=auto service=44007 control_port=45007 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45017 peer=172.31.47.214:35628 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=17 branch=1 lane=17 provider=efa endpoint=rdm bind=auto service=44017 control_port=45017 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45015 peer=172.31.47.214:36660 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=15 branch=1 lane=15 provider=efa endpoint=rdm bind=auto service=44015 control_port=45015 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45026 peer=172.31.47.214:52418 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=26 branch=1 lane=26 provider=efa endpoint=rdm bind=auto service=44026 control_port=45026 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45011 peer=172.31.47.214:54218 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=11 branch=1 lane=11 provider=efa endpoint=rdm bind=auto service=44011 control_port=45011 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45022 peer=172.31.47.214:33532 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=22 branch=1 lane=22 provider=efa endpoint=rdm bind=auto service=44022 control_port=45022 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45013 peer=172.31.47.214:42938 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=13 branch=1 lane=13 provider=efa endpoint=rdm bind=auto service=44013 control_port=45013 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45020 peer=172.31.47.214:40796 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=20 branch=1 lane=20 provider=efa endpoint=rdm bind=auto service=44020 control_port=45020 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45025 peer=172.31.47.214:49616 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=25 branch=1 lane=25 provider=efa endpoint=rdm bind=auto service=44025 control_port=45025 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45018 peer=172.31.47.214:45216 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=18 branch=1 lane=18 provider=efa endpoint=rdm bind=auto service=44018 control_port=45018 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45019 peer=172.31.47.214:45844 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=19 branch=1 lane=19 provider=efa endpoint=rdm bind=auto service=44019 control_port=45019 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45010 peer=172.31.47.214:52196 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=10 branch=1 lane=10 provider=efa endpoint=rdm bind=auto service=44010 control_port=45010 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45023 peer=172.31.47.214:50864 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=23 branch=1 lane=23 provider=efa endpoint=rdm bind=auto service=44023 control_port=45023 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45030 peer=172.31.47.214:56852 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=30 branch=1 lane=30 provider=efa endpoint=rdm bind=auto service=44030 control_port=45030 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45016 peer=172.31.47.214:41908 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=16 branch=1 lane=16 provider=efa endpoint=rdm bind=auto service=44016 control_port=45016 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45009 peer=172.31.47.214:48752 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=9 branch=1 lane=9 provider=efa endpoint=rdm bind=auto service=44009 control_port=45009 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45014 peer=172.31.47.214:39576 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=14 branch=1 lane=14 provider=efa endpoint=rdm bind=auto service=44014 control_port=45014 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45027 peer=172.31.47.214:45570 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=27 branch=1 lane=27 provider=efa endpoint=rdm bind=auto service=44027 control_port=45027 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45029 peer=172.31.47.214:39148 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=29 branch=1 lane=29 provider=efa endpoint=rdm bind=auto service=44029 control_port=45029 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45024 peer=172.31.47.214:43804 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=24 branch=1 lane=24 provider=efa endpoint=rdm bind=auto service=44024 control_port=45024 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45028 peer=172.31.47.214:35026 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=28 branch=1 lane=28 provider=efa endpoint=rdm bind=auto service=44028 control_port=45028 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:45031 peer=172.31.47.214:52872 local_addr_bytes=32 remote_addr_bytes=32
+zcraid-mirror-ofi-recv-lane: worker=31 branch=1 lane=31 provider=efa endpoint=rdm bind=auto service=44031 control_port=45031 domain=efa_1-rdm max_msg_size=18446744073709551615 inject_size=4096
+zcraid-mirror-recv-worker: worker=0 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.277910 payload_Gbitps=1.932 logical_iops=58954 thread_cpu_seconds=0.281957 cpu_wall_pct=101.5 target_cpu=96 affinity_applied=true start_cpu=96 end_cpu=96 voluntary_ctxt_switches=56 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-recv-worker-wire: worker=0 branch_wire_bytes=67108864 branch_wire_Gbitps=1.932
+zcraid-mirror-recv-worker: worker=1 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.286768 payload_Gbitps=1.872 logical_iops=57133 thread_cpu_seconds=0.288827 cpu_wall_pct=100.7 target_cpu=97 affinity_applied=true start_cpu=97 end_cpu=97 voluntary_ctxt_switches=47 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-recv-worker-wire: worker=1 branch_wire_bytes=67108864 branch_wire_Gbitps=1.872
+zcraid-mirror-recv-worker: worker=2 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.286869 payload_Gbitps=1.871 logical_iops=57113 thread_cpu_seconds=0.290995 cpu_wall_pct=101.4 target_cpu=98 affinity_applied=true start_cpu=98 end_cpu=98 voluntary_ctxt_switches=52 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-recv-worker-wire: worker=2 branch_wire_bytes=67108864 branch_wire_Gbitps=1.871
+zcraid-mirror-recv-worker: worker=3 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.286214 payload_Gbitps=1.876 logical_iops=57244 thread_cpu_seconds=0.286724 cpu_wall_pct=100.2 target_cpu=99 affinity_applied=true start_cpu=99 end_cpu=99 voluntary_ctxt_switches=45 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-recv-worker-wire: worker=3 branch_wire_bytes=67108864 branch_wire_Gbitps=1.876
+zcraid-mirror-recv-worker: worker=4 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.289241 payload_Gbitps=1.856 logical_iops=56645 thread_cpu_seconds=0.291179 cpu_wall_pct=100.7 target_cpu=100 affinity_applied=true start_cpu=100 end_cpu=100 voluntary_ctxt_switches=54 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=4 branch_wire_bytes=67108864 branch_wire_Gbitps=1.856
+zcraid-mirror-recv-worker: worker=5 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.287335 payload_Gbitps=1.868 logical_iops=57021 thread_cpu_seconds=0.288305 cpu_wall_pct=100.3 target_cpu=101 affinity_applied=true start_cpu=101 end_cpu=101 voluntary_ctxt_switches=59 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-recv-worker-wire: worker=5 branch_wire_bytes=67108864 branch_wire_Gbitps=1.868
+zcraid-mirror-recv-worker: worker=6 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.176074 payload_Gbitps=3.049 logical_iops=93052 thread_cpu_seconds=0.184033 cpu_wall_pct=104.5 target_cpu=102 affinity_applied=true start_cpu=102 end_cpu=102 voluntary_ctxt_switches=71 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=6 branch_wire_bytes=67108864 branch_wire_Gbitps=3.049
+zcraid-mirror-recv-worker: worker=7 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.193215 payload_Gbitps=2.779 logical_iops=84797 thread_cpu_seconds=0.199837 cpu_wall_pct=103.4 target_cpu=103 affinity_applied=true start_cpu=103 end_cpu=103 voluntary_ctxt_switches=82 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-recv-worker-wire: worker=7 branch_wire_bytes=67108864 branch_wire_Gbitps=2.779
+zcraid-mirror-recv-worker: worker=8 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.178982 payload_Gbitps=3.000 logical_iops=91540 thread_cpu_seconds=0.187119 cpu_wall_pct=104.5 target_cpu=104 affinity_applied=true start_cpu=104 end_cpu=104 voluntary_ctxt_switches=94 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=8 branch_wire_bytes=67108864 branch_wire_Gbitps=3.000
+zcraid-mirror-recv-worker: worker=9 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.196345 payload_Gbitps=2.734 logical_iops=83445 thread_cpu_seconds=0.202884 cpu_wall_pct=103.3 target_cpu=105 affinity_applied=true start_cpu=105 end_cpu=105 voluntary_ctxt_switches=76 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=9 branch_wire_bytes=67108864 branch_wire_Gbitps=2.734
+zcraid-mirror-recv-worker: worker=10 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.183628 payload_Gbitps=2.924 logical_iops=89224 thread_cpu_seconds=0.189367 cpu_wall_pct=103.1 target_cpu=106 affinity_applied=true start_cpu=106 end_cpu=106 voluntary_ctxt_switches=73 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-recv-worker-wire: worker=10 branch_wire_bytes=67108864 branch_wire_Gbitps=2.924
+zcraid-mirror-recv-worker: worker=11 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.171253 payload_Gbitps=3.135 logical_iops=95671 thread_cpu_seconds=0.177478 cpu_wall_pct=103.6 target_cpu=107 affinity_applied=true start_cpu=107 end_cpu=107 voluntary_ctxt_switches=74 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=11 branch_wire_bytes=67108864 branch_wire_Gbitps=3.135
+zcraid-mirror-recv-worker: worker=12 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.273292 payload_Gbitps=1.964 logical_iops=59951 thread_cpu_seconds=0.281060 cpu_wall_pct=102.8 target_cpu=108 affinity_applied=true start_cpu=108 end_cpu=108 voluntary_ctxt_switches=89 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=12 branch_wire_bytes=67108864 branch_wire_Gbitps=1.964
+zcraid-mirror-recv-worker: worker=13 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.281716 payload_Gbitps=1.906 logical_iops=58158 thread_cpu_seconds=0.286250 cpu_wall_pct=101.6 target_cpu=109 affinity_applied=true start_cpu=109 end_cpu=109 voluntary_ctxt_switches=51 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=13 branch_wire_bytes=67108864 branch_wire_Gbitps=1.906
+zcraid-mirror-recv-worker: worker=14 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.259352 payload_Gbitps=2.070 logical_iops=63173 thread_cpu_seconds=0.269930 cpu_wall_pct=104.1 target_cpu=110 affinity_applied=true start_cpu=110 end_cpu=110 voluntary_ctxt_switches=62 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-recv-worker-wire: worker=14 branch_wire_bytes=67108864 branch_wire_Gbitps=2.070
+zcraid-mirror-recv-worker: worker=15 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.280763 payload_Gbitps=1.912 logical_iops=58355 thread_cpu_seconds=0.286662 cpu_wall_pct=102.1 target_cpu=111 affinity_applied=true start_cpu=111 end_cpu=111 voluntary_ctxt_switches=51 involuntary_ctxt_switches=2 migrations=0
+zcraid-mirror-recv-worker-wire: worker=15 branch_wire_bytes=67108864 branch_wire_Gbitps=1.912
+zcraid-mirror-recv-worker: worker=16 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.211581 payload_Gbitps=2.537 logical_iops=77436 thread_cpu_seconds=0.213507 cpu_wall_pct=100.9 target_cpu=112 affinity_applied=true start_cpu=112 end_cpu=112 voluntary_ctxt_switches=56 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=16 branch_wire_bytes=67108864 branch_wire_Gbitps=2.537
+zcraid-mirror-recv-worker: worker=17 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.192793 payload_Gbitps=2.785 logical_iops=84982 thread_cpu_seconds=0.199177 cpu_wall_pct=103.3 target_cpu=113 affinity_applied=true start_cpu=113 end_cpu=113 voluntary_ctxt_switches=86 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=17 branch_wire_bytes=67108864 branch_wire_Gbitps=2.785
+zcraid-mirror-recv-worker: worker=18 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.196952 payload_Gbitps=2.726 logical_iops=83188 thread_cpu_seconds=0.204691 cpu_wall_pct=103.9 target_cpu=114 affinity_applied=true start_cpu=114 end_cpu=114 voluntary_ctxt_switches=83 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=18 branch_wire_bytes=67108864 branch_wire_Gbitps=2.726
+zcraid-mirror-recv-worker: worker=19 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.196663 payload_Gbitps=2.730 logical_iops=83310 thread_cpu_seconds=0.205845 cpu_wall_pct=104.7 target_cpu=115 affinity_applied=true start_cpu=115 end_cpu=115 voluntary_ctxt_switches=65 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=19 branch_wire_bytes=67108864 branch_wire_Gbitps=2.730
+zcraid-mirror-recv-worker: worker=20 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.176723 payload_Gbitps=3.038 logical_iops=92710 thread_cpu_seconds=0.184845 cpu_wall_pct=104.6 target_cpu=116 affinity_applied=true start_cpu=116 end_cpu=116 voluntary_ctxt_switches=74 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=20 branch_wire_bytes=67108864 branch_wire_Gbitps=3.038
+zcraid-mirror-recv-worker: worker=21 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.160838 payload_Gbitps=3.338 logical_iops=101867 thread_cpu_seconds=0.169039 cpu_wall_pct=105.1 target_cpu=117 affinity_applied=true start_cpu=117 end_cpu=117 voluntary_ctxt_switches=69 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=21 branch_wire_bytes=67108864 branch_wire_Gbitps=3.338
+zcraid-mirror-recv-worker: worker=22 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.172845 payload_Gbitps=3.106 logical_iops=94790 thread_cpu_seconds=0.182306 cpu_wall_pct=105.5 target_cpu=118 affinity_applied=true start_cpu=118 end_cpu=118 voluntary_ctxt_switches=69 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=22 branch_wire_bytes=67108864 branch_wire_Gbitps=3.106
+zcraid-mirror-recv-worker: worker=23 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.183487 payload_Gbitps=2.926 logical_iops=89292 thread_cpu_seconds=0.188658 cpu_wall_pct=102.8 target_cpu=119 affinity_applied=true start_cpu=119 end_cpu=119 voluntary_ctxt_switches=66 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=23 branch_wire_bytes=67108864 branch_wire_Gbitps=2.926
+zcraid-mirror-recv-worker: worker=24 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.246219 payload_Gbitps=2.180 logical_iops=66542 thread_cpu_seconds=0.254936 cpu_wall_pct=103.5 target_cpu=120 affinity_applied=true start_cpu=120 end_cpu=120 voluntary_ctxt_switches=68 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-recv-worker-wire: worker=24 branch_wire_bytes=67108864 branch_wire_Gbitps=2.180
+zcraid-mirror-recv-worker: worker=25 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.273780 payload_Gbitps=1.961 logical_iops=59844 thread_cpu_seconds=0.283467 cpu_wall_pct=103.5 target_cpu=121 affinity_applied=true start_cpu=121 end_cpu=121 voluntary_ctxt_switches=61 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=25 branch_wire_bytes=67108864 branch_wire_Gbitps=1.961
+zcraid-mirror-recv-worker: worker=26 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.206566 payload_Gbitps=2.599 logical_iops=79316 thread_cpu_seconds=0.213661 cpu_wall_pct=103.4 target_cpu=122 affinity_applied=true start_cpu=122 end_cpu=122 voluntary_ctxt_switches=83 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=26 branch_wire_bytes=67108864 branch_wire_Gbitps=2.599
+zcraid-mirror-recv-worker: worker=27 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.204179 payload_Gbitps=2.629 logical_iops=80243 thread_cpu_seconds=0.211673 cpu_wall_pct=103.7 target_cpu=123 affinity_applied=true start_cpu=123 end_cpu=123 voluntary_ctxt_switches=77 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=27 branch_wire_bytes=67108864 branch_wire_Gbitps=2.629
+zcraid-mirror-recv-worker: worker=28 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.194345 payload_Gbitps=2.762 logical_iops=84304 thread_cpu_seconds=0.201795 cpu_wall_pct=103.8 target_cpu=124 affinity_applied=true start_cpu=124 end_cpu=124 voluntary_ctxt_switches=64 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=28 branch_wire_bytes=67108864 branch_wire_Gbitps=2.762
+zcraid-mirror-recv-worker: worker=29 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.198488 payload_Gbitps=2.705 logical_iops=82544 thread_cpu_seconds=0.203927 cpu_wall_pct=102.7 target_cpu=125 affinity_applied=true start_cpu=125 end_cpu=125 voluntary_ctxt_switches=67 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=29 branch_wire_bytes=67108864 branch_wire_Gbitps=2.705
+zcraid-mirror-recv-worker: worker=30 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.185717 payload_Gbitps=2.891 logical_iops=88220 thread_cpu_seconds=0.190110 cpu_wall_pct=102.4 target_cpu=126 affinity_applied=true start_cpu=126 end_cpu=126 voluntary_ctxt_switches=81 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=30 branch_wire_bytes=67108864 branch_wire_Gbitps=2.891
+zcraid-mirror-recv-worker: worker=31 streams=1 payload_bytes=67108864 wire_bytes=67108864 extents=16384 logical_records=16384 acks=16384 seconds=0.179483 payload_Gbitps=2.991 logical_iops=91284 thread_cpu_seconds=0.187414 cpu_wall_pct=104.4 target_cpu=127 affinity_applied=true start_cpu=127 end_cpu=127 voluntary_ctxt_switches=58 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-recv-worker-wire: worker=31 branch_wire_bytes=67108864 branch_wire_Gbitps=2.991
+zcraid-mirror-recv-summary: transport=libfabric-rdm branches=2 lanes=32 workers=32 record_bytes=4096 ack_window=16 logical_payload_bytes=2147483648 branch_wire_bytes=2147483648 extents=524288 logical_records=524288 committed_acks=524288 seconds=0.289241 logical_payload_Gbitps=59.396 branch_wire_Gbitps=59.396 logical_iops=1812633 voluntary_ctxt_switches=2163 involuntary_ctxt_switches=24 migrations=0

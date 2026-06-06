@@ -1,0 +1,23 @@
+zcofi-wal-send: provider=tcp endpoint=rdm addr=127.0.0.1 base_service=43600 lanes=4 bytes_per_lane=16777216 extent_bytes=1048576 message_bytes=1048704 workers=4 ack_enabled=yes tx_nowait=no prepost_ack=no compact_4k=no payload_inject=no ack_window=1 ofi_domain=auto records_per_extent=256 timeout_ms=20000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-send-worker: affinity_index=3 target_cpu=3 status=ok
+zcofi-wal-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcofi-wal-send-worker: affinity_index=1 target_cpu=1 status=ok
+zcofi-wal-send-worker: affinity_index=2 target_cpu=2 status=ok
+zcofi-control-client: addr=127.0.0.1:44600 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=0 lane=0 provider=tcp endpoint=rdm addr=127.0.0.1 service=43600 control_port=44600 max_msg_size=18446744073709551615 inject_size=128
+zcofi-control-client: addr=127.0.0.1:44601 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=1 lane=1 provider=tcp endpoint=rdm addr=127.0.0.1 service=43601 control_port=44601 max_msg_size=18446744073709551615 inject_size=128
+zcofi-control-client: addr=127.0.0.1:44602 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-client: addr=127.0.0.1:44603 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=3 lane=3 provider=tcp endpoint=rdm addr=127.0.0.1 service=43603 control_port=44603 max_msg_size=18446744073709551615 inject_size=128
+zcofi-wal-send-lane: worker=2 lane=2 provider=tcp endpoint=rdm addr=127.0.0.1 service=43602 control_port=44602 max_msg_size=18446744073709551615 inject_size=128
+zcofi-wal-send-worker: worker=0 streams=1 payload_bytes=16777216 wire_bytes=16779264 extents=16 logical_records=4096 acks=16 seconds=0.430807 payload_Gbitps=0.312 logical_iops=9508 thread_cpu_seconds=0.152325 cpu_wall_pct=35.4 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=3 involuntary_ctxt_switches=38 migrations=0
+zcofi-wal-send-worker-latency: worker=0 ack_count=16 ack_avg_ns=26911359 ack_min_ns=16551722 ack_p50_ns=24000000 ack_p95_ns=79000000 ack_p99_ns=79000000 ack_p999_ns=79000000 ack_max_ns=78043669
+zcofi-wal-send-worker: worker=1 streams=1 payload_bytes=16777216 wire_bytes=16779264 extents=16 logical_records=4096 acks=16 seconds=0.446804 payload_Gbitps=0.300 logical_iops=9167 thread_cpu_seconds=0.154869 cpu_wall_pct=34.7 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=5 involuntary_ctxt_switches=39 migrations=0
+zcofi-wal-send-worker-latency: worker=1 ack_count=16 ack_avg_ns=27915938 ack_min_ns=16635572 ack_p50_ns=24000000 ack_p95_ns=87000000 ack_p99_ns=87000000 ack_p999_ns=87000000 ack_max_ns=86025805
+zcofi-wal-send-worker: worker=2 streams=1 payload_bytes=16777216 wire_bytes=16779264 extents=16 logical_records=4096 acks=16 seconds=0.410865 payload_Gbitps=0.327 logical_iops=9969 thread_cpu_seconds=0.145404 cpu_wall_pct=35.4 target_cpu=2 affinity_applied=true start_cpu=2 end_cpu=2 voluntary_ctxt_switches=4 involuntary_ctxt_switches=40 migrations=0
+zcofi-wal-send-worker-latency: worker=2 ack_count=16 ack_avg_ns=25669712 ack_min_ns=16759493 ack_p50_ns=24000000 ack_p95_ns=58000000 ack_p99_ns=58000000 ack_p999_ns=58000000 ack_max_ns=57950583
+zcofi-wal-send-worker: worker=3 streams=1 payload_bytes=16777216 wire_bytes=16779264 extents=16 logical_records=4096 acks=16 seconds=0.414528 payload_Gbitps=0.324 logical_iops=9881 thread_cpu_seconds=0.146027 cpu_wall_pct=35.2 target_cpu=3 affinity_applied=true start_cpu=3 end_cpu=3 voluntary_ctxt_switches=6 involuntary_ctxt_switches=42 migrations=0
+zcofi-wal-send-worker-latency: worker=3 ack_count=16 ack_avg_ns=25901643 ack_min_ns=16443619 ack_p50_ns=25000000 ack_p95_ns=62000000 ack_p99_ns=62000000 ack_p999_ns=62000000 ack_max_ns=61987292
+zcofi-wal-send-summary: payload_bytes=67108864 wire_bytes=67117056 extents=64 logical_records=16384 acks=64 seconds=0.446804 payload_Gbitps=1.202 logical_iops=36669 voluntary_ctxt_switches=18 involuntary_ctxt_switches=159 migrations=0
+zcofi-wal-send-latency-summary: ack_count=64 ack_avg_ns=26599663 ack_min_ns=16443619 ack_p50_ns=24000000 ack_p95_ns=58000000 ack_p99_ns=87000000 ack_p999_ns=87000000 ack_max_ns=86025805

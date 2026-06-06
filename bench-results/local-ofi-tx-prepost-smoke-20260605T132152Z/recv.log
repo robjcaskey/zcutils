@@ -1,0 +1,6 @@
+zcofi-wal-recv: provider=tcp endpoint=rdm bind=127.0.0.1 base_service=40100 lanes=1 bytes_per_lane=1048576 extent_bytes=4096 message_bytes=4224 workers=1 ack_enabled=yes ack_inject=yes records_per_extent=1 timeout_ms=30000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-recv-worker: affinity_index=0 target_cpu=4 status=ok
+zcofi-control-server: listen=127.0.0.1:41100 peer=127.0.0.1:43110 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-recv-lane: worker=0 lane=0 provider=tcp endpoint=rdm bind=127.0.0.1 service=40100 control_port=41100 max_msg_size=18446744073709551615 inject_size=128
+zcofi-wal-recv-worker: worker=0 streams=1 payload_bytes=1048576 wire_bytes=1081344 extents=256 logical_records=256 acks=256 seconds=0.003468 payload_Gbitps=2.419 logical_iops=73811 thread_cpu_seconds=0.006216 cpu_wall_pct=179.2 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=3 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-recv-summary: payload_bytes=1048576 wire_bytes=1081344 extents=256 logical_records=256 acks=256 seconds=0.003468 payload_Gbitps=2.419 logical_iops=73811 voluntary_ctxt_switches=3 involuntary_ctxt_switches=0 migrations=0

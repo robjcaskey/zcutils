@@ -1,0 +1,28 @@
++ ulimit -l unlimited
++ cd /home/ubuntu/zcutils
++ export PATH=/opt/amazon/efa/bin:/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
++ PATH=/opt/amazon/efa/bin:/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
++ export LD_LIBRARY_PATH=/opt/amazon/efa/lib:
++ LD_LIBRARY_PATH=/opt/amazon/efa/lib:
++ export FI_EFA_USE_DEVICE_RDMA=1
++ FI_EFA_USE_DEVICE_RDMA=1
++ export URING_PLAY_OFI_DOMAIN=efa_0-rdm
++ URING_PLAY_OFI_DOMAIN=efa_0-rdm
++ export URING_PLAY_OFI_EFA_FABRIC=efa
++ URING_PLAY_OFI_EFA_FABRIC=efa
++ export URING_PLAY_OFI_TIMEOUT_MS=60000
++ URING_PLAY_OFI_TIMEOUT_MS=60000
+zcofi-rma-target: provider=efa endpoint=rdm bind=auto base_service=36000 lanes=1 bytes_per_lane=67108864 extent_bytes=1048576 workers=1 direct_rma_target=yes lane_local_registered_arenas=yes commit_doorbell=ofi-msg records_per_extent=256 timeout_ms=60000 busy_poll_iters=1000000 cq_sleep_ns=0 ofi_domain=efa_0-rdm
++ export URING_PLAY_OFI_CQ_SLEEP_NS=0
++ URING_PLAY_OFI_CQ_SLEEP_NS=0
++ export URING_PLAY_OFI_BUSY_POLL_ITERS=1000000
++ URING_PLAY_OFI_BUSY_POLL_ITERS=1000000
++ export URING_PLAY_PIN_CPUS=1
++ URING_PLAY_PIN_CPUS=1
++ export URING_PLAY_PIN_CPU_LIST=0
++ URING_PLAY_PIN_CPU_LIST=0
++ ./target/release/zcutils zcwal-ofi-rma-target efa rdm auto 36000 1 64M 1M 1
+zcofi-rma-target-worker: affinity_index=0 target_cpu=0 status=ok
+zcofi-control-server: listen=0.0.0.0:37000 peer=172.31.47.44:34732 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-rma-target-lane: worker=0 lane=0 provider=efa endpoint=rdm bind=auto service=36000 control_port=37000 arena_bytes=67108864 remote_addr=0x0000000000000000 remote_key=0x0000000000000001 max_msg_size=18446744073709551615 inject_size=4096
+Error: Custom { kind: Other, error: "zc_ofi_recv failed rc=-110: OFI CQ wait timed out after 60000 ms" }

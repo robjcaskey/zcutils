@@ -1,0 +1,14 @@
+Warning: Permanently added '18.222.187.9' (ED25519) to the list of known hosts.
+zcofi-wal-send: provider=efa endpoint=rdm addr=172.31.47.142 base_service=36100 lanes=2 bytes_per_lane=16777216 extent_bytes=4096 message_bytes=4224 workers=2 ack_enabled=yes records_per_extent=1 timeout_ms=30000 busy_poll_iters=1000000 cq_sleep_ns=0
+zcofi-wal-send-worker: affinity_index=0 target_cpu=4 status=ok
+zcofi-wal-send-worker: affinity_index=1 target_cpu=5 status=ok
+zcofi-control-client: addr=172.31.47.142:37100 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-send-lane: worker=0 lane=0 provider=efa endpoint=rdm addr=172.31.47.142 service=36100 control_port=37100 max_msg_size=18446744073709551615
+zcofi-control-client: addr=172.31.47.142:37101 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-send-lane: worker=1 lane=1 provider=efa endpoint=rdm addr=172.31.47.142 service=36101 control_port=37101 max_msg_size=18446744073709551615
+zcofi-wal-send-worker: worker=0 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.077236 payload_Gbitps=1.738 logical_iops=53032 thread_cpu_seconds=0.080005 cpu_wall_pct=103.6 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=34 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-send-worker-latency: worker=0 ack_count=4096 ack_avg_ns=17420 ack_min_ns=13650 ack_p50_ns=16000 ack_p95_ns=17000 ack_p99_ns=19000 ack_p999_ns=38000 ack_max_ns=7945124
+zcofi-wal-send-worker: worker=1 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.076657 payload_Gbitps=1.751 logical_iops=53433 thread_cpu_seconds=0.080748 cpu_wall_pct=105.3 target_cpu=5 affinity_applied=true start_cpu=5 end_cpu=5 voluntary_ctxt_switches=36 involuntary_ctxt_switches=2 migrations=0
+zcofi-wal-send-worker-latency: worker=1 ack_count=4096 ack_avg_ns=17407 ack_min_ns=13712 ack_p50_ns=16000 ack_p95_ns=17000 ack_p99_ns=18000 ack_p999_ns=57000 ack_max_ns=7723302
+zcofi-wal-send-summary: payload_bytes=33554432 wire_bytes=34603008 extents=8192 logical_records=8192 acks=8192 seconds=0.077236 payload_Gbitps=3.476 logical_iops=106064 voluntary_ctxt_switches=70 involuntary_ctxt_switches=2 migrations=0
+zcofi-wal-send-latency-summary: ack_count=8192 ack_avg_ns=17413 ack_min_ns=13650 ack_p50_ns=16000 ack_p95_ns=17000 ack_p99_ns=19000 ack_p999_ns=52000 ack_max_ns=7945124

@@ -1,0 +1,35 @@
+PERF NOTE: zcraid-mirror-send range-lock mode holds sorted batch range locks until all branch ACKs arrive; requested_ack_window=32 zlane_lock_shards=8192
+zcraid-mirror-send-branch-topology: branch=0 domain=none lanes=0-3 leader_cpus=0-3 workers=0-3 block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches
+zcraid-mirror-send-branch-topology: branch=1 domain=none lanes=0-3 leader_cpus=4-7 workers=0-3 block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches
+zcraid-mirror-send-branch-port: branch=0 addr=127.0.0.1 base_port=7140 domain=auto
+zcraid-mirror-send-branch-port: branch=1 addr=127.0.0.1 base_port=7240 domain=auto
+zcraid-mirror-send: transport=tcp-mux-compatible addr=127.0.0.1 branches=2 lanes=0-3 lane_count=4 bytes_per_lane=268435456 extent_bytes=4096 logical_record_bytes=4096 extents_per_lane=65536 workers=4 ack_enabled=yes ack_window=32 zlane_coord=range-lock zlane_lock_shards=8192 provider=tcp endpoint=stream plan_json=yes compact_4k=no payload_inject=no ack_inject=no tx_nowait=no prepost_ack=no
+zcraid-mirror-tcp-send-worker: affinity_index=0 target_cpu=8 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=2 target_cpu=10 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=1 target_cpu=9 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=3 target_cpu=11 status=ok
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcraid-mirror-tcp-send-lane: worker=2 branch=0 lane=2 addr=127.0.0.1 port=7142
+zcraid-mirror-tcp-send-lane: worker=0 branch=0 lane=0 addr=127.0.0.1 port=7140
+zcraid-mirror-tcp-send-lane: worker=1 branch=0 lane=1 addr=127.0.0.1 port=7141
+zcraid-mirror-tcp-send-lane: worker=2 branch=1 lane=2 addr=127.0.0.1 port=7242
+zcraid-mirror-tcp-send-lane: worker=3 branch=0 lane=3 addr=127.0.0.1 port=7143
+zcraid-mirror-tcp-send-lane: worker=0 branch=1 lane=0 addr=127.0.0.1 port=7240
+zcraid-mirror-tcp-send-lane: worker=1 branch=1 lane=1 addr=127.0.0.1 port=7241
+zcraid-mirror-tcp-send-lane: worker=3 branch=1 lane=3 addr=127.0.0.1 port=7243
+zcraid-mirror-send-worker: worker=0 streams=2 payload_bytes=268435456 wire_bytes=553648128 extents=65536 logical_records=65536 acks=65536 seconds=1.037915 payload_Gbitps=2.069 logical_iops=63142 thread_cpu_seconds=1.028129 cpu_wall_pct=99.1 target_cpu=8 affinity_applied=true start_cpu=8 end_cpu=8 voluntary_ctxt_switches=842 involuntary_ctxt_switches=86 migrations=0
+zcraid-mirror-send-worker-latency: worker=0 ack_count=65536 ack_avg_ns=259277 ack_min_ns=22780 ack_p50_ns=260000 ack_p95_ns=473000 ack_p99_ns=496000 ack_p999_ns=584000 ack_max_ns=650946
+zcraid-mirror-send-worker-wire: worker=0 branch_wire_bytes=553648128 branch_wire_Gbitps=4.267
+zcraid-mirror-send-worker: worker=1 streams=2 payload_bytes=268435456 wire_bytes=553648128 extents=65536 logical_records=65536 acks=65536 seconds=1.038826 payload_Gbitps=2.067 logical_iops=63087 thread_cpu_seconds=1.012464 cpu_wall_pct=97.5 target_cpu=9 affinity_applied=true start_cpu=9 end_cpu=9 voluntary_ctxt_switches=871 involuntary_ctxt_switches=119 migrations=0
+zcraid-mirror-send-worker-latency: worker=1 ack_count=65536 ack_avg_ns=258313 ack_min_ns=22751 ack_p50_ns=258000 ack_p95_ns=467000 ack_p99_ns=490000 ack_p999_ns=603000 ack_max_ns=4069834
+zcraid-mirror-send-worker-wire: worker=1 branch_wire_bytes=553648128 branch_wire_Gbitps=4.264
+zcraid-mirror-send-worker: worker=2 streams=2 payload_bytes=268435456 wire_bytes=553648128 extents=65536 logical_records=65536 acks=65536 seconds=1.037437 payload_Gbitps=2.070 logical_iops=63171 thread_cpu_seconds=1.037203 cpu_wall_pct=100.0 target_cpu=10 affinity_applied=true start_cpu=10 end_cpu=10 voluntary_ctxt_switches=2 involuntary_ctxt_switches=83 migrations=0
+zcraid-mirror-send-worker-latency: worker=2 ack_count=65536 ack_avg_ns=261943 ack_min_ns=22391 ack_p50_ns=263000 ack_p95_ns=479000 ack_p99_ns=503000 ack_p999_ns=570000 ack_max_ns=786537
+zcraid-mirror-send-worker-wire: worker=2 branch_wire_bytes=553648128 branch_wire_Gbitps=4.269
+zcraid-mirror-send-worker: worker=3 streams=2 payload_bytes=268435456 wire_bytes=553648128 extents=65536 logical_records=65536 acks=65536 seconds=1.038366 payload_Gbitps=2.068 logical_iops=63115 thread_cpu_seconds=1.024193 cpu_wall_pct=98.6 target_cpu=11 affinity_applied=true start_cpu=11 end_cpu=11 voluntary_ctxt_switches=873 involuntary_ctxt_switches=82 migrations=0
+zcraid-mirror-send-worker-latency: worker=3 ack_count=65536 ack_avg_ns=258762 ack_min_ns=23020 ack_p50_ns=260000 ack_p95_ns=472000 ack_p99_ns=494000 ack_p999_ns=572000 ack_max_ns=642565
+zcraid-mirror-send-worker-wire: worker=3 branch_wire_bytes=553648128 branch_wire_Gbitps=4.266
+zcraid-mirror-send-summary: transport=tcp-mux-compatible branches=2 lanes=4 workers=4 extent_bytes=4096 logical_record_bytes=4096 ack_window=32 zlane_coord=range-lock zlane_lock_shards=8192 logical_payload_bytes=1073741824 branch_wire_bytes=2214592512 extents=262144 logical_records=262144 committed_acks=262144 seconds=1.038826 logical_payload_Gbitps=8.269 branch_wire_Gbitps=17.055 logical_iops=252346 voluntary_ctxt_switches=2588 involuntary_ctxt_switches=370 migrations=0
+zcraid-mirror-send-latency-summary: mirror_commit_ack_count=262144 mirror_commit_ack_avg_ns=259574 mirror_commit_ack_min_ns=22391 mirror_commit_ack_p50_ns=260000 mirror_commit_ack_p95_ns=473000 mirror_commit_ack_p99_ns=497000 mirror_commit_ack_p999_ns=579000 mirror_commit_ack_max_ns=4069834
+zcraid-mirror-send-commit-contract: placement_owner=userspace-raid block_device_raid_primitive=false ack_policy=all-branches-per-lane-hwm commit_point=after-all-branch-acks ordering=per-lane-monotonic zlane_coord=range-lock same_sector_order=range-lock-held-until-all-branch-acks

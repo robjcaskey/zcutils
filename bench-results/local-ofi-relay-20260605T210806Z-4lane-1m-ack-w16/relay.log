@@ -1,0 +1,31 @@
+zcofi-wal-relay: provider=tcp endpoint=rdm bind=127.0.0.1 tail_addr=127.0.0.1 in_base_service=44000 out_base_service=47000 lanes=4 bytes_per_lane=16777216 extent_bytes=1048576 message_bytes=1048704 workers=4 ack_enabled=yes compact_4k=no rewrite_headers=yes relay_window=16 tx_nowait_requested=no tx_nowait_effective=no ack_inject=no same_slot_forward=yes hwm_ack=tail-ack-before-upstream-ack timeout_ms=20000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-relay-worker: affinity_index=0 target_cpu=0 status=ok
+zcofi-wal-relay-worker: affinity_index=2 target_cpu=2 status=ok
+zcofi-wal-relay-worker: affinity_index=3 target_cpu=3 status=ok
+zcofi-wal-relay-worker: affinity_index=1 target_cpu=1 status=ok
+zcofi-control-server: listen=127.0.0.1:45001 peer=127.0.0.1:40466 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-server: listen=127.0.0.1:45002 peer=127.0.0.1:42086 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-server: listen=127.0.0.1:45000 peer=127.0.0.1:58406 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-client: addr=127.0.0.1:48000 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-lane: worker=0 lane=0 provider=tcp endpoint=rdm bind=127.0.0.1 in_service=44000 in_control_port=45000 tail_addr=127.0.0.1 out_service=47000 out_control_port=48000 message_bytes=1048704 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=127.0.0.1:48002 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-lane: worker=2 lane=2 provider=tcp endpoint=rdm bind=127.0.0.1 in_service=44002 in_control_port=45002 tail_addr=127.0.0.1 out_service=47002 out_control_port=48002 message_bytes=1048704 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=127.0.0.1:45003 peer=127.0.0.1:34358 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-client: addr=127.0.0.1:48003 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-lane: worker=3 lane=3 provider=tcp endpoint=rdm bind=127.0.0.1 in_service=44003 in_control_port=45003 tail_addr=127.0.0.1 out_service=47003 out_control_port=48003 message_bytes=1048704 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=127.0.0.1:48001 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-lane: worker=1 lane=1 provider=tcp endpoint=rdm bind=127.0.0.1 in_service=44001 in_control_port=45001 tail_addr=127.0.0.1 out_service=47001 out_control_port=48001 message_bytes=1048704 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-wal-relay-worker-contract: worker=3 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=16 header_rewrites=16 tail_ack_gates_upstream_ack=yes
+zcofi-wal-relay-worker-contract: worker=1 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=16 header_rewrites=16 tail_ack_gates_upstream_ack=yes
+zcofi-wal-relay-worker-contract: worker=2 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=16 header_rewrites=16 tail_ack_gates_upstream_ack=yes
+zcofi-wal-relay-worker-contract: worker=0 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=16 header_rewrites=16 tail_ack_gates_upstream_ack=yes
+zcofi-wal-relay-worker: worker=0 streams=2 payload_bytes=16777216 wire_bytes=16779264 extents=16 logical_records=4096 acks=16 seconds=0.137700 payload_Gbitps=0.975 logical_iops=29746 thread_cpu_seconds=0.047529 cpu_wall_pct=34.5 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=13 involuntary_ctxt_switches=11 migrations=0
+zcofi-wal-relay-worker-latency: worker=0 ack_count=16 ack_avg_ns=34817643 ack_min_ns=7346902 ack_p50_ns=37000000 ack_p95_ns=85000000 ack_p99_ns=85000000 ack_p999_ns=85000000 ack_max_ns=84234610
+zcofi-wal-relay-worker: worker=1 streams=2 payload_bytes=16777216 wire_bytes=16779264 extents=16 logical_records=4096 acks=16 seconds=0.108473 payload_Gbitps=1.237 logical_iops=37761 thread_cpu_seconds=0.039090 cpu_wall_pct=36.0 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=8 involuntary_ctxt_switches=13 migrations=0
+zcofi-wal-relay-worker-latency: worker=1 ack_count=16 ack_avg_ns=33776882 ack_min_ns=11285165 ack_p50_ns=24000000 ack_p95_ns=88000000 ack_p99_ns=88000000 ack_p999_ns=88000000 ack_max_ns=87663489
+zcofi-wal-relay-worker: worker=2 streams=2 payload_bytes=16777216 wire_bytes=16779264 extents=16 logical_records=4096 acks=16 seconds=0.121777 payload_Gbitps=1.102 logical_iops=33635 thread_cpu_seconds=0.040368 cpu_wall_pct=33.1 target_cpu=2 affinity_applied=true start_cpu=2 end_cpu=2 voluntary_ctxt_switches=28 involuntary_ctxt_switches=10 migrations=0
+zcofi-wal-relay-worker-latency: worker=2 ack_count=16 ack_avg_ns=26742260 ack_min_ns=668385 ack_p50_ns=23000000 ack_p95_ns=87000000 ack_p99_ns=87000000 ack_p999_ns=87000000 ack_max_ns=86213767
+zcofi-wal-relay-worker: worker=3 streams=2 payload_bytes=16777216 wire_bytes=16779264 extents=16 logical_records=4096 acks=16 seconds=0.099166 payload_Gbitps=1.353 logical_iops=41304 thread_cpu_seconds=0.036126 cpu_wall_pct=36.4 target_cpu=3 affinity_applied=true start_cpu=3 end_cpu=3 voluntary_ctxt_switches=7 involuntary_ctxt_switches=10 migrations=0
+zcofi-wal-relay-worker-latency: worker=3 ack_count=16 ack_avg_ns=30434288 ack_min_ns=7791916 ack_p50_ns=24000000 ack_p95_ns=80000000 ack_p99_ns=80000000 ack_p999_ns=80000000 ack_max_ns=79679082
+zcofi-wal-relay-summary: payload_bytes=67108864 wire_bytes=67117056 extents=64 logical_records=16384 tail_gated_acks=64 seconds=0.137700 payload_Gbitps=3.899 logical_iops=118983 voluntary_ctxt_switches=56 involuntary_ctxt_switches=44 migrations=0
+zcofi-wal-relay-latency-summary: tail_hwm_ack_count=64 tail_hwm_ack_avg_ns=31442768 tail_hwm_ack_min_ns=668385 tail_hwm_ack_p50_ns=24000000 tail_hwm_ack_p95_ns=80000000 tail_hwm_ack_p99_ns=88000000 tail_hwm_ack_p999_ns=88000000 tail_hwm_ack_max_ns=87663489

@@ -1,0 +1,170 @@
+{
+  "ami_id": "ami-0e03e3a55ecc62f7d",
+  "az": "us-east-2c",
+  "cost_ceiling": {
+    "duration_hours": 0.425,
+    "public_ipv4_ceiling_usd": 0.002125,
+    "root_ebs_ceiling_usd": 0.017884931506849316,
+    "spot_ceiling_usd": 0.85,
+    "total_ceiling_usd": 0.8700099315068494
+  },
+  "drop_dead_utc": "2026-06-05T19:29:46Z",
+  "ena_express": false,
+  "enable_efa": true,
+  "instance_type": "c8gn.48xlarge",
+  "network_card_count": 2,
+  "nodes": 1,
+  "public_ip_mode": "tagged-eip-post-launch",
+  "region": "us-east-2",
+  "request": {
+    "BlockDeviceMappings": [
+      {
+        "DeviceName": "/dev/sda1",
+        "Ebs": {
+          "DeleteOnTermination": true,
+          "VolumeSize": 256,
+          "VolumeType": "gp3"
+        }
+      }
+    ],
+    "ImageId": "ami-0e03e3a55ecc62f7d",
+    "InstanceMarketOptions": {
+      "MarketType": "spot",
+      "SpotOptions": {
+        "InstanceInterruptionBehavior": "terminate",
+        "MaxPrice": "2.00",
+        "SpotInstanceType": "one-time"
+      }
+    },
+    "InstanceType": "c8gn.48xlarge",
+    "KeyName": "adhocMasterKeypair",
+    "MaxCount": 1,
+    "MetadataOptions": {
+      "HttpEndpoint": "enabled",
+      "HttpTokens": "required"
+    },
+    "MinCount": 1,
+    "NetworkInterfaces": [
+      {
+        "DeviceIndex": 0,
+        "Groups": [
+          "sg-025a50a35d3073a8a"
+        ],
+        "InterfaceType": "efa",
+        "NetworkCardIndex": 0,
+        "SubnetId": "subnet-c66ddd8b"
+      },
+      {
+        "DeviceIndex": 1,
+        "Groups": [
+          "sg-025a50a35d3073a8a"
+        ],
+        "InterfaceType": "efa",
+        "NetworkCardIndex": 1,
+        "SubnetId": "subnet-c66ddd8b"
+      }
+    ],
+    "Placement": {
+      "AvailabilityZone": "us-east-2c",
+      "GroupName": "up-zc-ramtarget-us-east-2a"
+    },
+    "TagSpecifications": [
+      {
+        "ResourceType": "instance",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "zc-headtail-client-adhoc-c8gn48-20260605T190415Z"
+          },
+          {
+            "Key": "Project",
+            "Value": "uring-play"
+          },
+          {
+            "Key": "Purpose",
+            "Value": "adhoc-performance-compute"
+          },
+          {
+            "Key": "uringPlayRunId",
+            "Value": "zc-headtail-client-adhoc-c8gn48-20260605T190415Z"
+          },
+          {
+            "Key": "adhocKeepaliveModeAction",
+            "Value": "terminate"
+          },
+          {
+            "Key": "adhocKeepalive",
+            "Value": "2026-06-05T19:29:46Z"
+          }
+        ]
+      },
+      {
+        "ResourceType": "volume",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "zc-headtail-client-adhoc-c8gn48-20260605T190415Z"
+          },
+          {
+            "Key": "Project",
+            "Value": "uring-play"
+          },
+          {
+            "Key": "Purpose",
+            "Value": "adhoc-performance-compute"
+          },
+          {
+            "Key": "uringPlayRunId",
+            "Value": "zc-headtail-client-adhoc-c8gn48-20260605T190415Z"
+          },
+          {
+            "Key": "adhocKeepaliveModeAction",
+            "Value": "terminate"
+          },
+          {
+            "Key": "adhocKeepalive",
+            "Value": "2026-06-05T19:29:46Z"
+          }
+        ]
+      }
+    ]
+  },
+  "run_id": "zc-headtail-client-adhoc-c8gn48-20260605T190415Z",
+  "subnet_id": "subnet-c66ddd8b"
+}
+{
+  "drop_dead_utc": "2026-06-05T19:29:46Z",
+  "instances": [
+    {
+      "az": "us-east-2c",
+      "instance_id": "i-0651ab435dc114680",
+      "instance_type": "c8gn.48xlarge",
+      "network_interfaces": [
+        {
+          "device_index": 0,
+          "interface_type": "efa",
+          "mac": "0a:21:58:2f:01:9f",
+          "network_card_index": 0,
+          "network_interface_id": "eni-099f04ab50b809ee9",
+          "private_ip": "172.31.41.140",
+          "public_ip": "16.58.229.180"
+        },
+        {
+          "device_index": 1,
+          "interface_type": "efa",
+          "mac": "0a:95:07:42:01:87",
+          "network_card_index": 1,
+          "network_interface_id": "eni-09d00a04c4cb7642c",
+          "private_ip": "172.31.37.125",
+          "public_ip": null
+        }
+      ],
+      "private_ip": "172.31.41.140",
+      "public_ip": "16.58.229.180"
+    }
+  ],
+  "public_ip_mode": "tagged-eip-post-launch",
+  "region": "us-east-2",
+  "run_id": "zc-headtail-client-adhoc-c8gn48-20260605T190415Z"
+}
+wrote inventory: qemu-zcrx/zc-headtail-client-adhoc-c8gn48-20260605T190415Z-inventory.json

@@ -1,0 +1,2 @@
+zcofi-wal-relay: provider=tcp endpoint=rdm bind=127.0.0.1 tail_addr=127.0.0.1 in_base_service=43000 out_base_service=44000 lanes=1 bytes_per_lane=1048576 extent_bytes=65536 message_bytes=65664 workers=1 ack_enabled=yes compact_4k=no rewrite_headers=yes tx_nowait=no ack_inject=no same_slot_forward=yes hwm_ack=tail-ack-before-upstream-ack timeout_ms=10000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-relay-worker: affinity_index=0 target_cpu=0 status=ok

@@ -1,0 +1,10 @@
+Warning: Permanently added '18.222.187.9' (ED25519) to the list of known hosts.
+zcwal-extent-send: addr=172.31.47.142 base_port=35000 lanes=1 connections_per_lane=1 total_connections=1 bytes_per_connection=16777216 extent_bytes=4096 record_size=4096 records_per_extent=1 workers=1 framing=extent data_path=blocking ack_enabled=yes sync_acks=yes tcp_nodelay=yes socket_buffer_bytes=16777216 uring_pipeline=32 uring_entries=64 source_ports=kernel-ephemeral
+zcwal-extent-send-worker: affinity_index=0 target_cpu=4 status=ok
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 425984 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 425984 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcwal-extent-send-stream: worker=0 lane=0 port=35000 conn=0
+zcwal-extent-send-worker: worker=0 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.385028 payload_Gbitps=0.349 logical_iops=10638 thread_cpu_seconds=0.019907 cpu_wall_pct=5.2 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=4098 involuntary_ctxt_switches=0 migrations=0
+zcwal-extent-send-worker-latency: worker=0 ack_count=4096 ack_avg_ns=93935 ack_min_ns=43959 ack_p50_ns=70000 ack_p95_ns=262000 ack_p99_ns=262000 ack_p999_ns=264000 ack_max_ns=457662
+zcwal-extent-send-summary: payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.385089 payload_Gbitps=0.349 logical_iops=10637
+zcwal-extent-send-latency-summary: ack_count=4096 ack_avg_ns=93935 ack_min_ns=43959 ack_p50_ns=70000 ack_p95_ns=262000 ack_p99_ns=262000 ack_p999_ns=264000 ack_max_ns=457662

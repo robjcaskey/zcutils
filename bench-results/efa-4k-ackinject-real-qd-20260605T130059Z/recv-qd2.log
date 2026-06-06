@@ -1,0 +1,11 @@
+Warning: Permanently added '3.144.173.172' (ED25519) to the list of known hosts.
+zcofi-wal-recv: provider=efa endpoint=rdm bind=auto base_service=37100 lanes=2 bytes_per_lane=16777216 extent_bytes=4096 message_bytes=4224 workers=2 ack_enabled=yes ack_inject=yes records_per_extent=1 timeout_ms=30000 busy_poll_iters=1000000 cq_sleep_ns=0
+zcofi-wal-recv-worker: affinity_index=0 target_cpu=4 status=ok
+zcofi-wal-recv-worker: affinity_index=1 target_cpu=5 status=ok
+zcofi-control-server: listen=0.0.0.0:38100 peer=172.31.42.237:37182 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-recv-lane: worker=0 lane=0 provider=efa endpoint=rdm bind=auto service=37100 control_port=38100 max_msg_size=18446744073709551615 inject_size=4096
+zcofi-control-server: listen=0.0.0.0:38101 peer=172.31.42.237:37628 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-recv-lane: worker=1 lane=1 provider=efa endpoint=rdm bind=auto service=37101 control_port=38101 max_msg_size=18446744073709551615 inject_size=4096
+zcofi-wal-recv-worker: worker=0 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.076330 payload_Gbitps=1.758 logical_iops=53662 thread_cpu_seconds=0.079190 cpu_wall_pct=103.7 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=24 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-recv-worker: worker=1 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.077765 payload_Gbitps=1.726 logical_iops=52672 thread_cpu_seconds=0.081522 cpu_wall_pct=104.8 target_cpu=5 affinity_applied=true start_cpu=5 end_cpu=5 voluntary_ctxt_switches=32 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-recv-summary: payload_bytes=33554432 wire_bytes=34603008 extents=8192 logical_records=8192 acks=8192 seconds=0.077765 payload_Gbitps=3.452 logical_iops=105344 voluntary_ctxt_switches=56 involuntary_ctxt_switches=1 migrations=0

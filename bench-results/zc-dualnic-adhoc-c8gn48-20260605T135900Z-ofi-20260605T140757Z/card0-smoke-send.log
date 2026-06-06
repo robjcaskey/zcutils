@@ -1,0 +1,32 @@
+Warning: Permanently added '3.151.24.0' (ED25519) to the list of known hosts.
+zcofi-wal-send: provider=efa endpoint=rdm addr=172.31.38.204 base_service=47000 lanes=1 bytes_per_lane=16777216 extent_bytes=4096 message_bytes=4096 workers=1 ack_enabled=yes tx_nowait=yes prepost_ack=yes compact_4k=yes payload_inject=yes ack_window=4 ofi_domain=efa_0-rdm records_per_extent=1 timeout_ms=30000 busy_poll_iters=1000000 cq_sleep_ns=0
+zcofi-wal-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcofi-control-client: addr=172.31.38.204:48000 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-send-lane: worker=0 lane=0 provider=efa endpoint=rdm addr=172.31.38.204 service=47000 control_port=48000 max_msg_size=18446744073709551615 inject_size=4096
+zcofi-wal-send-worker: worker=0 streams=1 payload_bytes=16777216 wire_bytes=16777216 extents=4096 logical_records=4096 acks=4096 seconds=0.033085 payload_Gbitps=4.057 logical_iops=123803 thread_cpu_seconds=0.039280 cpu_wall_pct=118.7 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=23 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-send-worker-latency: worker=0 ack_count=4096 ack_avg_ns=25272 ack_min_ns=13704 ack_p50_ns=18000 ack_p95_ns=21000 ack_p99_ns=28000 ack_p999_ns=46000 ack_max_ns=7950490
+zcofi-wal-send-summary: payload_bytes=16777216 wire_bytes=16777216 extents=4096 logical_records=4096 acks=4096 seconds=0.033085 payload_Gbitps=4.057 logical_iops=123803 voluntary_ctxt_switches=23 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-send-latency-summary: ack_count=4096 ack_avg_ns=25272 ack_min_ns=13704 ack_p50_ns=18000 ack_p95_ns=21000 ack_p99_ns=28000 ack_p999_ns=46000 ack_max_ns=7950490
+	Command being timed: "./target/release/zcutils zcwal-ofi-send efa rdm 172.31.38.204 47000 1 16M 4K 1 true"
+	User time (seconds): 0.02
+	System time (seconds): 0.01
+	Percent of CPU this job got: 84%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.04
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 35340
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 8491
+	Voluntary context switches: 27
+	Involuntary context switches: 2
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

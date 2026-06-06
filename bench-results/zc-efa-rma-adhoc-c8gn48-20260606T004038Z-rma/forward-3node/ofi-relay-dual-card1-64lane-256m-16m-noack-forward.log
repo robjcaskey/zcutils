@@ -1,0 +1,386 @@
+zcofi-wal-relay: provider=efa endpoint=rdm bind=auto tail_addr=172.31.37.202 in_base_service=52000 out_base_service=54000 lanes=64 bytes_per_lane=268435456 extent_bytes=16777216 message_bytes=16777344 workers=64 ack_enabled=no compact_4k=no rewrite_headers=yes relay_window=1 tx_nowait_requested=no tx_nowait_effective=no ack_inject=no same_slot_forward=yes hwm_ack=tail-ack-before-upstream-ack timeout_ms=120000 busy_poll_iters=1000000 cq_sleep_ns=0
+zcofi-wal-relay-worker: affinity_index=0 target_cpu=64 status=ok
+zcofi-wal-relay-worker: affinity_index=1 target_cpu=65 status=ok
+zcofi-wal-relay-worker: affinity_index=3 target_cpu=67 status=ok
+zcofi-wal-relay-worker: affinity_index=4 target_cpu=68 status=ok
+zcofi-wal-relay-worker: affinity_index=6 target_cpu=70 status=ok
+zcofi-wal-relay-worker: affinity_index=5 target_cpu=69 status=ok
+zcofi-wal-relay-worker: affinity_index=9 target_cpu=73 status=ok
+zcofi-wal-relay-worker: affinity_index=7 target_cpu=71 status=ok
+zcofi-wal-relay-worker: affinity_index=14 target_cpu=78 status=ok
+zcofi-wal-relay-worker: affinity_index=19 target_cpu=83 status=ok
+zcofi-wal-relay-worker: affinity_index=15 target_cpu=79 status=ok
+zcofi-wal-relay-worker: affinity_index=8 target_cpu=72 status=ok
+zcofi-wal-relay-worker: affinity_index=20 target_cpu=84 status=ok
+zcofi-wal-relay-worker: affinity_index=16 target_cpu=80 status=ok
+zcofi-wal-relay-worker: affinity_index=21 target_cpu=85 status=ok
+zcofi-wal-relay-worker: affinity_index=22 target_cpu=86 status=ok
+zcofi-wal-relay-worker: affinity_index=12 target_cpu=76 status=ok
+zcofi-wal-relay-worker: affinity_index=10 target_cpu=74 status=ok
+zcofi-wal-relay-worker: affinity_index=17 target_cpu=81 status=ok
+zcofi-wal-relay-worker: affinity_index=23 target_cpu=87 status=ok
+zcofi-wal-relay-worker: affinity_index=2 target_cpu=66 status=ok
+zcofi-wal-relay-worker: affinity_index=24 target_cpu=88 status=ok
+zcofi-wal-relay-worker: affinity_index=13 target_cpu=77 status=ok
+zcofi-wal-relay-worker: affinity_index=11 target_cpu=75 status=ok
+zcofi-wal-relay-worker: affinity_index=18 target_cpu=82 status=ok
+zcofi-wal-relay-worker: affinity_index=25 target_cpu=89 status=ok
+zcofi-wal-relay-worker: affinity_index=26 target_cpu=90 status=ok
+zcofi-wal-relay-worker: affinity_index=27 target_cpu=91 status=ok
+zcofi-wal-relay-worker: affinity_index=28 target_cpu=92 status=ok
+zcofi-wal-relay-worker: affinity_index=29 target_cpu=93 status=ok
+zcofi-wal-relay-worker: affinity_index=30 target_cpu=94 status=ok
+zcofi-wal-relay-worker: affinity_index=31 target_cpu=95 status=ok
+zcofi-wal-relay-worker: affinity_index=32 target_cpu=96 status=ok
+zcofi-wal-relay-worker: affinity_index=33 target_cpu=97 status=ok
+zcofi-wal-relay-worker: affinity_index=34 target_cpu=98 status=ok
+zcofi-wal-relay-worker: affinity_index=35 target_cpu=99 status=ok
+zcofi-wal-relay-worker: affinity_index=36 target_cpu=100 status=ok
+zcofi-wal-relay-worker: affinity_index=37 target_cpu=101 status=ok
+zcofi-wal-relay-worker: affinity_index=38 target_cpu=102 status=ok
+zcofi-wal-relay-worker: affinity_index=39 target_cpu=103 status=ok
+zcofi-wal-relay-worker: affinity_index=40 target_cpu=104 status=ok
+zcofi-wal-relay-worker: affinity_index=41 target_cpu=105 status=ok
+zcofi-wal-relay-worker: affinity_index=42 target_cpu=106 status=ok
+zcofi-wal-relay-worker: affinity_index=43 target_cpu=107 status=ok
+zcofi-wal-relay-worker: affinity_index=44 target_cpu=108 status=ok
+zcofi-wal-relay-worker: affinity_index=45 target_cpu=109 status=ok
+zcofi-wal-relay-worker: affinity_index=46 target_cpu=110 status=ok
+zcofi-wal-relay-worker: affinity_index=47 target_cpu=111 status=ok
+zcofi-wal-relay-worker: affinity_index=48 target_cpu=112 status=ok
+zcofi-wal-relay-worker: affinity_index=49 target_cpu=113 status=ok
+zcofi-wal-relay-worker: affinity_index=50 target_cpu=114 status=ok
+zcofi-wal-relay-worker: affinity_index=51 target_cpu=115 status=ok
+zcofi-wal-relay-worker: affinity_index=52 target_cpu=116 status=ok
+zcofi-wal-relay-worker: affinity_index=53 target_cpu=117 status=ok
+zcofi-wal-relay-worker: affinity_index=54 target_cpu=118 status=ok
+zcofi-wal-relay-worker: affinity_index=55 target_cpu=119 status=ok
+zcofi-wal-relay-worker: affinity_index=56 target_cpu=120 status=ok
+zcofi-wal-relay-worker: affinity_index=57 target_cpu=121 status=ok
+zcofi-wal-relay-worker: affinity_index=58 target_cpu=122 status=ok
+zcofi-wal-relay-worker: affinity_index=59 target_cpu=123 status=ok
+zcofi-wal-relay-worker: affinity_index=60 target_cpu=124 status=ok
+zcofi-wal-relay-worker: affinity_index=61 target_cpu=125 status=ok
+zcofi-wal-relay-worker: affinity_index=62 target_cpu=126 status=ok
+zcofi-wal-relay-worker: affinity_index=63 target_cpu=127 status=ok
+zcofi-control-server: listen=0.0.0.0:53001 peer=172.31.47.44:56134 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53002 peer=172.31.47.44:39806 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53000 peer=172.31.47.44:43748 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53033 peer=172.31.47.44:44042 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53004 peer=172.31.47.44:41336 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53032 peer=172.31.47.44:36146 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53034 peer=172.31.47.44:36802 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53036 peer=172.31.47.44:38150 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55001 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=1 lane=1 provider=efa endpoint=rdm bind=auto in_service=52001 in_control_port=53001 tail_addr=172.31.37.202 out_service=54001 out_control_port=55001 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53035 peer=172.31.47.44:45778 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55002 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=2 lane=2 provider=efa endpoint=rdm bind=auto in_service=52002 in_control_port=53002 tail_addr=172.31.37.202 out_service=54002 out_control_port=55002 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53003 peer=172.31.47.44:58764 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55000 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=0 lane=0 provider=efa endpoint=rdm bind=auto in_service=52000 in_control_port=53000 tail_addr=172.31.37.202 out_service=54000 out_control_port=55000 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53005 peer=172.31.47.44:58360 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55033 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=33 lane=33 provider=efa endpoint=rdm bind=auto in_service=52033 in_control_port=53033 tail_addr=172.31.37.202 out_service=54033 out_control_port=55033 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53008 peer=172.31.47.44:36960 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53015 peer=172.31.47.44:57136 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55004 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=4 lane=4 provider=efa endpoint=rdm bind=auto in_service=52004 in_control_port=53004 tail_addr=172.31.37.202 out_service=54004 out_control_port=55004 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55032 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=32 lane=32 provider=efa endpoint=rdm bind=auto in_service=52032 in_control_port=53032 tail_addr=172.31.37.202 out_service=54032 out_control_port=55032 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53009 peer=172.31.47.44:37036 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53014 peer=172.31.47.44:46628 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55034 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=34 lane=34 provider=efa endpoint=rdm bind=auto in_service=52034 in_control_port=53034 tail_addr=172.31.37.202 out_service=54034 out_control_port=55034 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53007 peer=172.31.47.44:33286 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55036 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=36 lane=36 provider=efa endpoint=rdm bind=auto in_service=52036 in_control_port=53036 tail_addr=172.31.37.202 out_service=54036 out_control_port=55036 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53017 peer=172.31.47.44:59528 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55035 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=35 lane=35 provider=efa endpoint=rdm bind=auto in_service=52035 in_control_port=53035 tail_addr=172.31.37.202 out_service=54035 out_control_port=55035 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53028 peer=172.31.47.44:33102 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55003 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=3 lane=3 provider=efa endpoint=rdm bind=auto in_service=52003 in_control_port=53003 tail_addr=172.31.37.202 out_service=54003 out_control_port=55003 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53018 peer=172.31.47.44:42508 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55005 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=5 lane=5 provider=efa endpoint=rdm bind=auto in_service=52005 in_control_port=53005 tail_addr=172.31.37.202 out_service=54005 out_control_port=55005 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53012 peer=172.31.47.44:59462 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55008 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=8 lane=8 provider=efa endpoint=rdm bind=auto in_service=52008 in_control_port=53008 tail_addr=172.31.37.202 out_service=54008 out_control_port=55008 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53013 peer=172.31.47.44:40044 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53020 peer=172.31.47.44:33538 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55015 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=15 lane=15 provider=efa endpoint=rdm bind=auto in_service=52015 in_control_port=53015 tail_addr=172.31.37.202 out_service=54015 out_control_port=55015 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53016 peer=172.31.47.44:42514 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55009 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=9 lane=9 provider=efa endpoint=rdm bind=auto in_service=52009 in_control_port=53009 tail_addr=172.31.37.202 out_service=54009 out_control_port=55009 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55014 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=14 lane=14 provider=efa endpoint=rdm bind=auto in_service=52014 in_control_port=53014 tail_addr=172.31.37.202 out_service=54014 out_control_port=55014 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53010 peer=172.31.47.44:41964 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53031 peer=172.31.47.44:38744 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55007 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=7 lane=7 provider=efa endpoint=rdm bind=auto in_service=52007 in_control_port=53007 tail_addr=172.31.37.202 out_service=54007 out_control_port=55007 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53006 peer=172.31.47.44:59830 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55017 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=17 lane=17 provider=efa endpoint=rdm bind=auto in_service=52017 in_control_port=53017 tail_addr=172.31.37.202 out_service=54017 out_control_port=55017 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53022 peer=172.31.47.44:42010 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55028 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=28 lane=28 provider=efa endpoint=rdm bind=auto in_service=52028 in_control_port=53028 tail_addr=172.31.37.202 out_service=54028 out_control_port=55028 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53026 peer=172.31.47.44:38442 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53011 peer=172.31.47.44:49536 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55018 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=18 lane=18 provider=efa endpoint=rdm bind=auto in_service=52018 in_control_port=53018 tail_addr=172.31.37.202 out_service=54018 out_control_port=55018 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53038 peer=172.31.47.44:54634 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53037 peer=172.31.47.44:57342 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55012 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=12 lane=12 provider=efa endpoint=rdm bind=auto in_service=52012 in_control_port=53012 tail_addr=172.31.37.202 out_service=54012 out_control_port=55012 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53050 peer=172.31.47.44:59476 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53060 peer=172.31.47.44:51716 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55013 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=13 lane=13 provider=efa endpoint=rdm bind=auto in_service=52013 in_control_port=53013 tail_addr=172.31.37.202 out_service=54013 out_control_port=55013 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53045 peer=172.31.47.44:48656 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53039 peer=172.31.47.44:56376 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55020 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=20 lane=20 provider=efa endpoint=rdm bind=auto in_service=52020 in_control_port=53020 tail_addr=172.31.37.202 out_service=54020 out_control_port=55020 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53058 peer=172.31.47.44:43798 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53054 peer=172.31.47.44:55656 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55016 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=16 lane=16 provider=efa endpoint=rdm bind=auto in_service=52016 in_control_port=53016 tail_addr=172.31.37.202 out_service=54016 out_control_port=55016 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53061 peer=172.31.47.44:43308 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53062 peer=172.31.47.44:41676 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53043 peer=172.31.47.44:34678 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55010 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=10 lane=10 provider=efa endpoint=rdm bind=auto in_service=52010 in_control_port=53010 tail_addr=172.31.37.202 out_service=54010 out_control_port=55010 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53063 peer=172.31.47.44:38768 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53044 peer=172.31.47.44:38608 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55031 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=31 lane=31 provider=efa endpoint=rdm bind=auto in_service=52031 in_control_port=53031 tail_addr=172.31.37.202 out_service=54031 out_control_port=55031 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53042 peer=172.31.47.44:48576 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53059 peer=172.31.47.44:45468 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55006 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=6 lane=6 provider=efa endpoint=rdm bind=auto in_service=52006 in_control_port=53006 tail_addr=172.31.37.202 out_service=54006 out_control_port=55006 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53052 peer=172.31.47.44:40808 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53046 peer=172.31.47.44:49448 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55022 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=22 lane=22 provider=efa endpoint=rdm bind=auto in_service=52022 in_control_port=53022 tail_addr=172.31.37.202 out_service=54022 out_control_port=55022 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53040 peer=172.31.47.44:41874 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55026 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=26 lane=26 provider=efa endpoint=rdm bind=auto in_service=52026 in_control_port=53026 tail_addr=172.31.37.202 out_service=54026 out_control_port=55026 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53048 peer=172.31.47.44:33666 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55038 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=38 lane=38 provider=efa endpoint=rdm bind=auto in_service=52038 in_control_port=53038 tail_addr=172.31.37.202 out_service=54038 out_control_port=55038 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53041 peer=172.31.47.44:44832 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53047 peer=172.31.47.44:45570 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53051 peer=172.31.47.44:45790 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55011 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=11 lane=11 provider=efa endpoint=rdm bind=auto in_service=52011 in_control_port=53011 tail_addr=172.31.37.202 out_service=54011 out_control_port=55011 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53049 peer=172.31.47.44:49282 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55037 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=37 lane=37 provider=efa endpoint=rdm bind=auto in_service=52037 in_control_port=53037 tail_addr=172.31.37.202 out_service=54037 out_control_port=55037 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53055 peer=172.31.47.44:42440 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53056 peer=172.31.47.44:38366 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55050 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=50 lane=50 provider=efa endpoint=rdm bind=auto in_service=52050 in_control_port=53050 tail_addr=172.31.37.202 out_service=54050 out_control_port=55050 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53053 peer=172.31.47.44:37634 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55060 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=60 lane=60 provider=efa endpoint=rdm bind=auto in_service=52060 in_control_port=53060 tail_addr=172.31.37.202 out_service=54060 out_control_port=55060 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53057 peer=172.31.47.44:51726 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53021 peer=172.31.47.44:39214 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55045 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=45 lane=45 provider=efa endpoint=rdm bind=auto in_service=52045 in_control_port=53045 tail_addr=172.31.37.202 out_service=54045 out_control_port=55045 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53024 peer=172.31.47.44:48230 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53019 peer=172.31.47.44:33146 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55039 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=39 lane=39 provider=efa endpoint=rdm bind=auto in_service=52039 in_control_port=53039 tail_addr=172.31.37.202 out_service=54039 out_control_port=55039 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53030 peer=172.31.47.44:46054 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53027 peer=172.31.47.44:59568 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55058 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=58 lane=58 provider=efa endpoint=rdm bind=auto in_service=52058 in_control_port=53058 tail_addr=172.31.37.202 out_service=54058 out_control_port=55058 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53029 peer=172.31.47.44:39544 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55054 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=54 lane=54 provider=efa endpoint=rdm bind=auto in_service=52054 in_control_port=53054 tail_addr=172.31.37.202 out_service=54054 out_control_port=55054 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-server: listen=0.0.0.0:53025 peer=172.31.47.44:37812 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-server: listen=0.0.0.0:53023 peer=172.31.47.44:43172 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-control-client: addr=172.31.37.202:55062 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=62 lane=62 provider=efa endpoint=rdm bind=auto in_service=52062 in_control_port=53062 tail_addr=172.31.37.202 out_service=54062 out_control_port=55062 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55061 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=61 lane=61 provider=efa endpoint=rdm bind=auto in_service=52061 in_control_port=53061 tail_addr=172.31.37.202 out_service=54061 out_control_port=55061 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55043 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=43 lane=43 provider=efa endpoint=rdm bind=auto in_service=52043 in_control_port=53043 tail_addr=172.31.37.202 out_service=54043 out_control_port=55043 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55063 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=63 lane=63 provider=efa endpoint=rdm bind=auto in_service=52063 in_control_port=53063 tail_addr=172.31.37.202 out_service=54063 out_control_port=55063 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55044 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=44 lane=44 provider=efa endpoint=rdm bind=auto in_service=52044 in_control_port=53044 tail_addr=172.31.37.202 out_service=54044 out_control_port=55044 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55042 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=42 lane=42 provider=efa endpoint=rdm bind=auto in_service=52042 in_control_port=53042 tail_addr=172.31.37.202 out_service=54042 out_control_port=55042 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55059 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=59 lane=59 provider=efa endpoint=rdm bind=auto in_service=52059 in_control_port=53059 tail_addr=172.31.37.202 out_service=54059 out_control_port=55059 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55052 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=52 lane=52 provider=efa endpoint=rdm bind=auto in_service=52052 in_control_port=53052 tail_addr=172.31.37.202 out_service=54052 out_control_port=55052 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55046 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=46 lane=46 provider=efa endpoint=rdm bind=auto in_service=52046 in_control_port=53046 tail_addr=172.31.37.202 out_service=54046 out_control_port=55046 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55040 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=40 lane=40 provider=efa endpoint=rdm bind=auto in_service=52040 in_control_port=53040 tail_addr=172.31.37.202 out_service=54040 out_control_port=55040 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55048 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=48 lane=48 provider=efa endpoint=rdm bind=auto in_service=52048 in_control_port=53048 tail_addr=172.31.37.202 out_service=54048 out_control_port=55048 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55041 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=41 lane=41 provider=efa endpoint=rdm bind=auto in_service=52041 in_control_port=53041 tail_addr=172.31.37.202 out_service=54041 out_control_port=55041 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55047 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=47 lane=47 provider=efa endpoint=rdm bind=auto in_service=52047 in_control_port=53047 tail_addr=172.31.37.202 out_service=54047 out_control_port=55047 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55051 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=51 lane=51 provider=efa endpoint=rdm bind=auto in_service=52051 in_control_port=53051 tail_addr=172.31.37.202 out_service=54051 out_control_port=55051 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55049 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=49 lane=49 provider=efa endpoint=rdm bind=auto in_service=52049 in_control_port=53049 tail_addr=172.31.37.202 out_service=54049 out_control_port=55049 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55055 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=55 lane=55 provider=efa endpoint=rdm bind=auto in_service=52055 in_control_port=53055 tail_addr=172.31.37.202 out_service=54055 out_control_port=55055 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55053 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=53 lane=53 provider=efa endpoint=rdm bind=auto in_service=52053 in_control_port=53053 tail_addr=172.31.37.202 out_service=54053 out_control_port=55053 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55056 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=56 lane=56 provider=efa endpoint=rdm bind=auto in_service=52056 in_control_port=53056 tail_addr=172.31.37.202 out_service=54056 out_control_port=55056 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55057 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=57 lane=57 provider=efa endpoint=rdm bind=auto in_service=52057 in_control_port=53057 tail_addr=172.31.37.202 out_service=54057 out_control_port=55057 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55021 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=21 lane=21 provider=efa endpoint=rdm bind=auto in_service=52021 in_control_port=53021 tail_addr=172.31.37.202 out_service=54021 out_control_port=55021 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55024 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=24 lane=24 provider=efa endpoint=rdm bind=auto in_service=52024 in_control_port=53024 tail_addr=172.31.37.202 out_service=54024 out_control_port=55024 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55019 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=19 lane=19 provider=efa endpoint=rdm bind=auto in_service=52019 in_control_port=53019 tail_addr=172.31.37.202 out_service=54019 out_control_port=55019 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55030 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=30 lane=30 provider=efa endpoint=rdm bind=auto in_service=52030 in_control_port=53030 tail_addr=172.31.37.202 out_service=54030 out_control_port=55030 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55027 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=27 lane=27 provider=efa endpoint=rdm bind=auto in_service=52027 in_control_port=53027 tail_addr=172.31.37.202 out_service=54027 out_control_port=55027 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55029 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=29 lane=29 provider=efa endpoint=rdm bind=auto in_service=52029 in_control_port=53029 tail_addr=172.31.37.202 out_service=54029 out_control_port=55029 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55025 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=25 lane=25 provider=efa endpoint=rdm bind=auto in_service=52025 in_control_port=53025 tail_addr=172.31.37.202 out_service=54025 out_control_port=55025 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=172.31.37.202:55023 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-wal-relay-lane: worker=23 lane=23 provider=efa endpoint=rdm bind=auto in_service=52023 in_control_port=53023 tail_addr=172.31.37.202 out_service=54023 out_control_port=55023 message_bytes=16777344 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-wal-relay-worker-contract: worker=34 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=15 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=32 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=2 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=35 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=33 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=0 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker: worker=0 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.461399 payload_Gbitps=4.654 logical_iops=142038 thread_cpu_seconds=0.460338 cpu_wall_pct=99.8 target_cpu=64 affinity_applied=true start_cpu=64 end_cpu=64 voluntary_ctxt_switches=109 involuntary_ctxt_switches=2 migrations=0
+zcofi-wal-relay-worker-contract: worker=8 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=1 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker: worker=1 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.494915 payload_Gbitps=4.339 logical_iops=132419 thread_cpu_seconds=0.495736 cpu_wall_pct=100.2 target_cpu=65 affinity_applied=true start_cpu=65 end_cpu=65 voluntary_ctxt_switches=94 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=2 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.437954 payload_Gbitps=4.903 logical_iops=149641 thread_cpu_seconds=0.438059 cpu_wall_pct=100.0 target_cpu=66 affinity_applied=true start_cpu=66 end_cpu=66 voluntary_ctxt_switches=125 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker-contract: worker=3 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker: worker=3 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.482742 payload_Gbitps=4.449 logical_iops=135758 thread_cpu_seconds=0.486828 cpu_wall_pct=100.8 target_cpu=67 affinity_applied=true start_cpu=67 end_cpu=67 voluntary_ctxt_switches=92 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker-contract: worker=4 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker: worker=4 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.523335 payload_Gbitps=4.103 logical_iops=125228 thread_cpu_seconds=0.524806 cpu_wall_pct=100.3 target_cpu=68 affinity_applied=true start_cpu=68 end_cpu=68 voluntary_ctxt_switches=98 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker-contract: worker=36 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=16 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=14 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=9 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=5 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker: worker=5 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.568055 payload_Gbitps=3.780 logical_iops=115369 thread_cpu_seconds=0.550857 cpu_wall_pct=97.0 target_cpu=69 affinity_applied=true start_cpu=69 end_cpu=69 voluntary_ctxt_switches=123 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker-contract: worker=38 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=27 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=7 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=31 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=39 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=28 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=13 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=43 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=45 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=48 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=18 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=54 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=61 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=30 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=53 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=12 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=10 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=44 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=20 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=6 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=21 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker: worker=6 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.668128 payload_Gbitps=3.214 logical_iops=98089 thread_cpu_seconds=0.552985 cpu_wall_pct=82.8 target_cpu=70 affinity_applied=true start_cpu=70 end_cpu=70 voluntary_ctxt_switches=146 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=7 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.583344 payload_Gbitps=3.681 logical_iops=112345 thread_cpu_seconds=0.548143 cpu_wall_pct=94.0 target_cpu=71 affinity_applied=true start_cpu=71 end_cpu=71 voluntary_ctxt_switches=143 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=8 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.467456 payload_Gbitps=4.594 logical_iops=140197 thread_cpu_seconds=0.470907 cpu_wall_pct=100.7 target_cpu=72 affinity_applied=true start_cpu=72 end_cpu=72 voluntary_ctxt_switches=110 involuntary_ctxt_switches=2 migrations=0
+zcofi-wal-relay-worker: worker=9 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.558111 payload_Gbitps=3.848 logical_iops=117425 thread_cpu_seconds=0.543277 cpu_wall_pct=97.3 target_cpu=73 affinity_applied=true start_cpu=73 end_cpu=73 voluntary_ctxt_switches=105 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=10 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.666451 payload_Gbitps=3.222 logical_iops=98336 thread_cpu_seconds=0.566085 cpu_wall_pct=84.9 target_cpu=74 affinity_applied=true start_cpu=74 end_cpu=74 voluntary_ctxt_switches=164 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker-contract: worker=25 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=19 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=49 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=40 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=26 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=50 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=63 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=47 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=46 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=57 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=29 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=60 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=62 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=17 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=23 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=56 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=59 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=58 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=52 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=51 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=22 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=42 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=41 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=55 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=24 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker-contract: worker=11 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker: worker=11 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.730298 payload_Gbitps=2.941 logical_iops=89739 thread_cpu_seconds=0.568060 cpu_wall_pct=77.8 target_cpu=75 affinity_applied=true start_cpu=75 end_cpu=75 voluntary_ctxt_switches=184 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=12 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.681321 payload_Gbitps=3.152 logical_iops=96190 thread_cpu_seconds=0.574121 cpu_wall_pct=84.3 target_cpu=76 affinity_applied=true start_cpu=76 end_cpu=76 voluntary_ctxt_switches=144 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=13 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.591641 payload_Gbitps=3.630 logical_iops=110770 thread_cpu_seconds=0.553444 cpu_wall_pct=93.5 target_cpu=77 affinity_applied=true start_cpu=77 end_cpu=77 voluntary_ctxt_switches=156 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=14 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.525834 payload_Gbitps=4.084 logical_iops=124632 thread_cpu_seconds=0.526200 cpu_wall_pct=100.1 target_cpu=78 affinity_applied=true start_cpu=78 end_cpu=78 voluntary_ctxt_switches=109 involuntary_ctxt_switches=2 migrations=0
+zcofi-wal-relay-worker: worker=15 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.409701 payload_Gbitps=5.242 logical_iops=159960 thread_cpu_seconds=0.413645 cpu_wall_pct=101.0 target_cpu=79 affinity_applied=true start_cpu=79 end_cpu=79 voluntary_ctxt_switches=105 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=16 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.495018 payload_Gbitps=4.338 logical_iops=132391 thread_cpu_seconds=0.497347 cpu_wall_pct=100.5 target_cpu=80 affinity_applied=true start_cpu=80 end_cpu=80 voluntary_ctxt_switches=105 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=17 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.741051 payload_Gbitps=2.898 logical_iops=88437 thread_cpu_seconds=0.598906 cpu_wall_pct=80.8 target_cpu=81 affinity_applied=true start_cpu=81 end_cpu=81 voluntary_ctxt_switches=143 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=18 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.671485 payload_Gbitps=3.198 logical_iops=97599 thread_cpu_seconds=0.567378 cpu_wall_pct=84.5 target_cpu=82 affinity_applied=true start_cpu=82 end_cpu=82 voluntary_ctxt_switches=189 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=19 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.589177 payload_Gbitps=3.645 logical_iops=111233 thread_cpu_seconds=0.468585 cpu_wall_pct=79.5 target_cpu=83 affinity_applied=true start_cpu=83 end_cpu=83 voluntary_ctxt_switches=143 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=20 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.683051 payload_Gbitps=3.144 logical_iops=95946 thread_cpu_seconds=0.571153 cpu_wall_pct=83.6 target_cpu=84 affinity_applied=true start_cpu=84 end_cpu=84 voluntary_ctxt_switches=153 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=21 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.584662 payload_Gbitps=3.673 logical_iops=112092 thread_cpu_seconds=0.473197 cpu_wall_pct=80.9 target_cpu=85 affinity_applied=true start_cpu=85 end_cpu=85 voluntary_ctxt_switches=139 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=22 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.724503 payload_Gbitps=2.964 logical_iops=90456 thread_cpu_seconds=0.575311 cpu_wall_pct=79.4 target_cpu=86 affinity_applied=true start_cpu=86 end_cpu=86 voluntary_ctxt_switches=168 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=23 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.608359 payload_Gbitps=3.530 logical_iops=107726 thread_cpu_seconds=0.472543 cpu_wall_pct=77.7 target_cpu=87 affinity_applied=true start_cpu=87 end_cpu=87 voluntary_ctxt_switches=177 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=24 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.654543 payload_Gbitps=3.281 logical_iops=100125 thread_cpu_seconds=0.495046 cpu_wall_pct=75.6 target_cpu=88 affinity_applied=true start_cpu=88 end_cpu=88 voluntary_ctxt_switches=177 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=25 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.574165 payload_Gbitps=3.740 logical_iops=114141 thread_cpu_seconds=0.460853 cpu_wall_pct=80.3 target_cpu=89 affinity_applied=true start_cpu=89 end_cpu=89 voluntary_ctxt_switches=156 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=26 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.678197 payload_Gbitps=3.166 logical_iops=96633 thread_cpu_seconds=0.557052 cpu_wall_pct=82.1 target_cpu=90 affinity_applied=true start_cpu=90 end_cpu=90 voluntary_ctxt_switches=157 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=27 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.436621 payload_Gbitps=4.918 logical_iops=150098 thread_cpu_seconds=0.424122 cpu_wall_pct=97.1 target_cpu=91 affinity_applied=true start_cpu=91 end_cpu=91 voluntary_ctxt_switches=118 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=28 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.590137 payload_Gbitps=3.639 logical_iops=111052 thread_cpu_seconds=0.558613 cpu_wall_pct=94.7 target_cpu=92 affinity_applied=true start_cpu=92 end_cpu=92 voluntary_ctxt_switches=162 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker-contract: worker=37 same_slot_forward=yes registered_memory=libfabric-mr-cache relay_window=1 header_rewrites=16 tail_ack_gates_upstream_ack=no
+zcofi-wal-relay-worker: worker=29 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.602895 payload_Gbitps=3.562 logical_iops=108702 thread_cpu_seconds=0.472479 cpu_wall_pct=78.4 target_cpu=93 affinity_applied=true start_cpu=93 end_cpu=93 voluntary_ctxt_switches=147 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=30 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.558647 payload_Gbitps=3.844 logical_iops=117312 thread_cpu_seconds=0.458396 cpu_wall_pct=82.1 target_cpu=94 affinity_applied=true start_cpu=94 end_cpu=94 voluntary_ctxt_switches=185 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=31 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.556053 payload_Gbitps=3.862 logical_iops=117859 thread_cpu_seconds=0.525070 cpu_wall_pct=94.4 target_cpu=95 affinity_applied=true start_cpu=95 end_cpu=95 voluntary_ctxt_switches=129 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=32 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.429538 payload_Gbitps=5.000 logical_iops=152573 thread_cpu_seconds=0.429670 cpu_wall_pct=100.0 target_cpu=96 affinity_applied=true start_cpu=96 end_cpu=96 voluntary_ctxt_switches=109 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=33 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.458231 payload_Gbitps=4.686 logical_iops=143020 thread_cpu_seconds=0.468752 cpu_wall_pct=102.3 target_cpu=97 affinity_applied=true start_cpu=97 end_cpu=97 voluntary_ctxt_switches=162 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=34 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.380670 payload_Gbitps=5.641 logical_iops=172160 thread_cpu_seconds=0.396779 cpu_wall_pct=104.2 target_cpu=98 affinity_applied=true start_cpu=98 end_cpu=98 voluntary_ctxt_switches=115 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=35 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.447739 payload_Gbitps=4.796 logical_iops=146371 thread_cpu_seconds=0.459559 cpu_wall_pct=102.6 target_cpu=99 affinity_applied=true start_cpu=99 end_cpu=99 voluntary_ctxt_switches=118 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=36 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.530304 payload_Gbitps=4.050 logical_iops=123582 thread_cpu_seconds=0.540215 cpu_wall_pct=101.9 target_cpu=100 affinity_applied=true start_cpu=100 end_cpu=100 voluntary_ctxt_switches=121 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=37 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.730301 payload_Gbitps=2.941 logical_iops=89738 thread_cpu_seconds=0.572843 cpu_wall_pct=78.4 target_cpu=101 affinity_applied=true start_cpu=101 end_cpu=101 voluntary_ctxt_switches=143 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=38 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.521154 payload_Gbitps=4.121 logical_iops=125752 thread_cpu_seconds=0.513184 cpu_wall_pct=98.5 target_cpu=102 affinity_applied=true start_cpu=102 end_cpu=102 voluntary_ctxt_switches=145 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=39 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.532105 payload_Gbitps=4.036 logical_iops=123164 thread_cpu_seconds=0.503474 cpu_wall_pct=94.6 target_cpu=103 affinity_applied=true start_cpu=103 end_cpu=103 voluntary_ctxt_switches=148 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=40 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.623801 payload_Gbitps=3.443 logical_iops=105059 thread_cpu_seconds=0.509313 cpu_wall_pct=81.6 target_cpu=104 affinity_applied=true start_cpu=104 end_cpu=104 voluntary_ctxt_switches=147 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=41 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.672588 payload_Gbitps=3.193 logical_iops=97438 thread_cpu_seconds=0.521513 cpu_wall_pct=77.5 target_cpu=105 affinity_applied=true start_cpu=105 end_cpu=105 voluntary_ctxt_switches=126 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=42 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.682932 payload_Gbitps=3.145 logical_iops=95963 thread_cpu_seconds=0.534277 cpu_wall_pct=78.2 target_cpu=106 affinity_applied=true start_cpu=106 end_cpu=106 voluntary_ctxt_switches=121 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=43 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.553128 payload_Gbitps=3.882 logical_iops=118483 thread_cpu_seconds=0.499822 cpu_wall_pct=90.4 target_cpu=107 affinity_applied=true start_cpu=107 end_cpu=107 voluntary_ctxt_switches=148 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=44 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.615598 payload_Gbitps=3.488 logical_iops=106459 thread_cpu_seconds=0.515191 cpu_wall_pct=83.7 target_cpu=108 affinity_applied=true start_cpu=108 end_cpu=108 voluntary_ctxt_switches=178 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=45 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.582927 payload_Gbitps=3.684 logical_iops=112426 thread_cpu_seconds=0.519745 cpu_wall_pct=89.2 target_cpu=109 affinity_applied=true start_cpu=109 end_cpu=109 voluntary_ctxt_switches=160 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=46 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.639428 payload_Gbitps=3.358 logical_iops=102492 thread_cpu_seconds=0.517696 cpu_wall_pct=81.0 target_cpu=110 affinity_applied=true start_cpu=110 end_cpu=110 voluntary_ctxt_switches=160 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=47 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.626504 payload_Gbitps=3.428 logical_iops=104606 thread_cpu_seconds=0.502884 cpu_wall_pct=80.3 target_cpu=111 affinity_applied=true start_cpu=111 end_cpu=111 voluntary_ctxt_switches=152 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=48 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.576122 payload_Gbitps=3.727 logical_iops=113754 thread_cpu_seconds=0.484645 cpu_wall_pct=84.1 target_cpu=112 affinity_applied=true start_cpu=112 end_cpu=112 voluntary_ctxt_switches=142 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=49 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.607501 payload_Gbitps=3.535 logical_iops=107878 thread_cpu_seconds=0.496672 cpu_wall_pct=81.8 target_cpu=113 affinity_applied=true start_cpu=113 end_cpu=113 voluntary_ctxt_switches=148 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=50 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.671299 payload_Gbitps=3.199 logical_iops=97626 thread_cpu_seconds=0.549071 cpu_wall_pct=81.8 target_cpu=114 affinity_applied=true start_cpu=114 end_cpu=114 voluntary_ctxt_switches=172 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=51 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.656732 payload_Gbitps=3.270 logical_iops=99791 thread_cpu_seconds=0.510271 cpu_wall_pct=77.7 target_cpu=115 affinity_applied=true start_cpu=115 end_cpu=115 voluntary_ctxt_switches=161 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=52 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.671886 payload_Gbitps=3.196 logical_iops=97540 thread_cpu_seconds=0.526432 cpu_wall_pct=78.4 target_cpu=116 affinity_applied=true start_cpu=116 end_cpu=116 voluntary_ctxt_switches=142 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=53 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.573811 payload_Gbitps=3.742 logical_iops=114212 thread_cpu_seconds=0.482138 cpu_wall_pct=84.0 target_cpu=117 affinity_applied=true start_cpu=117 end_cpu=117 voluntary_ctxt_switches=141 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=54 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.611754 payload_Gbitps=3.510 logical_iops=107128 thread_cpu_seconds=0.517546 cpu_wall_pct=84.6 target_cpu=118 affinity_applied=true start_cpu=118 end_cpu=118 voluntary_ctxt_switches=120 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=55 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.664411 payload_Gbitps=3.232 logical_iops=98638 thread_cpu_seconds=0.512806 cpu_wall_pct=77.2 target_cpu=119 affinity_applied=true start_cpu=119 end_cpu=119 voluntary_ctxt_switches=151 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=56 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.635686 payload_Gbitps=3.378 logical_iops=103095 thread_cpu_seconds=0.502864 cpu_wall_pct=79.1 target_cpu=120 affinity_applied=true start_cpu=120 end_cpu=120 voluntary_ctxt_switches=133 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=57 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.615205 payload_Gbitps=3.491 logical_iops=106527 thread_cpu_seconds=0.495719 cpu_wall_pct=80.6 target_cpu=121 affinity_applied=true start_cpu=121 end_cpu=121 voluntary_ctxt_switches=137 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=58 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.690446 payload_Gbitps=3.110 logical_iops=94918 thread_cpu_seconds=0.547750 cpu_wall_pct=79.3 target_cpu=122 affinity_applied=true start_cpu=122 end_cpu=122 voluntary_ctxt_switches=135 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=59 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.664901 payload_Gbitps=3.230 logical_iops=98565 thread_cpu_seconds=0.513675 cpu_wall_pct=77.3 target_cpu=123 affinity_applied=true start_cpu=123 end_cpu=123 voluntary_ctxt_switches=140 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=60 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.680574 payload_Gbitps=3.155 logical_iops=96295 thread_cpu_seconds=0.555063 cpu_wall_pct=81.6 target_cpu=124 affinity_applied=true start_cpu=124 end_cpu=124 voluntary_ctxt_switches=145 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=61 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.605945 payload_Gbitps=3.544 logical_iops=108155 thread_cpu_seconds=0.515646 cpu_wall_pct=85.1 target_cpu=125 affinity_applied=true start_cpu=125 end_cpu=125 voluntary_ctxt_switches=146 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-worker: worker=62 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.672533 payload_Gbitps=3.193 logical_iops=97447 thread_cpu_seconds=0.538243 cpu_wall_pct=80.0 target_cpu=126 affinity_applied=true start_cpu=126 end_cpu=126 voluntary_ctxt_switches=147 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker: worker=63 streams=2 payload_bytes=268435456 wire_bytes=268437504 extents=16 logical_records=65536 acks=0 seconds=0.643693 payload_Gbitps=3.336 logical_iops=101813 thread_cpu_seconds=0.525320 cpu_wall_pct=81.6 target_cpu=127 affinity_applied=true start_cpu=127 end_cpu=127 voluntary_ctxt_switches=146 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-relay-summary: payload_bytes=17179869184 wire_bytes=17180000256 extents=1024 logical_records=4194304 tail_gated_acks=0 seconds=0.741051 payload_Gbitps=185.465 logical_iops=5659941 voluntary_ctxt_switches=9014 involuntary_ctxt_switches=38 migrations=0

@@ -1,0 +1,43 @@
+zcofi-wal-send: provider=tcp endpoint=rdm addr=127.0.0.1 base_service=44600 lanes=8 bytes_per_lane=67108864 extent_bytes=1048576 message_bytes=1048704 workers=8 ack_enabled=yes tx_nowait_requested=no tx_nowait_effective=no prepost_ack_requested=no prepost_ack_effective=no compact_4k=no payload_inject=no ack_window=64 ofi_domain=auto records_per_extent=256 timeout_ms=30000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-send-worker: affinity_index=1 target_cpu=1 status=ok
+zcofi-wal-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcofi-wal-send-worker: affinity_index=2 target_cpu=2 status=ok
+zcofi-wal-send-worker: affinity_index=3 target_cpu=3 status=ok
+zcofi-wal-send-worker: affinity_index=4 target_cpu=4 status=ok
+zcofi-wal-send-worker: affinity_index=5 target_cpu=5 status=ok
+zcofi-wal-send-worker: affinity_index=6 target_cpu=6 status=ok
+zcofi-wal-send-worker: affinity_index=7 target_cpu=7 status=ok
+zcofi-control-client: addr=127.0.0.1:45603 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=3 lane=3 provider=tcp endpoint=rdm addr=127.0.0.1 service=44603 control_port=45603 max_msg_size=18446744073709551615 inject_size=128
+zcofi-control-client: addr=127.0.0.1:45602 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=2 lane=2 provider=tcp endpoint=rdm addr=127.0.0.1 service=44602 control_port=45602 max_msg_size=18446744073709551615 inject_size=128
+zcofi-control-client: addr=127.0.0.1:45600 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=0 lane=0 provider=tcp endpoint=rdm addr=127.0.0.1 service=44600 control_port=45600 max_msg_size=18446744073709551615 inject_size=128
+zcofi-control-client: addr=127.0.0.1:45601 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=1 lane=1 provider=tcp endpoint=rdm addr=127.0.0.1 service=44601 control_port=45601 max_msg_size=18446744073709551615 inject_size=128
+zcofi-control-client: addr=127.0.0.1:45604 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=4 lane=4 provider=tcp endpoint=rdm addr=127.0.0.1 service=44604 control_port=45604 max_msg_size=18446744073709551615 inject_size=128
+zcofi-control-client: addr=127.0.0.1:45607 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=7 lane=7 provider=tcp endpoint=rdm addr=127.0.0.1 service=44607 control_port=45607 max_msg_size=18446744073709551615 inject_size=128
+zcofi-control-client: addr=127.0.0.1:45605 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=5 lane=5 provider=tcp endpoint=rdm addr=127.0.0.1 service=44605 control_port=45605 max_msg_size=18446744073709551615 inject_size=128
+zcofi-control-client: addr=127.0.0.1:45606 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=6 lane=6 provider=tcp endpoint=rdm addr=127.0.0.1 service=44606 control_port=45606 max_msg_size=18446744073709551615 inject_size=128
+zcofi-wal-send-worker: worker=0 streams=1 payload_bytes=67108864 wire_bytes=67117056 extents=64 logical_records=16384 acks=64 seconds=0.318683 payload_Gbitps=1.685 logical_iops=51412 thread_cpu_seconds=0.123333 cpu_wall_pct=38.7 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=8 involuntary_ctxt_switches=36 migrations=0
+zcofi-wal-send-worker-latency: worker=0 ack_count=64 ack_avg_ns=128169772 ack_min_ns=23609144 ack_p50_ns=120000000 ack_p95_ns=292000000 ack_p99_ns=311000000 ack_p999_ns=311000000 ack_max_ns=310017467
+zcofi-wal-send-worker: worker=1 streams=1 payload_bytes=67108864 wire_bytes=67117056 extents=64 logical_records=16384 acks=64 seconds=0.394450 payload_Gbitps=1.361 logical_iops=41536 thread_cpu_seconds=0.151880 cpu_wall_pct=38.5 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=6 involuntary_ctxt_switches=47 migrations=0
+zcofi-wal-send-worker-latency: worker=1 ack_count=64 ack_avg_ns=155348477 ack_min_ns=20102386 ack_p50_ns=149000000 ack_p95_ns=257000000 ack_p99_ns=390000000 ack_p999_ns=390000000 ack_max_ns=389051920
+zcofi-wal-send-worker: worker=2 streams=1 payload_bytes=67108864 wire_bytes=67117056 extents=64 logical_records=16384 acks=64 seconds=0.381196 payload_Gbitps=1.408 logical_iops=42980 thread_cpu_seconds=0.146092 cpu_wall_pct=38.3 target_cpu=2 affinity_applied=true start_cpu=2 end_cpu=2 voluntary_ctxt_switches=8 involuntary_ctxt_switches=67 migrations=0
+zcofi-wal-send-worker-latency: worker=2 ack_count=64 ack_avg_ns=155911102 ack_min_ns=43932083 ack_p50_ns=140000000 ack_p95_ns=312000000 ack_p99_ns=377000000 ack_p999_ns=377000000 ack_max_ns=376777148
+zcofi-wal-send-worker: worker=3 streams=1 payload_bytes=67108864 wire_bytes=67117056 extents=64 logical_records=16384 acks=64 seconds=0.370796 payload_Gbitps=1.448 logical_iops=44186 thread_cpu_seconds=0.147299 cpu_wall_pct=39.7 target_cpu=3 affinity_applied=true start_cpu=3 end_cpu=3 voluntary_ctxt_switches=6 involuntary_ctxt_switches=83 migrations=0
+zcofi-wal-send-worker-latency: worker=3 ack_count=64 ack_avg_ns=147487028 ack_min_ns=51736847 ack_p50_ns=136000000 ack_p95_ns=256000000 ack_p99_ns=365000000 ack_p999_ns=365000000 ack_max_ns=364809899
+zcofi-wal-send-worker: worker=4 streams=1 payload_bytes=67108864 wire_bytes=67117056 extents=64 logical_records=16384 acks=64 seconds=0.382061 payload_Gbitps=1.405 logical_iops=42883 thread_cpu_seconds=0.176127 cpu_wall_pct=46.1 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=6 involuntary_ctxt_switches=58 migrations=0
+zcofi-wal-send-worker-latency: worker=4 ack_count=64 ack_avg_ns=140262258 ack_min_ns=12156490 ack_p50_ns=132000000 ack_p95_ns=249000000 ack_p99_ns=377000000 ack_p999_ns=377000000 ack_max_ns=376775709
+zcofi-wal-send-worker: worker=5 streams=1 payload_bytes=67108864 wire_bytes=67117056 extents=64 logical_records=16384 acks=64 seconds=0.322168 payload_Gbitps=1.666 logical_iops=50855 thread_cpu_seconds=0.148076 cpu_wall_pct=46.0 target_cpu=5 affinity_applied=true start_cpu=5 end_cpu=5 voluntary_ctxt_switches=6 involuntary_ctxt_switches=29 migrations=0
+zcofi-wal-send-worker-latency: worker=5 ack_count=64 ack_avg_ns=119168977 ack_min_ns=20026336 ack_p50_ns=116000000 ack_p95_ns=241000000 ack_p99_ns=319000000 ack_p999_ns=319000000 ack_max_ns=318143045
+zcofi-wal-send-worker: worker=6 streams=1 payload_bytes=67108864 wire_bytes=67117056 extents=64 logical_records=16384 acks=64 seconds=0.323582 payload_Gbitps=1.659 logical_iops=50633 thread_cpu_seconds=0.148094 cpu_wall_pct=45.8 target_cpu=6 affinity_applied=true start_cpu=6 end_cpu=6 voluntary_ctxt_switches=4 involuntary_ctxt_switches=41 migrations=0
+zcofi-wal-send-worker-latency: worker=6 ack_count=64 ack_avg_ns=118627287 ack_min_ns=23669745 ack_p50_ns=108000000 ack_p95_ns=252000000 ack_p99_ns=319000000 ack_p999_ns=319000000 ack_max_ns=318976961
+zcofi-wal-send-worker: worker=7 streams=1 payload_bytes=67108864 wire_bytes=67117056 extents=64 logical_records=16384 acks=64 seconds=0.322097 payload_Gbitps=1.667 logical_iops=50867 thread_cpu_seconds=0.123602 cpu_wall_pct=38.4 target_cpu=7 affinity_applied=true start_cpu=7 end_cpu=7 voluntary_ctxt_switches=4 involuntary_ctxt_switches=36 migrations=0
+zcofi-wal-send-worker-latency: worker=7 ack_count=64 ack_avg_ns=114617527 ack_min_ns=19840734 ack_p50_ns=104000000 ack_p95_ns=217000000 ack_p99_ns=319000000 ack_p999_ns=319000000 ack_max_ns=318006244
+zcofi-wal-send-summary: payload_bytes=536870912 wire_bytes=536936448 extents=512 logical_records=131072 acks=512 seconds=0.394450 payload_Gbitps=10.888 logical_iops=332290 voluntary_ctxt_switches=48 involuntary_ctxt_switches=397 migrations=0
+zcofi-wal-send-latency-summary: ack_count=512 ack_avg_ns=134949054 ack_min_ns=12156490 ack_p50_ns=128000000 ack_p95_ns=257000000 ack_p99_ns=319000000 ack_p999_ns=390000000 ack_max_ns=389051920

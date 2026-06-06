@@ -1,0 +1,10 @@
+zcofi-wal-relay: provider=tcp endpoint=rdm bind=127.0.0.1 tail_addr=127.0.0.1 in_base_service=43100 out_base_service=45100 lanes=1 bytes_per_lane=1048576 extent_bytes=65536 message_bytes=65664 workers=1 ack_enabled=yes compact_4k=no rewrite_headers=yes tx_nowait=no ack_inject=no same_slot_forward=yes hwm_ack=tail-ack-before-upstream-ack timeout_ms=10000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-relay-worker: affinity_index=0 target_cpu=0 status=ok
+zcofi-control-server: listen=127.0.0.1:44100 peer=127.0.0.1:57332 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-client: addr=127.0.0.1:46100 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-lane: worker=0 lane=0 provider=tcp endpoint=rdm bind=127.0.0.1 in_service=43100 in_control_port=44100 tail_addr=127.0.0.1 out_service=45100 out_control_port=46100 message_bytes=65664 max_msg_size_in=18446744073709551615 max_msg_size_out=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-wal-relay-worker-contract: worker=0 same_slot_forward=yes registered_memory=libfabric-mr-cache header_rewrites=16 tail_ack_gates_upstream_ack=yes
+zcofi-wal-relay-worker: worker=0 streams=2 payload_bytes=1048576 wire_bytes=1050624 extents=16 logical_records=256 acks=16 seconds=0.399052 payload_Gbitps=0.021 logical_iops=642 thread_cpu_seconds=0.138060 cpu_wall_pct=34.6 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=4 involuntary_ctxt_switches=33 migrations=0
+zcofi-wal-relay-worker-latency: worker=0 ack_count=16 ack_avg_ns=24922045 ack_min_ns=20208949 ack_p50_ns=24000000 ack_p95_ns=43000000 ack_p99_ns=43000000 ack_p999_ns=43000000 ack_max_ns=42555311
+zcofi-wal-relay-summary: payload_bytes=1048576 wire_bytes=1050624 extents=16 logical_records=256 tail_gated_acks=16 seconds=0.399052 payload_Gbitps=0.021 logical_iops=642 voluntary_ctxt_switches=4 involuntary_ctxt_switches=33 migrations=0
+zcofi-wal-relay-latency-summary: tail_hwm_ack_count=16 tail_hwm_ack_avg_ns=24922045 tail_hwm_ack_min_ns=20208949 tail_hwm_ack_p50_ns=24000000 tail_hwm_ack_p95_ns=43000000 tail_hwm_ack_p99_ns=43000000 tail_hwm_ack_p999_ns=43000000 tail_hwm_ack_max_ns=42555311

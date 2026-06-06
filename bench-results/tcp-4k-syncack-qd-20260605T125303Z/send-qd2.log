@@ -1,0 +1,14 @@
+Warning: Permanently added '18.222.187.9' (ED25519) to the list of known hosts.
+zcwal-extent-send: addr=172.31.47.142 base_port=35100 lanes=2 connections_per_lane=1 total_connections=2 bytes_per_connection=16777216 extent_bytes=4096 record_size=4096 records_per_extent=1 workers=2 framing=extent data_path=blocking ack_enabled=yes sync_acks=yes tcp_nodelay=yes socket_buffer_bytes=16777216 uring_pipeline=32 uring_entries=64 source_ports=kernel-ephemeral
+zcwal-extent-send-worker: affinity_index=0 target_cpu=4 status=ok
+zcwal-extent-send-worker: affinity_index=1 target_cpu=5 status=ok
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 425984 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 425984 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcwal-extent-send-stream: worker=0 lane=0 port=35100 conn=0
+zcwal-extent-send-stream: worker=1 lane=1 port=35101 conn=0
+zcwal-extent-send-worker: worker=0 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.324547 payload_Gbitps=0.414 logical_iops=12621 thread_cpu_seconds=0.021736 cpu_wall_pct=6.7 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=4099 involuntary_ctxt_switches=0 migrations=0
+zcwal-extent-send-worker-latency: worker=0 ack_count=4096 ack_avg_ns=79173 ack_min_ns=41744 ack_p50_ns=70000 ack_p95_ns=131000 ack_p99_ns=132000 ack_p999_ns=135000 ack_max_ns=197479
+zcwal-extent-send-worker: worker=1 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.215023 payload_Gbitps=0.624 logical_iops=19049 thread_cpu_seconds=0.021309 cpu_wall_pct=9.9 target_cpu=5 affinity_applied=true start_cpu=5 end_cpu=5 voluntary_ctxt_switches=4100 involuntary_ctxt_switches=0 migrations=0
+zcwal-extent-send-worker-latency: worker=1 ack_count=4096 ack_avg_ns=52436 ack_min_ns=33467 ack_p50_ns=43000 ack_p95_ns=71000 ack_p99_ns=139000 ack_p999_ns=140000 ack_max_ns=213273
+zcwal-extent-send-summary: payload_bytes=33554432 wire_bytes=34603008 extents=8192 logical_records=8192 acks=8192 seconds=0.324605 payload_Gbitps=0.827 logical_iops=25237
+zcwal-extent-send-latency-summary: ack_count=8192 ack_avg_ns=65805 ack_min_ns=33467 ack_p50_ns=69000 ack_p95_ns=131000 ack_p99_ns=138000 ack_p999_ns=139000 ack_max_ns=213273

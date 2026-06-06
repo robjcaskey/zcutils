@@ -1,0 +1,8 @@
+zcofi-wal-send: provider=tcp endpoint=rdm addr=127.0.0.1 base_service=40210 lanes=1 bytes_per_lane=1048576 extent_bytes=4096 message_bytes=4096 workers=1 ack_enabled=yes tx_nowait=yes prepost_ack=yes compact_4k=yes payload_inject=yes records_per_extent=1 timeout_ms=30000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-send-worker: affinity_index=0 target_cpu=20 status=ok
+zcofi-control-client: addr=127.0.0.1:41210 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=0 lane=0 provider=tcp endpoint=rdm addr=127.0.0.1 service=40210 control_port=41210 max_msg_size=18446744073709551615 inject_size=128
+zcofi-wal-send-worker: worker=0 streams=1 payload_bytes=1048576 wire_bytes=1048576 extents=256 logical_records=256 acks=256 seconds=0.003404 payload_Gbitps=2.464 logical_iops=75196 thread_cpu_seconds=0.005488 cpu_wall_pct=161.2 target_cpu=20 affinity_applied=true start_cpu=20 end_cpu=20 voluntary_ctxt_switches=2 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-send-worker-latency: worker=0 ack_count=256 ack_avg_ns=11696 ack_min_ns=5610 ack_p50_ns=6000 ack_p95_ns=7000 ack_p99_ns=8000 ack_p999_ns=2000000 ack_max_ns=1497279
+zcofi-wal-send-summary: payload_bytes=1048576 wire_bytes=1048576 extents=256 logical_records=256 acks=256 seconds=0.003404 payload_Gbitps=2.464 logical_iops=75196 voluntary_ctxt_switches=2 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-send-latency-summary: ack_count=256 ack_avg_ns=11696 ack_min_ns=5610 ack_p50_ns=6000 ack_p95_ns=7000 ack_p99_ns=8000 ack_p999_ns=2000000 ack_max_ns=1497279

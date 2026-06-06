@@ -1,0 +1,38 @@
+Warning: Permanently added '18.222.187.9' (ED25519) to the list of known hosts.
+zcwal-extent-send: addr=172.31.47.142 base_port=35300 lanes=8 connections_per_lane=1 total_connections=8 bytes_per_connection=16777216 extent_bytes=4096 record_size=4096 records_per_extent=1 workers=8 framing=extent data_path=blocking ack_enabled=yes sync_acks=yes tcp_nodelay=yes socket_buffer_bytes=16777216 uring_pipeline=32 uring_entries=64 source_ports=kernel-ephemeral
+zcwal-extent-send-worker: affinity_index=0 target_cpu=4 status=ok
+zcwal-extent-send-worker: affinity_index=1 target_cpu=5 status=ok
+zcwal-extent-send-worker: affinity_index=2 target_cpu=6 status=ok
+zcwal-extent-send-worker: affinity_index=4 target_cpu=8 status=ok
+zcwal-extent-send-worker: affinity_index=3 target_cpu=7 status=ok
+zcwal-extent-send-worker: affinity_index=5 target_cpu=9 status=ok
+zcwal-extent-send-worker: affinity_index=6 target_cpu=10 status=ok
+zcwal-extent-send-worker: affinity_index=7 target_cpu=11 status=ok
+zcwal-extent-send-stream: worker=0 lane=0 port=35300 conn=0
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 425984 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 425984 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcwal-extent-send-stream: worker=2 lane=2 port=35302 conn=0
+zcwal-extent-send-stream: worker=1 lane=1 port=35301 conn=0
+zcwal-extent-send-stream: worker=4 lane=4 port=35304 conn=0
+zcwal-extent-send-stream: worker=6 lane=6 port=35306 conn=0
+zcwal-extent-send-stream: worker=3 lane=3 port=35303 conn=0
+zcwal-extent-send-stream: worker=5 lane=5 port=35305 conn=0
+zcwal-extent-send-stream: worker=7 lane=7 port=35307 conn=0
+zcwal-extent-send-worker: worker=0 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.171990 payload_Gbitps=0.780 logical_iops=23815 thread_cpu_seconds=0.020969 cpu_wall_pct=12.2 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=4101 involuntary_ctxt_switches=0 migrations=0
+zcwal-extent-send-worker-latency: worker=0 ack_count=4096 ack_avg_ns=41926 ack_min_ns=29601 ack_p50_ns=41000 ack_p95_ns=58000 ack_p99_ns=73000 ack_p999_ns=86000 ack_max_ns=124366
+zcwal-extent-send-worker: worker=1 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.429927 payload_Gbitps=0.312 logical_iops=9527 thread_cpu_seconds=0.020720 cpu_wall_pct=4.8 target_cpu=5 affinity_applied=true start_cpu=5 end_cpu=5 voluntary_ctxt_switches=4103 involuntary_ctxt_switches=0 migrations=0
+zcwal-extent-send-worker-latency: worker=1 ack_count=4096 ack_avg_ns=104900 ack_min_ns=44643 ack_p50_ns=73000 ack_p95_ns=140000 ack_p99_ns=261000 ack_p999_ns=284000 ack_max_ns=284649
+zcwal-extent-send-worker: worker=2 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.295101 payload_Gbitps=0.455 logical_iops=13880 thread_cpu_seconds=0.021349 cpu_wall_pct=7.2 target_cpu=6 affinity_applied=true start_cpu=6 end_cpu=6 voluntary_ctxt_switches=4102 involuntary_ctxt_switches=0 migrations=0
+zcwal-extent-send-worker-latency: worker=2 ack_count=4096 ack_avg_ns=71985 ack_min_ns=39693 ack_p50_ns=70000 ack_p95_ns=85000 ack_p99_ns=137000 ack_p999_ns=168000 ack_max_ns=186431
+zcwal-extent-send-worker: worker=3 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.279326 payload_Gbitps=0.481 logical_iops=14664 thread_cpu_seconds=0.029607 cpu_wall_pct=10.6 target_cpu=7 affinity_applied=true start_cpu=7 end_cpu=7 voluntary_ctxt_switches=4101 involuntary_ctxt_switches=5 migrations=0
+zcwal-extent-send-worker-latency: worker=3 ack_count=4096 ack_avg_ns=68117 ack_min_ns=30296 ack_p50_ns=69000 ack_p95_ns=75000 ack_p99_ns=131000 ack_p999_ns=134000 ack_max_ns=204833
+zcwal-extent-send-worker: worker=4 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.283272 payload_Gbitps=0.474 logical_iops=14460 thread_cpu_seconds=0.020348 cpu_wall_pct=7.2 target_cpu=8 affinity_applied=true start_cpu=8 end_cpu=8 voluntary_ctxt_switches=4100 involuntary_ctxt_switches=0 migrations=0
+zcwal-extent-send-worker-latency: worker=4 ack_count=4096 ack_avg_ns=69096 ack_min_ns=40355 ack_p50_ns=70000 ack_p95_ns=74000 ack_p99_ns=82000 ack_p999_ns=89000 ack_max_ns=210618
+zcwal-extent-send-worker: worker=5 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.297382 payload_Gbitps=0.451 logical_iops=13774 thread_cpu_seconds=0.020664 cpu_wall_pct=6.9 target_cpu=9 affinity_applied=true start_cpu=9 end_cpu=9 voluntary_ctxt_switches=4100 involuntary_ctxt_switches=0 migrations=0
+zcwal-extent-send-worker-latency: worker=5 ack_count=4096 ack_avg_ns=72538 ack_min_ns=43802 ack_p50_ns=70000 ack_p95_ns=119000 ack_p99_ns=138000 ack_p999_ns=191000 ack_max_ns=226055
+zcwal-extent-send-worker: worker=6 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.539823 payload_Gbitps=0.249 logical_iops=7588 thread_cpu_seconds=0.021212 cpu_wall_pct=3.9 target_cpu=10 affinity_applied=true start_cpu=10 end_cpu=10 voluntary_ctxt_switches=4099 involuntary_ctxt_switches=0 migrations=0
+zcwal-extent-send-worker-latency: worker=6 ack_count=4096 ack_avg_ns=131731 ack_min_ns=56315 ack_p50_ns=131000 ack_p95_ns=138000 ack_p99_ns=261000 ack_p999_ns=277000 ack_max_ns=277740
+zcwal-extent-send-worker: worker=7 streams=1 payload_bytes=16777216 wire_bytes=17301504 extents=4096 logical_records=4096 acks=4096 seconds=0.283281 payload_Gbitps=0.474 logical_iops=14459 thread_cpu_seconds=0.020854 cpu_wall_pct=7.4 target_cpu=11 affinity_applied=true start_cpu=11 end_cpu=11 voluntary_ctxt_switches=4099 involuntary_ctxt_switches=0 migrations=0
+zcwal-extent-send-worker-latency: worker=7 ack_count=4096 ack_avg_ns=69099 ack_min_ns=39460 ack_p50_ns=70000 ack_p95_ns=75000 ack_p99_ns=82000 ack_p999_ns=89000 ack_max_ns=214442
+zcwal-extent-send-summary: payload_bytes=134217728 wire_bytes=138412032 extents=32768 logical_records=32768 acks=32768 seconds=0.539907 payload_Gbitps=1.989 logical_iops=60692
+zcwal-extent-send-latency-summary: ack_count=32768 ack_avg_ns=78674 ack_min_ns=29601 ack_p50_ns=70000 ack_p95_ns=137000 ack_p99_ns=141000 ack_p999_ns=269000 ack_max_ns=284649
