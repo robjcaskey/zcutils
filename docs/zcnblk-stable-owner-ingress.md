@@ -97,5 +97,34 @@ throughput stayed at 111K because this local two-lane control was capped by the
 remaining kernel/protocol path. The leaf now prints its final spin budget,
 spin hits, blocking fallbacks, polls, and grow/shrink counts.
 
+Ingress fragment sizing is topology-derived: the default is the owner count,
+capped at 16 records. A two-owner local sweep measured 103.5K, 135.8K, 132.3K,
+95.4K, 121.8K, and 99.7K IOPS at fragment targets 1, 2, 4, 8, 16, and 64,
+respectively. A fixed bug had reset the oldest-tail deadline on every submit,
+preventing sparse owner tails from ever reaching their 500 us deadline under
+continuous traffic. The deadline now retains the timestamp of the oldest
+pending tail; the topology-derived target handles the remaining crossbar
+sparsity.
+
+The owner write-fill sweep also exposed a latency/throughput policy boundary.
+At two lanes and QD16, mixed 50/50 traffic rose from 29.8K IOPS with a 1 ms
+fill delay through 62.6K, 135.8K, 221.1K, 322.2K, and 425.1K at 500, 200,
+100, 50, and 20 us, then reached 486.0K with no timed fill. Write-only traffic
+still benefits from the 200 us fill, so the owner now retains that write
+default but bypasses timed waiting for 10 ms after observing a read. Immediate
+dispatch still drains fragments already present in the owner queue; skipping
+that opportunistic drain doubled protocol batches and reduced the control to
+262K IOPS.
+
+After preserving the queue drain, the repeated noisy-host control reached
+491.9K/492.8K/493.5K mixed 4K IOPS (min/mean/max, 0.32% spread). Overall p50
+latency was 57 us, read p50 was 58 us, and write p50 was 57 us. Target context
+switches were 0.095-0.133 per 1K I/O, kernel completion-thread switches were
+0.007-0.015 per 1K, and client switches were 1.440-1.452 per 1K. The run used
+explicit client CPUs 0/8, target CPUs 1/9, kernel CPUs 2/10, owner CPUs 3/11,
+and userspace zcmem leaf CPUs 4/5; all same-sector and terminal-sync checks
+passed. It remains a shared-host, small-page control rather than a
+representative hugetlb result.
+
 Compact logs, topology manifests, context deltas, and correctness output are in
 `bench-results/cloud-owner-ingress-x48-20260712/`.

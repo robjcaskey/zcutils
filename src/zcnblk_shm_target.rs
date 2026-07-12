@@ -2353,6 +2353,22 @@ struct WalOwnerIngressWorker {
 }
 
 impl WalOwnerIngressWorker {
+    fn mixed_dispatch_is_immediate(
+        requests: &[PendingRemoteRead],
+        read_hot_until: &mut Option<Instant>,
+        hysteresis: Duration,
+    ) -> bool {
+        let has_read = requests
+            .iter()
+            .any(|pending| pending.request.op != ZCNBLK_SHM_OP_WRITE);
+        let now = Instant::now();
+        if has_read {
+            *read_hot_until = now.checked_add(hysteresis);
+            return true;
+        }
+        read_hot_until.is_some_and(|deadline| now < deadline)
+    }
+
     fn start(
         mut remote: RemoteWalLeaf,
         mapping: Arc<Mapping>,
@@ -2406,7 +2422,7 @@ impl WalOwnerIngressWorker {
                     .map(|value| value.parse::<u64>())
                     .transpose()
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
-                    .unwrap_or(20);
+                    .unwrap_or(200);
                 let pipeline_batches = env::var("URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES")
                     .ok()
                     .map(|value| value.parse::<usize>())
@@ -2437,6 +2453,14 @@ impl WalOwnerIngressWorker {
                         .transpose()
                         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
                         .unwrap_or(50_000);
+                let mixed_hysteresis = Duration::from_micros(
+                    env::var("URING_PLAY_ZCNBLK_SHM_OWNER_MIXED_HYSTERESIS_US")
+                        .ok()
+                        .map(|value| value.parse::<u64>())
+                        .transpose()
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+                        .unwrap_or(10_000),
+                );
                 let mut command_wait = AdaptiveChannelReceiver::new(
                     adaptive_wait,
                     wait_spin_min,
@@ -2452,6 +2476,7 @@ impl WalOwnerIngressWorker {
                     }
                 };
                 let mut carry = None::<WalOwnerIngressCommand>;
+                let mut read_hot_until = None::<Instant>;
                 loop {
                     let first = match carry.take() {
                         Some(command) => command,
@@ -2465,6 +2490,11 @@ impl WalOwnerIngressWorker {
                     };
                     match first {
                         WalOwnerIngressCommand::Batch { ingress, requests } => {
+                            let mut immediate = Self::mixed_dispatch_is_immediate(
+                                &requests,
+                                &mut read_hot_until,
+                                mixed_hysteresis,
+                            );
                             let mut commands = VecDeque::from([(ingress, requests)]);
                             let mut records = commands.front().map_or(0, |(_, batch)| batch.len());
                             let deadline = Instant::now()
@@ -2483,6 +2513,11 @@ impl WalOwnerIngressWorker {
                                             });
                                             break;
                                         }
+                                        immediate |= Self::mixed_dispatch_is_immediate(
+                                            &requests,
+                                            &mut read_hot_until,
+                                            mixed_hysteresis,
+                                        );
                                         records = records.saturating_add(requests.len());
                                         commands.push_back((ingress, requests));
                                     }
@@ -2499,7 +2534,7 @@ impl WalOwnerIngressWorker {
                                         return Err(error);
                                     }
                                     Err(TryRecvError::Empty) => {
-                                        if fill_us == 0 || Instant::now() >= deadline {
+                                        if immediate || fill_us == 0 || Instant::now() >= deadline {
                                             break;
                                         }
                                         std::hint::spin_loop();
@@ -2661,6 +2696,18 @@ enum WalLaneTransport {
 }
 
 impl WalLaneTransport {
+    fn default_owner_fragment_records(owner_count: usize) -> usize {
+        owner_count.clamp(1, 16)
+    }
+
+    fn update_owner_fragment_deadline(started: &mut Option<Instant>, has_pending: bool) {
+        if has_pending {
+            started.get_or_insert_with(Instant::now);
+        } else {
+            *started = None;
+        }
+    }
+
     fn start(
         mut remote: RemoteWalLeaf,
         mapping: Arc<Mapping>,
@@ -2687,7 +2734,7 @@ impl WalLaneTransport {
         let fragment_records = env::var("URING_PLAY_ZCNBLK_SHM_OWNER_FRAGMENT_RECORDS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(64)
+            .unwrap_or_else(|| Self::default_owner_fragment_records(owner_count))
             .max(1);
         let fragment_fill_us = env::var("URING_PLAY_ZCNBLK_SHM_OWNER_FRAGMENT_FILL_US")
             .ok()
@@ -2821,11 +2868,10 @@ impl WalLaneTransport {
                     true,
                     *fragment_records,
                 )?;
-                if pending_by_owner.iter().any(|pending| !pending.is_empty()) {
-                    *fragment_started = Some(Instant::now());
-                } else {
-                    *fragment_started = None;
-                }
+                Self::update_owner_fragment_deadline(
+                    fragment_started,
+                    pending_by_owner.iter().any(|pending| !pending.is_empty()),
+                );
             }
         }
         Ok(())
@@ -8244,6 +8290,64 @@ mod tests {
         assert_eq!(wait.current_spins, 2);
         assert_eq!(wait.blocking_waits, 1);
         assert_eq!(wait.quick_blocking_waits, 0);
+    }
+
+    #[test]
+    fn owner_fragment_deadline_tracks_the_oldest_pending_tail() {
+        assert_eq!(WalLaneTransport::default_owner_fragment_records(1), 1);
+        assert_eq!(WalLaneTransport::default_owner_fragment_records(2), 2);
+        assert_eq!(WalLaneTransport::default_owner_fragment_records(32), 16);
+
+        let oldest = Instant::now()
+            .checked_sub(Duration::from_millis(2))
+            .unwrap();
+        let mut started = Some(oldest);
+        WalLaneTransport::update_owner_fragment_deadline(&mut started, true);
+        assert_eq!(started, Some(oldest));
+
+        WalLaneTransport::update_owner_fragment_deadline(&mut started, false);
+        assert!(started.is_none());
+    }
+
+    #[test]
+    fn owner_mixed_hysteresis_bypasses_write_fill_until_quiescent() {
+        let pending = |op| PendingRemoteRead {
+            request: ZcnblkShmRequest {
+                op,
+                ..ZcnblkShmRequest::default()
+            },
+            request_sequence: 0,
+            payload_offset: 0,
+            dirty_ref: None,
+        };
+
+        let hysteresis = Duration::from_secs(1);
+        let mut read_hot_until = None;
+        assert!(!WalOwnerIngressWorker::mixed_dispatch_is_immediate(
+            &[pending(ZCNBLK_SHM_OP_WRITE), pending(ZCNBLK_SHM_OP_WRITE)],
+            &mut read_hot_until,
+            hysteresis,
+        ));
+        assert!(read_hot_until.is_none());
+
+        assert!(WalOwnerIngressWorker::mixed_dispatch_is_immediate(
+            &[pending(ZCNBLK_SHM_OP_WRITE), pending(ZCNBLK_SHM_OP_READ)],
+            &mut read_hot_until,
+            hysteresis,
+        ));
+        assert!(read_hot_until.is_some());
+        assert!(WalOwnerIngressWorker::mixed_dispatch_is_immediate(
+            &[pending(ZCNBLK_SHM_OP_WRITE)],
+            &mut read_hot_until,
+            hysteresis,
+        ));
+
+        read_hot_until = Instant::now().checked_sub(Duration::from_nanos(1));
+        assert!(!WalOwnerIngressWorker::mixed_dispatch_is_immediate(
+            &[pending(ZCNBLK_SHM_OP_WRITE)],
+            &mut read_hot_until,
+            hysteresis,
+        ));
     }
 
     #[test]
