@@ -143,6 +143,15 @@ syscalls per I/O. A 64-spin ultra-low-latency setting reached 207.6K IOPS at
 I/O. The harness now defaults to 256 spins at QD1-4 and retains 4,096 at deeper
 queues; explicit override remains available for the CPU/syscall-heavy setting.
 
+`zcblockbench --engine hybrid` alternates fixed-buffer io_uring and synchronous
+workers behind one start barrier, so both request types are active against the
+same block edge rather than being tested sequentially. A two-worker QD1 live
+smoke reached 177.6K mixed IOPS at 4 us overall p50 and 19 us read p50. The
+per-worker log identified worker 0 as `uring-fixed` and worker 1 as `sync`;
+same-sector ordering and terminal sync also passed. Worker regions are
+disjoint, so this proves concurrent engine coexistence while the dedicated
+ordering smoke remains responsible for same-sector conflict semantics.
+
 After preserving the queue drain, the repeated noisy-host control reached
 491.9K/492.8K/493.5K mixed 4K IOPS (min/mean/max, 0.32% spread). Overall p50
 latency was 57 us, read p50 was 58 us, and write p50 was 57 us. Target context

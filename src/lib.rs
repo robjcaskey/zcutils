@@ -62044,6 +62044,7 @@ enum BlockBenchEngine {
     UringSlot,
     Aio,
     Sync,
+    Hybrid,
     Suite,
 }
 
@@ -62061,10 +62062,11 @@ impl BlockBenchEngine {
                 Ok(Self::Aio)
             }
             "sync" | "blocking" | "syscall" | "readwrite" | "read-write" => Ok(Self::Sync),
+            "hybrid" | "mixed-engine" | "sync-uring" | "uring-sync" => Ok(Self::Hybrid),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "unknown zcblockbench engine {other:?}; use suite, uring-plain, uring-fixed, uring-slot, aio, or sync"
+                    "unknown zcblockbench engine {other:?}; use suite, hybrid, uring-plain, uring-fixed, uring-slot, aio, or sync"
                 ),
             )),
         }
@@ -62077,6 +62079,7 @@ impl BlockBenchEngine {
             Self::UringSlot => "uring-slot",
             Self::Aio => "aio",
             Self::Sync => "sync",
+            Self::Hybrid => "hybrid",
             Self::Suite => "suite",
         }
     }
@@ -62280,7 +62283,7 @@ fn zcblockbench_help() {
     println!(
         "zcblockbench - purpose-built multithreaded 4K random block IOPS bench\n\
          \n\
-         zcblockbench [TARGET] [--engine suite|uring-plain|uring-fixed|uring-slot|aio|sync]\n\
+         zcblockbench [TARGET] [--engine suite|hybrid|uring-plain|uring-fixed|uring-slot|aio|sync]\n\
            [--mode read|write|rw] [--workers N] [--ops-per-worker N]\n\
            [--bs BYTES] [--iodepth N] [--region-bytes-per-worker BYTES]\n\
            [--read-percent N] [--ring-entries N] [--buffer-mode small-pages|hugetlb]\n\
@@ -62380,6 +62383,7 @@ fn parse_zcblockbench_args(args: impl Iterator<Item = String>) -> io::Result<Blo
             "--uring-slot" => cfg.engine = BlockBenchEngine::UringSlot,
             "--aio" => cfg.engine = BlockBenchEngine::Aio,
             "--sync" => cfg.engine = BlockBenchEngine::Sync,
+            "--hybrid" => cfg.engine = BlockBenchEngine::Hybrid,
             other if other.starts_with('-') => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -62441,6 +62445,12 @@ fn zcblockbench_validate_config(cfg: &BlockBenchConfig) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "workers must be non-zero",
+        ));
+    }
+    if cfg.engine == BlockBenchEngine::Hybrid && cfg.workers < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "hybrid engine requires at least two workers",
         ));
     }
     if cfg.ops_per_worker == 0 {
@@ -63317,6 +63327,15 @@ fn zcblockbench_print_results(
     for result in results.iter() {
         let seconds = result.elapsed.as_secs_f64().max(f64::MIN_POSITIVE);
         let cpu_seconds = result.cpu.as_secs_f64();
+        let worker_engine = if engine == BlockBenchEngine::Hybrid {
+            if result.worker % 2 == 0 {
+                BlockBenchEngine::UringFixed
+            } else {
+                BlockBenchEngine::Sync
+            }
+        } else {
+            engine
+        };
         println!(
             "zcblockbench-worker: engine={} worker={} ops={} reads={} writes={} \
              seconds={seconds:.6} ops_per_sec={:.0} cpu_seconds={cpu_seconds:.6} \
@@ -63325,7 +63344,7 @@ fn zcblockbench_print_results(
              depth={} completion_batch={} wait_min_completions={} target_cpu={} affinity_applied={} local_cpu={} \
              worker_numa_node={} sqpoll_cpu={} buffers={} buffer_base=0x{:x} buffer_alignment={} \
              buffer_stride={} buffer_map_len={} memory_policy={}",
-            engine.as_str(),
+            worker_engine.as_str(),
             result.worker,
             result.ops,
             result.reads,
@@ -63534,9 +63553,43 @@ fn zcblockbench_run_direct_engine(
             .map(|cpus| cpus[region.worker % cpus.len()]);
         let cfg = cfg.clone();
         let start_barrier = Arc::clone(&start_barrier);
-        handles.push(thread::spawn(move || match engine {
-            BlockBenchEngine::UringPlain | BlockBenchEngine::UringFixed => {
-                zcblockbench_uring_fixed_worker(
+        handles.push(thread::spawn(move || {
+            let worker_engine = if engine == BlockBenchEngine::Hybrid {
+                if region.worker % 2 == 0 {
+                    BlockBenchEngine::UringFixed
+                } else {
+                    BlockBenchEngine::Sync
+                }
+            } else {
+                engine
+            };
+            match worker_engine {
+                BlockBenchEngine::UringPlain | BlockBenchEngine::UringFixed => {
+                    zcblockbench_uring_fixed_worker(
+                        target,
+                        region.worker,
+                        region.base_offset,
+                        region.len_bytes,
+                        cfg.ops_per_worker,
+                        cfg.chunk_bytes,
+                        cfg.pipeline,
+                        cfg.ring_entries,
+                        cfg.mode,
+                        cfg.read_percent,
+                        cfg.buffer_mode,
+                        cfg.pin_workers,
+                        planned_cpu,
+                        cfg.ring_mode,
+                        cfg.cqe_mode,
+                        cfg.registered_ring_fd,
+                        sqpoll_cpu,
+                        cfg.sqpoll_idle_ms,
+                        worker_engine == BlockBenchEngine::UringFixed,
+                        cfg.latency_sample_rate,
+                        start_barrier,
+                    )
+                }
+                BlockBenchEngine::Aio => zcblockbench_aio_worker(
                     target,
                     region.worker,
                     region.base_offset,
@@ -63544,55 +63597,34 @@ fn zcblockbench_run_direct_engine(
                     cfg.ops_per_worker,
                     cfg.chunk_bytes,
                     cfg.pipeline,
-                    cfg.ring_entries,
                     cfg.mode,
                     cfg.read_percent,
                     cfg.buffer_mode,
                     cfg.pin_workers,
                     planned_cpu,
-                    cfg.ring_mode,
-                    cfg.cqe_mode,
-                    cfg.registered_ring_fd,
-                    sqpoll_cpu,
-                    cfg.sqpoll_idle_ms,
-                    engine == BlockBenchEngine::UringFixed,
                     cfg.latency_sample_rate,
                     start_barrier,
-                )
+                ),
+                BlockBenchEngine::Sync => zcblockbench_sync_worker(
+                    target,
+                    region.worker,
+                    region.base_offset,
+                    region.len_bytes,
+                    cfg.ops_per_worker,
+                    cfg.chunk_bytes,
+                    cfg.pipeline,
+                    cfg.mode,
+                    cfg.read_percent,
+                    cfg.buffer_mode,
+                    cfg.pin_workers,
+                    planned_cpu,
+                    cfg.latency_sample_rate,
+                    start_barrier,
+                ),
+                BlockBenchEngine::UringSlot
+                | BlockBenchEngine::Hybrid
+                | BlockBenchEngine::Suite => unreachable!(),
             }
-            BlockBenchEngine::Aio => zcblockbench_aio_worker(
-                target,
-                region.worker,
-                region.base_offset,
-                region.len_bytes,
-                cfg.ops_per_worker,
-                cfg.chunk_bytes,
-                cfg.pipeline,
-                cfg.mode,
-                cfg.read_percent,
-                cfg.buffer_mode,
-                cfg.pin_workers,
-                planned_cpu,
-                cfg.latency_sample_rate,
-                start_barrier,
-            ),
-            BlockBenchEngine::Sync => zcblockbench_sync_worker(
-                target,
-                region.worker,
-                region.base_offset,
-                region.len_bytes,
-                cfg.ops_per_worker,
-                cfg.chunk_bytes,
-                cfg.pipeline,
-                cfg.mode,
-                cfg.read_percent,
-                cfg.buffer_mode,
-                cfg.pin_workers,
-                planned_cpu,
-                cfg.latency_sample_rate,
-                start_barrier,
-            ),
-            BlockBenchEngine::UringSlot | BlockBenchEngine::Suite => unreachable!(),
         }));
     }
     let mut results = Vec::with_capacity(cfg.workers);
@@ -63665,7 +63697,7 @@ fn zcblockbench(args: impl Iterator<Item = String>) -> io::Result<()> {
     if cfg.ring_mode.uses_sqpoll()
         && !matches!(
             cfg.engine,
-            BlockBenchEngine::UringPlain | BlockBenchEngine::UringFixed
+            BlockBenchEngine::UringPlain | BlockBenchEngine::UringFixed | BlockBenchEngine::Hybrid
         )
     {
         blockbench_perf_warning(
@@ -63743,7 +63775,8 @@ fn zcblockbench(args: impl Iterator<Item = String>) -> io::Result<()> {
         BlockBenchEngine::UringPlain
         | BlockBenchEngine::UringFixed
         | BlockBenchEngine::Aio
-        | BlockBenchEngine::Sync => zcblockbench_run_direct_engine(target, cfg.engine, &cfg),
+        | BlockBenchEngine::Sync
+        | BlockBenchEngine::Hybrid => zcblockbench_run_direct_engine(target, cfg.engine, &cfg),
         BlockBenchEngine::UringSlot => zcblockbench_run_slot_engine(&target, &cfg),
     }
 }
