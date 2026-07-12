@@ -2422,7 +2422,7 @@ impl WalOwnerIngressWorker {
                     .map(|value| value.parse::<u64>())
                     .transpose()
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
-                    .unwrap_or(200);
+                    .unwrap_or(0);
                 let pipeline_batches = env::var("URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES")
                     .ok()
                     .map(|value| value.parse::<usize>())

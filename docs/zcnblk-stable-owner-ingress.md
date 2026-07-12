@@ -109,12 +109,20 @@ sparsity.
 The owner write-fill sweep also exposed a latency/throughput policy boundary.
 At two lanes and QD16, mixed 50/50 traffic rose from 29.8K IOPS with a 1 ms
 fill delay through 62.6K, 135.8K, 221.1K, 322.2K, and 425.1K at 500, 200,
-100, 50, and 20 us, then reached 486.0K with no timed fill. Write-only traffic
-still benefits from the 200 us fill, so the owner now retains that write
-default but bypasses timed waiting for 10 ms after observing a read. Immediate
-dispatch still drains fragments already present in the owner queue; skipping
-that opportunistic drain doubled protocol batches and reduced the control to
-262K IOPS.
+100, 50, and 20 us, then reached 486.0K with no timed fill. Immediate dispatch
+still drains fragments already present in the owner queue; skipping that
+opportunistic drain doubled protocol batches and reduced the control to 262K
+IOPS. A separate pure-write sweep reached 557.5K, 550.8K, and 182.7K IOPS at
+0, 20, and 200 us, respectively. Even at zero timed fill, natural queue
+draining coalesced 16.1 records per remote batch. The default is therefore
+zero timed fill; a nonzero fill remains an explicit bulk-throughput experiment
+that must prove a benefit on its target topology. The owner also bypasses any
+configured timed fill for 10 ms after observing a read.
+
+The zero-fill default then repeated at 550.6K/553.0K/554.5K pure-write IOPS
+(min/mean/max, 0.71% spread), with 58 us p50 latency and 0.475-0.657 target
+context switches per 1K I/O. Natural coalescing remained 16.1 records per
+remote batch.
 
 After preserving the queue drain, the repeated noisy-host control reached
 491.9K/492.8K/493.5K mixed 4K IOPS (min/mean/max, 0.32% spread). Overall p50
