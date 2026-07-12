@@ -28954,9 +28954,9 @@ fn zcnblk_fan_wal_recv_adaptive_spin_max(
     min_budget: usize,
 ) -> usize {
     let default_max = initial_budget
-        .unwrap_or(min_budget.max(1))
-        .saturating_mul(16)
+        .unwrap_or(min_budget)
         .max(min_budget)
+        .max(65_536)
         .max(1);
     env_usize_or(
         "URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN_MAX",
@@ -28972,12 +28972,21 @@ fn zcnblk_fan_wal_recv_adaptive_wait_ns() -> u64 {
     ) as u64
 }
 
+fn zcnblk_fan_wal_recv_adaptive_hysteresis_ns() -> u64 {
+    env_usize_or(
+        "URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_HYSTERESIS_NS",
+        env_usize_or("URING_PLAY_TCP_RECV_ADAPTIVE_HYSTERESIS_NS", 10_000_000),
+    ) as u64
+}
+
 #[derive(Clone, Copy)]
 struct ZcnblkFanWalAdaptiveRecvSpin {
     current: usize,
     min: usize,
     max: usize,
     wait_ns: u64,
+    hysteresis_ns: u64,
+    last_progress: Option<Instant>,
     spin_hits: u64,
     blocking_fallbacks: u64,
     would_block_polls: u64,
@@ -28989,16 +28998,30 @@ impl ZcnblkFanWalAdaptiveRecvSpin {
     fn new(initial_budget: Option<usize>) -> Self {
         let min = zcnblk_fan_wal_recv_adaptive_spin_min(initial_budget);
         let max = zcnblk_fan_wal_recv_adaptive_spin_max(initial_budget, min);
-        Self::with_limits(min, min, max, zcnblk_fan_wal_recv_adaptive_wait_ns())
+        Self::with_limits(
+            min,
+            min,
+            max,
+            zcnblk_fan_wal_recv_adaptive_wait_ns(),
+            zcnblk_fan_wal_recv_adaptive_hysteresis_ns(),
+        )
     }
 
-    fn with_limits(current: usize, min: usize, max: usize, wait_ns: u64) -> Self {
+    fn with_limits(
+        current: usize,
+        min: usize,
+        max: usize,
+        wait_ns: u64,
+        hysteresis_ns: u64,
+    ) -> Self {
         let max = max.max(min);
         Self {
             current: current.clamp(min, max),
             min,
             max,
             wait_ns,
+            hysteresis_ns,
+            last_progress: None,
             spin_hits: 0,
             blocking_fallbacks: 0,
             would_block_polls: 0,
@@ -29023,6 +29046,22 @@ impl ZcnblkFanWalAdaptiveRecvSpin {
         self.current = next;
     }
 
+    fn note_progress(&mut self, wait_started: Instant, spun: bool) {
+        let now = Instant::now();
+        let sustained = self.last_progress.is_some_and(|last| {
+            now.saturating_duration_since(last).as_nanos() <= self.hysteresis_ns as u128
+        });
+        if spun {
+            self.spin_hits = self.spin_hits.saturating_add(1);
+            if wait_started.elapsed().as_nanos() <= self.wait_ns as u128 || sustained {
+                self.grow();
+            } else {
+                self.shrink();
+            }
+        }
+        self.last_progress = Some(now);
+    }
+
     unsafe fn recv_exact_raw(
         &mut self,
         stream: &mut TcpStream,
@@ -29043,14 +29082,7 @@ impl ZcnblkFanWalAdaptiveRecvSpin {
                     )
                 };
                 if received > 0 {
-                    if spins != 0 {
-                        self.spin_hits = self.spin_hits.saturating_add(1);
-                        if wait_started.elapsed().as_nanos() <= self.wait_ns as u128 {
-                            self.grow();
-                        } else {
-                            self.shrink();
-                        }
-                    }
+                    self.note_progress(wait_started, spins != 0);
                     filled += received as usize;
                     break;
                 }
@@ -29077,11 +29109,16 @@ impl ZcnblkFanWalAdaptiveRecvSpin {
                             len - filled,
                         )?;
                     }
-                    if wait_started.elapsed().as_nanos() <= self.wait_ns as u128 {
+                    let now = Instant::now();
+                    let sustained = self.last_progress.is_some_and(|last| {
+                        now.saturating_duration_since(last).as_nanos() <= self.hysteresis_ns as u128
+                    });
+                    if wait_started.elapsed().as_nanos() <= self.wait_ns as u128 || sustained {
                         self.grow();
                     } else {
                         self.shrink();
                     }
+                    self.last_progress = Some(now);
                     return Ok(());
                 }
                 spins = spins.saturating_add(1);
@@ -29089,6 +29126,31 @@ impl ZcnblkFanWalAdaptiveRecvSpin {
             }
         }
         Ok(())
+    }
+}
+
+fn zcnblk_fan_wal_adaptive_recv_spin_snapshot() -> Option<ZcnblkFanWalAdaptiveRecvSpin> {
+    ZCNBLK_FAN_WAL_ADAPTIVE_RECV_SPIN.with(|state| *state.borrow())
+}
+
+#[cfg(test)]
+mod zcnblk_fan_wal_adaptive_recv_tests {
+    use super::*;
+
+    #[test]
+    fn sustained_activity_hysteresis_grows_then_quiescence_shrinks() {
+        let mut state = ZcnblkFanWalAdaptiveRecvSpin::with_limits(2, 1, 8, 0, 1_000_000);
+        state.last_progress = Some(Instant::now());
+        let slow_wait = Instant::now()
+            .checked_sub(Duration::from_millis(2))
+            .unwrap();
+
+        state.note_progress(slow_wait, true);
+        assert_eq!(state.current, 4);
+
+        state.last_progress = Instant::now().checked_sub(Duration::from_millis(2));
+        state.note_progress(slow_wait, true);
+        assert_eq!(state.current, 2);
     }
 }
 
@@ -48069,6 +48131,21 @@ fn zcnblk_wal_leaf_process_stream(
             ring_stats.submit_short,
         );
     }
+    if let Some(adaptive) = zcnblk_fan_wal_adaptive_recv_spin_snapshot() {
+        println!(
+            "zcnblk-wal-leaf-recv-summary: worker={worker} slot={stream_slot} current_spins={} min_spins={} max_spins={} wait_ns={} hysteresis_ns={} spin_hits={} blocking_fallbacks={} would_block_polls={} grow_events={} shrink_events={}",
+            adaptive.current,
+            adaptive.min,
+            adaptive.max,
+            adaptive.wait_ns,
+            adaptive.hysteresis_ns,
+            adaptive.spin_hits,
+            adaptive.blocking_fallbacks,
+            adaptive.would_block_polls,
+            adaptive.grow_events,
+            adaptive.shrink_events,
+        );
+    }
     let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
     let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
     stats.thread_cpu = end_thread_cpu.saturating_sub(start_thread_cpu);
@@ -48312,6 +48389,7 @@ fn zcnblk_wal_leaf(
     let leaf_adaptive_spin_max =
         zcnblk_fan_wal_recv_adaptive_spin_max(leaf_spin_budget, leaf_adaptive_spin_min);
     let leaf_adaptive_wait_ns = zcnblk_fan_wal_recv_adaptive_wait_ns();
+    let leaf_adaptive_hysteresis_ns = zcnblk_fan_wal_recv_adaptive_hysteresis_ns();
     let zero_copy_strict = zcnblk_wal_zero_copy_strict_enabled();
     if !pin_workers {
         zc_topology_issue(
@@ -48362,7 +48440,7 @@ fn zcnblk_wal_leaf(
          submit_mode={} ring_entries={ring_entries} ring_cq_entries={ring_cq_entries} \
          cqe_hot_poll={} leaf_sqpoll={} leaf_spin_reads={} leaf_spin_policy={} \
          leaf_spin_budget={} leaf_adaptive_spin_min={} leaf_adaptive_spin_max={} \
-         leaf_adaptive_wait_ns={} \
+         leaf_adaptive_wait_ns={} leaf_adaptive_hysteresis_ns={} \
          uninit_read_buffers={} zero_copy_strict={zero_copy_strict} \
          result_ranges_configured={result_ranges_configured} device_bytes={} \
          required_alignment={} memory_policy={} memory_hugetlb={} preferred_numa_node={} \
@@ -48388,6 +48466,11 @@ fn zcnblk_wal_leaf(
         },
         if leaf_adaptive_spin {
             leaf_adaptive_wait_ns.to_string()
+        } else {
+            "off".to_string()
+        },
+        if leaf_adaptive_spin {
+            leaf_adaptive_hysteresis_ns.to_string()
         } else {
             "off".to_string()
         },

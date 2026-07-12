@@ -367,7 +367,7 @@ impl RemoteWalRecvWait {
                 let max = parse_optional_usize_env(
                     "URING_PLAY_ZCNBLK_SHM_REMOTE_RECV_ADAPTIVE_SPIN_MAX",
                 )?
-                .unwrap_or_else(|| initial.max(256).saturating_mul(16).max(min).max(1));
+                .unwrap_or_else(|| initial.max(min).max(65_536).max(1));
                 if max < min {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -377,8 +377,16 @@ impl RemoteWalRecvWait {
                 let wait_ns =
                     parse_optional_usize_env("URING_PLAY_ZCNBLK_SHM_REMOTE_RECV_ADAPTIVE_WAIT_NS")?
                         .unwrap_or(50_000) as u64;
+                let hysteresis_ns = parse_optional_usize_env(
+                    "URING_PLAY_ZCNBLK_SHM_REMOTE_RECV_ADAPTIVE_HYSTERESIS_NS",
+                )?
+                .unwrap_or(10_000_000) as u64;
                 Ok(Self::Adaptive(ZcnblkFanWalAdaptiveRecvSpin::with_limits(
-                    initial, min, max, wait_ns,
+                    initial,
+                    min,
+                    max,
+                    wait_ns,
+                    hysteresis_ns,
                 )))
             }
         }
@@ -2265,6 +2273,80 @@ fn recv_channel_spinning<T>(receiver: &Receiver<T>, spins: usize) -> io::Result<
         .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "WAL owner queue disconnected"))
 }
 
+struct AdaptiveChannelReceiver {
+    enabled: bool,
+    min_spins: usize,
+    max_spins: usize,
+    current_spins: usize,
+    quick_wait_ns: u64,
+    spin_hits: u64,
+    blocking_waits: u64,
+    quick_blocking_waits: u64,
+}
+
+impl AdaptiveChannelReceiver {
+    fn new(enabled: bool, min_spins: usize, max_spins: usize, quick_wait_ns: u64) -> Self {
+        let min_spins = min_spins.min(max_spins);
+        Self {
+            enabled,
+            min_spins,
+            max_spins,
+            current_spins: if enabled { min_spins } else { max_spins },
+            quick_wait_ns,
+            spin_hits: 0,
+            blocking_waits: 0,
+            quick_blocking_waits: 0,
+        }
+    }
+
+    fn grow(&mut self) {
+        if self.enabled && self.max_spins != 0 {
+            self.current_spins = self
+                .current_spins
+                .saturating_mul(2)
+                .clamp(self.min_spins, self.max_spins);
+        }
+    }
+
+    fn shrink(&mut self) {
+        if self.enabled {
+            self.current_spins = (self.current_spins / 2).max(self.min_spins);
+        }
+    }
+
+    fn recv<T>(&mut self, receiver: &Receiver<T>) -> io::Result<T> {
+        for _ in 0..self.current_spins {
+            match receiver.try_recv() {
+                Ok(value) => {
+                    self.spin_hits = self.spin_hits.saturating_add(1);
+                    self.grow();
+                    return Ok(value);
+                }
+                Err(TryRecvError::Empty) => std::hint::spin_loop(),
+                Err(TryRecvError::Disconnected) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "WAL owner queue disconnected",
+                    ));
+                }
+            }
+        }
+
+        self.blocking_waits = self.blocking_waits.saturating_add(1);
+        let started = Instant::now();
+        let value = receiver.recv().map_err(|_| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "WAL owner queue disconnected")
+        })?;
+        if started.elapsed().as_nanos() <= self.quick_wait_ns as u128 {
+            self.quick_blocking_waits = self.quick_blocking_waits.saturating_add(1);
+            self.grow();
+        } else {
+            self.shrink();
+        }
+        Ok(value)
+    }
+}
+
 struct WalOwnerIngressWorker {
     command_tx: SyncSender<WalOwnerIngressCommand>,
     handle: Option<thread::JoinHandle<io::Result<RemoteWalLeaf>>>,
@@ -2338,6 +2420,29 @@ impl WalOwnerIngressWorker {
                     .transpose()
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
                     .unwrap_or(65_536);
+                let adaptive_wait = env_enabled_or(
+                    "URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_ADAPTIVE_SPIN",
+                    true,
+                );
+                let wait_spin_min = env::var("URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_SPIN_MIN")
+                    .ok()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+                    .unwrap_or(4_096);
+                let quick_wait_ns =
+                    env::var("URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_ADAPTIVE_WAIT_NS")
+                        .ok()
+                        .map(|value| value.parse::<u64>())
+                        .transpose()
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+                        .unwrap_or(50_000);
+                let mut command_wait = AdaptiveChannelReceiver::new(
+                    adaptive_wait,
+                    wait_spin_min,
+                    wait_spins,
+                    quick_wait_ns,
+                );
                 let report_failure = |error: &io::Error| {
                     for result_tx in result_txs.iter() {
                         let _ = result_tx.try_send(WalOwnerIngressResult::Failed(io::Error::new(
@@ -2350,7 +2455,7 @@ impl WalOwnerIngressWorker {
                 loop {
                     let first = match carry.take() {
                         Some(command) => command,
-                        None => match recv_channel_spinning(&command_rx, wait_spins) {
+                        None => match command_wait.recv(&command_rx) {
                             Ok(command) => command,
                             Err(error) => {
                                 report_failure(&error);
@@ -2486,6 +2591,18 @@ impl WalOwnerIngressWorker {
                         WalOwnerIngressCommand::Eof => {
                             tx.ensure_idle()?;
                             remote.eof()?;
+                            eprintln!(
+                                "zcnblk-shm-owner-wait-summary: owner={} adaptive={} min_spins={} max_spins={} final_spins={} quick_wait_ns={} spin_hits={} blocking_waits={} quick_blocking_waits={}",
+                                owner,
+                                command_wait.enabled,
+                                command_wait.min_spins,
+                                command_wait.max_spins,
+                                command_wait.current_spins,
+                                command_wait.quick_wait_ns,
+                                command_wait.spin_hits,
+                                command_wait.blocking_waits,
+                                command_wait.quick_blocking_waits,
+                            );
                             return Ok(remote);
                         }
                     }
@@ -7963,7 +8080,7 @@ mod tests {
 
     #[test]
     fn adaptive_recv_can_start_quiescent_and_ramp() {
-        let mut state = ZcnblkFanWalAdaptiveRecvSpin::with_limits(0, 0, 4_096, 50_000);
+        let mut state = ZcnblkFanWalAdaptiveRecvSpin::with_limits(0, 0, 4_096, 50_000, 10_000_000);
         assert_eq!(state.current, 0);
         state.grow();
         assert_eq!(state.current, 1);
@@ -8106,6 +8223,27 @@ mod tests {
             }
         }
         producer.join().unwrap();
+    }
+
+    #[test]
+    fn adaptive_owner_wait_grows_while_busy_and_shrinks_after_quiescence() {
+        let (sender, receiver) = sync_channel(1);
+        let mut wait = AdaptiveChannelReceiver::new(true, 2, 8, 1_000);
+
+        sender.send(1u32).unwrap();
+        assert_eq!(wait.recv(&receiver).unwrap(), 1);
+        assert_eq!(wait.current_spins, 4);
+        assert_eq!(wait.spin_hits, 1);
+
+        let delayed = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(2));
+            sender.send(2u32).unwrap();
+        });
+        assert_eq!(wait.recv(&receiver).unwrap(), 2);
+        delayed.join().unwrap();
+        assert_eq!(wait.current_spins, 2);
+        assert_eq!(wait.blocking_waits, 1);
+        assert_eq!(wait.quick_blocking_waits, 0);
     }
 
     #[test]

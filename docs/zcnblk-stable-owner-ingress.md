@@ -70,5 +70,32 @@ range/HWM completion delivery. It must preserve the current dirty-reference,
 same-sector predecessor, and all-owner sync contracts while separating the
 latency fragment deadline from the throughput extent size.
 
+## Adaptive Owner Scheduling
+
+Owner command waits use an adaptive spin budget by default. The budget starts
+at 4,096 iterations, grows toward 65,536 when work is already queued or arrives
+within 50 us of a blocking miss, and shrinks after a genuinely quiescent wait.
+The controls are `URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_ADAPTIVE_SPIN`,
+`URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_SPIN_MIN`,
+`URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_SPINS`, and
+`URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_ADAPTIVE_WAIT_NS`.
+
+On the noisy local two-lane QD16 path, fixed 4,096 spinning produced 34.2
+target context switches per 1K I/O. Fixed 65,536 produced 1.12, and the adaptive
+policy produced 1.44 while preserving the same 111K IOPS and roughly 201 us
+p50. The adaptive owners blocked only 37-61 times over 1.2M I/O and ended at a
+32,768-spin budget. A continuous QD1 control remained classified as busy and
+delivered 107K IOPS at 13 us overall p50; truly quiescent waits shrink toward
+the configured floor.
+
+The leaf TCP receiver uses the same sustained-activity idea with a 256-spin
+floor, 65,536-spin ceiling, and 10 ms hysteresis. On the same local QD16 path,
+the old per-wait adaptive rule stayed at its floor and incurred about 40 leaf
+switches per 1K I/O. Hysteresis reduced that to 0.15 per 1K and ended at 32,768
+spins. It intentionally raised each busy leaf lane from about 14% to 92% CPU;
+throughput stayed at 111K because this local two-lane control was capped by the
+remaining kernel/protocol path. The leaf now prints its final spin budget,
+spin hits, blocking fallbacks, polls, and grow/shrink counts.
+
 Compact logs, topology manifests, context deltas, and correctness output are in
 `bench-results/cloud-owner-ingress-x48-20260712/`.
