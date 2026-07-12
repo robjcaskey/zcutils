@@ -2689,6 +2689,7 @@ enum WalLaneTransport {
         endpoint: WalOwnerIngressEndpoint,
         in_flight: usize,
         pending_by_owner: Vec<Vec<PendingRemoteRead>>,
+        urgent_owner_words: Vec<u64>,
         fragment_records: usize,
         fragment_fill_us: u64,
         fragment_started: Option<Instant>,
@@ -2744,6 +2745,7 @@ impl WalLaneTransport {
             endpoint,
             in_flight: 0,
             pending_by_owner: vec![Vec::with_capacity(fragment_records); owner_count],
+            urgent_owner_words: vec![0; owner_count.div_ceil(64)],
             fragment_records,
             fragment_fill_us,
             fragment_started: None,
@@ -2758,22 +2760,37 @@ impl WalLaneTransport {
         fragment_records: usize,
     ) -> io::Result<()> {
         for (owner, pending) in pending_by_owner.iter_mut().enumerate() {
-            while pending.len() >= fragment_records || (!only_full && !pending.is_empty()) {
-                let take = if pending.len() >= fragment_records {
-                    fragment_records
-                } else {
-                    pending.len()
-                };
-                let requests = pending.drain(..take).collect::<Vec<_>>();
-                send_sync_channel_spinning(
-                    &endpoint.owner_commands[owner],
-                    WalOwnerIngressCommand::Batch {
-                        ingress: endpoint.ingress,
-                        requests,
-                    },
-                )?;
-                *in_flight += 1;
-            }
+            Self::flush_owner_queue(
+                endpoint,
+                owner,
+                pending,
+                in_flight,
+                only_full,
+                fragment_records,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn flush_owner_queue(
+        endpoint: &WalOwnerIngressEndpoint,
+        owner: usize,
+        pending: &mut Vec<PendingRemoteRead>,
+        in_flight: &mut usize,
+        only_full: bool,
+        fragment_records: usize,
+    ) -> io::Result<()> {
+        while pending.len() >= fragment_records || (!only_full && !pending.is_empty()) {
+            let take = pending.len().min(fragment_records);
+            let requests = pending.drain(..take).collect::<Vec<_>>();
+            send_sync_channel_spinning(
+                &endpoint.owner_commands[owner],
+                WalOwnerIngressCommand::Batch {
+                    ingress: endpoint.ingress,
+                    requests,
+                },
+            )?;
+            *in_flight += 1;
         }
         Ok(())
     }
@@ -2803,6 +2820,7 @@ impl WalLaneTransport {
             fragment_records,
             fragment_fill_us,
             fragment_started,
+            ..
         } = self
         else {
             return Ok(false);
@@ -2848,18 +2866,38 @@ impl WalLaneTransport {
                 endpoint,
                 in_flight,
                 pending_by_owner,
+                urgent_owner_words,
                 fragment_records,
                 fragment_started,
                 ..
             } => {
+                urgent_owner_words.fill(0);
                 for pending in batch {
                     let owner = wal_transport_owner(
                         pending.request.offset,
                         pending_by_owner.len(),
                         endpoint.owner_extent_records,
                     )?;
+                    if pending.request.op != ZCNBLK_SHM_OP_WRITE {
+                        urgent_owner_words[owner / 64] |= 1_u64 << (owner % 64);
+                    }
                     pending_by_owner[owner].push(pending);
                     fragment_started.get_or_insert_with(Instant::now);
+                }
+                for (word_index, mut owners) in urgent_owner_words.iter().copied().enumerate() {
+                    while owners != 0 {
+                        let bit = owners.trailing_zeros() as usize;
+                        owners &= owners - 1;
+                        let owner = word_index * 64 + bit;
+                        Self::flush_owner_queue(
+                            endpoint,
+                            owner,
+                            &mut pending_by_owner[owner],
+                            in_flight,
+                            false,
+                            *fragment_records,
+                        )?;
+                    }
                 }
                 Self::flush_owner_pending(
                     endpoint,
@@ -2958,6 +2996,7 @@ impl WalLaneTransport {
                 endpoint,
                 in_flight,
                 pending_by_owner: _,
+                urgent_owner_words: _,
                 fragment_records: _,
                 fragment_fill_us: _,
                 fragment_started: _,

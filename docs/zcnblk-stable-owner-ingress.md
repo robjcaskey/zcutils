@@ -124,6 +124,15 @@ The zero-fill default then repeated at 550.6K/553.0K/554.5K pure-write IOPS
 context switches per 1K I/O. Natural coalescing remained 16.1 records per
 remote batch.
 
+Low-QD validation found a separate read-tail penalty: with fragment fill still
+set to 500 us, QD1 mixed traffic reached only 10.6K IOPS and remote-read p50
+was 507 us. A read now marks only its stable extent owner urgent and flushes
+that owner's existing tail in order, including preceding writes. Mixed QD1
+then reached 38.8K IOPS with 52 us read p50, while target context switches fell
+from 27.5 to 4.8 per 1K I/O. QD16 remained healthy at 502.0K mixed IOPS, 58 us
+read p50, 0.092 target context switches per 1K, and six records per remote
+batch. Both live controls passed same-sector ordering and terminal-sync checks.
+
 After preserving the queue drain, the repeated noisy-host control reached
 491.9K/492.8K/493.5K mixed 4K IOPS (min/mean/max, 0.32% spread). Overall p50
 latency was 57 us, read p50 was 58 us, and write p50 was 57 us. Target context
