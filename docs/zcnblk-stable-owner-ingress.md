@@ -133,6 +133,16 @@ from 27.5 to 4.8 per 1K I/O. QD16 remained healthy at 502.0K mixed IOPS, 58 us
 read p50, 0.092 target context switches per 1K, and six records per remote
 batch. Both live controls passed same-sector ordering and terminal-sync checks.
 
+The QD1 client completion policy matters independently of the transport. A
+conventional synchronous mixed control reached 182.1K IOPS with 4 us overall
+p50 and 19 us read p50, but incurred 1,006 client context switches per 1K I/O.
+io_uring hot polling with a progress kick every 256 spins reached 179.0K IOPS
+at 4/17 us p50 and 5.9 client switches per 1K, using 3.3 nonblocking progress
+syscalls per I/O. A 64-spin ultra-low-latency setting reached 207.6K IOPS at
+3/18 us p50 and 8.7 switches per 1K, at the cost of 11 progress syscalls per
+I/O. The harness now defaults to 256 spins at QD1-4 and retains 4,096 at deeper
+queues; explicit override remains available for the CPU/syscall-heavy setting.
+
 After preserving the queue drain, the repeated noisy-host control reached
 491.9K/492.8K/493.5K mixed 4K IOPS (min/mean/max, 0.32% spread). Overall p50
 latency was 57 us, read p50 was 58 us, and write p50 was 57 us. Target context
