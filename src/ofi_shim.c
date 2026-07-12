@@ -15,6 +15,10 @@
 #include <string.h>
 #include <time.h>
 
+#ifndef FI_EPROTO
+#define FI_EPROTO EPROTO
+#endif
+
 struct zc_ofi_mr_cache {
     const void *buf;
     size_t len;
@@ -42,6 +46,8 @@ struct zc_ofi_endpoint {
     struct fid_mr *rma_target_mr;
     struct fi_context2 async_send_context;
     struct fi_context2 async_recv_context;
+    struct fi_context2 *async_send_contexts;
+    size_t async_send_context_count;
     int async_send_pending;
     int async_recv_pending;
     int mr_local;
@@ -145,6 +151,7 @@ void zc_ofi_close(struct zc_ofi_endpoint *ep) {
     zc_ofi_close_fid(ep->tx_cq ? &ep->tx_cq->fid : NULL);
     zc_ofi_close_fid(ep->domain ? &ep->domain->fid : NULL);
     zc_ofi_close_fid(ep->fabric ? &ep->fabric->fid : NULL);
+    free(ep->async_send_contexts);
     if (ep->info) {
         fi_freeinfo(ep->info);
     }
@@ -165,6 +172,8 @@ size_t zc_ofi_max_msg_size(const struct zc_ofi_endpoint *ep) {
 size_t zc_ofi_inject_size(const struct zc_ofi_endpoint *ep) {
     return ep ? ep->inject_size : 0;
 }
+
+int zc_ofi_drain_send(struct zc_ofi_endpoint *ep, int timeout_ms);
 
 int zc_ofi_get_name(struct zc_ofi_endpoint *ep, void *buf, size_t *len) {
     if (!ep || !buf || !len) {
@@ -460,10 +469,16 @@ static int zc_ofi_wait_cq(struct zc_ofi_endpoint *ep, struct fid_cq *cq, const c
             memset(&err_entry, 0, sizeof(err_entry));
             ssize_t erc = fi_cq_readerr(cq, &err_entry, 0);
             if (erc >= 0) {
+#if FI_MAJOR_VERSION >= 2
                 snprintf(ep->err, sizeof(ep->err),
                          "OFI %s CQ error err=%d prov_errno=%d len=%zu src=%llu",
                          label, err_entry.err, err_entry.prov_errno, err_entry.len,
                          (unsigned long long)err_entry.src_addr);
+#else
+                snprintf(ep->err, sizeof(ep->err),
+                         "OFI %s CQ error err=%d prov_errno=%d len=%zu",
+                         label, err_entry.err, err_entry.prov_errno, err_entry.len);
+#endif
                 return err_entry.err ? -err_entry.err : -FI_EIO;
             }
         }
@@ -591,9 +606,169 @@ int zc_ofi_send(struct zc_ofi_endpoint *ep, const void *buf, size_t len, int tim
     return rc;
 }
 
+int zc_ofi_send_many(struct zc_ofi_endpoint *ep, const void *base, size_t stride,
+                     size_t len, size_t count, int timeout_ms) {
+    if (!ep || !base || len == 0) {
+        return -FI_EINVAL;
+    }
+    if (count == 0) {
+        return 0;
+    }
+    int rc = zc_ofi_drain_send(ep, timeout_ms);
+    if (rc) {
+        return rc;
+    }
+    if (ep->peer_addr == FI_ADDR_UNSPEC) {
+        snprintf(ep->err, sizeof(ep->err), "OFI peer address is not set");
+        return -FI_EINVAL;
+    }
+    if (ep->max_msg_size && len > ep->max_msg_size) {
+        snprintf(ep->err, sizeof(ep->err), "OFI message len=%zu exceeds max_msg_size=%zu",
+                 len, ep->max_msg_size);
+        return -EMSGSIZE;
+    }
+    if (stride < len) {
+        snprintf(ep->err, sizeof(ep->err), "OFI send_many stride=%zu below len=%zu",
+                 stride, len);
+        return -FI_EINVAL;
+    }
+    if (count > 1 && stride > (SIZE_MAX - len) / (count - 1)) {
+        snprintf(ep->err, sizeof(ep->err), "OFI send_many byte span overflow");
+        return -FI_EINVAL;
+    }
+    size_t span = len + stride * (count - 1);
+    void *desc = NULL;
+    rc = zc_ofi_register_cached(ep, base, span, FI_SEND, &ep->send_mr, &desc);
+    if (rc) {
+        return rc;
+    }
+    struct fi_context2 *contexts = calloc(count, sizeof(*contexts));
+    if (!contexts) {
+        snprintf(ep->err, sizeof(ep->err), "calloc(send_many contexts) failed");
+        return -FI_ENOMEM;
+    }
+    const char *bytes = (const char *)base;
+    size_t posted = 0;
+    uint64_t post_start = zc_ofi_now_ms();
+    uint64_t post_spins = 0;
+    for (; posted < count; posted++) {
+        const void *buf = bytes + posted * stride;
+        do {
+            rc = (int)fi_send(ep->ep, buf, len, desc, ep->peer_addr, &contexts[posted]);
+            if (rc == -FI_EAGAIN) {
+                if (timeout_ms > 0 && zc_ofi_now_ms() - post_start >= (uint64_t)timeout_ms) {
+                    snprintf(ep->err, sizeof(ep->err),
+                             "OFI fi_send_many post timed out after %d ms posted=%zu/%zu",
+                             timeout_ms, posted, count);
+                    free(contexts);
+                    return -ETIMEDOUT;
+                }
+                zc_ofi_wait_after_eagain(ep, &post_spins);
+            }
+        } while (rc == -FI_EAGAIN);
+        if (rc) {
+            free(contexts);
+            return zc_ofi_fail(ep, rc, "fi_send_many");
+        }
+    }
+    for (size_t i = 0; i < posted; i++) {
+        rc = zc_ofi_wait_cq(ep, ep->tx_cq, "tx fi_send_many cq", &contexts[i],
+                            0, NULL, NULL, timeout_ms);
+        if (rc) {
+            free(contexts);
+            return rc;
+        }
+    }
+    free(contexts);
+    return 0;
+}
+
+int zc_ofi_send_many_nowait(struct zc_ofi_endpoint *ep, const void *base, size_t stride,
+                            size_t len, size_t count, int timeout_ms) {
+    if (!ep || !base || len == 0) {
+        return -FI_EINVAL;
+    }
+    if (count == 0) {
+        return 0;
+    }
+    int rc = zc_ofi_drain_send(ep, timeout_ms);
+    if (rc) {
+        return rc;
+    }
+    if (ep->peer_addr == FI_ADDR_UNSPEC) {
+        snprintf(ep->err, sizeof(ep->err), "OFI peer address is not set");
+        return -FI_EINVAL;
+    }
+    if (ep->max_msg_size && len > ep->max_msg_size) {
+        snprintf(ep->err, sizeof(ep->err), "OFI message len=%zu exceeds max_msg_size=%zu",
+                 len, ep->max_msg_size);
+        return -EMSGSIZE;
+    }
+    if (stride < len) {
+        snprintf(ep->err, sizeof(ep->err), "OFI send_many_nowait stride=%zu below len=%zu",
+                 stride, len);
+        return -FI_EINVAL;
+    }
+    if (count > 1 && stride > (SIZE_MAX - len) / (count - 1)) {
+        snprintf(ep->err, sizeof(ep->err), "OFI send_many_nowait byte span overflow");
+        return -FI_EINVAL;
+    }
+    size_t span = len + stride * (count - 1);
+    void *desc = NULL;
+    rc = zc_ofi_register_cached(ep, base, span, FI_SEND, &ep->send_mr, &desc);
+    if (rc) {
+        return rc;
+    }
+    struct fi_context2 *contexts = calloc(count, sizeof(*contexts));
+    if (!contexts) {
+        snprintf(ep->err, sizeof(ep->err), "calloc(send_many_nowait contexts) failed");
+        return -FI_ENOMEM;
+    }
+    const char *bytes = (const char *)base;
+    size_t posted = 0;
+    uint64_t post_start = zc_ofi_now_ms();
+    uint64_t post_spins = 0;
+    for (; posted < count; posted++) {
+        const void *buf = bytes + posted * stride;
+        do {
+            rc = (int)fi_send(ep->ep, buf, len, desc, ep->peer_addr, &contexts[posted]);
+            if (rc == -FI_EAGAIN) {
+                if (timeout_ms > 0 && zc_ofi_now_ms() - post_start >= (uint64_t)timeout_ms) {
+                    snprintf(ep->err, sizeof(ep->err),
+                             "OFI fi_send_many_nowait post timed out after %d ms posted=%zu/%zu",
+                             timeout_ms, posted, count);
+                    free(contexts);
+                    return -ETIMEDOUT;
+                }
+                zc_ofi_wait_after_eagain(ep, &post_spins);
+            }
+        } while (rc == -FI_EAGAIN);
+        if (rc) {
+            free(contexts);
+            return zc_ofi_fail(ep, rc, "fi_send_many_nowait");
+        }
+    }
+    ep->async_send_contexts = contexts;
+    ep->async_send_context_count = posted;
+    return 0;
+}
+
 int zc_ofi_drain_send(struct zc_ofi_endpoint *ep, int timeout_ms) {
     if (!ep) {
         return -FI_EINVAL;
+    }
+    if (ep->async_send_context_count != 0) {
+        for (size_t i = 0; i < ep->async_send_context_count; i++) {
+            int rc = zc_ofi_wait_cq(ep, ep->tx_cq, "tx fi_send_many_nowait cq",
+                                    &ep->async_send_contexts[i], 0, NULL, NULL,
+                                    timeout_ms);
+            if (rc) {
+                return rc;
+            }
+        }
+        free(ep->async_send_contexts);
+        ep->async_send_contexts = NULL;
+        ep->async_send_context_count = 0;
     }
     if (!ep->async_send_pending) {
         return 0;

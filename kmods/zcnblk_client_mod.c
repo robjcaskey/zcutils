@@ -10,26 +10,36 @@
 #include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/highmem.h>
+#include <linux/hash.h>
 #include <linux/in.h>
 #include <linux/inet.h>
 #include <linux/kernel.h>
 #include <linux/kthread.h>
+#include <linux/ktime.h>
 #include <linux/list.h>
+#include <linux/log2.h>
+#include <linux/mm.h>
+#include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/net.h>
 #include <linux/overflow.h>
+#include <linux/poll.h>
 #include <linux/random.h>
 #include <linux/slab.h>
 #include <linux/scatterlist.h>
 #include <linux/socket.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
+#include <linux/uaccess.h>
+#include <linux/vmalloc.h>
 #include <linux/wait.h>
 #include <crypto/aead.h>
 #include <crypto/hash.h>
 #include <net/sock.h>
 #include <net/tcp.h>
+
+#include "zcnblk_shm_abi.h"
 
 #define ZCNBLK_NAME "zcnblk"
 #define ZCNBLK_DISK_NAME "zcnblk0"
@@ -44,6 +54,8 @@
 #define ZCNBLK_OP_WRITE_ACK 4
 #define ZCNBLK_OP_BATCH 5
 #define ZCNBLK_OP_BATCH_RESP 6
+#define ZCNBLK_OP_SYNC 7
+#define ZCNBLK_OP_SYNC_ACK 8
 #define ZCNBLK_AES256_GCM_KEY_LEN 32
 #define ZCNBLK_AES256_GCM_IV_LEN 12
 #define ZCNBLK_AES256_GCM_TAG_LEN 16
@@ -57,6 +69,10 @@
 static char *remote_ip = "127.0.0.1";
 module_param(remote_ip, charp, 0444);
 MODULE_PARM_DESC(remote_ip, "IPv4 address of zcnblk-target");
+
+static char *transport = "tcp";
+module_param(transport, charp, 0444);
+MODULE_PARM_DESC(transport, "Client transport: tcp or shm; shm exposes /dev/zcnblk-shmctl to a userspace target");
 
 static char *remote_ips;
 module_param(remote_ips, charp, 0444);
@@ -102,6 +118,22 @@ static uint pipeline_depth = 64;
 module_param(pipeline_depth, uint, 0444);
 MODULE_PARM_DESC(pipeline_depth, "Maximum in-flight requests per TCP connection");
 
+static uint shm_ring_entries;
+module_param(shm_ring_entries, uint, 0444);
+MODULE_PARM_DESC(shm_ring_entries, "Shared transport slots per connection, 0 means pipeline_depth");
+
+static uint shm_payload_entries;
+module_param(shm_payload_entries, uint, 0444);
+MODULE_PARM_DESC(shm_payload_entries, "Shared payload lease slots per connection, 0 means shm_ring_entries");
+
+static uint shm_sector_order_slots = 65536;
+module_param(shm_sector_order_slots, uint, 0444);
+MODULE_PARM_DESC(shm_sector_order_slots, "Power-of-two hashed 4K sector predecessor slots for decentralized userspace ordering");
+
+static uint shm_poll_us = 50;
+module_param(shm_poll_us, uint, 0644);
+MODULE_PARM_DESC(shm_poll_us, "Shared transport completion busy-poll budget before sleeping");
+
 static uint fill_timeout_ms;
 module_param(fill_timeout_ms, uint, 0444);
 MODULE_PARM_DESC(fill_timeout_ms, "Time to wait for more queued requests before receiving a partial pipeline, 0 means reap completions immediately");
@@ -109,6 +141,14 @@ MODULE_PARM_DESC(fill_timeout_ms, "Time to wait for more queued requests before 
 static bool write_acks;
 module_param(write_acks, bool, 0444);
 MODULE_PARM_DESC(write_acks, "Wait for target write acknowledgements before completing writes");
+
+static bool null_backend;
+module_param(null_backend, bool, 0444);
+MODULE_PARM_DESC(null_backend, "Benchmark-only: complete reads/writes/flushes locally without TCP");
+
+static bool null_read_zero = true;
+module_param(null_read_zero, bool, 0444);
+MODULE_PARM_DESC(null_read_zero, "With null_backend=1, zero-fill reads before completion");
 
 static uint publish_delay_ms;
 module_param(publish_delay_ms, uint, 0444);
@@ -163,6 +203,9 @@ struct zcnblk_pdu {
 	u32 len;
 	u16 request_id;
 	u64 remote_off;
+	u64 shm_sequence;
+	u64 shm_submit_sequence;
+	u32 shm_payload_slot;
 	enum req_op op;
 };
 
@@ -192,6 +235,9 @@ struct zcnblk_conn {
 	struct task_struct *thread;
 	struct list_head pending;
 	struct list_head inflight;
+	struct zcnblk_pdu **shm_inflight;
+	u32 shm_inflight_entries;
+	u32 shm_payload_cursor;
 	struct zcnblk_dev *dev;
 	u32 inflight_count;
 	u32 lane;
@@ -211,6 +257,20 @@ struct zcnblk_conn {
 	bool failed;
 };
 
+struct zcnblk_shm_state {
+	void *region;
+	size_t region_bytes;
+	struct zcnblk_shm_header *header;
+	struct miscdevice misc;
+	wait_queue_head_t poll_wait;
+	atomic_t daemon_open;
+	atomic64_t submit_sequence;
+	atomic64_t *sector_predecessors;
+	u32 sector_order_bits;
+	bool transfer_payload_slots;
+	bool registered;
+};
+
 struct zcnblk_dev {
 	struct blk_mq_tag_set tag_set;
 	struct gendisk *disk;
@@ -221,11 +281,21 @@ struct zcnblk_dev {
 	u32 active_conns;
 	int major;
 	bool crypto_enabled;
+	struct zcnblk_shm_state *shm;
 };
 
 static struct zcnblk_dev *zcnblk_dev;
 static __be32 zcnblk_remote_addrs[ZCNBLK_MAX_REMOTE_IPS];
 static u32 zcnblk_remote_addr_count;
+
+static_assert(sizeof(struct zcnblk_shm_channel) == 64);
+static_assert(sizeof(struct zcnblk_shm_request) == ZCNBLK_SHM_DESC_BYTES);
+static_assert(sizeof(struct zcnblk_shm_completion) == ZCNBLK_SHM_DESC_BYTES);
+
+static bool zcnblk_shm_enabled(void)
+{
+	return transport && !strcmp(transport, "shm");
+}
 
 static bool zcnblk_crypto_enabled(const struct zcnblk_dev *dev)
 {
@@ -802,6 +872,218 @@ static int zcnblk_map(u64 logical, u32 *shard, u64 *remote_off)
 	return 0;
 }
 
+static int zcnblk_copy_rq_to_buf(struct request *rq, size_t rq_off,
+				 void *dst, size_t len)
+{
+	struct req_iterator iter;
+	struct bio_vec bvec;
+	size_t skipped = 0;
+	size_t copied = 0;
+
+	rq_for_each_segment(bvec, rq, iter) {
+		size_t seg_len = bvec.bv_len;
+		size_t seg_off = 0;
+		size_t take;
+		void *mapped;
+
+		if (skipped + seg_len <= rq_off) {
+			skipped += seg_len;
+			continue;
+		}
+		if (rq_off > skipped) {
+			seg_off = rq_off - skipped;
+			seg_len -= seg_off;
+		}
+		take = min(seg_len, len - copied);
+		if (!take)
+			break;
+
+		mapped = bvec_kmap_local(&bvec);
+		memcpy(dst + copied, mapped + seg_off, take);
+		kunmap_local(mapped);
+		copied += take;
+		skipped += bvec.bv_len;
+		if (copied == len)
+			return 0;
+	}
+
+	return -EIO;
+}
+
+static int zcnblk_copy_buf_to_rq(struct request *rq, size_t rq_off,
+				 const void *src, size_t len)
+{
+	struct req_iterator iter;
+	struct bio_vec bvec;
+	size_t skipped = 0;
+	size_t copied = 0;
+
+	rq_for_each_segment(bvec, rq, iter) {
+		size_t seg_len = bvec.bv_len;
+		size_t seg_off = 0;
+		size_t take;
+		void *mapped;
+
+		if (skipped + seg_len <= rq_off) {
+			skipped += seg_len;
+			continue;
+		}
+		if (rq_off > skipped) {
+			seg_off = rq_off - skipped;
+			seg_len -= seg_off;
+		}
+		take = min(seg_len, len - copied);
+		if (!take)
+			break;
+
+		mapped = bvec_kmap_local(&bvec);
+		memcpy(mapped + seg_off, src + copied, take);
+		flush_dcache_page(bvec.bv_page);
+		kunmap_local(mapped);
+		copied += take;
+		skipped += bvec.bv_len;
+		if (copied == len)
+			return 0;
+	}
+
+	return -EIO;
+}
+
+static struct zcnblk_shm_channel *
+zcnblk_shm_channel(struct zcnblk_dev *dev, u32 conn_id)
+{
+	struct zcnblk_shm_header *hdr = dev->shm->header;
+
+	return dev->shm->region + hdr->channel_offset +
+		conn_id * sizeof(struct zcnblk_shm_channel);
+}
+
+static struct zcnblk_shm_request *
+zcnblk_shm_request(struct zcnblk_dev *dev, u32 conn_id, u64 sequence)
+{
+	struct zcnblk_shm_header *hdr = dev->shm->header;
+	u64 index = (u64)conn_id * hdr->ring_entries +
+		sequence % hdr->ring_entries;
+
+	return dev->shm->region + hdr->request_offset +
+		index * sizeof(struct zcnblk_shm_request);
+}
+
+static struct zcnblk_shm_completion *
+zcnblk_shm_completion(struct zcnblk_dev *dev, u32 conn_id, u64 sequence)
+{
+	struct zcnblk_shm_header *hdr = dev->shm->header;
+	u64 index = (u64)conn_id * hdr->ring_entries +
+		sequence % hdr->ring_entries;
+
+	return dev->shm->region + hdr->completion_offset +
+		index * sizeof(struct zcnblk_shm_completion);
+}
+
+static void *zcnblk_shm_payload_slot(struct zcnblk_dev *dev, u32 conn_id,
+				    u32 payload_slot)
+{
+	struct zcnblk_shm_header *hdr = dev->shm->header;
+	u64 index = (u64)conn_id * hdr->payload_entries +
+		payload_slot;
+
+	return dev->shm->region + hdr->payload_offset + index * hdr->slot_bytes;
+}
+
+static u64 *zcnblk_shm_payload_owner(struct zcnblk_dev *dev, u32 conn_id,
+				     u32 payload_slot)
+{
+	struct zcnblk_shm_header *hdr = dev->shm->header;
+	u64 index = (u64)conn_id * hdr->payload_entries + payload_slot;
+	u64 offset = hdr->reserved[ZCNBLK_SHM_HEADER_PAYLOAD_OWNER_OFFSET];
+
+	return dev->shm->region + offset + index * sizeof(u64);
+}
+
+static void zcnblk_shm_release_payload_slot(struct zcnblk_conn *conn,
+					    u32 payload_slot, u64 owner)
+{
+	u64 *token;
+	struct zcnblk_shm_channel *channel;
+
+	if (!conn->dev->shm->transfer_payload_slots)
+		return;
+	token = zcnblk_shm_payload_owner(conn->dev, conn->conn_id, payload_slot);
+	if (cmpxchg(token, owner, 0) != owner) {
+		pr_err_ratelimited("zcnblk: payload owner release mismatch channel=%u slot=%u owner=%llu actual=%llu\n",
+				   conn->conn_id, payload_slot, owner,
+				   READ_ONCE(*token));
+		return;
+	}
+	channel = zcnblk_shm_channel(conn->dev, conn->conn_id);
+	atomic64_inc((atomic64_t *)&channel->reserved);
+}
+
+static int zcnblk_shm_claim_payload_slot(struct zcnblk_conn *conn, u32 *slot)
+{
+	struct zcnblk_shm_header *hdr = conn->dev->shm->header;
+	struct zcnblk_shm_channel *channel =
+		zcnblk_shm_channel(conn->dev, conn->conn_id);
+	u32 start = conn->shm_payload_cursor;
+	u32 i;
+
+	for (i = 0; i < hdr->payload_entries; i++) {
+		u32 candidate = (start + i) % hdr->payload_entries;
+		u64 *owner = zcnblk_shm_payload_owner(conn->dev, conn->conn_id,
+						      candidate);
+
+		if (cmpxchg(owner, 0, ZCNBLK_SHM_PAYLOAD_OWNER_RESERVED))
+			continue;
+		conn->shm_payload_cursor = (candidate + 1) % hdr->payload_entries;
+		atomic64_dec((atomic64_t *)&channel->reserved);
+		*slot = candidate;
+		return 0;
+	}
+	return -EAGAIN;
+}
+
+static bool zcnblk_shm_daemon_online(struct zcnblk_dev *dev)
+{
+	return dev->shm && smp_load_acquire(&dev->shm->header->daemon_online);
+}
+
+static bool zcnblk_shm_has_capacity(struct zcnblk_conn *conn)
+{
+	struct zcnblk_shm_channel *channel =
+		zcnblk_shm_channel(conn->dev, conn->conn_id);
+	struct zcnblk_shm_header *hdr = conn->dev->shm->header;
+	u64 prod = READ_ONCE(channel->req_prod);
+	u64 comp = smp_load_acquire(&channel->comp_cons);
+	u64 lease = smp_load_acquire(&channel->payload_lease_hwm);
+	u64 payload_safe = min(comp, lease);
+	u64 req;
+	u32 inflight_slot;
+
+	if (conn->dev->shm->transfer_payload_slots) {
+		req = smp_load_acquire(&channel->req_cons);
+		inflight_slot = prod % conn->shm_inflight_entries;
+		return prod - req < hdr->ring_entries &&
+			!READ_ONCE(conn->shm_inflight[inflight_slot]) &&
+			atomic64_read((atomic64_t *)&channel->reserved) > 0;
+	}
+
+	if (hdr->payload_entries == hdr->ring_entries)
+		return prod - payload_safe < hdr->ring_entries;
+	req = smp_load_acquire(&channel->req_cons);
+
+	return prod - req < hdr->ring_entries &&
+		prod - payload_safe < hdr->payload_entries;
+}
+
+static bool zcnblk_shm_completion_ready(struct zcnblk_conn *conn)
+{
+	struct zcnblk_shm_channel *channel =
+		zcnblk_shm_channel(conn->dev, conn->conn_id);
+
+	return smp_load_acquire(&channel->comp_prod) !=
+		READ_ONCE(channel->comp_cons);
+}
+
 static int zcnblk_send_rq_payload(struct zcnblk_conn *conn, struct request *rq,
 				  size_t rq_off, size_t len)
 {
@@ -930,6 +1212,24 @@ static int zcnblk_do_frame(struct zcnblk_conn *conn, struct request *rq,
 	return zcnblk_recv_rq_payload(conn, rq, rq_off, len);
 }
 
+static int zcnblk_do_sync(struct zcnblk_conn *conn, u16 request_id)
+{
+	struct zcnblk_frame_header hdr;
+	int ret;
+
+	zcnblk_make_header(conn, &hdr, ZCNBLK_OP_SYNC, request_id, 0, 0, 0);
+	ret = zcnblk_send_frame_payload(conn, &hdr, NULL, 0);
+	if (ret)
+		return ret;
+	ret = zcnblk_conn_recv_all(conn, &hdr, sizeof(hdr));
+	if (ret)
+		return ret;
+	ret = zcnblk_validate_resp(&hdr, ZCNBLK_OP_SYNC_ACK, 0, 0, 0);
+	if (ret)
+		return ret;
+	return zcnblk_recv_frame_payload(conn, &hdr, NULL, 0);
+}
+
 static blk_status_t zcnblk_transfer_request_on_conn(struct zcnblk_dev *dev,
 						    struct zcnblk_conn *conn,
 						    struct request *rq)
@@ -941,7 +1241,7 @@ static blk_status_t zcnblk_transfer_request_on_conn(struct zcnblk_dev *dev,
 	int ret = 0;
 
 	if (op == REQ_OP_FLUSH)
-		return BLK_STS_OK;
+		return zcnblk_do_sync(conn, 0) ? BLK_STS_IOERR : BLK_STS_OK;
 	if (op != REQ_OP_READ && op != REQ_OP_WRITE)
 		return BLK_STS_NOTSUPP;
 	if (logical > dev->capacity_bytes || bytes > dev->capacity_bytes - logical)
@@ -1033,9 +1333,44 @@ static void zcnblk_complete_pdu(struct zcnblk_pdu *pdu, blk_status_t status)
 	blk_mq_end_request(rq, status);
 }
 
+static blk_status_t zcnblk_null_complete_request(struct zcnblk_dev *dev,
+						 struct request *rq)
+{
+	enum req_op op = req_op(rq);
+	u64 logical = (u64)blk_rq_pos(rq) << SECTOR_SHIFT;
+	u64 bytes = blk_rq_bytes(rq);
+
+	if (op == REQ_OP_FLUSH)
+		return BLK_STS_OK;
+	if (op != REQ_OP_READ && op != REQ_OP_WRITE)
+		return BLK_STS_NOTSUPP;
+	if (logical > dev->capacity_bytes || bytes > dev->capacity_bytes - logical)
+		return BLK_STS_IOERR;
+	if (op == REQ_OP_READ && null_read_zero) {
+		struct req_iterator iter;
+		struct bio_vec bvec;
+
+		rq_for_each_segment(bvec, rq, iter) {
+			void *mapped = bvec_kmap_local(&bvec);
+
+			memset(mapped, 0, bvec.bv_len);
+			flush_dcache_page(bvec.bv_page);
+			kunmap_local(mapped);
+		}
+	}
+	return BLK_STS_OK;
+}
+
 static int zcnblk_prepare_pdu(struct zcnblk_conn *conn, struct zcnblk_pdu *pdu)
 {
 	pdu->op = req_op(pdu->rq);
+	if (pdu->op == REQ_OP_FLUSH) {
+		pdu->shard = 0;
+		pdu->remote_off = 0;
+		pdu->len = 0;
+		pdu->request_id = conn->next_request_id++;
+		return 0;
+	}
 	if (!zcnblk_request_is_single_frame(conn->dev, pdu->rq, &pdu->shard,
 					    &pdu->remote_off, &pdu->len))
 		return -EOPNOTSUPP;
@@ -1059,6 +1394,11 @@ static int zcnblk_send_prepared_pdu(struct zcnblk_conn *conn,
 			ret = zcnblk_send_rq_payload(conn, pdu->rq, 0, pdu->len);
 		return ret;
 	}
+	if (pdu->op == REQ_OP_FLUSH) {
+		zcnblk_make_header(conn, &hdr, ZCNBLK_OP_SYNC,
+				   pdu->request_id, 0, 0, 0);
+		return zcnblk_send_frame_payload(conn, &hdr, NULL, 0);
+	}
 
 	zcnblk_make_header(conn, &hdr, ZCNBLK_OP_READ, pdu->request_id,
 			   pdu->shard, pdu->len, pdu->remote_off);
@@ -1078,7 +1418,7 @@ static int zcnblk_send_pdu(struct zcnblk_conn *conn, struct zcnblk_pdu *pdu)
 static void zcnblk_add_inflight_or_complete(struct zcnblk_conn *conn,
 					    struct zcnblk_pdu *pdu)
 {
-	if (pdu->op == REQ_OP_READ || write_acks) {
+	if (pdu->op == REQ_OP_READ || pdu->op == REQ_OP_FLUSH || write_acks) {
 		list_add_tail(&pdu->entry, &conn->inflight);
 		conn->inflight_count++;
 	} else {
@@ -1127,6 +1467,21 @@ static int zcnblk_send_batch(struct zcnblk_conn *conn, struct zcnblk_pdu *first)
 		zcnblk_add_inflight_or_complete(conn, first);
 		return 0;
 	}
+	batch_op = req_op(first->rq);
+	if (batch_op == REQ_OP_FLUSH) {
+		ret = zcnblk_prepare_pdu(conn, first);
+		if (ret) {
+			zcnblk_complete_pdu(first, BLK_STS_IOERR);
+			return ret;
+		}
+		ret = zcnblk_send_prepared_pdu(conn, first);
+		if (ret) {
+			zcnblk_complete_pdu(first, BLK_STS_IOERR);
+			return ret;
+		}
+		zcnblk_add_inflight_or_complete(conn, first);
+		return 0;
+	}
 	zcnblk_wait_for_batch_fill(conn, depth);
 
 	pdus = kcalloc(depth, sizeof(*pdus), GFP_NOIO);
@@ -1140,7 +1495,6 @@ static int zcnblk_send_batch(struct zcnblk_conn *conn, struct zcnblk_pdu *first)
 		return -ENOMEM;
 	}
 
-	batch_op = req_op(first->rq);
 	ret = zcnblk_prepare_pdu(conn, first);
 	if (ret) {
 		kfree(iov);
@@ -1231,8 +1585,15 @@ static struct zcnblk_pdu *zcnblk_find_inflight(struct zcnblk_conn *conn,
 					       const struct zcnblk_frame_header *hdr)
 {
 	struct zcnblk_pdu *pdu;
-	u16 want_op = response_op == ZCNBLK_OP_READ_RESP ? REQ_OP_READ : REQ_OP_WRITE;
+	enum req_op want_op;
 	u16 request_id = le16_to_cpu(hdr->flags);
+
+	if (response_op == ZCNBLK_OP_READ_RESP)
+		want_op = REQ_OP_READ;
+	else if (response_op == ZCNBLK_OP_SYNC_ACK)
+		want_op = REQ_OP_FLUSH;
+	else
+		want_op = REQ_OP_WRITE;
 
 	list_for_each_entry(pdu, &conn->inflight, entry) {
 		if (pdu->op == want_op && pdu->request_id == request_id)
@@ -1252,7 +1613,8 @@ static int zcnblk_validate_response_header(struct zcnblk_conn *conn,
 
 	*response_op = le16_to_cpu(hdr->op);
 	if (*response_op != ZCNBLK_OP_READ_RESP &&
-	    *response_op != ZCNBLK_OP_WRITE_ACK) {
+	    *response_op != ZCNBLK_OP_WRITE_ACK &&
+	    *response_op != ZCNBLK_OP_SYNC_ACK) {
 		pr_err_ratelimited("zcnblk: lane=%u stream=%u invalid response op=%u flags=%u shard=%u len=%u offset=%llu\n",
 				   conn->lane, conn->stream, *response_op,
 				   le16_to_cpu(hdr->flags), le32_to_cpu(hdr->shard),
@@ -1385,6 +1747,281 @@ static void zcnblk_fail_list(struct list_head *head)
 		list_del_init(&pdu->entry);
 		zcnblk_complete_pdu(pdu, BLK_STS_IOERR);
 	}
+}
+
+static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
+				 struct zcnblk_pdu *pdu)
+{
+	struct zcnblk_dev *dev = conn->dev;
+	struct zcnblk_shm_channel *channel;
+	struct zcnblk_shm_request *desc;
+	void *payload;
+	u64 sequence;
+	u32 inflight_slot;
+	u32 payload_slot;
+	u64 submit_sequence;
+	u16 wire_op;
+	int ret;
+
+	if (!zcnblk_shm_daemon_online(dev) || !zcnblk_shm_has_capacity(conn))
+		return -EAGAIN;
+
+	ret = zcnblk_prepare_pdu(conn, pdu);
+	if (ret)
+		return ret;
+
+	channel = zcnblk_shm_channel(dev, conn->conn_id);
+	sequence = READ_ONCE(channel->req_prod);
+	inflight_slot = sequence % conn->shm_inflight_entries;
+	if (WARN_ON_ONCE(conn->shm_inflight[inflight_slot]))
+		return -EOVERFLOW;
+	desc = zcnblk_shm_request(dev, conn->conn_id, sequence);
+	if (dev->shm->transfer_payload_slots) {
+		ret = zcnblk_shm_claim_payload_slot(conn, &payload_slot);
+		if (ret)
+			return ret;
+	} else {
+		payload_slot = sequence % dev->shm->header->payload_entries;
+	}
+	payload = zcnblk_shm_payload_slot(dev, conn->conn_id, payload_slot);
+	if (pdu->op == REQ_OP_WRITE) {
+		wire_op = ZCNBLK_SHM_OP_WRITE;
+		ret = zcnblk_copy_rq_to_buf(pdu->rq, 0, payload, pdu->len);
+		if (ret)
+			goto out_release_slot;
+	} else if (pdu->op == REQ_OP_READ) {
+		wire_op = ZCNBLK_SHM_OP_READ;
+	} else if (pdu->op == REQ_OP_FLUSH) {
+		wire_op = ZCNBLK_SHM_OP_SYNC;
+	} else {
+		ret = -EOPNOTSUPP;
+		goto out_release_slot;
+	}
+	submit_sequence = atomic64_inc_return(&dev->shm->submit_sequence);
+	if (dev->shm->transfer_payload_slots)
+		smp_store_release(zcnblk_shm_payload_owner(dev, conn->conn_id,
+							     payload_slot),
+				  submit_sequence);
+
+	memset(desc, 0, sizeof(*desc));
+	desc->request_id = pdu->request_id;
+	desc->offset = pdu->remote_off;
+	desc->len = pdu->len;
+	desc->op = wire_op;
+	desc->flags = ZCNBLK_SHM_F_TOPOLOGY_VALID |
+		ZCNBLK_SHM_F_PORT_LANE;
+	desc->lane = conn->lane;
+	desc->stream = conn->stream;
+	desc->queue_id = conn->conn_id;
+	desc->payload_slot = payload_slot;
+	desc->submit_sequence = submit_sequence;
+	if (wire_op != ZCNBLK_SHM_OP_SYNC) {
+		u64 sector = pdu->remote_off >> 12;
+		u32 order_slot = hash_64(sector, dev->shm->sector_order_bits);
+
+		desc->sector_predecessor = atomic64_xchg(
+			&dev->shm->sector_predecessors[order_slot],
+			desc->submit_sequence);
+	}
+	pdu->shm_sequence = sequence;
+	pdu->shm_submit_sequence = submit_sequence;
+	pdu->shm_payload_slot = payload_slot;
+	conn->shm_inflight[inflight_slot] = pdu;
+
+	/* Publish descriptor bytes before making the sequence visible. */
+	smp_store_release(&desc->sequence, sequence + 1);
+	smp_store_release(&channel->req_prod, sequence + 1);
+	WRITE_ONCE(dev->shm->header->global_submit_sequence,
+		   desc->submit_sequence);
+	WRITE_ONCE(channel->request_kicks,
+		   READ_ONCE(channel->request_kicks) + 1);
+	list_add_tail(&pdu->entry, &conn->inflight);
+	conn->inflight_count++;
+	wake_up_interruptible_poll(&dev->shm->poll_wait, EPOLLIN | EPOLLRDNORM);
+	return 0;
+
+out_release_slot:
+	if (dev->shm->transfer_payload_slots)
+		zcnblk_shm_release_payload_slot(conn, payload_slot,
+						ZCNBLK_SHM_PAYLOAD_OWNER_RESERVED);
+	return ret;
+}
+
+static int zcnblk_shm_consume_completion(struct zcnblk_conn *conn)
+{
+	struct zcnblk_dev *dev = conn->dev;
+	struct zcnblk_shm_channel *channel =
+		zcnblk_shm_channel(dev, conn->conn_id);
+	struct zcnblk_shm_completion *desc;
+	struct zcnblk_pdu *pdu;
+	u64 sequence = READ_ONCE(channel->comp_cons);
+	u64 produced = smp_load_acquire(&channel->comp_prod);
+	u16 want_op;
+	u32 inflight_slot;
+	u32 payload_channel;
+	bool payload_ref;
+	blk_status_t status = BLK_STS_OK;
+	int ret = 0;
+
+	if (sequence == produced)
+		return 0;
+	desc = zcnblk_shm_completion(dev, conn->conn_id, sequence);
+	if (smp_load_acquire(&desc->sequence) != sequence + 1)
+		return 0;
+	if (list_empty(&conn->inflight))
+		return -EIO;
+	inflight_slot = desc->request_sequence % conn->shm_inflight_entries;
+	pdu = conn->shm_inflight[inflight_slot];
+	if (!pdu) {
+		pr_err_ratelimited("zcnblk: shm completion has no inflight match channel=%u comp=%llu request_seq=%llu slot=%u\n",
+				   conn->conn_id, sequence,
+				   desc->request_sequence, inflight_slot);
+		return -EIO;
+	}
+	want_op = pdu->op == REQ_OP_WRITE ? ZCNBLK_SHM_OP_WRITE :
+		  pdu->op == REQ_OP_READ ? ZCNBLK_SHM_OP_READ :
+		  ZCNBLK_SHM_OP_SYNC;
+	payload_ref = desc->flags & ZCNBLK_SHM_CQE_F_READ_PAYLOAD_REF;
+	payload_channel = conn->conn_id;
+	if (desc->request_sequence != pdu->shm_sequence ||
+	    desc->request_id != pdu->request_id || desc->op != want_op ||
+	    desc->offset != pdu->remote_off || desc->len != pdu->len ||
+	    desc->lane != conn->lane || desc->stream != conn->stream) {
+		pr_err_ratelimited("zcnblk: shm completion mismatch channel=%u comp=%llu request_seq=%llu expected=%llu op=%u expected_op=%u request_id=%llu expected_id=%u\n",
+				   conn->conn_id, sequence,
+				   desc->request_sequence, pdu->shm_sequence,
+				   desc->op, want_op, desc->request_id,
+				   pdu->request_id);
+		return -EIO;
+	}
+	if (payload_ref) {
+		payload_channel =
+			(desc->flags & ZCNBLK_SHM_CQE_REF_CHANNEL_MASK) >>
+			ZCNBLK_SHM_CQE_REF_CHANNEL_SHIFT;
+		if (pdu->op != REQ_OP_READ || !dev->shm->transfer_payload_slots ||
+		    !(dev->shm->header->reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] &
+		      ZCNBLK_SHM_CAP_READ_PAYLOAD_REF) ||
+		    desc->flags & ~(ZCNBLK_SHM_CQE_F_READ_PAYLOAD_REF |
+				    ZCNBLK_SHM_CQE_REF_CHANNEL_MASK) ||
+		    payload_channel >= dev->total_conns ||
+		    desc->payload_slot >= dev->shm->header->payload_entries ||
+		    !atomic64_read((atomic64_t *)zcnblk_shm_payload_owner(
+				dev, payload_channel, desc->payload_slot))) {
+			pr_err_ratelimited("zcnblk: invalid shm read payload ref channel=%u source_channel=%u slot=%u flags=%#x\n",
+				   conn->conn_id, payload_channel,
+				   desc->payload_slot, desc->flags);
+			return -EIO;
+		}
+	} else if (desc->flags || desc->payload_slot != pdu->shm_payload_slot) {
+		pr_err_ratelimited("zcnblk: invalid shm completion payload channel=%u slot=%u expected=%u flags=%#x\n",
+				   conn->conn_id, desc->payload_slot,
+				   pdu->shm_payload_slot, desc->flags);
+		return -EIO;
+	}
+	if (desc->status) {
+		status = BLK_STS_IOERR;
+	} else if (pdu->op == REQ_OP_READ) {
+		ret = zcnblk_copy_buf_to_rq(
+			pdu->rq, 0,
+			zcnblk_shm_payload_slot(dev, payload_channel,
+						desc->payload_slot),
+			pdu->len);
+		if (ret)
+			status = BLK_STS_IOERR;
+	}
+
+	list_del_init(&pdu->entry);
+	conn->shm_inflight[inflight_slot] = NULL;
+	conn->inflight_count--;
+	if (dev->shm->transfer_payload_slots && pdu->op != REQ_OP_WRITE)
+		zcnblk_shm_release_payload_slot(conn, pdu->shm_payload_slot,
+						pdu->shm_submit_sequence);
+	/* A read slot cannot be reused until its payload has reached the bio. */
+	smp_store_release(&channel->comp_cons, sequence + 1);
+	zcnblk_complete_pdu(pdu, status);
+	return ret ? ret : 1;
+}
+
+static bool zcnblk_shm_spin_for_work(struct zcnblk_conn *conn)
+{
+	u64 deadline;
+
+	if (!shm_poll_us)
+		return false;
+	deadline = ktime_get_ns() + (u64)shm_poll_us * NSEC_PER_USEC;
+	do {
+		if (zcnblk_shm_completion_ready(conn) ||
+		    (zcnblk_shm_daemon_online(conn->dev) &&
+		     !list_empty_careful(&conn->pending) &&
+		     zcnblk_shm_has_capacity(conn)))
+			return true;
+		cpu_relax();
+	} while (ktime_get_ns() < deadline && !kthread_should_stop());
+	return false;
+}
+
+static int zcnblk_shm_conn_thread(void *data)
+{
+	struct zcnblk_conn *conn = data;
+
+	while (!kthread_should_stop()) {
+		bool progressed = false;
+		int ret;
+
+		while (conn->inflight_count < pipeline_depth &&
+		       zcnblk_shm_daemon_online(conn->dev) &&
+		       zcnblk_shm_has_capacity(conn)) {
+			struct zcnblk_pdu *pdu = zcnblk_pop_pending(conn);
+
+			if (!pdu)
+				break;
+			ret = zcnblk_shm_submit_pdu(conn, pdu);
+			if (ret == -EAGAIN) {
+				zcnblk_push_pending_front(conn, pdu);
+				break;
+			}
+			if (ret) {
+				zcnblk_complete_pdu(pdu, BLK_STS_IOERR);
+				if (ret != -EOPNOTSUPP)
+					conn->failed = true;
+				break;
+			}
+			progressed = true;
+		}
+
+		while ((ret = zcnblk_shm_consume_completion(conn)) > 0)
+			progressed = true;
+		if (ret < 0) {
+			conn->failed = true;
+			break;
+		}
+		if (conn->failed)
+			break;
+		if (progressed)
+			continue;
+		if (zcnblk_shm_spin_for_work(conn))
+			continue;
+
+		wait_event_interruptible(conn->wait,
+			kthread_should_stop() || conn->failed ||
+			zcnblk_shm_completion_ready(conn) ||
+			(zcnblk_shm_daemon_online(conn->dev) &&
+			 !list_empty_careful(&conn->pending) &&
+			 zcnblk_shm_has_capacity(conn)));
+	}
+
+	{
+		LIST_HEAD(pending);
+
+		spin_lock(&conn->queue_lock);
+		list_splice_init(&conn->pending, &pending);
+		spin_unlock(&conn->queue_lock);
+		zcnblk_fail_list(&pending);
+	}
+	zcnblk_fail_list(&conn->inflight);
+	if (conn->failed)
+		wait_event_interruptible(conn->wait, kthread_should_stop());
+	return 0;
 }
 
 static int zcnblk_conn_thread(void *data)
@@ -1524,19 +2161,21 @@ static blk_status_t zcnblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 	u32 conn_idx;
 
 	blk_mq_start_request(rq);
-	if (req_op(rq) == REQ_OP_FLUSH) {
-		blk_mq_end_request(rq, BLK_STS_OK);
+	if (req_op(rq) != REQ_OP_READ &&
+	    req_op(rq) != REQ_OP_WRITE &&
+	    req_op(rq) != REQ_OP_FLUSH) {
+		blk_mq_end_request(rq, BLK_STS_NOTSUPP);
 		return BLK_STS_OK;
 	}
-	if (req_op(rq) != REQ_OP_READ && req_op(rq) != REQ_OP_WRITE) {
-		blk_mq_end_request(rq, BLK_STS_NOTSUPP);
+	if (null_backend) {
+		blk_mq_end_request(rq, zcnblk_null_complete_request(dev, rq));
 		return BLK_STS_OK;
 	}
 
 	INIT_LIST_HEAD(&pdu->entry);
 	pdu->rq = rq;
 
-	if (shard_affinity) {
+	if (shard_affinity && req_op(rq) != REQ_OP_FLUSH) {
 		u32 shard;
 		u64 remote_off;
 		u32 len;
@@ -1576,6 +2215,142 @@ static const struct block_device_operations zcnblk_fops = {
 	.owner = THIS_MODULE,
 };
 
+static int zcnblk_shm_ctl_open(struct inode *inode, struct file *file)
+{
+	struct zcnblk_shm_state *shm;
+
+	if (!zcnblk_dev || !zcnblk_dev->shm)
+		return -ENODEV;
+	shm = zcnblk_dev->shm;
+	if (atomic_cmpxchg(&shm->daemon_open, 0, 1))
+		return -EBUSY;
+	file->private_data = shm;
+	return nonseekable_open(inode, file);
+}
+
+static int zcnblk_shm_ctl_release(struct inode *inode, struct file *file)
+{
+	struct zcnblk_shm_state *shm = file->private_data;
+	u32 i;
+
+	(void)inode;
+	if (!shm)
+		return 0;
+	smp_store_release(&shm->header->daemon_online, 0);
+	if (zcnblk_dev && zcnblk_dev->conns) {
+		for (i = 0; i < zcnblk_dev->active_conns; i++) {
+			WRITE_ONCE(zcnblk_dev->conns[i].failed, true);
+			wake_up(&zcnblk_dev->conns[i].wait);
+		}
+	}
+	atomic_set(&shm->daemon_open, 0);
+	wake_up_interruptible_poll(&shm->poll_wait, EPOLLHUP | EPOLLERR);
+	return 0;
+}
+
+static long zcnblk_shm_ctl_ioctl(struct file *file, unsigned int cmd,
+				 unsigned long arg)
+{
+	struct zcnblk_shm_state *shm = file->private_data;
+	void __user *argp = (void __user *)arg;
+	u32 channel;
+	u32 i;
+
+	if (!shm)
+		return -ENODEV;
+	switch (cmd) {
+	case ZCNBLK_SHM_IOC_GET_INFO:
+		if (copy_to_user(argp, shm->header, sizeof(*shm->header)))
+			return -EFAULT;
+		return 0;
+	case ZCNBLK_SHM_IOC_ATTACH: {
+		struct zcnblk_shm_attach attach;
+
+		if (copy_from_user(&attach, argp, sizeof(attach)))
+			return -EFAULT;
+		if (attach.magic != ZCNBLK_SHM_MAGIC ||
+		    attach.version != ZCNBLK_SHM_VERSION ||
+		    attach.flags & ~ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS)
+			return -EINVAL;
+		if (attach.flags & ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS) {
+			if (!(shm->header->reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] &
+			      ZCNBLK_SHM_CAP_TRANSFER_PAYLOAD_SLOTS))
+				return -EOPNOTSUPP;
+			shm->transfer_payload_slots = true;
+		}
+		WRITE_ONCE(shm->header->daemon_generation,
+			   READ_ONCE(shm->header->daemon_generation) + 1);
+		smp_store_release(&shm->header->daemon_online, 1);
+		for (i = 0; i < zcnblk_dev->active_conns; i++)
+			wake_up(&zcnblk_dev->conns[i].wait);
+		return 0;
+	}
+	case ZCNBLK_SHM_IOC_KICK:
+		if (copy_from_user(&channel, argp, sizeof(channel)))
+			return -EFAULT;
+		if (channel == U32_MAX) {
+			for (i = 0; i < zcnblk_dev->active_conns; i++)
+				wake_up(&zcnblk_dev->conns[i].wait);
+			return 0;
+		}
+		if (channel >= zcnblk_dev->active_conns)
+			return -EINVAL;
+		WRITE_ONCE(zcnblk_shm_channel(zcnblk_dev, channel)->completion_kicks,
+			   READ_ONCE(zcnblk_shm_channel(zcnblk_dev, channel)->completion_kicks) + 1);
+		wake_up(&zcnblk_dev->conns[channel].wait);
+		return 0;
+	default:
+		return -ENOTTY;
+	}
+}
+
+static int zcnblk_shm_ctl_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	struct zcnblk_shm_state *shm = file->private_data;
+	unsigned long len = vma->vm_end - vma->vm_start;
+
+	if (!shm)
+		return -ENODEV;
+	if (vma->vm_pgoff || len != shm->region_bytes)
+		return -EINVAL;
+	return remap_vmalloc_range(vma, shm->region, 0);
+}
+
+static __poll_t zcnblk_shm_ctl_poll(struct file *file, poll_table *wait)
+{
+	struct zcnblk_shm_state *shm = file->private_data;
+	__poll_t mask = 0;
+	u32 i;
+
+	if (!shm)
+		return EPOLLERR;
+	poll_wait(file, &shm->poll_wait, wait);
+	if (!smp_load_acquire(&shm->header->daemon_online))
+		mask |= EPOLLHUP;
+	for (i = 0; i < shm->header->channels; i++) {
+		struct zcnblk_shm_channel *channel =
+			zcnblk_shm_channel(zcnblk_dev, i);
+
+		if (smp_load_acquire(&channel->req_prod) !=
+		    READ_ONCE(channel->req_cons)) {
+			mask |= EPOLLIN | EPOLLRDNORM;
+			break;
+		}
+	}
+	return mask;
+}
+
+static const struct file_operations zcnblk_shm_ctl_fops = {
+	.owner = THIS_MODULE,
+	.open = zcnblk_shm_ctl_open,
+	.release = zcnblk_shm_ctl_release,
+	.unlocked_ioctl = zcnblk_shm_ctl_ioctl,
+	.compat_ioctl = compat_ptr_ioctl,
+	.mmap = zcnblk_shm_ctl_mmap,
+	.poll = zcnblk_shm_ctl_poll,
+	.llseek = noop_llseek,
+};
+
 static void zcnblk_disconnect_all(struct zcnblk_dev *dev)
 {
 	u32 i;
@@ -1601,6 +2376,9 @@ static void zcnblk_disconnect_all(struct zcnblk_dev *dev)
 			dev->conns[i].sock = NULL;
 		}
 		zcnblk_crypto_free_conn(&dev->conns[i]);
+		kfree(dev->conns[i].shm_inflight);
+		dev->conns[i].shm_inflight = NULL;
+		dev->conns[i].shm_inflight_entries = 0;
 	}
 	dev->active_conns = 0;
 }
@@ -1619,6 +2397,255 @@ static int zcnblk_thread_pin_cpu(u32 conn_id, unsigned int *cpu)
 	if (target >= nr_cpu_ids || !cpu_online(target))
 		return -EINVAL;
 	*cpu = target;
+	return 0;
+}
+
+static int zcnblk_shm_page_align(u64 value, u64 *aligned)
+{
+	u64 rounded;
+
+	if (check_add_overflow(value, (u64)PAGE_SIZE - 1, &rounded))
+		return -EOVERFLOW;
+	*aligned = rounded & PAGE_MASK;
+	return 0;
+}
+
+static int zcnblk_shm_layout_init(struct zcnblk_dev *dev)
+{
+	struct zcnblk_shm_state *shm;
+	struct zcnblk_shm_header *hdr;
+	u64 entries = shm_ring_entries ? shm_ring_entries : pipeline_depth;
+	u64 payload_entries = shm_payload_entries ? shm_payload_entries : entries;
+	u64 descriptor_slots;
+	u64 payload_slots;
+	u64 bytes;
+	u64 offset = PAGE_SIZE;
+	int ret;
+
+	if (!entries || entries > U32_MAX || entries < pipeline_depth ||
+	    !payload_entries || payload_entries > U32_MAX ||
+	    payload_entries < pipeline_depth || !shm_sector_order_slots ||
+	    !is_power_of_2(shm_sector_order_slots))
+		return -EINVAL;
+	if (check_mul_overflow((u64)dev->total_conns, entries,
+			       &descriptor_slots) ||
+	    check_mul_overflow((u64)dev->total_conns, payload_entries,
+			       &payload_slots))
+		return -EOVERFLOW;
+
+	shm = kzalloc(sizeof(*shm), GFP_KERNEL);
+	if (!shm)
+		return -ENOMEM;
+	dev->shm = shm;
+	shm->sector_predecessors = kvcalloc(shm_sector_order_slots,
+					    sizeof(*shm->sector_predecessors),
+					    GFP_KERNEL);
+	if (!shm->sector_predecessors) {
+		ret = -ENOMEM;
+		goto out_free;
+	}
+	shm->sector_order_bits = ilog2(shm_sector_order_slots);
+
+	if (check_mul_overflow((u64)dev->total_conns,
+			       (u64)sizeof(struct zcnblk_shm_channel), &bytes) ||
+	    check_add_overflow(offset, bytes, &offset) ||
+	    zcnblk_shm_page_align(offset, &offset)) {
+		ret = -EOVERFLOW;
+		goto out_free;
+	}
+	/* Save offsets after each prior section has been aligned. */
+	shm->region_bytes = offset;
+	if (check_mul_overflow(descriptor_slots,
+			       (u64)sizeof(struct zcnblk_shm_request), &bytes) ||
+	    check_add_overflow(offset, bytes, &offset) ||
+	    zcnblk_shm_page_align(offset, &offset)) {
+		ret = -EOVERFLOW;
+		goto out_free;
+	}
+	if (check_mul_overflow(descriptor_slots,
+			       (u64)sizeof(struct zcnblk_shm_completion), &bytes) ||
+	    check_add_overflow(offset, bytes, &offset) ||
+	    zcnblk_shm_page_align(offset, &offset)) {
+		ret = -EOVERFLOW;
+		goto out_free;
+	}
+	if (check_mul_overflow(payload_slots, (u64)sizeof(u64), &bytes) ||
+	    check_add_overflow(offset, bytes, &offset) ||
+	    zcnblk_shm_page_align(offset, &offset)) {
+		ret = -EOVERFLOW;
+		goto out_free;
+	}
+	if (check_mul_overflow(payload_slots, (u64)max_frame_bytes, &bytes) ||
+	    check_add_overflow(offset, bytes, &offset) ||
+	    zcnblk_shm_page_align(offset, &offset) || offset > SIZE_MAX) {
+		ret = -EOVERFLOW;
+		goto out_free;
+	}
+
+	shm->region_bytes = offset;
+	shm->region = vmalloc_user(shm->region_bytes);
+	if (!shm->region) {
+		ret = -ENOMEM;
+		goto out_free;
+	}
+	shm->header = shm->region;
+	hdr = shm->header;
+	hdr->magic = ZCNBLK_SHM_MAGIC;
+	hdr->version = ZCNBLK_SHM_VERSION;
+	hdr->header_bytes = PAGE_SIZE;
+	hdr->channels = dev->total_conns;
+	hdr->ring_entries = entries;
+	hdr->payload_entries = payload_entries;
+	hdr->slot_bytes = max_frame_bytes;
+	hdr->descriptor_bytes = ZCNBLK_SHM_DESC_BYTES;
+	hdr->channel_offset = PAGE_SIZE;
+	ret = zcnblk_shm_page_align(
+		hdr->channel_offset +
+			(u64)dev->total_conns * sizeof(struct zcnblk_shm_channel),
+		&hdr->request_offset);
+	if (ret)
+		goto out_region;
+	ret = zcnblk_shm_page_align(
+		hdr->request_offset +
+			descriptor_slots * sizeof(struct zcnblk_shm_request),
+		&hdr->completion_offset);
+	if (ret)
+		goto out_region;
+	ret = zcnblk_shm_page_align(
+		hdr->completion_offset +
+			descriptor_slots * sizeof(struct zcnblk_shm_completion),
+		&hdr->reserved[ZCNBLK_SHM_HEADER_PAYLOAD_OWNER_OFFSET]);
+	if (ret)
+		goto out_region;
+	ret = zcnblk_shm_page_align(
+		hdr->reserved[ZCNBLK_SHM_HEADER_PAYLOAD_OWNER_OFFSET] +
+			payload_slots * sizeof(u64),
+		&hdr->payload_offset);
+	if (ret)
+		goto out_region;
+	hdr->region_bytes = shm->region_bytes;
+	hdr->capacity_bytes = dev->capacity_bytes;
+	hdr->reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] =
+		ZCNBLK_SHM_CAP_SECTOR_PREDECESSOR |
+		ZCNBLK_SHM_CAP_TRANSFER_PAYLOAD_SLOTS |
+		ZCNBLK_SHM_CAP_READ_PAYLOAD_REF;
+	for (ret = 0; ret < dev->total_conns; ret++)
+		atomic64_set((atomic64_t *)&zcnblk_shm_channel(dev, ret)->reserved,
+			     payload_entries);
+	init_waitqueue_head(&shm->poll_wait);
+	atomic_set(&shm->daemon_open, 0);
+	atomic64_set(&shm->submit_sequence, 0);
+
+	shm->misc.minor = MISC_DYNAMIC_MINOR;
+	shm->misc.name = "zcnblk-shmctl";
+	shm->misc.fops = &zcnblk_shm_ctl_fops;
+	shm->misc.mode = 0600;
+	ret = misc_register(&shm->misc);
+	if (ret)
+		goto out_region;
+	shm->registered = true;
+	return 0;
+
+out_region:
+	vfree(shm->region);
+out_free:
+	kvfree(shm->sector_predecessors);
+	kfree(shm);
+	dev->shm = NULL;
+	return ret;
+}
+
+static void zcnblk_shm_layout_destroy(struct zcnblk_dev *dev)
+{
+	struct zcnblk_shm_state *shm;
+
+	if (!dev || !dev->shm)
+		return;
+	shm = dev->shm;
+	if (shm->registered)
+		misc_deregister(&shm->misc);
+	vfree(shm->region);
+	kvfree(shm->sector_predecessors);
+	kfree(shm);
+	dev->shm = NULL;
+}
+
+static int zcnblk_shm_connect_one(struct zcnblk_dev *dev,
+				  struct zcnblk_conn *conn, u32 lane,
+				  u32 stream, u32 conn_id)
+{
+	int ret;
+
+	mutex_init(&conn->lock);
+	spin_lock_init(&conn->queue_lock);
+	init_waitqueue_head(&conn->wait);
+	INIT_LIST_HEAD(&conn->pending);
+	INIT_LIST_HEAD(&conn->inflight);
+	conn->dev = dev;
+	conn->lane = lane;
+	conn->stream = stream;
+	conn->conn_id = conn_id;
+	conn->shm_inflight_entries = dev->shm->header->ring_entries;
+	conn->shm_inflight = kcalloc(conn->shm_inflight_entries,
+					    sizeof(*conn->shm_inflight), GFP_KERNEL);
+	if (!conn->shm_inflight)
+		return -ENOMEM;
+	conn->thread = kthread_create(zcnblk_shm_conn_thread, conn,
+				      "zcnblk-shm-%u-%u", lane, stream);
+	if (IS_ERR(conn->thread)) {
+		ret = PTR_ERR(conn->thread);
+		conn->thread = NULL;
+		kfree(conn->shm_inflight);
+		conn->shm_inflight = NULL;
+		conn->shm_inflight_entries = 0;
+		return ret;
+	}
+	if (pin_threads) {
+		unsigned int cpu;
+
+		ret = zcnblk_thread_pin_cpu(conn_id, &cpu);
+		if (ret) {
+			pr_warn("zcnblk: PERF WARNING: shm conn_id=%u lane=%u stream=%u maps to invalid/offline CPU base=%u count=%u stride=%u; leaving thread unpinned\n",
+				conn_id, lane, stream, pin_base_cpu, pin_cpu_count,
+				pin_stride);
+		} else {
+			kthread_bind(conn->thread, cpu);
+		}
+	}
+	wake_up_process(conn->thread);
+	return 0;
+}
+
+static int zcnblk_shm_connect_all(struct zcnblk_dev *dev)
+{
+	u32 lane;
+	u32 stream;
+	u32 idx = 0;
+	int ret;
+
+	ret = zcnblk_shm_layout_init(dev);
+	if (ret)
+		return ret;
+	dev->conns = kcalloc(dev->total_conns, sizeof(*dev->conns), GFP_KERNEL);
+	if (!dev->conns) {
+		zcnblk_shm_layout_destroy(dev);
+		return -ENOMEM;
+	}
+	for (lane = 0; lane < lanes; lane++) {
+		for (stream = 0; stream < connections_per_lane; stream++) {
+			ret = zcnblk_shm_connect_one(dev, &dev->conns[idx], lane,
+						 stream, idx);
+			if (ret) {
+				zcnblk_disconnect_all(dev);
+				kfree(dev->conns);
+				dev->conns = NULL;
+				zcnblk_shm_layout_destroy(dev);
+				return ret;
+			}
+			idx++;
+			dev->active_conns = idx;
+		}
+	}
 	return 0;
 }
 
@@ -1789,8 +2816,21 @@ static int __init zcnblk_init(void)
 	int ret;
 
 	if (!lanes || !connections_per_lane || !shard_count || !size_mib ||
-	    !max_frame_bytes || !queue_depth || !batch_depth)
+	    !max_frame_bytes || !queue_depth || !pipeline_depth || !batch_depth)
 		return -EINVAL;
+	if (!transport || (strcmp(transport, "tcp") && strcmp(transport, "shm"))) {
+		pr_err("zcnblk: unknown transport=%s; use tcp or shm\n",
+		       transport ? transport : "(null)");
+		return -EINVAL;
+	}
+	if (zcnblk_shm_enabled() && null_backend) {
+		pr_err("zcnblk: transport=shm and null_backend=1 are mutually exclusive\n");
+		return -EINVAL;
+	}
+	if (zcnblk_shm_enabled() && aes256_gcm_token && *aes256_gcm_token) {
+		pr_err("zcnblk: transport=shm does not encrypt same-host shared memory; encryption belongs on the userspace remote transport\n");
+		return -EINVAL;
+	}
 	if (shard_count != 1) {
 		pr_err("zcnblk: shard_count=%u rejected; kernel client is only the fabric block edge, userspace owns striping and mirroring\n",
 		       shard_count);
@@ -1800,7 +2840,7 @@ static int __init zcnblk_init(void)
 		pr_err("zcnblk: shard_affinity rejected; userspace target/gateway owns shard placement\n");
 		return -EINVAL;
 	}
-	if (remote_port_base > U16_MAX - lanes)
+	if (!zcnblk_shm_enabled() && remote_port_base > U16_MAX - lanes)
 		return -EINVAL;
 	if (blk_validate_block_size(logical_block_size))
 		return -EINVAL;
@@ -1814,10 +2854,10 @@ static int __init zcnblk_init(void)
 		pr_warn("zcnblk: PERF WARNING: connection kthreads are not module-pinned; set pin_threads=1 pin_base_cpu=<cpu> pin_cpu_count=<n> pin_stride=<n>, or bind [zcnblk-L-S] kthreads with taskset before benchmarking\n");
 	if (!hctx_affinity)
 		pr_warn("zcnblk: PERF WARNING: hctx_affinity=0; blk-mq queues will not map directly to target connections\n");
-	if (batch_depth <= 1 && pipeline_depth > 1)
+	if (!zcnblk_shm_enabled() && batch_depth <= 1 && pipeline_depth > 1)
 		pr_warn("zcnblk: PERF WARNING: batch_depth=1 with pipeline_depth=%u; 4K IOPS runs will pay more per-request wakeup/header overhead\n",
 			pipeline_depth);
-	if (batch_depth > 1 && !batch_fill_timeout_us)
+	if (!zcnblk_shm_enabled() && batch_depth > 1 && !batch_fill_timeout_us)
 		pr_warn("zcnblk: PERF WARNING: batch_depth=%u but batch_fill_timeout_us=0; connection kthreads may send underfilled batches before fio has filled the lane queue\n",
 			batch_depth);
 	zcnblk_dev = kzalloc(sizeof(*zcnblk_dev), GFP_KERNEL);
@@ -1830,9 +2870,17 @@ static int __init zcnblk_init(void)
 	ret = zcnblk_crypto_init(zcnblk_dev);
 	if (ret)
 		goto out_free_dev;
-	ret = zcnblk_connect_all(zcnblk_dev);
-	if (ret)
-		goto out_crypto;
+	if (null_backend) {
+		pr_warn("zcnblk: PERF WARNING: null_backend=1 completes requests locally; this is a device-edge ceiling test, not fabric or RAID performance\n");
+	} else if (zcnblk_shm_enabled()) {
+		ret = zcnblk_shm_connect_all(zcnblk_dev);
+		if (ret)
+			goto out_crypto;
+	} else {
+		ret = zcnblk_connect_all(zcnblk_dev);
+		if (ret)
+			goto out_crypto;
+	}
 	if (publish_delay_ms)
 		msleep(publish_delay_ms);
 
@@ -1848,7 +2896,9 @@ static int __init zcnblk_init(void)
 	zcnblk_dev->tag_set.queue_depth = queue_depth;
 	zcnblk_dev->tag_set.numa_node = NUMA_NO_NODE;
 	zcnblk_dev->tag_set.cmd_size = sizeof(struct zcnblk_pdu);
-	zcnblk_dev->tag_set.flags = BLK_MQ_F_NO_SCHED_BY_DEFAULT | BLK_MQ_F_BLOCKING;
+	zcnblk_dev->tag_set.flags = BLK_MQ_F_NO_SCHED_BY_DEFAULT;
+	if (!null_backend && !zcnblk_shm_enabled())
+		zcnblk_dev->tag_set.flags |= BLK_MQ_F_BLOCKING;
 	zcnblk_dev->tag_set.driver_data = zcnblk_dev;
 
 	ret = blk_mq_alloc_tag_set(&zcnblk_dev->tag_set);
@@ -1861,6 +2911,8 @@ static int __init zcnblk_init(void)
 	lim.max_segments = USHRT_MAX;
 	lim.max_segment_size = UINT_MAX;
 	lim.max_hw_sectors = max_frame_bytes >> SECTOR_SHIFT;
+	/* Normal writes are acknowledged before durable commit; flush carries sync. */
+	lim.features = BLK_FEAT_WRITE_CACHE;
 
 	zcnblk_dev->disk = blk_mq_alloc_disk(&zcnblk_dev->tag_set, &lim, zcnblk_dev);
 	if (IS_ERR(zcnblk_dev->disk)) {
@@ -1881,16 +2933,21 @@ static int __init zcnblk_init(void)
 	if (ret)
 		goto out_put_disk;
 
-	pr_info("zcnblk: /dev/%s remote=%s remote_ips=%s remote_count=%u port_base=%u lanes=%u connections_per_lane=%u total_conns=%u shards=%u bytes=%llu frame=%u queues=%u depth=%u pipeline_depth=%u batch_depth=%u batch_fill_timeout_us=%u fill_timeout_ms=%u write_acks=%d hctx_affinity=%d pin_threads=%d pin_base_cpu=%u pin_cpu_count=%u pin_stride=%u shard_affinity=%d encryption=%s aes_frame=%u publish_delay_ms=%u\n",
-		ZCNBLK_DISK_NAME, remote_ip, remote_ips ? remote_ips : "-", zcnblk_remote_addr_count,
+	pr_info("zcnblk: /dev/%s transport=%s remote=%s remote_ips=%s remote_count=%u port_base=%u lanes=%u connections_per_lane=%u total_conns=%u shards=%u bytes=%llu frame=%u queues=%u depth=%u pipeline_depth=%u batch_depth=%u batch_fill_timeout_us=%u fill_timeout_ms=%u write_acks=%d null_backend=%d null_read_zero=%d hctx_affinity=%d pin_threads=%d pin_base_cpu=%u pin_cpu_count=%u pin_stride=%u shard_affinity=%d encryption=%s aes_frame=%u publish_delay_ms=%u shm_ring_entries=%u shm_payload_entries=%u shm_region_bytes=%zu shm_poll_us=%u placement_owner=userspace block_client_placement=no\n",
+		ZCNBLK_DISK_NAME, transport, remote_ip, remote_ips ? remote_ips : "-", zcnblk_remote_addr_count,
 		remote_port_base, lanes, connections_per_lane,
 		total_conns, shard_count, capacity_bytes, max_frame_bytes,
 		nr_queues, queue_depth, pipeline_depth,
 		batch_depth, batch_fill_timeout_us, fill_timeout_ms, write_acks,
+		null_backend, null_read_zero,
 		hctx_affinity, pin_threads, pin_base_cpu, pin_cpu_count, pin_stride,
 		shard_affinity,
 		zcnblk_crypto_enabled(zcnblk_dev) ? "aes-256-gcm" : "none",
-		aes256_gcm_frame_bytes, publish_delay_ms);
+		aes256_gcm_frame_bytes, publish_delay_ms,
+		zcnblk_dev->shm ? zcnblk_dev->shm->header->ring_entries : 0,
+		zcnblk_dev->shm ? zcnblk_dev->shm->header->payload_entries : 0,
+		zcnblk_dev->shm ? zcnblk_dev->shm->region_bytes : 0,
+		shm_poll_us);
 	return 0;
 
 out_put_disk:
@@ -1902,6 +2959,7 @@ out_unregister:
 out_disconnect:
 	zcnblk_disconnect_all(zcnblk_dev);
 	kfree(zcnblk_dev->conns);
+	zcnblk_shm_layout_destroy(zcnblk_dev);
 out_crypto:
 	zcnblk_crypto_free(zcnblk_dev);
 out_free_dev:
@@ -1916,6 +2974,7 @@ static void __exit zcnblk_exit(void)
 		return;
 	del_gendisk(zcnblk_dev->disk);
 	zcnblk_disconnect_all(zcnblk_dev);
+	zcnblk_shm_layout_destroy(zcnblk_dev);
 	zcnblk_crypto_free(zcnblk_dev);
 	put_disk(zcnblk_dev->disk);
 	blk_mq_free_tag_set(&zcnblk_dev->tag_set);

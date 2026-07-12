@@ -7,6 +7,7 @@ use std::ptr;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
+use zcutils::dirty_pool::{ZcDirtyExtentMap, ZcDirtyExtentRef, ZcDirtyLatestMap, ZcDirtyRecordRef};
 
 const DEFAULT_LANES: usize = 8;
 const DEFAULT_WORKERS: usize = 8;
@@ -14,12 +15,15 @@ const DEFAULT_RECORD_BYTES: usize = 4096;
 const DEFAULT_EXTENT_RECORDS: usize = 256;
 const DEFAULT_RECORDS_PER_LANE: usize = 65_536;
 const DEFAULT_BLOCK_RECORDS_PER_LANE: usize = 65_536;
+const DEFAULT_FORWARD_WINDOW: usize = 1024;
+const DEFAULT_READ_REPEATS: usize = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Mode {
     Combine,
     Reduce,
     Read,
+    HotRead,
     Mixed,
 }
 
@@ -29,15 +33,19 @@ impl Mode {
             "combine" | "wal" => Ok(Self::Combine),
             "reduce" | "sync" => Ok(Self::Reduce),
             "read" => Ok(Self::Read),
+            "hot-read" | "cache-read" | "dirty-read" => Ok(Self::HotRead),
             "mixed" | "rw" => Ok(Self::Mixed),
             _ => Err(invalid_input(format!(
-                "unknown mode {value:?}; expected combine, reduce, read, or mixed"
+                "unknown mode {value:?}; expected combine, reduce, read, hot-read, or mixed"
             ))),
         }
     }
 
     fn needs_wal(self) -> bool {
-        matches!(self, Self::Combine | Self::Reduce | Self::Mixed)
+        matches!(
+            self,
+            Self::Combine | Self::Reduce | Self::HotRead | Self::Mixed
+        )
     }
 
     fn needs_blockstore(self) -> bool {
@@ -51,6 +59,7 @@ impl fmt::Display for Mode {
             Self::Combine => out.write_str("combine"),
             Self::Reduce => out.write_str("reduce"),
             Self::Read => out.write_str("read"),
+            Self::HotRead => out.write_str("hot-read"),
             Self::Mixed => out.write_str("mixed"),
         }
     }
@@ -87,6 +96,8 @@ impl fmt::Display for Pattern {
 enum ReadAccess {
     Copy,
     Ref,
+    ForwardRef,
+    ForwardExtent,
 }
 
 impl ReadAccess {
@@ -94,8 +105,12 @@ impl ReadAccess {
         match value {
             "copy" | "materialize" | "materialized" => Ok(Self::Copy),
             "ref" | "reference" | "descriptor" | "desc" => Ok(Self::Ref),
+            "forward-ref" | "send-ref" | "forward" | "send-descriptor" => Ok(Self::ForwardRef),
+            "forward-extent" | "extent-ref" | "send-extent" | "extent-descriptor" => {
+                Ok(Self::ForwardExtent)
+            }
             _ => Err(invalid_input(format!(
-                "unknown read access {value:?}; expected copy or ref"
+                "unknown read access {value:?}; expected copy, ref, forward-ref, or forward-extent"
             ))),
         }
     }
@@ -113,6 +128,46 @@ impl fmt::Display for ReadAccess {
         match self {
             Self::Copy => out.write_str("copy"),
             Self::Ref => out.write_str("ref"),
+            Self::ForwardRef => out.write_str("forward-ref"),
+            Self::ForwardExtent => out.write_str("forward-extent"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WriteAccess {
+    Lease,
+}
+
+impl WriteAccess {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "copy" | "wal-copy" | "materialize" => Err(invalid_input(
+                "fatal: write-access=copy is disabled here; we have not decided whether copy will be allowed in this dirty-pool path or belongs in another layer of the code",
+            )),
+            "lease" | "ref" | "reference" | "descriptor" | "rx-lease" => Ok(Self::Lease),
+            _ => Err(invalid_input(format!(
+                "unknown write access {value:?}; expected copy or lease"
+            ))),
+        }
+    }
+
+    fn from_env() -> io::Result<Self> {
+        match env::var("URING_PLAY_ZCWAL_REDUCE_WRITE_ACCESS") {
+            Ok(value) if !value.trim().is_empty() => Self::parse(value.trim()),
+            _ => Ok(Self::Lease),
+        }
+    }
+
+    fn copies_payload(self) -> bool {
+        false
+    }
+}
+
+impl fmt::Display for WriteAccess {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Lease => out.write_str("lease"),
         }
     }
 }
@@ -122,6 +177,7 @@ struct Config {
     mode: Mode,
     pattern: Pattern,
     read_access: ReadAccess,
+    write_access: WriteAccess,
     lanes: usize,
     workers: usize,
     records_per_lane: usize,
@@ -129,7 +185,9 @@ struct Config {
     extent_records: usize,
     block_records_per_lane: usize,
     read_pct: u32,
+    read_repeats: usize,
     reduce_every_extents: usize,
+    forward_window: usize,
     pin: bool,
     cpu_list: Vec<usize>,
     thp: bool,
@@ -167,9 +225,14 @@ struct WorkerStats {
     dirty_hits: u64,
     dirty_misses: u64,
     wal_bytes: u64,
+    wal_ref_bytes: u64,
     reduce_bytes: u64,
     read_bytes: u64,
     read_ref_bytes: u64,
+    forward_ref_bytes: u64,
+    forward_events: u64,
+    forward_completions: u64,
+    forward_max_inflight: usize,
     wal_extents: u64,
     reduced_extents: u64,
     contiguous_reduce_extents: u64,
@@ -295,6 +358,97 @@ struct ReduceBlockStore {
 struct ReadRef {
     dirty: bool,
     token: u64,
+    sequence: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ForwardDescriptor {
+    token: u64,
+    sequence: u64,
+    flags: u64,
+}
+
+struct RefForwarder {
+    ring: Vec<ForwardDescriptor>,
+    head: usize,
+    tail: usize,
+    in_flight: usize,
+    completion_mix: u64,
+}
+
+impl RefForwarder {
+    fn new(window: usize) -> Self {
+        Self {
+            ring: vec![ForwardDescriptor::default(); window],
+            head: 0,
+            tail: 0,
+            in_flight: 0,
+            completion_mix: 0,
+        }
+    }
+
+    fn forward(&mut self, read_ref: ReadRef, bytes: usize, stats: &mut WorkerStats) {
+        if self.in_flight == self.ring.len() {
+            self.complete_one(stats);
+        }
+
+        let slot = self.tail % self.ring.len();
+        self.ring[slot] = ForwardDescriptor {
+            token: read_ref.token,
+            sequence: read_ref.sequence,
+            flags: u64::from(read_ref.dirty),
+        };
+        self.tail = self.tail.wrapping_add(1);
+        self.in_flight = self.in_flight.saturating_add(1);
+        stats.forward_events = stats.forward_events.saturating_add(1);
+        stats.forward_ref_bytes = stats.forward_ref_bytes.saturating_add(bytes as u64);
+        stats.forward_max_inflight = stats.forward_max_inflight.max(self.in_flight);
+    }
+
+    fn forward_extent(
+        &mut self,
+        read_ref: ReadRef,
+        records: usize,
+        bytes: usize,
+        stats: &mut WorkerStats,
+    ) {
+        if self.in_flight == self.ring.len() {
+            self.complete_one(stats);
+        }
+
+        let slot = self.tail % self.ring.len();
+        self.ring[slot] = ForwardDescriptor {
+            token: read_ref.token ^ (records as u64).rotate_left(23),
+            sequence: read_ref.sequence,
+            flags: u64::from(read_ref.dirty) | ((records as u64) << 1),
+        };
+        self.tail = self.tail.wrapping_add(1);
+        self.in_flight = self.in_flight.saturating_add(1);
+        stats.forward_events = stats.forward_events.saturating_add(1);
+        stats.forward_ref_bytes = stats.forward_ref_bytes.saturating_add(bytes as u64);
+        stats.forward_max_inflight = stats.forward_max_inflight.max(self.in_flight);
+    }
+
+    fn drain(&mut self, stats: &mut WorkerStats) {
+        while self.in_flight != 0 {
+            self.complete_one(stats);
+        }
+    }
+
+    fn complete_one(&mut self, stats: &mut WorkerStats) {
+        debug_assert!(self.in_flight != 0);
+        let slot = self.head % self.ring.len();
+        let desc = self.ring[slot];
+        self.head = self.head.wrapping_add(1);
+        self.in_flight = self.in_flight.saturating_sub(1);
+        self.completion_mix = self.completion_mix.wrapping_add(
+            desc.token
+                ^ desc.sequence.rotate_left((self.head & 63) as u32)
+                ^ desc.flags.wrapping_mul(0x9e37_79b9_7f4a_7c15),
+        );
+        stats.forward_completions = stats.forward_completions.saturating_add(1);
+        stats.checksum = stats.checksum.wrapping_add(self.completion_mix);
+    }
 }
 
 impl ReduceBlockStore {
@@ -366,14 +520,17 @@ struct WalCombiner {
     lane: usize,
     record_bytes: usize,
     extent_records: usize,
-    wal: MmapArena,
+    write_access: WriteAccess,
+    wal: Option<MmapArena>,
+    leased_ptrs: Vec<usize>,
     wal_logicals: Vec<usize>,
-    dirty: Vec<usize>,
+    dirty: ZcDirtyLatestMap,
     next_wal_record: usize,
     pending_extent_start: usize,
     pending_extent_records: usize,
     wal_extents: u64,
     max_extent_records: usize,
+    extent_refs: ZcDirtyExtentMap,
 }
 
 impl WalCombiner {
@@ -383,24 +540,37 @@ impl WalCombiner {
         block_records: usize,
         record_bytes: usize,
         extent_records: usize,
+        write_access: WriteAccess,
         thp: bool,
         hugetlb: bool,
     ) -> io::Result<Self> {
         let bytes = wal_records
             .checked_mul(record_bytes)
             .ok_or_else(|| invalid_input("wal arena size overflow"))?;
+        let wal = write_access
+            .copies_payload()
+            .then(|| MmapArena::new(format!("lane{lane}-combined-wal"), bytes, thp, hugetlb))
+            .transpose()?;
+        let leased_ptrs = if write_access.copies_payload() {
+            Vec::new()
+        } else {
+            vec![0usize; wal_records]
+        };
         Ok(Self {
             lane,
             record_bytes,
             extent_records,
-            wal: MmapArena::new(format!("lane{lane}-combined-wal"), bytes, thp, hugetlb)?,
+            write_access,
+            wal,
+            leased_ptrs,
             wal_logicals: vec![usize::MAX; wal_records],
-            dirty: vec![usize::MAX; block_records],
+            dirty: ZcDirtyLatestMap::new(block_records),
             next_wal_record: 0,
             pending_extent_start: 0,
             pending_extent_records: 0,
             wal_extents: 0,
             max_extent_records: 0,
+            extent_refs: ZcDirtyExtentMap::new(),
         })
     }
 
@@ -415,15 +585,19 @@ impl WalCombiner {
 
         let wal_record = self.next_wal_record;
         let offset = wal_record.saturating_mul(self.record_bytes);
-        unsafe {
-            ptr::copy_nonoverlapping(
-                source.as_ptr(),
-                self.wal.as_mut_ptr_at(offset),
-                self.record_bytes,
-            );
+        if self.write_access.copies_payload() {
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    source.as_ptr(),
+                    self.wal.as_mut().unwrap().as_mut_ptr_at(offset),
+                    self.record_bytes,
+                );
+            }
+        } else {
+            self.leased_ptrs[wal_record] = source.as_ptr() as usize;
         }
         self.wal_logicals[wal_record] = logical_record;
-        self.dirty[logical_record] = wal_record;
+        self.admit_dirty(logical_record, wal_record);
         self.next_wal_record = self.next_wal_record.saturating_add(1);
         self.pending_extent_records = self.pending_extent_records.saturating_add(1);
 
@@ -462,19 +636,28 @@ impl WalCombiner {
         }
 
         let wal_start = self.next_wal_record;
-        unsafe {
-            ptr::copy_nonoverlapping(
-                source.as_ptr(),
-                self.wal
-                    .as_mut_ptr_at(wal_start.saturating_mul(self.record_bytes)),
-                bytes,
-            );
+        if self.write_access.copies_payload() {
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    source.as_ptr(),
+                    self.wal
+                        .as_mut()
+                        .unwrap()
+                        .as_mut_ptr_at(wal_start.saturating_mul(self.record_bytes)),
+                    bytes,
+                );
+            }
         }
         for index in 0..records {
             let wal_record = wal_start + index;
             let logical = logical_at(index);
+            if !self.write_access.copies_payload() {
+                self.leased_ptrs[wal_record] =
+                    unsafe { source.as_ptr().add(index.saturating_mul(self.record_bytes)) }
+                        as usize;
+            }
             self.wal_logicals[wal_record] = logical;
-            self.dirty[logical] = wal_record;
+            self.admit_dirty(logical, wal_record);
         }
         self.next_wal_record = self.next_wal_record.saturating_add(records);
         self.pending_extent_records = self.pending_extent_records.saturating_add(records);
@@ -488,10 +671,34 @@ impl WalCombiner {
         if self.pending_extent_records == 0 {
             return;
         }
+        let wal_start = self.pending_extent_start;
+        let records = self.pending_extent_records;
+        if let Some(extent_ref) = self.build_extent_ref(wal_start, records) {
+            self.extent_refs.admit(extent_ref);
+        }
         self.wal_extents = self.wal_extents.saturating_add(1);
-        self.max_extent_records = self.max_extent_records.max(self.pending_extent_records);
+        self.max_extent_records = self.max_extent_records.max(records);
         self.pending_extent_start = self.next_wal_record;
         self.pending_extent_records = 0;
+    }
+
+    fn build_extent_ref(&self, wal_start: usize, records: usize) -> Option<ZcDirtyExtentRef> {
+        let logical_start = self.extent_is_contiguous(wal_start, records, usize::MAX)?;
+        if !self.payload_extent_is_contiguous(wal_start, records) {
+            return None;
+        }
+        let sequence = wal_start as u64;
+        let record_count = u32::try_from(records).ok()?;
+        let byte_len = records.checked_mul(self.record_bytes)? as u64;
+        Some(ZcDirtyExtentRef::new(
+            logical_start as u64,
+            record_count,
+            sequence,
+            self.lane as u32,
+            wal_start as u64,
+            self.payload_ptr_at(wal_start) as usize as u64,
+            byte_len,
+        ))
     }
 
     fn flush(&mut self) {
@@ -508,7 +715,11 @@ impl WalCombiner {
             return None;
         }
         let first = self.wal_logicals[start];
-        if first == usize::MAX || first + records > block_records {
+        if first == usize::MAX
+            || first
+                .checked_add(records)
+                .is_none_or(|end| end > block_records)
+        {
             return None;
         }
         for index in 1..records {
@@ -519,15 +730,58 @@ impl WalCombiner {
         Some(first)
     }
 
-    fn read_dirty_into(&self, logical_record: usize, out: &mut [u8]) -> bool {
-        let wal_record = self.dirty[logical_record];
-        if wal_record == usize::MAX {
+    fn admit_dirty(&mut self, logical_record: usize, wal_record: usize) {
+        let offset = wal_record.saturating_mul(self.record_bytes);
+        let byte_offset = if self.write_access.copies_payload() {
+            offset as u64
+        } else {
+            self.leased_ptrs[wal_record] as u64
+        };
+        self.dirty.admit(
+            logical_record,
+            ZcDirtyRecordRef::new(
+                wal_record as u64,
+                self.lane as u32,
+                wal_record as u64,
+                byte_offset,
+                self.record_bytes as u32,
+            ),
+        );
+    }
+
+    fn payload_ptr_at(&self, wal_record: usize) -> *const u8 {
+        if self.write_access.copies_payload() {
+            self.wal
+                .as_ref()
+                .unwrap()
+                .as_ptr_at(wal_record.saturating_mul(self.record_bytes))
+        } else {
+            self.leased_ptrs[wal_record] as *const u8
+        }
+    }
+
+    fn payload_extent_is_contiguous(&self, start: usize, records: usize) -> bool {
+        if self.write_access.copies_payload() {
+            return true;
+        }
+        if records == 0 {
             return false;
         }
+        let first = self.leased_ptrs[start];
+        first != 0
+            && (1..records).all(|index| {
+                self.leased_ptrs[start + index]
+                    == first.saturating_add(index.saturating_mul(self.record_bytes))
+            })
+    }
+
+    fn read_dirty_into(&self, logical_record: usize, out: &mut [u8]) -> bool {
+        let Some(desc) = self.dirty.get(logical_record) else {
+            return false;
+        };
         unsafe {
             ptr::copy_nonoverlapping(
-                self.wal
-                    .as_ptr_at(wal_record.saturating_mul(self.record_bytes)),
+                self.payload_ptr_at(desc.slot as usize),
                 out.as_mut_ptr(),
                 self.record_bytes,
             );
@@ -535,25 +789,29 @@ impl WalCombiner {
         true
     }
 
-    fn read_dirty_ref_token(&self, logical_record: usize) -> Option<u64> {
-        let wal_record = self.dirty[logical_record];
-        if wal_record == usize::MAX {
-            return None;
-        }
-        let offset = wal_record.saturating_mul(self.record_bytes);
-        let ptr = self.wal.as_ptr_at(offset) as usize as u64;
-        Some(
-            ((self.lane as u64) << 48)
-                ^ wal_record as u64
-                ^ ptr.rotate_left(17)
-                ^ self.record_bytes as u64,
-        )
+    fn read_dirty_ref(&self, logical_record: usize) -> Option<ReadRef> {
+        self.dirty.get(logical_record).map(|desc| ReadRef {
+            dirty: true,
+            token: desc.descriptor_token(),
+            sequence: desc.sequence,
+        })
+    }
+
+    fn read_dirty_extent_ref(&self, logical_record: usize, records: usize) -> Option<ReadRef> {
+        let extent = self
+            .extent_refs
+            .get_covering(logical_record as u64, u32::try_from(records).ok()?)?;
+        self.dirty.get(logical_record)?;
+        Some(ReadRef {
+            dirty: true,
+            token: extent.descriptor_token() ^ (records as u64).rotate_left(11),
+            sequence: extent.sequence,
+        })
     }
 
     fn clear_dirty_if_current(&mut self, logical_record: usize, wal_record: usize) {
-        if self.dirty[logical_record] == wal_record {
-            self.dirty[logical_record] = usize::MAX;
-        }
+        self.dirty
+            .clear_if_current(logical_record, wal_record as u64);
     }
 }
 
@@ -586,6 +844,7 @@ impl LaneState {
                 config.block_records_per_lane,
                 config.record_bytes,
                 config.extent_records,
+                config.write_access,
                 config.thp,
                 config.hugetlb,
             )?)
@@ -663,19 +922,42 @@ impl LaneState {
 
     fn read_ref(&self, logical_record: usize) -> ReadRef {
         if let Some(combiner) = self.combiner.as_ref() {
-            if let Some(token) = combiner.read_dirty_ref_token(logical_record) {
-                return ReadRef { dirty: true, token };
+            if let Some(read_ref) = combiner.read_dirty_ref(logical_record) {
+                return read_ref;
             }
         }
         if let Some(blockstore) = self.blockstore.as_ref() {
             return ReadRef {
                 dirty: false,
                 token: blockstore.record_ref_token(logical_record),
+                sequence: logical_record as u64,
             };
         }
         ReadRef {
             dirty: false,
             token: 0,
+            sequence: u64::MAX,
+        }
+    }
+
+    fn read_extent_ref(&self, logical_record: usize, records: usize) -> ReadRef {
+        if let Some(combiner) = self.combiner.as_ref() {
+            if let Some(read_ref) = combiner.read_dirty_extent_ref(logical_record, records) {
+                return read_ref;
+            }
+        }
+        if let Some(blockstore) = self.blockstore.as_ref() {
+            return ReadRef {
+                dirty: false,
+                token: blockstore.record_ref_token(logical_record)
+                    ^ (records as u64).rotate_left(37),
+                sequence: logical_record as u64,
+            };
+        }
+        ReadRef {
+            dirty: false,
+            token: (records as u64).rotate_left(37),
+            sequence: u64::MAX,
         }
     }
 
@@ -698,18 +980,14 @@ impl LaneState {
             .map(|combiner| combiner.record_bytes)
             .ok_or_else(|| invalid_input("reduce attempted without a WAL combiner"))?;
 
-        let first_contiguous = self
-            .combiner
-            .as_ref()
-            .and_then(|combiner| combiner.extent_is_contiguous(start, records, block_records));
+        let first_contiguous = self.combiner.as_ref().and_then(|combiner| {
+            combiner
+                .extent_is_contiguous(start, records, block_records)
+                .filter(|_| combiner.payload_extent_is_contiguous(start, records))
+        });
 
         if let Some(first_record) = first_contiguous {
-            let src = self
-                .combiner
-                .as_ref()
-                .unwrap()
-                .wal
-                .as_ptr_at(start.saturating_mul(record_bytes));
+            let src = self.combiner.as_ref().unwrap().payload_ptr_at(start);
             self.blockstore
                 .as_mut()
                 .unwrap()
@@ -726,9 +1004,7 @@ impl LaneState {
                     let wal_record = start + index;
                     (
                         combiner.wal_logicals[wal_record],
-                        combiner
-                            .wal
-                            .as_ptr_at(wal_record.saturating_mul(record_bytes)),
+                        combiner.payload_ptr_at(wal_record),
                     )
                 };
                 self.blockstore
@@ -816,6 +1092,7 @@ impl Config {
             mode: Mode::Mixed,
             pattern: Pattern::Sequential,
             read_access: ReadAccess::from_env()?,
+            write_access: WriteAccess::from_env()?,
             lanes: DEFAULT_LANES,
             workers: DEFAULT_WORKERS,
             records_per_lane: DEFAULT_RECORDS_PER_LANE,
@@ -823,7 +1100,15 @@ impl Config {
             extent_records: DEFAULT_EXTENT_RECORDS,
             block_records_per_lane: DEFAULT_BLOCK_RECORDS_PER_LANE,
             read_pct: 50,
+            read_repeats: parse_count_env(
+                "URING_PLAY_ZCWAL_REDUCE_READ_REPEATS",
+                DEFAULT_READ_REPEATS,
+            )?,
             reduce_every_extents: 0,
+            forward_window: parse_count_env(
+                "URING_PLAY_ZCWAL_REDUCE_FORWARD_WINDOW",
+                DEFAULT_FORWARD_WINDOW,
+            )?,
             pin: env_truthy("URING_PLAY_PIN_CPUS"),
             cpu_list: parse_cpu_list_env(),
             thp: !env_falsey("URING_PLAY_ZCWAL_REDUCE_THP"),
@@ -862,15 +1147,37 @@ impl Config {
                         .parse::<u32>()
                         .map_err(|err| invalid_input(format!("invalid --read-pct: {err}")))?
                 }
+                "--read-repeats" | "--read-repeat" => {
+                    config.read_repeats = parse_count(&next_arg(&mut args, "--read-repeats")?)?
+                }
                 "--reduce-every-extents" => {
                     config.reduce_every_extents =
                         parse_count(&next_arg(&mut args, "--reduce-every-extents")?)?
+                }
+                "--forward-window" => {
+                    config.forward_window = parse_count(&next_arg(&mut args, "--forward-window")?)?
                 }
                 "--read-access" => {
                     config.read_access = ReadAccess::parse(&next_arg(&mut args, "--read-access")?)?
                 }
                 "--read-copy" | "--materialize-reads" => config.read_access = ReadAccess::Copy,
                 "--read-ref" | "--descriptor-reads" => config.read_access = ReadAccess::Ref,
+                "--forward-ref" | "--send-ref" | "--send-descriptor-reads" => {
+                    config.read_access = ReadAccess::ForwardRef
+                }
+                "--forward-extent" | "--send-extent-reads" | "--extent-descriptor-reads" => {
+                    config.read_access = ReadAccess::ForwardExtent
+                }
+                "--write-access" => {
+                    config.write_access =
+                        WriteAccess::parse(&next_arg(&mut args, "--write-access")?)?
+                }
+                "--write-copy" | "--materialize-writes" => {
+                    return Err(WriteAccess::parse("copy").unwrap_err());
+                }
+                "--write-lease" | "--lease-writes" | "--descriptor-writes" => {
+                    config.write_access = WriteAccess::Lease
+                }
                 "--pin" => config.pin = true,
                 "--no-pin" => config.pin = false,
                 "--cpu-list" => {
@@ -910,6 +1217,13 @@ fn run_worker(
     let source = make_source_pattern(worker, config.record_bytes);
     let source_extent = make_source_extent(worker, config.record_bytes, config.extent_records);
     let mut sink = vec![0u8; config.record_bytes];
+    let mut forwarder = RefForwarder::new(config.forward_window);
+
+    if config.mode == Mode::HotRead {
+        for (lane, state) in lane_states.iter_mut() {
+            prefill_lane_dirty_cache(*lane, state, &source_extent, &config)?;
+        }
+    }
 
     barrier.wait();
 
@@ -936,9 +1250,33 @@ fn run_worker(
             Mode::Reduce => {
                 run_lane_reduce(*lane, state, &source, &source_extent, &config, &mut stats)?
             }
-            Mode::Read => run_lane_read(*lane, lane_index, state, &config, &mut sink, &mut stats),
+            Mode::HotRead => run_lane_read(
+                *lane,
+                lane_index,
+                state,
+                &config,
+                &mut sink,
+                &mut forwarder,
+                &mut stats,
+            ),
+            Mode::Read => run_lane_read(
+                *lane,
+                lane_index,
+                state,
+                &config,
+                &mut sink,
+                &mut forwarder,
+                &mut stats,
+            ),
             Mode::Mixed => run_lane_mixed(
-                *lane, lane_index, state, &source, &config, &mut sink, &mut stats,
+                *lane,
+                lane_index,
+                state,
+                &source,
+                &config,
+                &mut sink,
+                &mut forwarder,
+                &mut stats,
             )?,
         }
         state.flush_wal();
@@ -952,6 +1290,7 @@ fn run_worker(
             .saturating_add(state.scattered_reduce_records);
         stats.max_extent_records = stats.max_extent_records.max(state.max_extent_records());
     }
+    forwarder.drain(&mut stats);
 
     stats.wall = started.elapsed();
     stats.cpu = thread_cpu_time()
@@ -972,6 +1311,26 @@ fn run_worker(
     Ok(stats)
 }
 
+fn prefill_lane_dirty_cache(
+    lane: usize,
+    state: &mut LaneState,
+    source_extent: &[u8],
+    config: &Config,
+) -> io::Result<()> {
+    let mut op = 0usize;
+    while op < config.block_records_per_lane {
+        let records = config
+            .extent_records
+            .min(config.block_records_per_lane.saturating_sub(op));
+        state.append_write_extent(source_extent, records, |index| {
+            logical_record(config, lane, op + index)
+        })?;
+        op = op.saturating_add(records);
+    }
+    state.flush_wal();
+    Ok(())
+}
+
 fn run_lane_combine(
     lane: usize,
     state: &mut LaneState,
@@ -989,9 +1348,7 @@ fn run_lane_combine(
             })?;
             stats.ops = stats.ops.saturating_add(records as u64);
             stats.writes = stats.writes.saturating_add(records as u64);
-            stats.wal_bytes = stats
-                .wal_bytes
-                .saturating_add(records.saturating_mul(config.record_bytes) as u64);
+            record_write_payload(records, config, stats);
             op = op.saturating_add(records);
         }
         return Ok(());
@@ -1002,7 +1359,7 @@ fn run_lane_combine(
         state.append_write(logical, source)?;
         stats.ops = stats.ops.saturating_add(1);
         stats.writes = stats.writes.saturating_add(1);
-        stats.wal_bytes = stats.wal_bytes.saturating_add(config.record_bytes as u64);
+        record_write_payload(1, config, stats);
     }
     Ok(())
 }
@@ -1025,9 +1382,7 @@ fn run_lane_reduce(
             })?;
             stats.ops = stats.ops.saturating_add(records as u64);
             stats.writes = stats.writes.saturating_add(records as u64);
-            stats.wal_bytes = stats
-                .wal_bytes
-                .saturating_add(records.saturating_mul(config.record_bytes) as u64);
+            record_write_payload(records, config, stats);
             stats.reduce_bytes = stats
                 .reduce_bytes
                 .saturating_add(state.reduce_latest_completed_extent(extent_start, records)?);
@@ -1045,7 +1400,7 @@ fn run_lane_reduce(
         extent_records = extent_records.saturating_add(1);
         stats.ops = stats.ops.saturating_add(1);
         stats.writes = stats.writes.saturating_add(1);
-        stats.wal_bytes = stats.wal_bytes.saturating_add(config.record_bytes as u64);
+        record_write_payload(1, config, stats);
         if extent_records == config.extent_records {
             stats.reduce_bytes = stats.reduce_bytes.saturating_add(
                 state.reduce_latest_completed_extent(extent_start, extent_records)?,
@@ -1069,11 +1424,36 @@ fn run_lane_read(
     state: &mut LaneState,
     config: &Config,
     sink: &mut [u8],
+    forwarder: &mut RefForwarder,
     stats: &mut WorkerStats,
 ) {
-    for op in 0..config.records_per_lane {
+    let total_ops = config.records_per_lane.saturating_mul(config.read_repeats);
+    if config.read_access == ReadAccess::ForwardExtent {
+        let mut op = 0usize;
+        while op < total_ops {
+            let records = config.extent_records.min(total_ops - op);
+            let logical = logical_record(config, lane, op);
+            let read_ref = state.read_extent_ref(logical, records);
+            if read_ref.dirty {
+                stats.dirty_hits = stats.dirty_hits.saturating_add(records as u64);
+            } else {
+                stats.dirty_misses = stats.dirty_misses.saturating_add(records as u64);
+            }
+            stats.checksum = stats
+                .checksum
+                .wrapping_add(read_ref.token ^ (records as u64).rotate_left(11));
+            let bytes = records.saturating_mul(config.record_bytes);
+            stats.read_ref_bytes = stats.read_ref_bytes.saturating_add(bytes as u64);
+            stats.reads = stats.reads.saturating_add(records as u64);
+            stats.ops = stats.ops.saturating_add(records as u64);
+            forwarder.forward_extent(read_ref, records, bytes, stats);
+            op = op.saturating_add(records);
+        }
+        return;
+    }
+    for op in 0..total_ops {
         let logical = logical_record(config, lane, op);
-        record_read(state, logical, config, sink, stats);
+        record_read(state, logical, config, sink, forwarder, stats);
         stats.ops = stats.ops.saturating_add(1);
     }
 }
@@ -1085,6 +1465,7 @@ fn run_lane_mixed(
     source: &[u8],
     config: &Config,
     sink: &mut [u8],
+    forwarder: &mut RefForwarder,
     stats: &mut WorkerStats,
 ) -> io::Result<()> {
     let mut completed_extents_since_reduce = 0usize;
@@ -1094,12 +1475,12 @@ fn run_lane_mixed(
         let logical = logical_record(config, lane, op);
         let is_read = mixed_is_read(lane, op, config.read_pct);
         if is_read {
-            record_read(state, logical, config, sink, stats);
+            record_read(state, logical, config, sink, forwarder, stats);
         } else {
             let finished = state.append_write(logical, source)?;
             extent_records = extent_records.saturating_add(1);
             stats.writes = stats.writes.saturating_add(1);
-            stats.wal_bytes = stats.wal_bytes.saturating_add(config.record_bytes as u64);
+            record_write_payload(1, config, stats);
             if finished {
                 completed_extents_since_reduce = completed_extents_since_reduce.saturating_add(1);
                 if config.reduce_every_extents != 0
@@ -1126,11 +1507,21 @@ fn run_lane_mixed(
     Ok(())
 }
 
+fn record_write_payload(records: usize, config: &Config, stats: &mut WorkerStats) {
+    let bytes = records.saturating_mul(config.record_bytes) as u64;
+    if config.write_access.copies_payload() {
+        stats.wal_bytes = stats.wal_bytes.saturating_add(bytes);
+    } else {
+        stats.wal_ref_bytes = stats.wal_ref_bytes.saturating_add(bytes);
+    }
+}
+
 fn record_read(
     state: &mut LaneState,
     logical: usize,
     config: &Config,
     sink: &mut [u8],
+    forwarder: &mut RefForwarder,
     stats: &mut WorkerStats,
 ) {
     match config.read_access {
@@ -1156,12 +1547,25 @@ fn record_read(
                 .read_ref_bytes
                 .saturating_add(config.record_bytes as u64);
         }
+        ReadAccess::ForwardRef | ReadAccess::ForwardExtent => {
+            let read_ref = state.read_ref(logical);
+            if read_ref.dirty {
+                stats.dirty_hits = stats.dirty_hits.saturating_add(1);
+            } else {
+                stats.dirty_misses = stats.dirty_misses.saturating_add(1);
+            }
+            stats.checksum = stats.checksum.wrapping_add(read_ref.token);
+            stats.read_ref_bytes = stats
+                .read_ref_bytes
+                .saturating_add(config.record_bytes as u64);
+            forwarder.forward(read_ref, config.record_bytes, stats);
+        }
     }
     stats.reads = stats.reads.saturating_add(1);
 }
 
 fn print_config(config: &Config) {
-    let wal_bytes_per_lane = if config.mode.needs_wal() {
+    let wal_bytes_per_lane = if config.mode.needs_wal() && config.write_access.copies_payload() {
         config.records_per_lane.saturating_mul(config.record_bytes) as u64
     } else {
         0
@@ -1174,10 +1578,11 @@ fn print_config(config: &Config) {
         0
     };
     println!(
-        "zcwal-reduce-config: mode={} pattern={} read_access={} lanes={} workers={} records_per_lane={} record_bytes={} extent_records={} block_records_per_lane={} read_pct={} reduce_every_extents={} pin={} thp={} hugetlb={} verify={} bulk_extents={} wal_arena_per_lane={} blockstore_per_lane={} timing_excludes_allocation_first_touch=true",
+        "zcwal-reduce-config: mode={} pattern={} read_access={} write_access={} lanes={} workers={} records_per_lane={} record_bytes={} extent_records={} block_records_per_lane={} read_pct={} read_repeats={} reduce_every_extents={} forward_window={} pin={} thp={} hugetlb={} verify={} bulk_extents={} wal_arena_per_lane={} blockstore_per_lane={} timing_excludes_allocation_first_touch=true",
         config.mode,
         config.pattern,
         config.read_access,
+        config.write_access,
         config.lanes,
         config.workers,
         config.records_per_lane,
@@ -1185,7 +1590,9 @@ fn print_config(config: &Config) {
         config.extent_records,
         config.block_records_per_lane,
         config.read_pct,
+        config.read_repeats,
         config.reduce_every_extents,
+        config.forward_window,
         config.pin,
         config.thp,
         config.hugetlb,
@@ -1200,8 +1607,13 @@ fn print_stats(stats: &[WorkerStats]) {
     for stat in stats {
         let secs = stat.wall.as_secs_f64().max(f64::MIN_POSITIVE);
         let cpu_secs = stat.cpu.as_secs_f64();
+        let forward_records_per_event = if stat.forward_events == 0 {
+            0.0
+        } else {
+            stat.reads as f64 / stat.forward_events as f64
+        };
         println!(
-            "zcwal-reduce-worker: worker={} lanes={} ops={} writes={} reads={} dirty_hits={} dirty_misses={} wal_extents={} reduced_extents={} max_extent_records={} contiguous_reduce_extents={} scattered_reduce_records={} seconds={secs:.6} logical_iops={:.0} wal_Gbitps={:.3} reduce_Gbitps={:.3} read_Gbitps={:.3} read_ref_Gbitps={:.3} thread_cpu_seconds={cpu_secs:.6} cpu_wall_pct={:.1} target_cpu={} affinity_applied={} start_cpu={} end_cpu={} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={} checksum={}",
+            "zcwal-reduce-worker: worker={} lanes={} ops={} writes={} reads={} dirty_hits={} dirty_misses={} wal_extents={} reduced_extents={} max_extent_records={} contiguous_reduce_extents={} scattered_reduce_records={} forward_events={} forward_completions={} forward_max_inflight={} forward_events_per_sec={:.0} forward_records_per_event={:.1} seconds={secs:.6} logical_iops={:.0} wal_Gbitps={:.3} wal_ref_Gbitps={:.3} reduce_Gbitps={:.3} read_Gbitps={:.3} read_ref_Gbitps={:.3} forward_ref_Gbitps={:.3} thread_cpu_seconds={cpu_secs:.6} cpu_wall_pct={:.1} target_cpu={} affinity_applied={} start_cpu={} end_cpu={} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={} checksum={}",
             stat.worker,
             fmt_lanes(&stat.lanes),
             stat.ops,
@@ -1214,11 +1626,18 @@ fn print_stats(stats: &[WorkerStats]) {
             stat.max_extent_records,
             stat.contiguous_reduce_extents,
             stat.scattered_reduce_records,
+            stat.forward_events,
+            stat.forward_completions,
+            stat.forward_max_inflight,
+            stat.forward_events as f64 / secs,
+            forward_records_per_event,
             stat.ops as f64 / secs,
             stat.wal_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+            stat.wal_ref_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
             stat.reduce_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
             stat.read_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
             stat.read_ref_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+            stat.forward_ref_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
             cpu_secs / secs * 100.0,
             stat.target_cpu,
             stat.affinity_applied,
@@ -1247,9 +1666,18 @@ fn print_stats(stats: &[WorkerStats]) {
             total.dirty_hits = total.dirty_hits.saturating_add(stat.dirty_hits);
             total.dirty_misses = total.dirty_misses.saturating_add(stat.dirty_misses);
             total.wal_bytes = total.wal_bytes.saturating_add(stat.wal_bytes);
+            total.wal_ref_bytes = total.wal_ref_bytes.saturating_add(stat.wal_ref_bytes);
             total.reduce_bytes = total.reduce_bytes.saturating_add(stat.reduce_bytes);
             total.read_bytes = total.read_bytes.saturating_add(stat.read_bytes);
             total.read_ref_bytes = total.read_ref_bytes.saturating_add(stat.read_ref_bytes);
+            total.forward_ref_bytes = total
+                .forward_ref_bytes
+                .saturating_add(stat.forward_ref_bytes);
+            total.forward_events = total.forward_events.saturating_add(stat.forward_events);
+            total.forward_completions = total
+                .forward_completions
+                .saturating_add(stat.forward_completions);
+            total.forward_max_inflight = total.forward_max_inflight.max(stat.forward_max_inflight);
             total.wal_extents = total.wal_extents.saturating_add(stat.wal_extents);
             total.reduced_extents = total.reduced_extents.saturating_add(stat.reduced_extents);
             total.contiguous_reduce_extents = total
@@ -1274,8 +1702,13 @@ fn print_stats(stats: &[WorkerStats]) {
         .wal_bytes
         .saturating_add(total.reduce_bytes)
         .saturating_add(total.read_bytes);
+    let forward_records_per_event = if total.forward_events == 0 {
+        0.0
+    } else {
+        total.reads as f64 / total.forward_events as f64
+    };
     println!(
-        "zcwal-reduce-summary: workers={} ops={} writes={} reads={} dirty_hits={} dirty_misses={} wal_extents={} reduced_extents={} max_extent_records={} contiguous_reduce_extents={} scattered_reduce_records={} seconds={wall:.6} logical_iops={:.0} wal_Gbitps={:.3} reduce_Gbitps={:.3} read_Gbitps={:.3} read_ref_Gbitps={:.3} touched_Gbitps={:.3} thread_cpu_seconds={:.6} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={} checksum={}",
+        "zcwal-reduce-summary: workers={} ops={} writes={} reads={} dirty_hits={} dirty_misses={} wal_extents={} reduced_extents={} max_extent_records={} contiguous_reduce_extents={} scattered_reduce_records={} forward_events={} forward_completions={} forward_max_inflight={} forward_events_per_sec={:.0} forward_records_per_event={:.1} seconds={wall:.6} logical_iops={:.0} wal_Gbitps={:.3} wal_ref_Gbitps={:.3} reduce_Gbitps={:.3} read_Gbitps={:.3} read_ref_Gbitps={:.3} forward_ref_Gbitps={:.3} touched_Gbitps={:.3} thread_cpu_seconds={:.6} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={} checksum={}",
         stats.len(),
         total.ops,
         total.writes,
@@ -1287,11 +1720,18 @@ fn print_stats(stats: &[WorkerStats]) {
         total.max_extent_records,
         total.contiguous_reduce_extents,
         total.scattered_reduce_records,
+        total.forward_events,
+        total.forward_completions,
+        total.forward_max_inflight,
+        total.forward_events as f64 / wall,
+        forward_records_per_event,
         total.ops as f64 / wall,
         total.wal_bytes as f64 * 8.0 / 1_000_000_000.0 / wall,
+        total.wal_ref_bytes as f64 * 8.0 / 1_000_000_000.0 / wall,
         total.reduce_bytes as f64 * 8.0 / 1_000_000_000.0 / wall,
         total.read_bytes as f64 * 8.0 / 1_000_000_000.0 / wall,
         total.read_ref_bytes as f64 * 8.0 / 1_000_000_000.0 / wall,
+        total.forward_ref_bytes as f64 * 8.0 / 1_000_000_000.0 / wall,
         touched_bytes as f64 * 8.0 / 1_000_000_000.0 / wall,
         total.cpu.as_secs_f64(),
         total.voluntary_switches,
@@ -1320,8 +1760,31 @@ fn validate_config(config: &Config) -> io::Result<()> {
     if config.block_records_per_lane == 0 {
         return Err(invalid_input("--block-records-per-lane must be nonzero"));
     }
+    if config.mode == Mode::HotRead && config.block_records_per_lane > config.records_per_lane {
+        return Err(invalid_input(
+            "hot-read mode uses --records-per-lane as WAL/cache capacity; set --records-per-lane >= --block-records-per-lane",
+        ));
+    }
     if config.read_pct > 100 {
         return Err(invalid_input("--read-pct must be between 0 and 100"));
+    }
+    if config.read_repeats == 0 {
+        return Err(invalid_input("--read-repeats must be nonzero"));
+    }
+    if config.forward_window == 0 {
+        return Err(invalid_input("--forward-window must be nonzero"));
+    }
+    if config.read_access == ReadAccess::ForwardExtent {
+        if !matches!(config.mode, Mode::Read | Mode::HotRead) {
+            return Err(invalid_input(
+                "read-access=forward-extent currently requires --mode read or --mode hot-read",
+            ));
+        }
+        if config.pattern != Pattern::Sequential {
+            return Err(invalid_input(
+                "read-access=forward-extent currently requires --pattern seq so each descriptor represents a contiguous result-log extent",
+            ));
+        }
     }
     if config.pin && config.cpu_list.is_empty() {
         eprintln!(
@@ -1511,6 +1974,13 @@ fn parse_count(value: &str) -> io::Result<usize> {
         .ok_or_else(|| invalid_input(format!("numeric value {value:?} overflows usize")))
 }
 
+fn parse_count_env(name: &str, default: usize) -> io::Result<usize> {
+    match env::var(name) {
+        Ok(value) if !value.trim().is_empty() => parse_count(value.trim()),
+        _ => Ok(default),
+    }
+}
+
 fn parse_cpu_list_env() -> Vec<usize> {
     env::var("URING_PLAY_PIN_CPU_LIST")
         .ok()
@@ -1601,7 +2071,7 @@ fn print_usage() {
          No block device is used as a mirror or stripe primitive.\n\
          \n\
          Options:\n\
-           --mode combine|reduce|read|mixed       default: mixed\n\
+          --mode combine|reduce|read|hot-read|mixed default: mixed\n\
            --pattern seq|random                  default: seq\n\
            --lanes N                             default: 8\n\
            --workers N                           default: 8\n\
@@ -1610,13 +2080,16 @@ fn print_usage() {
            --extent-records N                    default: 256\n\
           --block-records-per-lane N            default: 65536\n\
           --read-pct N                          mixed-mode read percentage, default: 50\n\
-          --read-access copy|ref                copy materializes payload; ref returns slot tokens, default: copy\n\
-          --reduce-every-extents N              0 keeps dirty WAL until end, default: 0\n\
-          --pin --cpu-list 0-7                  pin workers and first-touch arenas there\n\
+          --read-repeats N                      repeat read working set without growing cache, default: 1\n\
+          --read-access copy|ref|forward-ref|forward-extent\n\
+                                                copy materializes payload; ref returns slot tokens; forward-ref queues 4K descriptors; forward-extent queues one extent descriptor, default: copy\n\
+           --forward-window N                    bounded downstream descriptor queue depth, default: 1024\n\
+           --reduce-every-extents N              0 keeps dirty WAL until end, default: 0\n\
+           --pin --cpu-list 0-7                  pin workers and first-touch arenas there\n\
            --thp|--no-thp                        madvise MADV_HUGEPAGE, default: on\n\
            --hugetlb|--no-hugetlb                request MAP_HUGETLB, default: off\n\
-          --verify|--no-verify                  reserved correctness hook, default: off\n\
-          --bulk-extents                        append full WAL extents with one payload copy, default: on\n\
-          --per-record-ingest                   append each 4K record separately"
+           --verify|--no-verify                  reserved correctness hook, default: off\n\
+           --bulk-extents                        append full WAL extents with one payload copy, default: on\n\
+           --per-record-ingest                   append each 4K record separately"
     );
 }

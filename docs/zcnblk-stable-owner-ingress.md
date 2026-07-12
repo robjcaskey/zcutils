@@ -1,0 +1,74 @@
+# Stable WAL Owner Ingress
+
+## TL;DR
+
+The client path is `/dev/zcnblk0 -> shared-memory lane ingress -> stable WAL
+owner -> TCP lane -> userspace leaf`. The kernel edge never makes mirror,
+stripe, tier, spill, or placement decisions. Payload pages remain leased in the
+shared arena while userspace descriptors move between ingress and owner
+threads. A global sync drains every owner and advances the committed high-water
+mark. Reads observe the dirty shared-page reference first and otherwise go to
+the remote userspace leaf. Block media is allowed only behind a terminal leaf
+writer after userspace placement.
+
+## Owner Contract
+
+- One ingress worker owns each block hctx lane, dirty-cache admission, and
+  completion ordering.
+- One stable owner owns each long-lived remote stream and coalesces fragments.
+- The ingress-to-owner queue copies descriptors, not 4K payloads.
+- A transferred payload slot is released only after remote completion or safe
+  dirty-cache retirement.
+- Same-sector predecessors and the global sync high-water mark preserve order
+  across blocking and io_uring callers.
+- `URING_PLAY_ZCNBLK_SHM_SECTOR_ORDER_SLOTS` must be a power of two and at
+  least twice the active benchmark page count for a representative run.
+
+Enable the path with `URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS=1`. Set the
+owner CPUs explicitly with `URING_PLAY_ZCNBLK_SHM_OWNER_CPU_LIST`; the benchmark
+harness records client, ingress, kthread, and owner CPU assignments per lane.
+
+## x48 Dual-NIC Result
+
+These July 12, 2026 controls used two `c8gn.48xlarge` instances, 32 lanes, 16
+lanes per 300-Gbit/s NIC, hugetlb buffers, 1,048,576 exact-order slots, a
+userspace `zcmem` leaf, random 4K 50/50 reads and writes, and eight linked
+same-sector order pairs followed by sync. Every completed run passed the order
+and terminal-sync check.
+
+| Shape | Mixed IOPS | Overall p50 | Read p50 | Write p50 | Client ctx/1K | Target ctx/1K |
+|---|---:|---:|---:|---:|---:|---:|
+| QD1, blocking CQ wait | 82,270 | 211 us | 354 us | 52 us | 1,006.8 | 1,197.8 |
+| QD1, hot CQ, progress 4096 | 89,566 | 173 us | 333 us | 57 us | 16.9 | 1,176.6 |
+| QD1, hot CQ, progress 64 | 91,680 | 111 us | 265 us | 5 us | 17.7 | 1,177.8 |
+| QD16, old completion wait | 412,709 | 2 ms | 2 ms | 129 us | 421.4 | 237.0 |
+| QD16, hot CQ, 4.6 s | 697,109 | 170 us | 2 ms | 61 us | 0.15 | 98.3 |
+| QD128, hot CQ, 2.3 s | 1,383,552 | 3 ms | 4 ms | 2 ms | 0.11 | 48.8 |
+
+The separate write-only owner control reached 1.512M IOPS with 47.1 target
+context switches per 1K I/O. The raw dual-NIC WAL transport ceiling remains
+about 495 Gbit/s, or 15.1M logical 4K records/s, so the integrated mixed block
+path is still scheduler/protocol limited rather than network limited.
+
+## io_uring Hot Progress
+
+Pure CQ memory polling can stall forever when this kernel defers a completion
+through task work. `URING_PLAY_CQE_HOT_POLL=1` therefore issues a nonblocking
+`IORING_ENTER_GETEVENTS` progress kick after
+`URING_PLAY_CQE_HOT_POLL_PROGRESS_SPINS` empty spins. The default is 4096.
+Using 64 improves QD1 median latency but generates millions of progress calls
+and is reserved for explicitly CPU-greedy latency workloads.
+
+## Remaining Bottleneck
+
+Client and kernel wake churn is no longer first-order in hot mode. Stable owner
+threads still block around small request/result cycles; the sustained QD16 run
+averaged only 4.1 records per remote batch and paid about 98 target context
+switches per 1K I/O. The next change should make each owner a persistent
+asynchronous send/receive state machine with multiple in-flight extents and
+range/HWM completion delivery. It must preserve the current dirty-reference,
+same-sector predecessor, and all-owner sync contracts while separating the
+latency fragment deadline from the throughput extent size.
+
+Compact logs, topology manifests, context deltas, and correctness output are in
+`bench-results/cloud-owner-ingress-x48-20260712/`.

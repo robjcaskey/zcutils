@@ -12,6 +12,9 @@ pub(crate) const ZCNBLK_OP_READ_RESP: u16 = 3;
 pub(crate) const ZCNBLK_OP_WRITE_ACK: u16 = 4;
 pub(crate) const ZCNBLK_OP_BATCH: u16 = 5;
 pub(crate) const ZCNBLK_OP_BATCH_RESP: u16 = 6;
+pub(crate) const ZCNBLK_OP_SYNC: u16 = 7;
+pub(crate) const ZCNBLK_OP_SYNC_ACK: u16 = 8;
+pub(crate) const ZCNBLK_OP_READ_RANGE_RESP: u16 = 9;
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ZcnblkFrameTopology {
@@ -68,6 +71,9 @@ impl ZcnblkFrameHeader {
                 | ZCNBLK_OP_WRITE_ACK
                 | ZCNBLK_OP_BATCH
                 | ZCNBLK_OP_BATCH_RESP
+                | ZCNBLK_OP_SYNC
+                | ZCNBLK_OP_SYNC_ACK
+                | ZCNBLK_OP_READ_RANGE_RESP
         ) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -148,6 +154,9 @@ impl ZcnblkFrameHeader {
                 | ZCNBLK_OP_WRITE_ACK
                 | ZCNBLK_OP_BATCH
                 | ZCNBLK_OP_BATCH_RESP
+                | ZCNBLK_OP_SYNC
+                | ZCNBLK_OP_SYNC_ACK
+                | ZCNBLK_OP_READ_RANGE_RESP
         ) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
