@@ -97,10 +97,13 @@ env URING_PLAY_PIN_CPU_LIST=3,11 URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1 \
 	>"$OUTDIR/leaf.log" 2>&1 &
 leaf_pid=$!
 for _ in $(seq 1 200); do
-	ss -H -ltn | awk -v port=":$LEAF_PORT" '$4 ~ port"$" {found=1} END {exit !found}' && break
+	listeners="$(ss -H -ltn | awk -v first=":$LEAF_PORT" -v second=":$((LEAF_PORT + 1))" \
+		'$4 ~ first"$" || $4 ~ second"$" {count++} END {print count + 0}')"
+	[ "$listeners" -eq 2 ] && break
 	[ -r "/proc/$leaf_pid/comm" ] || die 'leaf exited during startup'
 	sleep 0.05
 done
+[ "${listeners:-0}" -eq 2 ] || die 'leaf did not open both lane listeners'
 
 sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$OUTDIR/target.pid" \
 	URING_PLAY_TOPOLOGY_REPRESENTATIVE=1 \
