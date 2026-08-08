@@ -1,0 +1,66 @@
+timestamp_utc=2026-08-08T18:06:42Z
+hostname=ip-172-31-42-159
+kernel=Linux 6.17.0-1019-aws #19~24.04.1-Ubuntu SMP Tue Jun 23 18:34:05 UTC 2026 GNU/Linux
+data_root=/mnt/zc-fs-app-bench
+data_mount=/dev/zcnblk0 /mnt/zc-fs-app-bench ext4   rw,noatime
+client_mount=/mnt/zc-nfs-client-bench
+client_mount_info=127.0.0.1:/ /mnt/zc-nfs-client-bench nfs4   rw,noatime,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,fatal_neterrors=none,proto=tcp,nconnect=8,timeo=600,retrans=2,sec=sys,clientaddr=127.0.0.1,local_lock=none,addr=127.0.0.1
+nfs_version=4.2
+export_options=rw,sync,no_subtree_check,no_root_squash,fsid=0
+mount_options=vers=4.2,proto=tcp,port=2049,nconnect=8,hard,noatime
+server_cpus=99-107,111-127
+client_cpus=128-151
+nfs_threads_before=8
+nfs_threads_requested=32
+nfs_threads_actual=32
+qd1_workers=1
+qd1_per_worker_depth=1
+qd1_aggregate_depth=1
+qd16_workers=4
+qd16_per_worker_depth=4
+qd16_aggregate_depth=16
+sync_write_completion=client-fsync-to-NFS-COMMIT-on-sync-export
+stream_read_cache_state=warm-or-shared-system-unknown;global-caches-not-dropped
+coordination=unknown
+server_was_active=0
+zcnblk_device=present
+Architecture:                            aarch64
+CPU op-mode(s):                          64-bit
+Byte Order:                              Little Endian
+CPU(s):                                  192
+On-line CPU(s) list:                     0-191
+Vendor ID:                               ARM
+Model name:                              Neoverse-V2
+Model:                                   1
+Thread(s) per core:                      1
+Core(s) per socket:                      96
+Socket(s):                               2
+Stepping:                                r0p1
+BogoMIPS:                                2000.00
+Flags:                                   fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp sve2 sveaes svepmull svebitperm svesha3 flagm2 frint svei8mm svebf16 i8mm bf16 dgh rng bti
+L1d cache:                               12 MiB (192 instances)
+L1i cache:                               12 MiB (192 instances)
+L2 cache:                                384 MiB (192 instances)
+L3 cache:                                72 MiB (2 instances)
+NUMA node(s):                            2
+NUMA node0 CPU(s):                       0-95
+NUMA node1 CPU(s):                       96-191
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Not affected
+Vulnerability Spec rstack overflow:      Not affected
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; CSV2, BHB
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Not affected

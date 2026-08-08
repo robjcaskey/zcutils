@@ -188,7 +188,13 @@ NFS_THREADS_BEFORE=$(sudo -n cat /proc/fs/nfsd/threads)
 if [ "$NFS_THREADS_BEFORE" != "$NFS_THREADS" ]; then
 	[ "$SERVER_WAS_ACTIVE" -eq 0 ] ||
 		die "active nfsd has $NFS_THREADS_BEFORE workers; use NFS_THREADS=$NFS_THREADS_BEFORE or stop it before retuning"
-	sudo -n /usr/sbin/nfsdctl threads "$NFS_THREADS"
+	if [ -x /usr/sbin/nfsdctl ]; then
+		sudo -n /usr/sbin/nfsdctl threads "$NFS_THREADS"
+	elif [ -x /usr/sbin/rpc.nfsd ]; then
+		sudo -n /usr/sbin/rpc.nfsd "$NFS_THREADS"
+	else
+		die 'neither nfsdctl nor rpc.nfsd is available to set the NFS worker count'
+	fi
 fi
 NFS_THREADS_ACTUAL=$(sudo -n cat /proc/fs/nfsd/threads)
 [ "$NFS_THREADS_ACTUAL" = "$NFS_THREADS" ] ||

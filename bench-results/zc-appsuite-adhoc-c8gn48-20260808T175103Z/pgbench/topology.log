@@ -1,0 +1,14 @@
+classification=remote-userspace-leaf
+coordination_honored=true
+leaf_host=172.31.37.12 leaf_port=29000 leaf_source_addr=172.31.35.76 local_leaf=0
+topology_representative=1 preflight_warnings=0
+kernel_queues=16 target_cpus=97,109 kthread_cpus=98,110 leaf_cpus=3,11
+lane0_hctx=96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107
+lane1_hctx=108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119
+postgres_connection0_hctxs=0,2 postgres_connection1_hctxs=1,3
+sync_coordinator_cpu=152
+postgres_cpus=99-107,111-143
+pgbench_cpus=144-151
+scale=100 clients=64 jobs=8 duration=10 repeats=1 warmup_seconds=3 builtin=tpcb-like track_wal_io_timing=on vector_hwm=1 ordering_epochs=1
+write_completion=local-dirty-lease-admission; sync_completion=remote-volatile-leaf-hwm
+hugepages_total=8192 memlock_kib=unlimited loadavg=1.68 1.39 0.80 1/1999 34390

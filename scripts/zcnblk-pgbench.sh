@@ -19,12 +19,15 @@ LEAF_SIZE="${LEAF_SIZE:-64G}"
 PORT="${PORT:-55432}"
 LEAF_PORT="${LEAF_PORT:-29000}"
 LEAF_HOST="${LEAF_HOST:-127.0.0.1}"
+LEAF_SOURCE_ADDR="${LEAF_SOURCE_ADDR:-}"
 START_LOCAL_LEAF="${START_LOCAL_LEAF:-1}"
+KERNEL_QUEUES="${KERNEL_QUEUES:-2}"
 TARGET_CPU_LIST="${TARGET_CPU_LIST:-1,9}"
 KTHREAD_CPU_LIST="${KTHREAD_CPU_LIST:-2,10}"
 LEAF_CPU_LIST="${LEAF_CPU_LIST:-3,11}"
 POSTGRES_CPU_LIST="${POSTGRES_CPU_LIST:-4-7,12-15,20-23,28-31}"
 PGBENCH_CPU_LIST="${PGBENCH_CPU_LIST:-0,8,16,24}"
+SYNC_COORDINATOR_CPU="${SYNC_COORDINATOR_CPU:-17}"
 
 COORD_BIN="${AGENT_COORD_BIN:-$HOME/.local/bin/agent-coord}"
 COORDINATION_SCOPE="${COORDINATION_SCOPE:-shared-host}"
@@ -196,15 +199,24 @@ if [ "$preflight_warnings" -ne 0 ] &&
 fi
 
 sudo -n insmod "$MODULE" transport=shm lanes=2 connections_per_lane=1 \
-	size_mib="$SIZE_MIB" queues=2 queue_depth=256 shm_sector_order_slots=4194304 \
+	size_mib="$SIZE_MIB" queues="$KERNEL_QUEUES" queue_depth=256 shm_sector_order_slots=4194304 \
 	max_frame_bytes=4096 pipeline_depth=128 shm_ring_entries=512 \
 	shm_payload_entries=8192 shm_poll_us=1000 shm_ordering_epochs="$ORDERING_EPOCHS" pin_threads=0
 
+declare -a postgres_connection_hctxs=("" "")
 for hctx_cpu_file in /sys/block/zcnblk0/mq/*/cpu_list; do
 	[ -r "$hctx_cpu_file" ] || die 'zcnblk0 did not expose an hctx CPU map'
-	if ! cpu_lists_intersect "$POSTGRES_CPU_LIST" "$(cat "$hctx_cpu_file")"; then
+	hctx="${hctx_cpu_file%/cpu_list}"
+	hctx="${hctx##*/}"
+	if cpu_lists_intersect "$POSTGRES_CPU_LIST" "$(cat "$hctx_cpu_file")"; then
+		connection=$((hctx % 2))
+		postgres_connection_hctxs[$connection]="${postgres_connection_hctxs[$connection]}${postgres_connection_hctxs[$connection]:+,}$hctx"
+	fi
+done
+for connection in 0 1; do
+	if [ -z "${postgres_connection_hctxs[$connection]}" ]; then
 		topology_representative=0
-		warn_preflight "PostgreSQL CPU list $POSTGRES_CPU_LIST does not intersect $hctx_cpu_file ($(cat "$hctx_cpu_file")); the corresponding lane will not carry representative application I/O."
+		warn_preflight "PostgreSQL CPU list $POSTGRES_CPU_LIST reaches no hctx mapped to connection $connection (hctx modulo 2)."
 	fi
 done
 if [ "$preflight_warnings" -ne 0 ] &&
@@ -219,6 +231,7 @@ sudo -n chown postgres:postgres "$SOCKET_DIR"
 if [ "$START_LOCAL_LEAF" = 1 ]; then
 	env URING_PLAY_PIN_CPU_LIST="$LEAF_CPU_LIST" URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1 \
 		URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN=1 \
+		URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC=1 \
 		"$LEAF" "zcmem:$LEAF_SIZE" "$LEAF_HOST" "$LEAF_PORT" 2 1 4096 2 true blocking \
 		>"$OUTDIR/leaf.log" 2>&1 &
 	leaf_pid=$!
@@ -234,7 +247,7 @@ fi
 
 sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$OUTDIR/target.pid" \
 	URING_PLAY_TOPOLOGY_REPRESENTATIVE="$topology_representative" \
-	URING_PLAY_ZCNBLK_SHM_COORDINATOR_CPU=17 \
+	URING_PLAY_ZCNBLK_SHM_COORDINATOR_CPU="$SYNC_COORDINATOR_CPU" \
 	URING_PLAY_ZCNBLK_SHM_LEASE_RELEASE_BATCH=1 \
 	URING_PLAY_ZCNBLK_SHM_WRITEBACK_BATCH=4096 \
 	URING_PLAY_ZCNBLK_SHM_READ_BATCH=512 \
@@ -252,6 +265,12 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$OUTDIR/target.pid" \
 	URING_PLAY_ZCNBLK_SHM_WAL_COMPACT_WRITES=1 \
 	URING_PLAY_ZCNBLK_SHM_DIRTY_PRESSURE_RESERVE=0 \
 	URING_PLAY_ZCNBLK_SHM_LEAF_ADDR="$LEAF_HOST:$LEAF_PORT" \
+	URING_PLAY_ZCNBLK_SHM_LEAF_SOURCE_ADDR="$LEAF_SOURCE_ADDR" \
+	URING_PLAY_ROUTE_PROBE="${URING_PLAY_ROUTE_PROBE:-0}" \
+	URING_PLAY_EXPECT_ROUTE_DEV="${URING_PLAY_EXPECT_ROUTE_DEV:-}" \
+	URING_PLAY_EXPECT_ROUTE_SRC="${URING_PLAY_EXPECT_ROUTE_SRC:-}" \
+	URING_PLAY_TOPOLOGY_STRICT="${URING_PLAY_TOPOLOGY_STRICT:-0}" \
+	URING_PLAY_TOPOLOGY_FATAL="${URING_PLAY_TOPOLOGY_FATAL:-0}" \
 	"$TARGET" /dev/zcnblk-shmctl wal-tcp 128 "$TARGET_CPU_LIST" 1000 1000 10000 \
 	>"$OUTDIR/target.log" 2>&1 &
 target_job_pid=$!
@@ -267,6 +286,9 @@ for lane in 0 1; do
 	[ -n "$pid" ] || die "missing kernel lane thread $name"
 	kernel_pids+=("$pid")
 	cpu="${kthread_cpus[$lane]}"
+	if ! cpu_lists_intersect "$cpu" "$(cat "/sys/block/zcnblk0/mq/$lane/cpu_list")"; then
+		die "kernel lane $lane CPU $cpu is outside its hctx map ($(cat "/sys/block/zcnblk0/mq/$lane/cpu_list"))"
+	fi
 	sudo -n taskset -pc "$cpu" "$pid" >>"$OUTDIR/kthreads.log"
 done
 
@@ -274,18 +296,22 @@ done
 	printf 'classification=%s\ncoordination_honored=%s\n' \
 		"$([ "$START_LOCAL_LEAF" = 1 ] && printf local-shared-system || printf remote-userspace-leaf)" \
 		"$coord_honored"
-	printf 'leaf_host=%s leaf_port=%s local_leaf=%s\n' "$LEAF_HOST" "$LEAF_PORT" "$START_LOCAL_LEAF"
+	printf 'leaf_host=%s leaf_port=%s leaf_source_addr=%s local_leaf=%s\n' \
+		"$LEAF_HOST" "$LEAF_PORT" "${LEAF_SOURCE_ADDR:-kernel-route}" "$START_LOCAL_LEAF"
 	printf 'topology_representative=%s preflight_warnings=%s\n' "$topology_representative" "$preflight_warnings"
-	printf 'target_cpus=%s kthread_cpus=%s leaf_cpus=%s\n' "$TARGET_CPU_LIST" "$KTHREAD_CPU_LIST" "$LEAF_CPU_LIST"
+	printf 'kernel_queues=%s target_cpus=%s kthread_cpus=%s leaf_cpus=%s\n' \
+		"$KERNEL_QUEUES" "$TARGET_CPU_LIST" "$KTHREAD_CPU_LIST" "$LEAF_CPU_LIST"
 	printf 'lane0_hctx=%s\n' "$(cat /sys/block/zcnblk0/mq/0/cpu_list)"
 	printf 'lane1_hctx=%s\n' "$(cat /sys/block/zcnblk0/mq/1/cpu_list)"
-	printf 'sync_coordinator_cpu=17\n'
+	printf 'postgres_connection0_hctxs=%s postgres_connection1_hctxs=%s\n' \
+		"${postgres_connection_hctxs[0]}" "${postgres_connection_hctxs[1]}"
+	printf 'sync_coordinator_cpu=%s\n' "$SYNC_COORDINATOR_CPU"
 	printf 'postgres_cpus=%s\npgbench_cpus=%s\n' "$POSTGRES_CPU_LIST" "$PGBENCH_CPU_LIST"
 	printf 'scale=%s clients=%s jobs=%s duration=%s repeats=%s warmup_seconds=%s builtin=%s track_wal_io_timing=%s vector_hwm=%s ordering_epochs=%s\n' "$SCALE" "$CLIENTS" "$JOBS" "$DURATION" "$REPEATS" "$WARMUP_SECONDS" "$PGBENCH_BUILTIN" "$TRACK_WAL_IO_TIMING" "$VECTOR_HWM" "$ORDERING_EPOCHS"
 	if [ "$VECTOR_HWM" = 1 ]; then
-		printf 'completion=early-local-write-ack; durability=remote-per-lane-admission-vector+all-lane-marker\n'
+		printf 'write_completion=local-dirty-lease-admission; sync_completion=remote-volatile-leaf-hwm\n'
 	else
-		printf 'completion=early-local-write-ack; durability=remote-global-publication-hwm+all-lane-marker\n'
+		printf 'write_completion=local-dirty-lease-admission; sync_completion=remote-volatile-global-hwm\n'
 	fi
 	printf 'hugepages_total=%s memlock_kib=%s loadavg=%s\n' \
 		"$hugepages_total" "$memlock_kib" "$(cat /proc/loadavg)"

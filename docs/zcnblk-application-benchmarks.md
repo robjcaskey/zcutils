@@ -114,6 +114,25 @@ The NFS harness can also measure another already-mounted data root directly:
 scripts/zcnblk-nfs-filer-bench.sh bench-results/nfs-control /path/to/data-root
 ```
 
+For a remote userspace leaf, start `zcnblk-wal-leaf` on the leaf host and make
+the wrapper source every WAL connection from the private data NIC:
+
+```bash
+START_LOCAL_LEAF=0 \
+LEAF_HOST=172.31.37.12 LEAF_SOURCE_ADDR=172.31.35.76 \
+LEAF_PORT=29200 KERNEL_QUEUES=16 \
+TARGET_CPU_LIST=97,109 KTHREAD_CPU_LIST=98,110 \
+APP_CPU_LIST=99-107,111-151 SYNC_COORDINATOR_CPU=152 \
+COORDINATION_SCOPE=dedicated-adhoc \
+scripts/zcnblk-fs-app-bench.sh \
+  bench-results/remote-edge bench-results/remote-app \
+  scripts/zcnblk-etcd-bench.sh
+```
+
+The topology preflight checks the source route, lane workers, kernel queues,
+hctx affinity, memory policy, and application connection hctxs before allowing
+representative output.
+
 ## Completion Contracts
 
 Do not compare every row to one network-RTT ceiling.
@@ -172,6 +191,51 @@ arena is allocated with `vmalloc_user()` and mapped with
 `remap_vmalloc_range()`, so merely reserving HugeTLB pages cannot change that
 arena's backing. A future explicit HugeTLB arena requires an allocation/ABI
 change rather than only a sysctl.
+
+## Remote Pair Proof, 2026-08-08
+
+The complete suite ran between two `c8gn.48xlarge` hosts in `us-east-2c` and
+one cluster placement group. The private secondary NIC on NUMA node 1 carried
+all block/WAL traffic at MTU 9001. The 100-packet path RTT averaged 48 us, both
+hosts reserved 8,192 HugeTLB pages, and every final harness had an honored
+resource reservation and zero preflight warnings.
+
+Ordinary writes completed at bounded local dirty-lease admission. Sync/FUA
+waited for a remote two-lane HWM. The remote leaf used explicitly permitted
+volatile memory, which validates remote commit semantics but not power-loss
+durability.
+
+| Workload | Phase | Rate | Mean | p99 |
+|---|---|---:|---:|---:|
+| etcd | durable put | 11,955/s | 5.351 ms | 10.707 ms |
+| etcd | linearizable range | 116,969/s | 0.531 ms | 1.841 ms |
+| etcd | mixed transaction | 908/s | 44.432 ms | 65.693 ms |
+| Cassandra | durable write | 6,617/s | 4.4 ms | 6.0 ms |
+| Cassandra | read | 43,916/s | 0.3 ms | 1.4 ms |
+| Cassandra | 50/50 mixed | 12,603/s | 2.4 ms | 6.5 ms |
+| Kafka | forced-flush producer | 294 records/s | queued | queued |
+| Kafka | page-cache producer | 43,764 records/s | 3.56 ms | 8 ms |
+| Kafka | consumer fetch interval | 129,032 records/s | n/a | n/a |
+| NFS | fsync-per-write, QD1 | 367 IOPS | 2.718 ms sync | 3.162 ms sync |
+| NFS | 70/30 mixed, aggregate QD1 | 1,320 IOPS | R 44.8 us / W 2.345 ms | R 61.2 us / W 2.507 ms |
+| NFS | 70/30 mixed, aggregate QD16 | 10,571 IOPS | R 59.8 us / W 4.832 ms | R 100.9 us / W 5.603 ms |
+| NFS | 1 MiB stream write | 0.195 GB/s | n/a | n/a |
+| NFS | 1 MiB warm stream read | 12.2 GB/s | n/a | n/a |
+| PostgreSQL | pgbench scale 100 | 70,487 TPS | 0.905 ms | n/a |
+
+PostgreSQL used 64 clients and eight jobs with synchronous commit, fsync, and
+full-page writes enabled. It completed 703,647 transactions without failure
+and measured 4.320 storage-stage context switches per 1,000 transactions.
+Kafka's forced-flush producer used one in-flight request; its service rate was
+about 3.4 ms per record, while Kafka's displayed multi-second latency included
+producer queueing.
+
+The full topology, logs, summaries, context-switch snapshots, checksums, and
+cleanup evidence are in:
+
+```text
+bench-results/zc-appsuite-adhoc-c8gn48-20260808T175103Z/
+```
 
 ## Concurrent Sync Regression
 

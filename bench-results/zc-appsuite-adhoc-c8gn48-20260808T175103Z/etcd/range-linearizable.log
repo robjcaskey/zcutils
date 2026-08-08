@@ -1,0 +1,302 @@
+bench with linearizable range
+2026/08/08 18:01:50 INFO: [core] original dial target is: "etcd-endpoints://0x400049ad20/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #3] Channel created for target "etcd-endpoints://0x400049ad20/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #1 SubChannel #2] Subchannel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #3] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"etcd-endpoints", Opaque:"", User:(*url.Userinfo)(nil), Host:"0x400049ad20", Path:"/127.0.0.1:22379", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}
+2026/08/08 18:01:50 INFO: [core] [Channel #1 SubChannel #2] Subchannel picks a new address "127.0.0.1:22379" to connect
+2026/08/08 18:01:50 INFO: [core] [Channel #3] Channel authority set to "127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #3] Channel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #3] Resolver state updated: {
+  "Addresses": null,
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:22379",
+          "ServerName": "127.0.0.1:22379",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": {
+    "Config": {
+      "Config": null,
+      "Methods": {}
+    },
+    "Err": null
+  },
+  "Attributes": null
+} (service config updated)
+2026/08/08 18:01:50 INFO: [core] [Channel #3] Channel switches to new LB policy "round_robin"
+2026/08/08 18:01:50 INFO: [roundrobin] [0x40000f2690] Created
+2026/08/08 18:01:50 INFO: [core] [Channel #3 SubChannel #4] Subchannel created
+2026/08/08 18:01:50 INFO: [core] [Channel #3] Channel exiting idle mode
+2026/08/08 18:01:50 INFO: [core] original dial target is: "etcd-endpoints://0x40003e4d20/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #3 SubChannel #4] Subchannel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #3 SubChannel #4] Subchannel picks a new address "127.0.0.1:22379" to connect
+2026/08/08 18:01:50 INFO: [core] [Channel #6] Channel created for target "etcd-endpoints://0x40003e4d20/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #1 SubChannel #2] Subchannel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #6] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"etcd-endpoints", Opaque:"", User:(*url.Userinfo)(nil), Host:"0x40003e4d20", Path:"/127.0.0.1:22379", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}
+2026/08/08 18:01:50 INFO: [core] [Channel #6] Channel authority set to "127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #6] Channel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #1] Channel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #6] Resolver state updated: {
+  "Addresses": null,
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:22379",
+          "ServerName": "127.0.0.1:22379",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": {
+    "Config": {
+      "Config": null,
+      "Methods": {}
+    },
+    "Err": null
+  },
+  "Attributes": null
+} (service config updated)
+2026/08/08 18:01:50 INFO: [core] [Channel #6] Channel switches to new LB policy "round_robin"
+2026/08/08 18:01:50 INFO: [roundrobin] [0x400011d2f0] Created
+2026/08/08 18:01:50 INFO: [core] [Channel #6 SubChannel #8] Subchannel created
+2026/08/08 18:01:50 INFO: [core] [Channel #6] Channel exiting idle mode
+2026/08/08 18:01:50 INFO: [core] [Channel #3 SubChannel #4] Subchannel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #6 SubChannel #8] Subchannel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #6 SubChannel #8] Subchannel picks a new address "127.0.0.1:22379" to connect
+2026/08/08 18:01:50 INFO: [core] original dial target is: "etcd-endpoints://0x400049b0e0/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #3] Channel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #9] Channel created for target "etcd-endpoints://0x400049b0e0/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #9] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"etcd-endpoints", Opaque:"", User:(*url.Userinfo)(nil), Host:"0x400049b0e0", Path:"/127.0.0.1:22379", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}
+2026/08/08 18:01:50 INFO: [core] [Channel #9] Channel authority set to "127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #9] Channel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #9] Resolver state updated: {
+  "Addresses": null,
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:22379",
+          "ServerName": "127.0.0.1:22379",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": {
+    "Config": {
+      "Config": null,
+      "Methods": {}
+    },
+    "Err": null
+  },
+  "Attributes": null
+} (service config updated)
+2026/08/08 18:01:50 INFO: [core] [Channel #9] Channel switches to new LB policy "round_robin"
+2026/08/08 18:01:50 INFO: [roundrobin] [0x4000253890] Created
+2026/08/08 18:01:50 INFO: [core] [Channel #6 SubChannel #8] Subchannel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #6] Channel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #9 SubChannel #11] Subchannel created
+2026/08/08 18:01:50 INFO: [core] [Channel #9] Channel exiting idle mode
+2026/08/08 18:01:50 INFO: [core] [Channel #9 SubChannel #11] Subchannel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #9 SubChannel #11] Subchannel picks a new address "127.0.0.1:22379" to connect
+2026/08/08 18:01:50 INFO: [core] original dial target is: "etcd-endpoints://0x4000788000/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #13] Channel created for target "etcd-endpoints://0x4000788000/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #13] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"etcd-endpoints", Opaque:"", User:(*url.Userinfo)(nil), Host:"0x4000788000", Path:"/127.0.0.1:22379", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}
+2026/08/08 18:01:50 INFO: [core] [Channel #13] Channel authority set to "127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #13] Channel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #9 SubChannel #11] Subchannel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #13] Resolver state updated: {
+  "Addresses": null,
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:22379",
+          "ServerName": "127.0.0.1:22379",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": {
+    "Config": {
+      "Config": null,
+      "Methods": {}
+    },
+    "Err": null
+  },
+  "Attributes": null
+} (service config updated)
+2026/08/08 18:01:50 INFO: [core] [Channel #9] Channel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #13] Channel switches to new LB policy "round_robin"
+2026/08/08 18:01:50 INFO: [roundrobin] [0x400077c3f0] Created
+2026/08/08 18:01:50 INFO: [core] [Channel #13 SubChannel #14] Subchannel created
+2026/08/08 18:01:50 INFO: [core] [Channel #13] Channel exiting idle mode
+2026/08/08 18:01:50 INFO: [core] [Channel #13 SubChannel #14] Subchannel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #13 SubChannel #14] Subchannel picks a new address "127.0.0.1:22379" to connect
+2026/08/08 18:01:50 INFO: [core] original dial target is: "etcd-endpoints://0x40007883c0/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #15] Channel created for target "etcd-endpoints://0x40007883c0/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #15] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"etcd-endpoints", Opaque:"", User:(*url.Userinfo)(nil), Host:"0x40007883c0", Path:"/127.0.0.1:22379", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}
+2026/08/08 18:01:50 INFO: [core] [Channel #15] Channel authority set to "127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #15] Channel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #15] Resolver state updated: {
+  "Addresses": null,
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:22379",
+          "ServerName": "127.0.0.1:22379",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": {
+    "Config": {
+      "Config": null,
+      "Methods": {}
+    },
+    "Err": null
+  },
+  "Attributes": null
+} (service config updated)
+2026/08/08 18:01:50 INFO: [core] [Channel #15] Channel switches to new LB policy "round_robin"
+2026/08/08 18:01:50 INFO: [roundrobin] [0x400077cbd0] Created
+2026/08/08 18:01:50 INFO: [core] [Channel #15 SubChannel #16] Subchannel created
+2026/08/08 18:01:50 INFO: [core] [Channel #15] Channel exiting idle mode
+2026/08/08 18:01:50 INFO: [core] original dial target is: "etcd-endpoints://0x4000788780/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #18] Channel created for target "etcd-endpoints://0x4000788780/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #18] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"etcd-endpoints", Opaque:"", User:(*url.Userinfo)(nil), Host:"0x4000788780", Path:"/127.0.0.1:22379", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}
+2026/08/08 18:01:50 INFO: [core] [Channel #18] Channel authority set to "127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #18] Channel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #18] Resolver state updated: {
+  "Addresses": null,
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:22379",
+          "ServerName": "127.0.0.1:22379",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": {
+    "Config": {
+      "Config": null,
+      "Methods": {}
+    },
+    "Err": null
+  },
+  "Attributes": null
+} (service config updated)
+2026/08/08 18:01:50 INFO: [core] [Channel #18] Channel switches to new LB policy "round_robin"
+2026/08/08 18:01:50 INFO: [core] [Channel #15 SubChannel #16] Subchannel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #13 SubChannel #14] Subchannel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #15 SubChannel #16] Subchannel picks a new address "127.0.0.1:22379" to connect
+2026/08/08 18:01:50 INFO: [core] [Channel #13] Channel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [roundrobin] [0x400077d380] Created
+2026/08/08 18:01:50 INFO: [core] [Channel #18 SubChannel #19] Subchannel created
+2026/08/08 18:01:50 INFO: [core] [Channel #18] Channel exiting idle mode
+2026/08/08 18:01:50 INFO: [core] [Channel #18 SubChannel #19] Subchannel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #18 SubChannel #19] Subchannel picks a new address "127.0.0.1:22379" to connect
+2026/08/08 18:01:50 INFO: [core] original dial target is: "etcd-endpoints://0x40003e52c0/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #20] Channel created for target "etcd-endpoints://0x40003e52c0/127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #20] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"etcd-endpoints", Opaque:"", User:(*url.Userinfo)(nil), Host:"0x40003e52c0", Path:"/127.0.0.1:22379", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}
+2026/08/08 18:01:50 INFO: [core] [Channel #20] Channel authority set to "127.0.0.1:22379"
+2026/08/08 18:01:50 INFO: [core] [Channel #20] Channel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #20] Resolver state updated: {
+  "Addresses": null,
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:22379",
+          "ServerName": "127.0.0.1:22379",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": {
+    "Config": {
+      "Config": null,
+      "Methods": {}
+    },
+    "Err": null
+  },
+  "Attributes": null
+} (service config updated)
+2026/08/08 18:01:50 INFO: [core] [Channel #20] Channel switches to new LB policy "round_robin"
+2026/08/08 18:01:50 INFO: [roundrobin] [0x40005172c0] Created
+2026/08/08 18:01:50 INFO: [core] [Channel #20 SubChannel #22] Subchannel created
+2026/08/08 18:01:50 INFO: [core] [Channel #20] Channel exiting idle mode
+2026/08/08 18:01:50 INFO: [core] [Channel #15 SubChannel #16] Subchannel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #20 SubChannel #22] Subchannel Connectivity change to CONNECTING
+2026/08/08 18:01:50 INFO: [core] [Channel #18 SubChannel #19] Subchannel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #15] Channel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #20 SubChannel #22] Subchannel picks a new address "127.0.0.1:22379" to connect
+2026/08/08 18:01:50 INFO: [core] [Channel #18] Channel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #20 SubChannel #22] Subchannel Connectivity change to READY
+2026/08/08 18:01:50 INFO: [core] [Channel #20] Channel Connectivity change to READY
+22793 / 100000 [--------------->______________________________________________________] 22.79% ? p/s45827 / 100000 [-------------------------------->_____________________________________] 45.83% ? p/s69863 / 100000 [------------------------------------------------>_____________________] 69.86% ? p/s93559 / 100000 [------------------------------------------------------------>____] 93.56% 117948 p/s100000 / 100000 [---------------------------------------------------------------] 100.00% 152684 p/s
+Summary:
+  Total:	0.85492382 secs.
+  Slowest:	0.007891101 secs.
+  Fastest:	7.6521e-05 secs.
+  Average:	0.0005310402052100019 secs.
+  Stddev:	0.00036787906187128765 secs.
+  Requests/sec:	116969.48624030619
+
+Response time histogram:
+  7.6521e-05 [1]	|
+  0.0008579789999999999 [86788]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
+  0.0016394369999999999 [11506]	|∎∎∎∎∎
+  0.0024208949999999997 [1518]	|
+  0.003202353 [82]	|
+  0.003983810999999999 [35]	|
+  0.004765269 [19]	|
+  0.0055467269999999996 [12]	|
+  0.006328185 [20]	|
+  0.007109643 [11]	|
+  0.007891101 [8]	|
+
+Latency distribution:
+  10% in 0.000211179 secs.
+  25% in 0.000285369 secs.
+  50% in 0.000435344 secs.
+  75% in 0.000674738 secs.
+  90% in 0.000938274 secs.
+  95% in 0.001169129 secs.
+  99% in 0.001840895 secs.
+  99.9% in 0.003301578 secs.

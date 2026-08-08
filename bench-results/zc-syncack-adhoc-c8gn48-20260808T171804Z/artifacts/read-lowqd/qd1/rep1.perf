@@ -1,0 +1,18 @@
+# started on Sat Aug  8 17:31:14 2026
+
+
+ Performance counter stats for 'env URING_PLAY_PIN_CPU_LIST=96,108,120,132,144,156,168,180 URING_PLAY_TOPOLOGY_STRICT=1 URING_PLAY_BLOCKBENCH_RING_STATS=1 URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS=1 URING_PLAY_CQE_SPIN=0 URING_PLAY_CQE_ADAPTIVE_SPIN=0 URING_PLAY_CQE_ADAPTIVE_SPIN_MIN=0 URING_PLAY_CQE_ADAPTIVE_SPIN_MAX=4096 URING_PLAY_CQE_ADAPTIVE_WAIT_NS=50000 URING_PLAY_CQE_HOT_POLL=0 URING_PLAY_CQE_HOT_POLL_PROGRESS_SPINS=256 /home/ubuntu/uring-play/target/release/zcblockbench /dev/zcnblk0 --engine uring-fixed --mode read --workers 8 --ops-per-worker 50000 --bs 4096 --iodepth 1 --region-bytes-per-worker 67108864 --read-percent 100 --ring-entries 256 --ring-mode normal --sqpoll-idle-ms 1000 --buffer-mode hugetlb --pin true --latency-sample-rate 16':
+
+       12170896120      task-clock                       #    2.843 CPUs utilized             
+            400047      context-switches                 #   32.869 K/sec                     
+                 8      cpu-migrations                   #    0.657 /sec                      
+        2834521888      cycles                           #    0.233 GHz                       
+        5585115548      instructions                     #    1.97  insn per cycle            
+         111250352      cache-misses                                                          
+
+       4.280613043 seconds time elapsed
+
+       0.093807000 seconds user
+      11.839970000 seconds sys
+
+

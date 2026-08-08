@@ -186,7 +186,7 @@ EOF
 	printf 'commitlog_sync=batch\ncompletion=write-ack-after-commitlog-fsync\n'
 	printf 'coordination=%s\n' "$COORDINATION_RESULT"
 	printf 'zcnblk_device=%s\n' "$(test -b /dev/zcnblk0 && printf present || printf absent)"
-	printf 'cassandra_tar_sha256=%s\n' \
+	printf 'cassandra_core_jar_sha256=%s\n' \
 		"$(sha256sum "$CASSANDRA_HOME/lib/apache-cassandra-"*.jar | awk 'NR == 1 {print $1}')"
 	lscpu
 } >"$RESULT_DIR/topology.txt"

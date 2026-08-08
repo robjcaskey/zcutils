@@ -1,0 +1,70 @@
+Server rpc stats:
+calls      badcalls   badfmt     badauth    badclnt
+68965      0          0          0          0       
+
+Server nfs v4:
+null             compound         
+1         0%     69081    99%     
+
+Server nfs v4 operations:
+op0-unused       op1-unused       op2-future       access           close            
+0         0%     0         0%     0         0%     1981      0%     1972      0%     
+commit           create           delegpurge       delegreturn      getattr          
+1         0%     1         0%     0         0%     0         0%     6092      2%     
+getfh            link             lock             lockt            locku            
+1007      0%     0         0%     0         0%     0         0%     0         0%     
+lookup           lookup_root      nverify          open             openattr         
+1085      0%     0         0%     0         0%     1978      0%     0         0%     
+open_conf        open_dgrd        putfh            putpubfh         putrootfh        
+0         0%     0         0%     69115    31%     0         0%     2         0%     
+read             readdir          readlink         remove           rename           
+41985    19%     0         0%     0         0%     1000      0%     40        0%     
+renew            restorefh        savefh           secinfo          setattr          
+0         0%     0         0%     40        0%     0         0%     0         0%     
+setcltid         setcltidconf     verify           write            rellockowner     
+0         0%     0         0%     0         0%     20993     9%     0         0%     
+bc_ctl           bind_conn        exchange_id      create_ses       destroy_ses      
+0         0%     0         0%     2         0%     1         0%     0         0%     
+free_stateid     getdirdeleg      getdevinfo       getdevlist       layoutcommit     
+0         0%     0         0%     0         0%     0         0%     0         0%     
+layoutget        layoutreturn     secinfononam     sequence         set_ssv          
+0         0%     0         0%     1         0%     69078    31%     0         0%     
+test_stateid     want_deleg       destroy_clid     reclaim_comp     allocate         
+0         0%     0         0%     0         0%     1         0%     4         0%     
+copy             copy_notify      deallocate       ioadvise         layouterror      
+0         0%     0         0%     0         0%     0         0%     0         0%     
+layoutstats      offloadcancel    offloadstatus    readplus         seek             
+0         0%     0         0%     0         0%     0         0%     0         0%     
+write_same       
+0         0%     
+
+Client rpc stats:
+calls      retrans    authrefrsh
+69078      0          69081   
+
+Client nfs v4:
+null             read             write            commit           open             
+1         0%     41983    60%     20993    30%     1         0%     1004      1%     
+open_conf        open_noat        open_dgrd        close            setattr          
+0         0%     974       1%     0         0%     1972      2%     0         0%     
+fsinfo           renew            setclntid        confirm          lock             
+1         0%     0         0%     0         0%     0         0%     0         0%     
+lockt            locku            access           getattr          lookup           
+0         0%     0         0%     3         0%     9         0%     1085      1%     
+lookup_root      remove           rename           link             symlink          
+1         0%     1000      1%     40        0%     0         0%     0         0%     
+create           pathconf         statfs           readlink         readdir          
+1         0%     1         0%     0         0%     0         0%     0         0%     
+server_caps      delegreturn      getacl           setacl           fs_locations     
+2         0%     0         0%     0         0%     0         0%     0         0%     
+rel_lkowner      secinfo          fsid_present     exchange_id      create_session   
+0         0%     0         0%     0         0%     2         0%     1         0%     
+destroy_session  sequence         get_lease_time   reclaim_comp     layoutget        
+0         0%     0         0%     0         0%     1         0%     0         0%     
+getdevinfo       layoutcommit     layoutreturn     secinfo_no       test_stateid     
+0         0%     0         0%     0         0%     1         0%     0         0%     
+free_stateid     getdevicelist    bind_conn_to_ses destroy_clientid seek             
+0         0%     0         0%     0         0%     0         0%     0         0%     
+allocate         deallocate       layoutstats      clone            
+4         0%     0         0%     0         0%     0         0%     
+
