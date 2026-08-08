@@ -133,12 +133,16 @@ sudo -n dd if=/dev/zcnblk0 of="$scratch/read-b-dirty" bs=4096 skip=7 count=1 \
 	iflag=direct status=none
 cmp "$scratch/pattern-b" "$scratch/read-b-dirty"
 
-sudo -n dd if=/dev/zero of=/dev/zcnblk0 bs=4096 count=0 conv=fsync status=none
-sudo -n dd if=/dev/zcnblk0 of="$scratch/read-b-synced" bs=4096 skip=7 count=1 \
+if sudo -n dd if=/dev/zero of=/dev/zcnblk0 bs=4096 count=0 conv=fsync status=none \
+	2>"$OUTDIR/expected-sync-rejection.log"; then
+	echo "wal-memory incorrectly acknowledged a block sync" >&2
+	exit 1
+fi
+sudo -n dd if=/dev/zcnblk0 of="$scratch/read-b-after-rejected-sync" bs=4096 skip=7 count=1 \
 	iflag=direct status=none
-cmp "$scratch/pattern-b" "$scratch/read-b-synced"
+cmp "$scratch/pattern-b" "$scratch/read-b-after-rejected-sync"
 
 stop_target
 grep 'zcnblk-shm-target-summary:' "$OUTDIR/target.log" | tee "$OUTDIR/summary.log"
 grep -q 'syncs=[1-9]' "$OUTDIR/summary.log"
-printf 'zcnblk-shm-walmem-smoke: PASS dirty-read=true overwrite-order=true sync-read=true artifact=%s\n' "$OUTDIR"
+printf 'zcnblk-shm-walmem-smoke: PASS dirty-read=true overwrite-order=true sync-fail-closed=true artifact=%s\n' "$OUTDIR"

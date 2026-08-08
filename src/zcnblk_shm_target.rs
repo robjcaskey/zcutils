@@ -275,6 +275,18 @@ impl BackendMode {
     fn is_wal_writeback(self) -> bool {
         matches!(self, Self::WalMemory | Self::WalTcp)
     }
+
+    fn can_ack_block_sync(self) -> bool {
+        matches!(self, Self::WalTcp)
+    }
+
+    fn sync_contract(self) -> &'static str {
+        if self.can_ack_block_sync() {
+            "persistent-remote-leaf-hwm"
+        } else {
+            "unsupported-volatile"
+        }
+    }
 }
 
 impl ZcnblkFanWalSharedLeaseSource for Mapping {
@@ -6477,7 +6489,12 @@ impl SharedTarget {
                     self.stats.reads += 1;
                     self.stats.read_bytes += u64::from(request.len);
                 }
-                ZCNBLK_SHM_OP_SYNC => self.stats.syncs += 1,
+                ZCNBLK_SHM_OP_SYNC => {
+                    self.stats.syncs += 1;
+                    if !self.backend.can_ack_block_sync() {
+                        status = -(libc::EOPNOTSUPP as i16);
+                    }
+                }
                 _ => status = -(libc::EOPNOTSUPP as i16),
             }
             if status == 0 {
@@ -6522,7 +6539,10 @@ impl SharedTarget {
                         }
                     }
                 }
-                ZCNBLK_SHM_OP_SYNC => self.stats.syncs += 1,
+                ZCNBLK_SHM_OP_SYNC => {
+                    self.stats.syncs += 1;
+                    status = -(libc::EOPNOTSUPP as i16);
+                }
                 _ => status = -(libc::EOPNOTSUPP as i16),
             }
         }
@@ -8655,7 +8675,7 @@ impl SharedTarget {
                 _ => ("request-order", "immediate-copy", "reduced-memory", "none"),
             };
         eprintln!(
-            "zcnblk-shm-target-summary: backend={:?} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={elapsed:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} lease_release_batch={} writeback_batch={} writeback_batches={} writeback_writes={} writeback_bytes={} durable_submit_hwm={} pending_writes={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} completion_order=global-fifo data_order=per-sector+sync-hwm sync_boundary={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress={} dirty_read_source={} kernel_payload_copies=one-per-direction writeback_materialization_copies={}",
+            "zcnblk-shm-target-summary: backend={:?} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={elapsed:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} lease_release_batch={} writeback_batch={} writeback_batches={} writeback_writes={} writeback_bytes={} durable_submit_hwm={} pending_writes={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} completion_order=global-fifo data_order=per-sector+sync-hwm sync_contract={} sync_boundary={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress={} dirty_read_source={} kernel_payload_copies=one-per-direction writeback_materialization_copies={}",
             self.backend,
             self.header.channels,
             self.stats.requests,
@@ -8682,6 +8702,7 @@ impl SharedTarget {
             self.busy_poll_us,
             self.busy_hysteresis_us,
             self.poll_clock_check_spins,
+            self.backend.sync_contract(),
             sync_boundary,
             write_ingress,
             dirty_read_source,
@@ -9140,7 +9161,7 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
         }
     }
     eprintln!(
-        "zcnblk-shm-target: device={} backend={backend:?} channels={} ring_entries={} payload_entries={} slot_bytes={} region_bytes={} capacity_bytes={} kick_batch={} lease_release_batch={} writeback_batch={} read_batch={} read_batch_fill_us={} read_batch_fill_min={} write_batch_fill_us={} write_batch_fill_min={} remote_leaf={} cpu_list={} owner_dispatch={} owner_count={} owner_extent_records={} owner_max_tx_iovecs={} split_transport={} transport_cpu_list={} transport_wait={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} wait_policy={} ordering={} shared_payload_slots=true payload_ownership={} placement_owner=downstream-userspace-stage block_client_placement=no representative={} ",
+        "zcnblk-shm-target: device={} backend={backend:?} channels={} ring_entries={} payload_entries={} slot_bytes={} region_bytes={} capacity_bytes={} kick_batch={} lease_release_batch={} writeback_batch={} read_batch={} read_batch_fill_us={} read_batch_fill_min={} write_batch_fill_us={} write_batch_fill_min={} remote_leaf={} cpu_list={} owner_dispatch={} owner_count={} owner_extent_records={} owner_max_tx_iovecs={} split_transport={} transport_cpu_list={} transport_wait={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} wait_policy={} ordering={} sync_contract={} shared_payload_slots=true payload_ownership={} placement_owner=downstream-userspace-stage block_client_placement=no representative={} ",
         device,
         target.header.channels,
         target.header.ring_entries,
@@ -9213,6 +9234,7 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
         } else {
             "per-channel-fifo+sector-lock"
         },
+        backend.sync_contract(),
         if target.transfer_payload_slots {
             "submit-sequence-token-transfer"
         } else {
@@ -9559,6 +9581,14 @@ mod tests {
     fn remote_wal_connection_remains_thread_portable() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<RemoteWalLeaf>();
+    }
+
+    #[test]
+    fn only_remote_wal_backend_can_ack_block_sync() {
+        assert!(!BackendMode::Null.can_ack_block_sync());
+        assert!(!BackendMode::Memory.can_ack_block_sync());
+        assert!(!BackendMode::WalMemory.can_ack_block_sync());
+        assert!(BackendMode::WalTcp.can_ack_block_sync());
     }
 
     #[test]

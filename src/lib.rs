@@ -34025,7 +34025,8 @@ struct ZcnblkFanWalResultArenaSlot {
     branch_id: AtomicU64,
     segment_count: AtomicU64,
     payload_len: AtomicU64,
-    _pad: [u64; 2],
+    frame_sequence: AtomicU64,
+    sync_epoch: AtomicU64,
 }
 
 #[derive(Clone, Copy)]
@@ -34035,6 +34036,8 @@ struct ZcnblkFanWalResultBatchHeader {
     branch_id: u32,
     segment_count: u32,
     payload_len: u32,
+    sequence: u64,
+    sync_epoch: u64,
 }
 
 struct ZcnblkFanWalResultArenaMap {
@@ -34122,7 +34125,8 @@ impl ZcnblkFanWalResultArenaMap {
                         branch_id: AtomicU64::new(0),
                         segment_count: AtomicU64::new(0),
                         payload_len: AtomicU64::new(0),
-                        _pad: [0; 2],
+                        frame_sequence: AtomicU64::new(0),
+                        sync_epoch: AtomicU64::new(0),
                     },
                 );
             }
@@ -34200,6 +34204,9 @@ impl ZcnblkFanWalResultArenaMap {
             .store(result.segment_count as u64, Ordering::Relaxed);
         slot.payload_len
             .store(result.payload_len as u64, Ordering::Relaxed);
+        slot.frame_sequence
+            .store(result.sequence, Ordering::Relaxed);
+        slot.sync_epoch.store(result.sync_epoch, Ordering::Relaxed);
         slot.sequence_plus_one
             .store(sequence.saturating_add(1), Ordering::Release);
         self.header()
@@ -34233,6 +34240,8 @@ impl ZcnblkFanWalResultArenaMap {
             branch_id: slot.branch_id.load(Ordering::Relaxed) as u32,
             segment_count: slot.segment_count.load(Ordering::Relaxed) as u32,
             payload_len: slot.payload_len.load(Ordering::Relaxed) as u32,
+            sequence: slot.frame_sequence.load(Ordering::Relaxed),
+            sync_epoch: slot.sync_epoch.load(Ordering::Relaxed),
         };
         self.header().consumed.store(want, Ordering::Release);
         Ok(result)
@@ -34580,6 +34589,8 @@ fn zcnblk_fan_wal_result_receiver(
                 branch_id: frame.branch_id,
                 segment_count: frame.segment_count,
                 payload_len: frame.payload_len,
+                sequence: frame.sequence,
+                sync_epoch: frame.sync_epoch,
             },
         )?;
         batches = batches.saturating_add(1);
@@ -36078,6 +36089,8 @@ fn zcnblk_fan_wal_sync_leaves(
                     branch_id: header.branch_id,
                     segment_count: header.segment_count,
                     payload_len: header.payload_len,
+                    sequence: header.sequence,
+                    sync_epoch: header.sync_epoch,
                     ..ZcnblkFanWalFrame::default()
                 }
             }
@@ -36094,22 +36107,48 @@ fn zcnblk_fan_wal_sync_leaves(
             || result.branch_id as usize != leaf_idx
             || result.segment_count != 1
             || result.payload_len != 0
+            || result.sequence != sync_epoch
+            || result.sync_epoch != sync_epoch
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "fan WAL sync result mismatch op={} status={} branch={} count={} payload_len={} expected_branch={leaf_idx}",
+                    "fan WAL sync result mismatch op={} status={} branch={} count={} payload_len={} sequence={} sync_epoch={} expected_branch={leaf_idx} expected_sequence={} expected_sync_epoch={}",
                     result.op,
                     result.status,
                     result.branch_id,
                     result.segment_count,
-                    result.payload_len
+                    result.payload_len,
+                    result.sequence,
+                    result.sync_epoch,
+                    sync_epoch,
+                    sync_epoch,
                 ),
             ));
         }
         *result_records = result_records
             .checked_add(1)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan WAL result overflow"))?;
+    }
+    Ok(())
+}
+
+fn zcnblk_fan_wal_sync_local_leaves(
+    local_leaves: Option<&Arc<Vec<Arc<ZcnblkWalLeafBackend>>>>,
+) -> io::Result<()> {
+    let Some(local_leaves) = local_leaves else {
+        return Ok(());
+    };
+    for (leaf_idx, backend) in local_leaves.iter().enumerate() {
+        backend.sync().map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "local fan WAL leaf {leaf_idx} ({}) cannot satisfy block SYNC: {err}",
+                    backend.label()
+                ),
+            )
+        })?;
     }
     Ok(())
 }
@@ -41418,6 +41457,7 @@ fn zcnblk_fan_wal_handler(
                 topology_numa_node,
                 &mut result_records,
             )?;
+            zcnblk_fan_wal_sync_local_leaves(local_leaf_backends.as_ref())?;
             if trace_sync {
                 eprintln!(
                     "zcnblk-fan-wal-sync-trace: handler={handler} lane={} sending_sync_ack",
@@ -44587,7 +44627,31 @@ enum ZcnblkWalLeafBackend {
         file: fs::File,
         device_bytes: u64,
         required_alignment: usize,
+        durability: ZcnblkWalLeafDurability,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZcnblkWalLeafDurability {
+    Volatile,
+    Persistent,
+}
+
+impl ZcnblkWalLeafDurability {
+    fn for_target(target: &SlotWalTarget) -> Self {
+        if matches!(target.kind, SlotWalTargetKind::PartUuid(_)) {
+            Self::Persistent
+        } else {
+            Self::Volatile
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Volatile => "volatile-no-sync-ack",
+            Self::Persistent => "persistent-fsync",
+        }
+    }
 }
 
 struct ZcnblkWalLeafMemoryArena {
@@ -44917,6 +44981,15 @@ impl ZcnblkWalLeafBackend {
         }
     }
 
+    fn durability(&self) -> ZcnblkWalLeafDurability {
+        match self {
+            Self::Block { durability, .. } => *durability,
+            Self::DevNull { .. } | Self::Memory { .. } | Self::LeaseMemory { .. } => {
+                ZcnblkWalLeafDurability::Volatile
+            }
+        }
+    }
+
     fn validate_range(&self, offset: u64, len: usize) -> io::Result<()> {
         let alignment = self.required_alignment();
         if len == 0 || len % alignment != 0 || offset % alignment as u64 != 0 {
@@ -44971,8 +45044,24 @@ impl ZcnblkWalLeafBackend {
 
     fn sync(&self) -> io::Result<()> {
         match self {
-            Self::Block { file, .. } => file.sync_data(),
-            Self::DevNull { .. } | Self::Memory { .. } | Self::LeaseMemory { .. } => Ok(()),
+            Self::Block {
+                file,
+                durability: ZcnblkWalLeafDurability::Persistent,
+                ..
+            } => file.sync_data(),
+            Self::Block {
+                durability: ZcnblkWalLeafDurability::Volatile,
+                ..
+            }
+            | Self::DevNull { .. }
+            | Self::Memory { .. }
+            | Self::LeaseMemory { .. } => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "refusing to acknowledge block SYNC on volatile WAL leaf {}; use an allowlisted persistent PARTUUID leaf before testing durability",
+                    self.label()
+                ),
+            )),
         }
     }
 
@@ -45339,11 +45428,13 @@ fn zcnblk_wal_leaf_open_backend(
         .custom_flags(libc::O_CLOEXEC)
         .open(target.open_path())?;
     let device_bytes = block_device_size(file.as_raw_fd())?;
+    let durability = ZcnblkWalLeafDurability::for_target(&target);
     Ok(ZcnblkWalLeafBackend::Block {
         label: target.label().to_string(),
         file,
         device_bytes,
         required_alignment,
+        durability,
     })
 }
 
@@ -48506,7 +48597,7 @@ fn zcnblk_wal_leaf(
          leaf_adaptive_wait_ns={} leaf_adaptive_hysteresis_ns={} \
          uninit_read_buffers={} zero_copy_strict={zero_copy_strict} \
          result_ranges_configured={result_ranges_configured} device_bytes={} \
-         required_alignment={} memory_policy={} memory_hugetlb={} preferred_numa_node={} \
+         required_alignment={} durability={} memory_policy={} memory_hugetlb={} preferred_numa_node={} \
          protocol=fan-wal-v{ZCNBLK_FAN_WAL_VERSION}",
         backend.label(),
         io_mode.label(),
@@ -48540,6 +48631,7 @@ fn zcnblk_wal_leaf(
         zcnblk_uninit_read_buffers_enabled(),
         backend.device_bytes(),
         backend.required_alignment(),
+        backend.durability().label(),
         backend.memory_policy(),
         backend.memory_hugetlb(),
         option_i32_label(preferred_numa_node),
@@ -58029,6 +58121,54 @@ EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_grou
             ZcnblkWalLeafIoMode::Blocking.adapter_for_frame(frame),
             ZcnblkWalLeafIoMode::Blocking
         );
+    }
+
+    #[test]
+    fn zcnblk_wal_leaf_refuses_sync_on_volatile_media() {
+        let backend = ZcnblkWalLeafBackend::DevNull {
+            device_bytes: 1024 * 1024,
+            required_alignment: 4096,
+        };
+        assert_eq!(backend.durability(), ZcnblkWalLeafDurability::Volatile);
+        let err = backend.sync().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        assert!(
+            err.to_string()
+                .contains("refusing to acknowledge block SYNC")
+        );
+    }
+
+    #[test]
+    fn zcnblk_wal_leaf_only_classifies_partuuid_as_persistent() {
+        assert_eq!(
+            ZcnblkWalLeafDurability::for_target(&SlotWalTarget::zc_block_ramdisk("/dev/zcbrd0")),
+            ZcnblkWalLeafDurability::Volatile
+        );
+        assert_eq!(
+            ZcnblkWalLeafDurability::for_target(
+                &SlotWalTarget::from_partuuid("1234-abcd").unwrap()
+            ),
+            ZcnblkWalLeafDurability::Persistent
+        );
+    }
+
+    #[test]
+    fn zcnblk_fan_result_arena_preserves_sync_identity() {
+        let arena = ZcnblkFanWalResultArenaMap::create(2).unwrap();
+        let expected = ZcnblkFanWalResultBatchHeader {
+            op: ZCNBLK_FAN_WAL_OP_RESULT,
+            status: ZCNBLK_FAN_WAL_STATUS_OK,
+            branch_id: 1,
+            segment_count: 1,
+            payload_len: 0,
+            sequence: 97,
+            sync_epoch: 97,
+        };
+        arena.publish(0, expected).unwrap();
+        let actual = arena.consume(0).unwrap();
+        assert_eq!(actual.op, expected.op);
+        assert_eq!(actual.sequence, expected.sequence);
+        assert_eq!(actual.sync_epoch, expected.sync_epoch);
     }
 
     #[test]

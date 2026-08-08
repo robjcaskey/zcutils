@@ -135,10 +135,10 @@ static uint shm_poll_us = 50;
 module_param(shm_poll_us, uint, 0644);
 MODULE_PARM_DESC(shm_poll_us, "Shared transport completion busy-poll budget before sleeping");
 
-static bool shm_ordering_epochs;
+static bool shm_ordering_epochs = true;
 module_param(shm_ordering_epochs, bool, 0444);
 MODULE_PARM_DESC(shm_ordering_epochs,
-		 "Stamp flush epochs and publish per-lane admission vectors (experimental)");
+		 "Stamp flush epochs and publish per-lane admission vectors (required for shm)");
 
 static uint fill_timeout_ms;
 module_param(fill_timeout_ms, uint, 0444);
@@ -150,7 +150,7 @@ MODULE_PARM_DESC(write_acks, "Wait for target write acknowledgements before comp
 
 static bool null_backend;
 module_param(null_backend, bool, 0444);
-MODULE_PARM_DESC(null_backend, "Benchmark-only: complete reads/writes/flushes locally without TCP");
+MODULE_PARM_DESC(null_backend, "Benchmark-only: complete reads/writes locally without TCP; flushes fail closed");
 
 static bool null_read_zero = true;
 module_param(null_read_zero, bool, 0444);
@@ -2305,6 +2305,11 @@ static blk_status_t zcnblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 		return BLK_STS_OK;
 	}
 	if (null_backend) {
+		if (req_op(rq) == REQ_OP_FLUSH) {
+			pr_err_ratelimited("zcnblk: null_backend refuses to acknowledge block flush without durable media\n");
+			blk_mq_end_request(rq, BLK_STS_NOTSUPP);
+			return BLK_STS_OK;
+		}
 		blk_mq_end_request(rq, zcnblk_null_complete_request(dev, rq));
 		return BLK_STS_OK;
 	}
@@ -2992,6 +2997,10 @@ static int __init zcnblk_init(void)
 	}
 	if (zcnblk_shm_enabled() && null_backend) {
 		pr_err("zcnblk: transport=shm and null_backend=1 are mutually exclusive\n");
+		return -EINVAL;
+	}
+	if (zcnblk_shm_enabled() && !shm_ordering_epochs) {
+		pr_err("zcnblk: transport=shm requires shm_ordering_epochs=1; refusing a block edge that cannot preserve global sync cuts\n");
 		return -EINVAL;
 	}
 	if (zcnblk_shm_enabled() && aes256_gcm_token && *aes256_gcm_token) {

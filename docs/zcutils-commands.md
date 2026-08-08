@@ -1726,9 +1726,11 @@ the longest permitted unsynced/writeback window.
 `zcnblk-shm-target ... wal-memory` is the first concrete local writeback stage
 on that ABI. It admits ordinary writes by shared-slot reference, serves dirty
 read-after-write from the latest slot, materializes ordered batches into a
-userspace RAM reduction arena at pressure or sync, and ACKs flush only after all
-prior writes are reduced. The module advertises a volatile write cache and does
-not advertise FUA, so `fsync(2)` reaches the `REQ_OP_FLUSH` to sync-HWM path.
+userspace RAM reduction arena at pressure or sync. It is volatile benchmark
+media and deliberately rejects flush after reducing prior writes; a successful
+block sync requires the `wal-tcp` path to persistent leaves. The module
+advertises a volatile write cache and does not advertise FUA, so `fsync(2)`
+reaches the `REQ_OP_FLUSH` to sync-HWM path instead of being silently absorbed.
 This backend is currently restricted to one lane; it fails startup for multiple
 lanes until cross-lane submit order and the global sync HWM have a dedicated
 overlap test. It is a single-leaf baseline and makes no RAID placement decision.
@@ -1748,9 +1750,10 @@ REPEATS=3 OPS_PER_WORKER=2000000 scripts/zcnblk-shm-block-bench.sh
 ```
 
 The smoke reserves `/dev/zcnblk0`, tracks the daemon through its PID file, and
-uses `dd count=0 conv=fsync` to issue `fsync(2)` on the block fd. Do not replace
-that check with `blockdev --flushbufs`: in a direct-I/O-only test the latter can
-sync/invalidate the block page cache without submitting a device flush.
+uses `dd count=0 conv=fsync` to issue `fsync(2)` on the block fd and requires it
+to fail for volatile `wal-memory`. Do not replace that check with
+`blockdev --flushbufs`: in a direct-I/O-only test the latter can sync/invalidate
+the block page cache without submitting a device flush.
 
 Use `BACKEND=wal-tcp` to keep `/dev/zcnblk0` as the client edge while sending
 the userspace WAL stage to a `zcnblk-wal-leaf`. The harness starts a local
