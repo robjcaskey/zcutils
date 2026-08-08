@@ -1,0 +1,39 @@
+make: Entering directory '/home/ubuntu/zcutils/kmods'
+make -C /lib/modules/6.17.0-1019-aws/build M=/home/ubuntu/zcutils/kmods modules
+make[1]: Entering directory '/usr/src/linux-headers-6.17.0-1019-aws'
+make[2]: Entering directory '/home/ubuntu/zcutils/kmods'
+warning: the compiler differs from the one used to build the kernel
+  The kernel was built by: aarch64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+  You are using:           gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+  CC [M]  zcbrd_mod.o
+zcbrd_mod.c:816:24: warning: initialization discards ‘const’ qualifier from pointer target type [-Wdiscarded-qualifiers]
+  816 |         .ct_item_ops = &zcbrd_device_ops,
+      |                        ^
+zcbrd_mod.c:867:25: warning: initialization discards ‘const’ qualifier from pointer target type [-Wdiscarded-qualifiers]
+  867 |         .ct_group_ops = &zcbrd_group_ops,
+      |                         ^
+  CC [M]  zcnblk_client_mod.o
+  CC [M]  zcwalblk_mod.o
+zcwalblk_mod.c:986:24: warning: initialization discards ‘const’ qualifier from pointer target type [-Wdiscarded-qualifiers]
+  986 |         .ct_item_ops = &zcwalblk_device_ops,
+      |                        ^
+zcwalblk_mod.c:1038:25: warning: initialization discards ‘const’ qualifier from pointer target type [-Wdiscarded-qualifiers]
+ 1038 |         .ct_group_ops = &zcwalblk_group_ops,
+      |                         ^
+  MODPOST Module.symvers
+  CC [M]  zcbrd_mod.mod.o
+  CC [M]  .module-common.o
+  LD [M]  zcbrd_mod.ko
+  BTF [M] zcbrd_mod.ko
+Skipping BTF generation for zcbrd_mod.ko due to unavailability of vmlinux
+  CC [M]  zcnblk_client_mod.mod.o
+  LD [M]  zcnblk_client_mod.ko
+  BTF [M] zcnblk_client_mod.ko
+Skipping BTF generation for zcnblk_client_mod.ko due to unavailability of vmlinux
+  CC [M]  zcwalblk_mod.mod.o
+  LD [M]  zcwalblk_mod.ko
+  BTF [M] zcwalblk_mod.ko
+make[2]: Leaving directory '/home/ubuntu/zcutils/kmods'
+make[1]: Leaving directory '/usr/src/linux-headers-6.17.0-1019-aws'
+make: Leaving directory '/home/ubuntu/zcutils/kmods'
+Skipping BTF generation for zcwalblk_mod.ko due to unavailability of vmlinux

@@ -1,0 +1,14 @@
+[18:27:28] WARNING: mapped CPUs are not all using performance governor: cpu0=powersave,cpu1=powersave,cpu2=powersave,cpu3=powersave,cpu4=powersave,cpu5=powersave,cpu6=powersave,cpu7=powersave,cpu8=powersave,cpu9=powersave,cpu10=powersave,cpu11=powersave,cpu12=powersave,cpu13=powersave,cpu14=powersave,cpu15=powersave,cpu16=powersave,cpu17=powersave,cpu18=powersave,cpu19=powersave,cpu20=powersave,cpu21=powersave,cpu22=powersave,cpu23=powersave,cpu24=powersave,cpu25=powersave,cpu26=powersave,cpu27=powersave,cpu28=powersave,cpu29=powersave
+[18:27:28] WARNING: mapped local stages include SMT siblings; report this as SMT-paired, not isolated physical-core topology
+[18:27:28] WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+[18:27:28] WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+[18:27:28] WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons
+[18:27:28] WARNING: topology preflight found 5 issue(s); see /home/rob/zcutils/bench-results/local-fanwal-localleaf-6lane-8m-20260708T2030Z/topology-preflight.log
+[18:27:29] plan_id=zcp-mirror-max-gbit-tcp-mux-6l-2b-8388608e-4096r placement_epoch=1
+[18:27:29] using in-process local zcleasemem leaves; no external zcnblk-wal-leaf daemons
+[18:27:29] starting fan
+zcnblk-fan-wal-local-leaf: leaf=0 target=zcleasemem:1073741824 transport=shared-arena block_devices=no kernel_raid=no
+zcnblk-fan-wal-local-leaf: leaf=1 target=zcleasemem:1073741824 transport=shared-arena block_devices=no kernel_raid=no
+zcnblk-fan-wal-stage-cpus: fan-handler=6-11 fan-async-writeback=12-17 client=0-5
+Error: Custom { kind: Other, error: "TOPOLOGY ERROR: zcnblk-fan WAL: SMT topology conflict: stage fan-async-writeback CPU 16 and stage client CPU 0 in domain local share a physical core; separate fan/client/leaf lanes or report this as an SMT-paired run; strict topology mode refuses to print representative benchmark numbers for this run" }
+ERROR: fan exited before startup completed

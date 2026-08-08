@@ -1,0 +1,4 @@
+run=stream-direct-low1m mode=stream-direct lowat=1048576 client_cpus=0-7 fan_cpus=8-15 leaf0_cpus=16-23 leaf1_cpus=24-31 client_port=45100 leaf_port=45200
+run=stream-direct-low1m leaf0_ret=0 leaf1_ret=0 fan_ret=0 client_ret=0
+run=lane-splice-blocking-low1m mode=lane-splice-blocking lowat=1048576 client_cpus=0-7 fan_cpus=8-15 leaf0_cpus=16-23 leaf1_cpus=24-31 client_port=45300 leaf_port=45400
+run=lane-splice-blocking-low1m leaf0_ret=0 leaf1_ret=0 fan_ret=0 client_ret=0

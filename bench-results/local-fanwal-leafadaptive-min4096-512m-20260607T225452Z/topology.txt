@@ -1,0 +1,11 @@
+root=bench-results/local-fanwal-leafadaptive-min4096-512m-20260607T225452Z
+topology=sender zcnblk-send -> zcnblk-fan WAL mirror -> two zcnblk-wal-leaf zcleasemem targets
+block_raid=no
+label=min4096
+leaf_spin_policy=adaptive
+leaf_adaptive_min=4096
+sender_cpus=0,1,2,3
+fan_cpus=4,5,6,7
+leaf0_cpus=8,9,10,11
+leaf1_cpus=12,13,14,15
+lanes=4 bytes_per_connection=512M chunk=4K stripe=256K leaf_base=62920 fan_base=64120 batch_depth=64 physical_core_separated=yes

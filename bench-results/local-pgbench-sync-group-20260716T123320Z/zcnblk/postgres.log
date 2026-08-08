@@ -1,0 +1,24 @@
+2026-07-16 08:33:21.715 EDT [1576608] LOG:  starting PostgreSQL 17.10 (Debian 17.10-0+deb13u1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+2026-07-16 08:33:21.715 EDT [1576608] LOG:  listening on Unix socket "/tmp/zc-pgbench-sync-hwm-socket/.s.PGSQL.55432"
+2026-07-16 08:33:22.021 EDT [1576637] LOG:  database system was shut down at 2026-07-16 08:33:21 EDT
+2026-07-16 08:33:22.022 EDT [1576638] FATAL:  the database system is starting up
+2026-07-16 08:33:22.024 EDT [1576608] LOG:  database system is ready to accept connections
+2026-07-16 08:33:22.127 EDT [1576647] FATAL:  role "rob" does not exist
+2026-07-16 08:33:33.127 EDT [1576635] LOG:  checkpoints are occurring too frequently (11 seconds apart)
+2026-07-16 08:33:33.127 EDT [1576635] HINT:  Consider increasing the configuration parameter "max_wal_size".
+2026-07-16 08:33:33.238 EDT [1576635] LOG:  checkpoint starting: wal
+2026-07-16 08:33:51.379 EDT [1576635] LOG:  checkpoint complete: wrote 938 buffers (2.9%); 0 WAL file(s) added, 3 removed, 30 recycled; write=10.318 s, sync=2.274 s, total=18.253 s; sync files=313, longest=1.216 s, average=0.008 s; distance=543833 kB, estimate=543833 kB; lsn=0/438095D8, redo lsn=0/22803420
+2026-07-16 08:33:51.379 EDT [1576635] LOG:  checkpoints are occurring too frequently (18 seconds apart)
+2026-07-16 08:33:51.379 EDT [1576635] HINT:  Consider increasing the configuration parameter "max_wal_size".
+2026-07-16 08:33:51.380 EDT [1576635] LOG:  checkpoint starting: wal
+2026-07-16 08:35:40.827 EDT [1577519] PANIC:  could not fdatasync file "00000001000000000000006D": Input/output error
+2026-07-16 08:35:40.827 EDT [1577519] STATEMENT:  END;
+2026-07-16 08:35:40.828 EDT [1576635] PANIC:  could not fsync file "base/16384/16400": Input/output error
+2026-07-16 08:35:40.828 EDT [1576636] PANIC:  could not flush dirty data: Read-only file system
+2026-07-16 08:35:40.828 EDT [1579700] ERROR:  could not open file "base/1/1249": Read-only file system
+2026-07-16 08:35:40.828 EDT [1580292] ERROR:  could not open file "base/16384/16405": Read-only file system
+2026-07-16 08:35:40.828 EDT [1580292] CONTEXT:  writing block 441 of relation base/16384/16405
+2026-07-16 08:35:40.830 EDT [1576608] LOG:  checkpointer process (PID 1576635) was terminated by signal 6: Aborted
+2026-07-16 08:35:40.830 EDT [1576608] LOG:  terminating any other active server processes
+2026-07-16 08:35:40.851 EDT [1576608] LOG:  all server processes terminated; reinitializing
+2026-07-16 08:35:40.863 EDT [1576608] PANIC:  could not open file "global/pg_control": Read-only file system

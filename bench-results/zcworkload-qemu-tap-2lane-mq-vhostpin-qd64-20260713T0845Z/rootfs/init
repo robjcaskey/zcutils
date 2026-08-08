@@ -1,0 +1,338 @@
+#!/bin/sh
+
+set -eu
+
+export PATH=/usr/bin:/bin:/sbin
+IP=/usr/bin/ip
+
+cmdline_value()
+{
+	key="$1"
+	for arg in $(cat /proc/cmdline); do
+		case "$arg" in
+			"$key"=*)
+				printf '%s\n' "${arg#*=}"
+				return 0
+				;;
+		esac
+	done
+	return 1
+}
+
+finish()
+{
+	status=$?
+	trap - EXIT HUP INT TERM
+	echo "ZCWORKLOAD_GUEST_FINAL role=${role:-unknown} status=$status"
+	/bin/busybox sync || true
+	/bin/busybox poweroff -f || true
+	sleep 5
+	exit "$status"
+}
+
+record_zcnblk_contexts()
+{
+	label="$1"
+	echo "--- zcnblk thread contexts: $label ---"
+	for status_file in /proc/[0-9]*/task/[0-9]*/status; do
+		[ -r "$status_file" ] || continue
+		comm=$(/bin/busybox sed -n 's/^Name:[[:space:]]*//p' "$status_file")
+		case "$comm" in
+			zcnblk*)
+				tid=${status_file%/status}
+				tid=${tid##*/}
+				/bin/busybox awk -v label="$label" -v tid="$tid" -v comm="$comm" '
+					/^voluntary_ctxt_switches:/ { voluntary=$2 }
+					/^nonvoluntary_ctxt_switches:/ { involuntary=$2 }
+					END { printf "zcnblk-kthread-context: phase=%s tid=%s comm=%s voluntary=%s involuntary=%s\n", label, tid, comm, voluntary, involuntary }
+				' "$status_file"
+				;;
+		esac
+	done
+}
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev || true
+mount -t debugfs debugfs /sys/kernel/debug || true
+
+role=$(cmdline_value zcworkload_role || printf unknown)
+trap finish EXIT HUP INT TERM
+
+echo "ZCWORKLOAD_GUEST_BOOT role=$role"
+uname -a
+echo "guest_cmdline=$(cat /proc/cmdline)"
+echo "guest_online_cpus=$(cat /sys/devices/system/cpu/online)"
+echo "guest_memlock_kib=$(ulimit -l)"
+echo "guest_hugepages_total=$(cat /proc/sys/vm/nr_hugepages)"
+echo "guest_hugepages_free=$(grep '^HugePages_Free:' /proc/meminfo | /bin/busybox awk '{print $2}')"
+
+for module in failover net_failover virtio_net; do
+	if [ -r "/modules/$module.ko" ]; then
+		insmod "/modules/$module.ko" || true
+	fi
+done
+
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+	[ -e /sys/class/net/eth0 ] && break
+	sleep 1
+done
+[ -e /sys/class/net/eth0 ]
+
+case "$role" in
+	target)
+		$IP addr add 10.72.0.2/24 dev eth0
+		$IP link set eth0 mtu 9000
+		$IP link set eth0 up
+		/zc-net-channels eth0 2
+		set -- $(/bin/busybox awk '/virtio0-input\.[01]/ { gsub(":", "", $1); print $1 }' /proc/interrupts)
+		[ "$#" -eq 2 ]
+		echo 1 > "/proc/irq/$1/smp_affinity_list"
+		echo 2 > "/proc/irq/$2/smp_affinity_list"
+		echo "target-rxq-map: rxq0:irq$1:guest-cpu1 rxq1:irq$2:guest-cpu2"
+		set -- $(/bin/busybox awk '/virtio0-output\.[01]/ { gsub(":", "", $1); print $1 }' /proc/interrupts)
+		[ "$#" -eq 2 ]
+		echo 1 > "/proc/irq/$1/smp_affinity_list"
+		echo 2 > "/proc/irq/$2/smp_affinity_list"
+		echo "target-txq-map: txq0:irq$1:guest-cpu1 txq1:irq$2:guest-cpu2"
+		echo "target_topology=wal-tcp-lane0:leaf-worker0:guest-cpu1,wal-tcp-lane1:leaf-worker1:guest-cpu2 backend=zcmem:128M frame_bytes=4096 submit_mode=blocking"
+		echo "target_vcpu_host_map=vCPU0:hostCPU4,vCPU1:hostCPU5,vCPU2:hostCPU6,vCPU3:hostCPU7 emulator:hostCPU2"
+		echo "target_no_raid=true target_no_terminal_block_media=true"
+		grep -E 'virtio|eth0' /proc/interrupts || true
+		sleep 8
+		echo "+ URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1,2 URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1 /uring-play zcnblk-wal-leaf zcmem:128M 10.72.0.2 29000 2 1 4096 2 true blocking"
+		URING_PLAY_PIN_CPUS=1 \
+		URING_PLAY_PIN_CPU_LIST=1,2 \
+		URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1 \
+		/uring-play zcnblk-wal-leaf zcmem:128M 10.72.0.2 29000 2 1 4096 2 true blocking
+		;;
+	client)
+		$IP addr add 10.72.0.1/24 dev eth0
+		$IP link set eth0 mtu 9000
+		$IP link set eth0 up
+		/zc-net-channels eth0 2
+		set -- $(/bin/busybox awk '/virtio0-input\.[01]/ { gsub(":", "", $1); print $1 }' /proc/interrupts)
+		[ "$#" -eq 2 ]
+		echo 2 > "/proc/irq/$1/smp_affinity_list"
+		echo 3 > "/proc/irq/$2/smp_affinity_list"
+		echo "client-rxq-map: rxq0:irq$1:guest-cpu2 rxq1:irq$2:guest-cpu3"
+		set -- $(/bin/busybox awk '/virtio0-output\.[01]/ { gsub(":", "", $1); print $1 }' /proc/interrupts)
+		[ "$#" -eq 2 ]
+		echo 2 > "/proc/irq/$1/smp_affinity_list"
+		echo 3 > "/proc/irq/$2/smp_affinity_list"
+		echo "client-txq-map: txq0:irq$1:guest-cpu2 txq1:irq$2:guest-cpu3"
+		echo "client_topology=lane0:workload-worker0:guest-cpu1:wal-onramp-worker0:guest-cpu2:kernel-kthread0:guest-cpu5,lane1:workload-worker1:guest-cpu4:wal-onramp-worker1:guest-cpu3:kernel-kthread1:guest-cpu6 frame_bytes=4096"
+		echo "client_vcpu_host_map=vCPU0:hostCPU8,vCPU1:hostCPU9,vCPU2:hostCPU10,vCPU3:hostCPU11,vCPU4:hostCPU12,vCPU5:hostCPU13,vCPU6:hostCPU14 emulator:hostCPU15"
+		echo "client_block_edge=/dev/zcnblk0 transport=shm userspace_stage=zcnblk-shm-target:wal-tcp placement_owner=none block_client_placement=no"
+		sleep 15
+		/bin/busybox ping -c 1 -W 2 10.72.0.2
+		echo "+ insmod /modules/zcnblk_client_mod.ko transport=shm lanes=2 connections_per_lane=1 shard_count=1 size_mib=128 logical_block_size=4096 max_frame_bytes=4096 queues=2 queue_depth=128 pipeline_depth=128 shm_ring_entries=256 shm_payload_entries=4096 shm_poll_us=50 batch_depth=1 write_acks=1 hctx_affinity=1 pin_threads=1 pin_base_cpu=5 pin_cpu_count=2 pin_stride=1"
+		insmod /modules/zcnblk_client_mod.ko \
+			transport=shm lanes=2 connections_per_lane=1 shard_count=1 size_mib=128 \
+			logical_block_size=4096 max_frame_bytes=4096 queues=2 queue_depth=128 \
+			pipeline_depth=128 shm_ring_entries=256 shm_payload_entries=4096 \
+			shm_poll_us=50 batch_depth=1 write_acks=1 hctx_affinity=1 \
+			pin_threads=1 pin_base_cpu=5 pin_cpu_count=2 pin_stride=1
+		for _ in 1 2 3 4 5 6 7 8 9 10; do
+			[ -b /dev/zcnblk0 ] && [ -c /dev/zcnblk-shmctl ] && break
+			sleep 1
+		done
+		[ -b /dev/zcnblk0 ] && [ -c /dev/zcnblk-shmctl ]
+		echo "+ URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE=/tmp/zcworkload-onramp.pid URING_PLAY_ZCNBLK_SHM_LEAF_ADDR=10.72.0.2:29000 URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH=1 URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1 /zcnblk-shm-target /dev/zcnblk-shmctl wal-tcp 128 2,3 1000 1000 10000"
+		URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE=/tmp/zcworkload-onramp.pid \
+		URING_PLAY_ZCNBLK_SHM_LEAF_ADDR=10.72.0.2:29000 \
+		URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH=1 \
+		URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1 \
+		URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=2,3 \
+		/zcnblk-shm-target /dev/zcnblk-shmctl wal-tcp 128 2,3 1000 1000 10000 \
+			> /wal-onramp.log 2>&1 &
+		onramp_job_pid=$!
+		for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+			[ -s /tmp/zcworkload-onramp.pid ] && break
+			[ -e "/proc/$onramp_job_pid" ] || { cat /wal-onramp.log; exit 32; }
+			sleep 1
+		done
+		[ -s /tmp/zcworkload-onramp.pid ]
+		onramp_pid=$(cat /tmp/zcworkload-onramp.pid)
+		echo "wal-onramp-pid=$onramp_pid comm=$(cat /proc/$onramp_pid/comm)"
+		cat /wal-onramp.log
+		echo "--- zcnblk module parameters ---"
+		for parameter in transport lanes connections_per_lane size_mib logical_block_size max_frame_bytes queues queue_depth pipeline_depth shm_ring_entries shm_payload_entries shm_poll_us batch_depth write_acks hctx_affinity pin_threads pin_base_cpu pin_cpu_count pin_stride; do
+			printf '%s=' "$parameter"
+			cat "/sys/module/zcnblk_client_mod/parameters/$parameter"
+		done
+		echo "--- hctx maps ---"
+		for cpu_list in /sys/block/zcnblk0/mq/*/cpu_list; do
+			printf '%s=' "$cpu_list"
+			cat "$cpu_list"
+		done
+		grep -Eq '(^|,| )1(,| |$)' /sys/block/zcnblk0/mq/0/cpu_list
+		grep -Eq '(^|,| )4(,| |$)' /sys/block/zcnblk0/mq/1/cpu_list
+		echo "hctx-worker-alignment: PASS lane0=hctx0:worker0:cpu1 lane1=hctx1:worker1:cpu4"
+		grep -E 'virtio|zcnblk|eth0' /proc/interrupts || true
+		record_zcnblk_contexts before
+
+		echo "+ io_uring fixed random 4K 50/50 read/write two-lane QD64 per worker"
+		for depth in 64; do
+			echo "qdsweep-case: engine=uring-fixed mode=rw read_percent=50 workers=2 depth=$depth lane_map=lane0:worker0:guest-cpu1,lane1:worker1:guest-cpu4 onramp=lane0:guest-cpu2,lane1:guest-cpu3 kthread=lane0:guest-cpu5,lane1:guest-cpu6"
+			URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1,4 \
+				/zcblockbench /dev/zcnblk0 --engine uring-fixed --mode rw \
+				--read-percent 50 --workers 2 --ops-per-worker 100000 --bs 4096 \
+				--iodepth "$depth" --ring-entries 128 \
+				--region-bytes-per-worker 64M --buffer-mode small-pages \
+				--pin true --latency > "/qdsweep-$depth.log" 2>&1
+			cat "/qdsweep-$depth.log"
+		done
+		record_zcnblk_contexts after-qdsweep
+		onramp_comm=$(cat "/proc/$onramp_pid/comm")
+		echo "client-cleanup: inspect pid=$onramp_pid comm=$onramp_comm"
+		[ "$onramp_comm" = zcnblk-shm-targ ]
+		kill -INT "$onramp_pid"
+		set +e
+		wait "$onramp_job_pid"
+		onramp_wait_status=$?
+		set -e
+		cat /wal-onramp.log
+		echo "client-cleanup: onramp_wait_status=$onramp_wait_status"
+		[ "$onramp_wait_status" -eq 0 ]
+		/bin/busybox rmmod zcnblk_client_mod
+		echo "client-cleanup: onramp_stopped=true module_unloaded=true"
+		echo "ZCWORKLOAD_CLIENT_VALIDATION PASS frame_bytes=4096 lanes=2 virtio_queue_pairs=2 vhost_smt_paired=true workers=2 hctx_aligned=true qd_per_worker=64 lane_window=4 mixed_read_percent=50 ops=200000 representative=false"
+		exit 0
+
+		echo "+ /bin/busybox ping -q -c 20 -W 2 10.72.0.2"
+		/bin/busybox ping -q -c 20 -W 2 10.72.0.2 > /transport-rtt.log
+		cat /transport-rtt.log
+		rtt_ns=$(/bin/busybox awk -F '[=/ ]+' '/(round-trip|rtt) / { printf "%.0f\n", $6 * 1000000 }' /transport-rtt.log)
+		case "$rtt_ns" in
+			''|*[!0-9]*) echo "invalid parsed transport RTT: $rtt_ns"; exit 31 ;;
+		esac
+		[ "$rtt_ns" -gt 0 ]
+		echo "measured_transport_rtt_ns=$rtt_ns semantics=ICMP_guest_to_guest_not_block_completion"
+
+		echo "+ /zcworkload sample --capacity 64M --requests 100000 --seed 42 --json"
+		/zcworkload sample --capacity 64M --requests 100000 --seed 42 --json > /sample.json
+		cat /sample.json
+		grep -q '"profile": "enterprise-mixed-v1"' /sample.json
+		grep -q '"requests": 100000' /sample.json
+		grep -q '"invalid_alignment": 0' /sample.json
+		grep -q '"out_of_bounds": 0' /sample.json
+		echo "sample-validation: PASS requests=100000 invalid_alignment=0 out_of_bounds=0"
+
+		echo "+ URING_PLAY_TOPOLOGY_STRICT=1 /zcworkload run --target /dev/zcnblk0 --capacity 64M --engine sync --workers 1 --depth 1 --completion-batch 1 --ops-per-worker 8 --buffers small-pages --pin false --completion remote-ack"
+		set +e
+		URING_PLAY_TOPOLOGY_STRICT=1 \
+			/zcworkload run --target /dev/zcnblk0 --capacity 64M --engine sync \
+			--workers 1 --depth 1 --completion-batch 1 --ops-per-worker 8 \
+			--buffers small-pages --pin false --completion remote-ack \
+			> /strict-negative-unmapped.log 2>&1
+		strict_unmapped_status=$?
+		set -e
+		cat /strict-negative-unmapped.log
+		[ "$strict_unmapped_status" -ne 0 ]
+		! grep -q '^zcworkload-result:' /strict-negative-unmapped.log
+		grep -q 'TOPOLOGY ERROR:' /strict-negative-unmapped.log
+		echo "strict-negative-unmapped: PASS status=$strict_unmapped_status no_result=true"
+
+		echo "+ URING_PLAY_TOPOLOGY_FATAL=1 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1 /zcworkload run --target /dev/zcnblk0 --capacity 64M --engine uring --workers 1 --depth 2 --ring-entries 64 --completion-batch 2 --ops-per-worker 8 --buffers small-pages --pin true --lane-map lane0:worker0:cpu1 --kthread-map kthread0:cpu3 --completion remote-ack --transport-rtt-ns $rtt_ns"
+		set +e
+		URING_PLAY_TOPOLOGY_FATAL=1 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1 \
+			/zcworkload run --target /dev/zcnblk0 --capacity 64M --engine uring \
+			--workers 1 --depth 2 --ring-entries 64 --completion-batch 2 \
+			--ops-per-worker 8 --buffers small-pages --pin true \
+			--lane-map lane0:worker0:cpu1 \
+			--kthread-map kthread0:cpu3 \
+			--completion remote-ack --transport-rtt-ns "$rtt_ns" \
+			> /strict-negative-fastpath.log 2>&1
+		strict_fastpath_status=$?
+		set -e
+		cat /strict-negative-fastpath.log
+		[ "$strict_fastpath_status" -ne 0 ]
+		! grep -q '^zcworkload-result:' /strict-negative-fastpath.log
+		grep -q 'TOPOLOGY ERROR:' /strict-negative-fastpath.log
+		echo "strict-negative-fastpath: PASS status=$strict_fastpath_status no_result=true"
+
+		echo "+ sync pure 4K write QD1"
+		URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1 \
+			/zcblockbench /dev/zcnblk0 --engine sync --mode write \
+			--workers 1 --ops-per-worker 128 --bs 4096 --iodepth 1 \
+			--region-bytes-per-worker 64M --buffer-mode small-pages \
+			--pin true --latency > /pure-sync-write.log 2>&1
+		cat /pure-sync-write.log
+
+		echo "+ io_uring fixed pure 4K read QD1"
+		URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1 \
+			/zcblockbench /dev/zcnblk0 --engine uring-fixed --mode read \
+			--workers 1 --ops-per-worker 128 --bs 4096 --iodepth 1 \
+			--ring-entries 64 --region-bytes-per-worker 64M \
+			--buffer-mode small-pages --pin true --latency \
+			> /pure-uring-read-qd1.log 2>&1
+		cat /pure-uring-read-qd1.log
+
+		echo "+ io_uring fixed pure 4K read QD4"
+		URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1 \
+			/zcblockbench /dev/zcnblk0 --engine uring-fixed --mode read \
+			--workers 1 --ops-per-worker 256 --bs 4096 --iodepth 4 \
+			--ring-entries 64 --region-bytes-per-worker 64M \
+			--buffer-mode small-pages --pin true --latency \
+			> /pure-uring-read-qd4.log 2>&1
+		cat /pure-uring-read-qd4.log
+
+		echo "+ URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1 /zcworkload run --target /dev/zcnblk0 --capacity 64M --engine sync --workers 1 --depth 1 --completion-batch 1 --ops-per-worker 512 --buffers small-pages --pin true --latency-sample-rate 1 --completion remote-ack --lane-map lane0:worker0:cpu1 --kthread-map kthread0:cpu3 --transport-rtt-ns $rtt_ns --repeats 3"
+		set +e
+		URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1 \
+			/zcworkload run --target /dev/zcnblk0 --capacity 64M --engine sync \
+			--workers 1 --depth 1 --completion-batch 1 --ops-per-worker 512 \
+			--buffers small-pages --pin true --latency-sample-rate 1 \
+			--completion remote-ack \
+			--lane-map lane0:worker0:cpu1 \
+			--kthread-map kthread0:cpu3 \
+			--transport-rtt-ns "$rtt_ns" --repeats 3 \
+			> /sync-mixed.log 2>&1
+		sync_status=$?
+		set -e
+		cat /sync-mixed.log
+		[ "$sync_status" -eq 0 ]
+		[ "$(grep -c '^zcworkload-result:' /sync-mixed.log)" -eq 3 ]
+		grep -q '^zcworkload-spread:' /sync-mixed.log
+
+		echo "+ URING_PLAY_ENTER_NO_IOWAIT=1 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1 /zcworkload run --target /dev/zcnblk0 --capacity 64M --engine uring --workers 1 --depth 4 --ring-entries 64 --completion-batch 4 --ops-per-worker 512 --buffers small-pages --pin true --latency-sample-rate 1 --completion remote-ack --lane-map lane0:worker0:cpu1 --kthread-map kthread0:cpu3 --transport-rtt-ns $rtt_ns --repeats 3"
+		set +e
+		URING_PLAY_ENTER_NO_IOWAIT=1 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1 \
+			/zcworkload run --target /dev/zcnblk0 --capacity 64M --engine uring \
+			--workers 1 --depth 4 --ring-entries 64 --completion-batch 4 \
+			--ops-per-worker 512 --buffers small-pages --pin true \
+			--latency-sample-rate 1 --completion remote-ack \
+			--lane-map lane0:worker0:cpu1 \
+			--kthread-map kthread0:cpu3 \
+			--transport-rtt-ns "$rtt_ns" --repeats 3 \
+			> /uring-mixed.log 2>&1
+		uring_status=$?
+		set -e
+		cat /uring-mixed.log
+		[ "$uring_status" -eq 0 ]
+		[ "$(grep -c '^zcworkload-result:' /uring-mixed.log)" -eq 3 ]
+		grep -q '^zcworkload-spread:' /uring-mixed.log
+
+		record_zcnblk_contexts after
+		grep -E 'virtio|zcnblk|eth0' /proc/interrupts || true
+		dmesg | tail -120
+		onramp_comm=$(cat "/proc/$onramp_pid/comm")
+		echo "client-cleanup: inspect pid=$onramp_pid comm=$onramp_comm"
+		[ "$onramp_comm" = zcnblk-shm-targ ]
+		kill -INT "$onramp_pid"
+		set +e
+		wait "$onramp_job_pid"
+		onramp_wait_status=$?
+		set -e
+		cat /wal-onramp.log
+		echo "client-cleanup: onramp_wait_status=$onramp_wait_status"
+		/bin/busybox rmmod zcnblk_client_mod
+		echo "client-cleanup: onramp_stopped=true module_unloaded=true"
+		echo "ZCWORKLOAD_CLIENT_VALIDATION PASS frame_bytes=4096 logical_request_bytes=4096-65536 sync_repeats=3 uring_repeats=3 representative=false"
+		;;
+	*)
+		echo "unknown zcworkload_role=$role"
+		exit 2
+		;;
+esac

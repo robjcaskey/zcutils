@@ -1,0 +1,5 @@
+zcnblk-fan-wal-local-leaf: leaf=0 target=zcleasemem:536870912 transport=shared-arena block_devices=no kernel_raid=no
+zcnblk-fan-wal-local-leaf: leaf=1 target=zcleasemem:536870912 transport=shared-arena block_devices=no kernel_raid=no
+zcnblk-fan-wal-stage-cpus: fan-handler=4-7 fan-async-writeback=8-11 client=0-3
+PERF WARNING: zcnblk-fan WAL local leaves remove the fan-to-leaf socket payload leg, but client_fan_transport=tcp still pays same-host loopback payload copies. Treat this as an integration smoke, not the same-host zero-copy ceiling; use the zcnblk-shm-* shared-memory controls or set URING_PLAY_ZCNBLK_REQUIRE_LOCAL_SHM_ONRAMP=1 to make this architectural mismatch fatal.
+Error: Custom { kind: Other, error: "TOPOLOGY ERROR: zcnblk-fan WAL: sender write_window hint 8192 is below batch_depth(2048) * batch_window(8); this can force upstream-idle drains before the fan can fill its leaf pipeline; strict topology mode refuses to print representative benchmark numbers for this run" }

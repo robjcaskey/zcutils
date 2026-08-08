@@ -1,0 +1,34 @@
+zcfan-readcache-config: role=fan-cold bind=127.0.0.1 branch_binds=127.0.0.1,127.0.0.1 peer=127.0.0.1 source_ip=- base_port=33000 leaf_base_port=28000 downstream_base_port=27000 lanes=8 branches=2 bytes_per_lane=536870912 branch_bytes_per_lane=268435456 cache_bytes_per_lane=67108864 chunk_bytes=1048576 extent_bytes=1048576 workers=8 pin=false cpu_list=- verify=false client_sink=read wait_mode=spin cold_mode=uring-zc slab_slots=4 prefill_bytes=0 transport=sendfile/splice/tee/slab/lane-splice/io_uring-sendzc page_cache=memfd block_devices=no kernel_raid=no
+zcfan-readcache-topology: worker=0 target_cpu=unpinned
+zcfan-readcache-topology: worker=1 target_cpu=unpinned
+zcfan-readcache-topology: worker=2 target_cpu=unpinned
+zcfan-readcache-topology: worker=3 target_cpu=unpinned
+zcfan-readcache-topology: worker=4 target_cpu=unpinned
+zcfan-readcache-topology: worker=5 target_cpu=unpinned
+zcfan-readcache-topology: worker=6 target_cpu=unpinned
+zcfan-readcache-topology: worker=7 target_cpu=unpinned
+zcfan-readcache-accept: role=fan-cold branch=0 lane=0 peer=127.0.0.1:55914 local=127.0.0.1:28000
+zcfan-readcache-accept: role=fan-cold branch=0 lane=1 peer=127.0.0.1:56136 local=127.0.0.1:28001
+zcfan-readcache-accept: role=fan-cold branch=0 lane=2 peer=127.0.0.1:38738 local=127.0.0.1:28002
+zcfan-readcache-accept: role=fan-cold branch=0 lane=3 peer=127.0.0.1:35370 local=127.0.0.1:28003
+zcfan-readcache-accept: role=fan-cold branch=0 lane=4 peer=127.0.0.1:54332 local=127.0.0.1:28004
+zcfan-readcache-accept: role=fan-cold branch=0 lane=5 peer=127.0.0.1:55222 local=127.0.0.1:28005
+zcfan-readcache-accept: role=fan-cold branch=0 lane=6 peer=127.0.0.1:53790 local=127.0.0.1:28006
+zcfan-readcache-accept: role=fan-cold branch=0 lane=7 peer=127.0.0.1:38274 local=127.0.0.1:28007
+zcfan-readcache-accept: role=fan-cold branch=1 lane=0 peer=127.0.0.1:56856 local=127.0.0.1:28008
+zcfan-readcache-accept: role=fan-cold branch=1 lane=1 peer=127.0.0.1:50796 local=127.0.0.1:28009
+zcfan-readcache-accept: role=fan-cold branch=1 lane=2 peer=127.0.0.1:38252 local=127.0.0.1:28010
+zcfan-readcache-accept: role=fan-cold branch=1 lane=3 peer=127.0.0.1:40640 local=127.0.0.1:28011
+zcfan-readcache-accept: role=fan-cold branch=1 lane=4 peer=127.0.0.1:47274 local=127.0.0.1:28012
+zcfan-readcache-accept: role=fan-cold branch=1 lane=5 peer=127.0.0.1:46150 local=127.0.0.1:28013
+zcfan-readcache-accept: role=fan-cold branch=1 lane=6 peer=127.0.0.1:48500 local=127.0.0.1:28014
+zcfan-readcache-accept: role=fan-cold branch=1 lane=7 peer=127.0.0.1:49680 local=127.0.0.1:28015
+zcfan-readcache-connect: lane=0 peer=127.0.0.1:27000 local=127.0.0.1:52988
+zcfan-readcache-connect: lane=1 peer=127.0.0.1:27001 local=127.0.0.1:60672
+zcfan-readcache-connect: lane=2 peer=127.0.0.1:27002 local=127.0.0.1:34558
+zcfan-readcache-connect: lane=3 peer=127.0.0.1:27003 local=127.0.0.1:36920
+zcfan-readcache-connect: lane=4 peer=127.0.0.1:27004 local=127.0.0.1:32862
+zcfan-readcache-connect: lane=5 peer=127.0.0.1:27005 local=127.0.0.1:46012
+zcfan-readcache-connect: lane=6 peer=127.0.0.1:27006 local=127.0.0.1:48436
+zcfan-readcache-connect: lane=7 peer=127.0.0.1:27007 local=127.0.0.1:45116
+Error: Os { code: 12, kind: OutOfMemory, message: "Cannot allocate memory" }

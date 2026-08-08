@@ -1,0 +1,76 @@
+topology_preflight=1
+run_mode=local
+strict=0
+topology_preflight_fatal=0
+topology_busy_pct=1.0
+local_mapped_cpus=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19
+local_mapped_cpu_count=20
+stage=client cpus=0-3 unique_cpus=4
+stage=fan-handler cpus=4-7 unique_cpus=4
+stage=fan-async cpus=8-11 unique_cpus=4
+stage=leaf0 cpus=12-15 unique_cpus=4
+stage=leaf1 cpus=16-19 unique_cpus=4
+cpu=0 governor=powersave
+cpu=1 governor=powersave
+cpu=2 governor=powersave
+cpu=3 governor=powersave
+cpu=4 governor=powersave
+cpu=5 governor=powersave
+cpu=6 governor=powersave
+cpu=7 governor=powersave
+cpu=8 governor=powersave
+cpu=9 governor=powersave
+cpu=10 governor=powersave
+cpu=11 governor=powersave
+cpu=12 governor=powersave
+cpu=13 governor=powersave
+cpu=14 governor=powersave
+cpu=15 governor=powersave
+cpu=16 governor=powersave
+cpu=17 governor=powersave
+cpu=18 governor=powersave
+cpu=19 governor=powersave
+PERF WARNING: mapped CPUs are not all using performance governor: cpu0=powersave,cpu1=powersave,cpu2=powersave,cpu3=powersave,cpu4=powersave,cpu5=powersave,cpu6=powersave,cpu7=powersave,cpu8=powersave,cpu9=powersave,cpu10=powersave,cpu11=powersave,cpu12=powersave,cpu13=powersave,cpu14=powersave,cpu15=powersave,cpu16=powersave,cpu17=powersave,cpu18=powersave,cpu19=powersave
+PERF WARNING: mapped local stages include SMT siblings; report this as SMT-paired, not isolated physical-core topology
+cpu=0 sibling=16 stages=,client
+cpu=1 sibling=17 stages=,client
+cpu=16 sibling=0 stages=,leaf1
+cpu=17 sibling=1 stages=,leaf1
+cpu=18 sibling=2 stages=,leaf1
+cpu=19 sibling=3 stages=,leaf1
+cpu=2 sibling=18 stages=,client
+cpu=3 sibling=19 stages=,client
+== mapped cpu mhz sample ==
+CPU CORE SOCKET NODE L1d:L1i:L2:L3 ONLINE    MAXMHZ   MINMHZ       MHZ
+  0    0      0    0 0:0:0:0          yes 5756.4521 624.1940 4417.2549
+  1    1      0    0 1:1:1:0          yes 5756.4521 624.1940 4416.3501
+  2    2      0    0 2:2:2:0          yes 5756.4521 624.1940 2205.8770
+  3    3      0    0 3:3:3:0          yes 5756.4521 624.1940 4421.3110
+  4    4      0    0 4:4:4:0          yes 5756.4521 624.1940 4418.2949
+  5    5      0    0 5:5:5:0          yes 5756.4521 624.1940 4418.1299
+  6    6      0    0 6:6:6:0          yes 5756.4521 624.1940 4024.5139
+  7    7      0    0 7:7:7:0          yes 5756.4521 624.1940 4421.9541
+  8    8      0    0 8:8:8:1          yes 5756.4521 624.1940 4356.5298
+  9    9      0    0 9:9:9:1          yes 5756.4521 624.1940 2511.4319
+ 10   10      0    0 10:10:10:1       yes 5756.4521 624.1940 4362.7642
+ 11   11      0    0 11:11:11:1       yes 5756.4521 624.1940 4037.6160
+ 12   12      0    0 12:12:12:1       yes 5756.4521 624.1940 4358.5059
+ 13   13      0    0 13:13:13:1       yes 5756.4521 624.1940 4375.7129
+ 14   14      0    0 14:14:14:1       yes 5756.4521 624.1940 4337.1309
+ 15   15      0    0 15:15:15:1       yes 5756.4521 624.1940 4380.5552
+ 16    0      0    0 0:0:0:0          yes 5756.4521 624.1940 4393.1011
+ 17    1      0    0 1:1:1:0          yes 5756.4521 624.1940 4408.3062
+ 18    2      0    0 2:2:2:0          yes 5756.4521 624.1940 2192.1389
+ 19    3      0    0 3:3:3:0          yes 5756.4521 624.1940 2891.4241
+PERF WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+busy_cpu=2 pcpu=4.0 pid=1915 tid=1915 comm=sway
+busy_cpu=18 pcpu=4.3 pid=2358 tid=2358 comm=alacritty
+busy_cpu=18 pcpu=2.4 pid=2465 tid=2465 comm=alacritty
+busy_cpu=8 pcpu=1.2 pid=9128 tid=284143 comm=tokio-runtime-w
+busy_cpu=13 pcpu=1.1 pid=14517 tid=261494 comm=sqlx-sqlite-wor
+busy_cpu=12 pcpu=1.1 pid=14517 tid=261584 comm=sqlx-sqlite-wor
+busy_cpu=2 pcpu=10.0 pid=284345 tid=284345 comm=bash
+memlock_limit=8192
+PERF WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+nr_hugepages=0
+PERF WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons

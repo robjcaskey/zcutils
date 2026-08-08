@@ -1,0 +1,90 @@
+# local zipper hwm bench
+2026-06-06T18:58:37Z
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           48 bits physical, 48 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  32
+On-line CPU(s) list:                     0-31
+Vendor ID:                               AuthenticAMD
+Model name:                              AMD Ryzen 9 9950X3D 16-Core Processor
+CPU family:                              26
+Model:                                   68
+Thread(s) per core:                      2
+Core(s) per socket:                      16
+Socket(s):                               1
+Stepping:                                0
+Frequency boost:                         enabled
+CPU(s) scaling MHz:                      56%
+CPU max MHz:                             5756.4521
+CPU min MHz:                             624.1940
+BogoMIPS:                                8600.02
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good amd_lbr_v2 nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpuid_fault cpb cat_l3 cdp_l3 hw_pstate ssbd mba perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a avx512f avx512dq adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local user_shstk avx_vnni avx512_bf16 clzero irperf xsaveerptr rdpru wbnoinvd cppc arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic v_vmsave_vmload vgif x2avic v_spec_ctrl vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid bus_lock_detect movdiri movdir64b overflow_recov succor smca fsrm avx512_vp2intersect flush_l1d amd_lbr_pmc_freeze
+Virtualization:                          AMD-V
+L1d cache:                               768 KiB (16 instances)
+L1i cache:                               512 KiB (16 instances)
+L2 cache:                                16 MiB (16 instances)
+L3 cache:                                128 MiB (2 instances)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-31
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+## per-record single owner stripe-read
+BRANCHES=2
+zcfanout-logzip-bench: mode=stripe-read lanes=1 branches=2 records_per_lane=10000000 payload_bytes=4096 window=32768 workers=1 skew=64 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read lanes=1 branches=2 result_records=20000000 emitted=10000000 duplicate_results=0 logical_bytes=40960000000 branch_bytes=40960000000 checksum=0x000110d93467ed00 seconds=0.112546 result_records_per_sec=177704805 emitted_per_sec=88852403 logical_4k_iops=88852403 logical_GiBps=338.945 branch_Gibitps=2911.516 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+BRANCHES=4
+zcfanout-logzip-bench: mode=stripe-read lanes=1 branches=4 records_per_lane=10000000 payload_bytes=4096 window=32768 workers=1 skew=64 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read lanes=1 branches=4 result_records=40000000 emitted=10000000 duplicate_results=0 logical_bytes=40960000000 branch_bytes=40960000000 checksum=0x0001c6bf65731f80 seconds=0.178909 result_records_per_sec=223577279 emitted_per_sec=55894320 logical_4k_iops=55894320 logical_GiBps=213.220 branch_Gibitps=1831.545 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+BRANCHES=8
+zcfanout-logzip-bench: mode=stripe-read lanes=1 branches=8 records_per_lane=10000000 payload_bytes=4096 window=32768 workers=1 skew=64 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read lanes=1 branches=8 result_records=80000000 emitted=10000000 duplicate_results=0 logical_bytes=40960000000 branch_bytes=40960000000 checksum=0x0003328cd02e8a80 seconds=0.338101 result_records_per_sec=236616011 emitted_per_sec=29577001 logical_4k_iops=29577001 logical_GiBps=112.827 branch_Gibitps=969.179 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+BRANCHES=16
+zcfanout-logzip-bench: mode=stripe-read lanes=1 branches=16 records_per_lane=10000000 payload_bytes=4096 window=32768 workers=1 skew=64 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read lanes=1 branches=16 result_records=160000000 emitted=10000000 duplicate_results=0 logical_bytes=40960000000 branch_bytes=40960000000 checksum=0x00060b5581e03880 seconds=0.788724 result_records_per_sec=202859302 emitted_per_sec=12678706 logical_4k_iops=12678706 logical_GiBps=48.365 branch_Gibitps=415.456 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+## range-hwm single owner stripe-read-hwm
+BRANCHES=2
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=2 records_per_lane=100000000 payload_bytes=4096 window=32768 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=2 result_records=6104 emitted=100000000 duplicate_results=0 logical_bytes=409600000000 branch_bytes=409600000000 checksum=0x000bec8e2ef90400 seconds=0.000019 result_records_per_sec=313186249 emitted_per_sec=5130836326321 logical_4k_iops=5130836326321 logical_GiBps=19572587.304 branch_Gibitps=168127244.741 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+BRANCHES=4
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=4 records_per_lane=100000000 payload_bytes=4096 window=32768 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=4 result_records=12208 emitted=100000000 duplicate_results=0 logical_bytes=409600000000 branch_bytes=409600000000 checksum=0x004788d547344600 seconds=0.000032 result_records_per_sec=381380818 emitted_per_sec=3124023742580 logical_4k_iops=3124023742580 logical_GiBps=11917204.829 branch_Gibitps=102368009.997 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+BRANCHES=8
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=8 records_per_lane=100000000 payload_bytes=4096 window=32768 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=8 result_records=24416 emitted=100000000 duplicate_results=0 logical_bytes=409600000000 branch_bytes=409600000000 checksum=0x014dd16377aaca00 seconds=0.000083 result_records_per_sec=294416978 emitted_per_sec=1205836247438 logical_4k_iops=1205836247438 logical_GiBps=4599900.236 branch_Gibitps=39512842.156 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+BRANCHES=16
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=16 records_per_lane=100000000 payload_bytes=4096 window=32768 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=16 result_records=48832 emitted=100000000 duplicate_results=0 logical_bytes=409600000000 branch_bytes=409600000000 checksum=0x0596a27fd897d200 seconds=0.000066 result_records_per_sec=740439727 emitted_per_sec=1516300227445 logical_4k_iops=1516300227445 logical_GiBps=5784226.332 branch_Gibitps=49686125.853 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+BRANCHES=32
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=32 records_per_lane=100000000 payload_bytes=4096 window=32768 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=32 result_records=97664 emitted=100000000 duplicate_results=0 logical_bytes=409600000000 branch_bytes=409600000000 checksum=0x171944b89a71e200 seconds=0.000161 result_records_per_sec=605518011 emitted_per_sec=620001240002 logical_4k_iops=620001240002 logical_GiBps=2365117.035 branch_Gibitps=20316200.632 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+BRANCHES=64
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=64 records_per_lane=100000000 payload_bytes=4096 window=32768 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=64 result_records=195328 emitted=100000000 duplicate_results=0 logical_bytes=409600000000 branch_bytes=409600000000 checksum=0x5de2892a1e260200 seconds=0.000284 result_records_per_sec=687099645 emitted_per_sec=351767102037 logical_4k_iops=351767102037 logical_GiBps=1341885.002 branch_Gibitps=11526704.400 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+## range-hwm 32 lane 32 worker stripe-read-hwm
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=32 branches=8 records_per_lane=10000000 payload_bytes=4096 window=32768 workers=32 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=32 branches=8 result_records=78336 emitted=320000000 duplicate_results=0 logical_bytes=1310720000000 branch_bytes=1310720000000 checksum=0x8b2f0072bf7c2000 seconds=0.000476 result_records_per_sec=164558292 emitted_per_sec=672215243321 logical_4k_iops=672215243321 logical_GiBps=2564297.651 branch_Gibitps=22027149.093 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+## shared memory 2 branch handoff
+zcfanout-logshm-bench: records=10000000 payload_bytes=4096 batch_records=2048 window=65536 wait_mode=spin pin_workers=true lanes=1 branches=2 primary_leg=inline secondary_leg=shared-memory sort=no global_queue=no transport=no block_devices=no payload_copy=no arena=memfd-mmap-shared mapped_views=2
+zcfanout-logshm-thread: role=primary records=10000000 batches=0 emitted=10000000 checksum=0x98981945cd6a6b40 seconds=0.086415 records_per_sec=115720312 cpu_seconds=0.086384 start_cpu=4 end_cpu=4 target_cpu=4 affinity_applied=true voluntary_ctxt_switches=0 involuntary_ctxt_switches=0 migrations=0
+zcfanout-logshm-thread: role=secondary records=10000000 batches=4883 emitted=0 checksum=0x9896daf311124000 seconds=0.085861 records_per_sec=116466995 cpu_seconds=0.085833 start_cpu=5 end_cpu=5 target_cpu=5 affinity_applied=true voluntary_ctxt_switches=0 involuntary_ctxt_switches=1 migrations=0
+zcfanout-logshm-summary: records=10000000 emitted=10000000 payload_bytes=4096 logical_bytes=40960000000 branch_bytes=81920000000 wait_mode=spin seconds=0.086564 logical_4k_iops=115520859 logical_GiBps=440.677 branch_Gibitps=7570.775 voluntary_ctxt_switches=0 involuntary_ctxt_switches=1 migrations=0 primary_cpu=4 secondary_cpu=5 primary_secondary=memfd-mmap-shared primary_interleaves=yes copy_bytes=0 mapped_slots=65536 mapped_bytes=4198400
+## stable range-hwm single owner long update runs
+RANGE=2048 BRANCHES=8
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=8 records_per_lane=100000000000 payload_bytes=4096 window=2048 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=8 result_records=390625000 emitted=100000000000 duplicate_results=0 logical_bytes=409600000000000 branch_bytes=409600000000000 checksum=0xd0705a6706707000 seconds=0.660863 result_records_per_sec=591083368 emitted_per_sec=151317342149 logical_4k_iops=151317342149 logical_GiBps=577229.851 branch_Gibitps=4958366.668 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+RANGE=2048 BRANCHES=64
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=64 records_per_lane=100000000000 payload_bytes=4096 window=2048 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=64 result_records=3125000000 emitted=100000000000 duplicate_results=0 logical_bytes=409600000000000 branch_bytes=409600000000000 checksum=0x11372de4b4e73000 seconds=4.616208 result_records_per_sec=676962500 emitted_per_sec=21662800005 logical_4k_iops=21662800005 logical_GiBps=82637.024 branch_Gibitps=709846.631 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+RANGE=32768 BRANCHES=8
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=8 records_per_lane=100000000000 payload_bytes=4096 window=32768 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=8 result_records=24414064 emitted=100000000000 duplicate_results=0 logical_bytes=409600000000000 branch_bytes=409600000000000 checksum=0x2d070b7f3bf31000 seconds=0.041204 result_records_per_sec=592511005 emitted_per_sec=2426924926427 logical_4k_iops=2426924926427 logical_GiBps=9257983.881 branch_Gibitps=79525475.989 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+RANGE=32768 BRANCHES=64
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=64 records_per_lane=100000000000 payload_bytes=4096 window=32768 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=64 result_records=195312512 emitted=100000000000 duplicate_results=0 logical_bytes=409600000000000 branch_bytes=409600000000000 checksum=0x4114f0cebdead000 seconds=0.290120 result_records_per_sec=673211734 emitted_per_sec=344684386484 logical_4k_iops=344684386484 logical_GiBps=1314866.587 branch_Gibitps=11294617.976 sort=no global_queue=no payload_copy=no deep_payload_inspection=no

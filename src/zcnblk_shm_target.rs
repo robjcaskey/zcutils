@@ -17,13 +17,13 @@ use super::{
 };
 use std::cell::UnsafeCell;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, IoSlice};
 use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, SocketAddr, TcpStream};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
@@ -33,7 +33,7 @@ use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
 const ZCNBLK_SHM_MAGIC: u64 = 0x3130_4d48_534e_435a;
-const ZCNBLK_SHM_VERSION: u32 = 3;
+const ZCNBLK_SHM_VERSION: u32 = 4;
 const ZCNBLK_SHM_DESC_BYTES: u32 = 64;
 const ZCNBLK_SHM_OP_WRITE: u16 = 1;
 const ZCNBLK_SHM_OP_READ: u16 = 2;
@@ -43,11 +43,18 @@ const ZCNBLK_SHM_CAP_TRANSFER_PAYLOAD_SLOTS: u64 = 1 << 1;
 const ZCNBLK_SHM_CAP_READ_PAYLOAD_REF: u64 = 1 << 2;
 const ZCNBLK_SHM_CAP_REQUEST_WAKE_ARMED: u64 = 1 << 3;
 const ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED: u64 = 1 << 4;
+const ZCNBLK_SHM_CAP_ORDERING_EPOCH: u64 = 1 << 5;
+const ZCNBLK_SHM_CAP_ORDERING_VECTOR: u64 = 1 << 6;
+const ZCNBLK_SHM_REQUEST_ID_BITS: u32 = 16;
+#[cfg(test)]
+const ZCNBLK_SHM_REQUEST_ID_MASK: u64 = (1 << ZCNBLK_SHM_REQUEST_ID_BITS) - 1;
 const ZCNBLK_SHM_CQE_F_READ_PAYLOAD_REF: u32 = 1 << 0;
 const ZCNBLK_SHM_CQE_REF_CHANNEL_SHIFT: u32 = 8;
 const ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS: u32 = 1 << 0;
 const ZCNBLK_SHM_HEADER_CAPABILITIES: usize = 0;
 const ZCNBLK_SHM_HEADER_PAYLOAD_OWNER_OFFSET: usize = 1;
+const ZCNBLK_SHM_CHANNEL_FLUSH_TAIL: usize = 0;
+const ZCNBLK_SHM_CHANNEL_FLUSH_EPOCH: usize = 1;
 const ZCNBLK_SHM_IOC_MAGIC: u32 = 0xbc;
 
 const IOC_WRITE: u32 = 1;
@@ -105,6 +112,17 @@ struct ZcnblkShmRequest {
     payload_slot: u32,
     submit_sequence: u64,
     sector_predecessor: u64,
+}
+
+impl ZcnblkShmRequest {
+    fn ordering_epoch(self) -> u64 {
+        self.request_id >> ZCNBLK_SHM_REQUEST_ID_BITS
+    }
+
+    #[cfg(test)]
+    fn client_request_id(self) -> u64 {
+        self.request_id & ZCNBLK_SHM_REQUEST_ID_MASK
+    }
 }
 
 #[repr(C)]
@@ -305,6 +323,7 @@ struct RemoteWalLeaf {
     read_bytes: u64,
     read_batches: u64,
     syncs: u64,
+    sync_time: Duration,
     recv_wait: RemoteWalRecvWait,
     send_mode: RemoteWalSendMode,
     require_send_zc: bool,
@@ -1029,6 +1048,7 @@ impl RemoteWalLeaf {
             read_bytes: 0,
             read_batches: 0,
             syncs: 0,
+            sync_time: Duration::ZERO,
             recv_wait,
             send_mode,
             require_send_zc: env_enabled_or("URING_PLAY_ZCNBLK_SHM_REMOTE_SEND_ZC_REQUIRED", true),
@@ -1754,6 +1774,7 @@ impl RemoteWalLeaf {
     }
 
     fn sync(&mut self, submit_sequence: u64) -> io::Result<()> {
+        let started = Instant::now();
         let frame = ZcnblkFanWalFrame {
             op: ZCNBLK_FAN_WAL_OP_SYNC,
             lane_id: self.lane_id,
@@ -1776,6 +1797,7 @@ impl RemoteWalLeaf {
             ));
         }
         self.syncs += 1;
+        self.sync_time = self.sync_time.saturating_add(started.elapsed());
         Ok(())
     }
 
@@ -3890,42 +3912,132 @@ impl WalCompletionTracker {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WalSyncRequest {
+    ordering_epoch: u64,
+    lane_tails: Box<[u64]>,
+    required_global_hwm: u64,
+}
+
+/*
+ * A flush closes a kernel admission epoch and snapshots one FIFO tail per
+ * channel. The durable marker cannot start until remote lane HWMs dominate
+ * that vector. Later traffic may be included conservatively, but an older
+ * request hidden in a kernel lane cannot be skipped.
+ */
 struct WalSyncCoordinator {
     epoch: AtomicU64,
     beginning: AtomicBool,
     requested_epoch: AtomicU64,
+    requested_syncs: Mutex<BTreeMap<u64, WalSyncRequest>>,
+    active_ordering_epoch: AtomicU64,
+    committed_ordering_epoch: AtomicU64,
     announcements: AtomicU64,
     acknowledged_lanes: AtomicU64,
     failed: AtomicBool,
     committed_hwm: AtomicU64,
     remote_epochs: AtomicU64,
     joined_syncs: AtomicU64,
-    lane_tails: Box<[AtomicU64]>,
+    remote_lane_hwms: Box<[AtomicU64]>,
     frozen_lane_tails: Box<[AtomicU64]>,
-    independent_lane_release: bool,
+    lane_wake_fds: Box<[OwnedFd]>,
     lanes: u64,
     coalesce_us: u64,
 }
 
 impl WalSyncCoordinator {
-    fn new(lanes: u32, coalesce_us: u64, independent_lane_release: bool) -> Self {
-        let lane_tails = (0..lanes).map(|_| AtomicU64::new(0)).collect();
+    fn new(lanes: u32, coalesce_us: u64) -> io::Result<Self> {
+        let remote_lane_hwms = (0..lanes).map(|_| AtomicU64::new(0)).collect();
         let frozen_lane_tails = (0..lanes).map(|_| AtomicU64::new(0)).collect();
-        Self {
+        let lane_wake_fds = (0..lanes)
+            .map(|_| {
+                let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+                if fd < 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+                }
+            })
+            .collect::<io::Result<Vec<_>>>()?
+            .into_boxed_slice();
+        Ok(Self {
             epoch: AtomicU64::new(0),
             beginning: AtomicBool::new(false),
             requested_epoch: AtomicU64::new(0),
+            requested_syncs: Mutex::new(BTreeMap::new()),
+            active_ordering_epoch: AtomicU64::new(0),
+            committed_ordering_epoch: AtomicU64::new(0),
             announcements: AtomicU64::new(0),
             acknowledged_lanes: AtomicU64::new(0),
             failed: AtomicBool::new(false),
             committed_hwm: AtomicU64::new(0),
             remote_epochs: AtomicU64::new(0),
             joined_syncs: AtomicU64::new(0),
-            lane_tails,
+            remote_lane_hwms,
             frozen_lane_tails,
-            independent_lane_release,
+            lane_wake_fds,
             lanes: u64::from(lanes),
             coalesce_us,
+        })
+    }
+
+    fn lane_wake_fd(&self, lane: u32) -> io::Result<i32> {
+        self.lane_wake_fds
+            .get(lane as usize)
+            .map(AsRawFd::as_raw_fd)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("WAL sync wake lane {lane} exceeds {} lanes", self.lanes),
+                )
+            })
+    }
+
+    fn wake_all_lanes(&self) -> io::Result<()> {
+        let value = 1u64;
+        for fd in &self.lane_wake_fds {
+            loop {
+                let written = unsafe {
+                    libc::write(
+                        fd.as_raw_fd(),
+                        ptr::from_ref(&value).cast::<libc::c_void>(),
+                        size_of::<u64>(),
+                    )
+                };
+                if written == size_of::<u64>() as isize {
+                    break;
+                }
+                let error = io::Error::last_os_error();
+                match error.kind() {
+                    io::ErrorKind::Interrupted => continue,
+                    io::ErrorKind::WouldBlock => break,
+                    _ => return Err(error),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn drain_lane_wake(&self, lane: u32) -> io::Result<()> {
+        let fd = self.lane_wake_fd(lane)?;
+        let mut value = 0u64;
+        loop {
+            let read = unsafe {
+                libc::read(
+                    fd,
+                    ptr::from_mut(&mut value).cast::<libc::c_void>(),
+                    size_of::<u64>(),
+                )
+            };
+            if read == size_of::<u64>() as isize {
+                return Ok(());
+            }
+            let error = io::Error::last_os_error();
+            match error.kind() {
+                io::ErrorKind::Interrupted => continue,
+                io::ErrorKind::WouldBlock => return Ok(()),
+                _ => return Err(error),
+            }
         }
     }
 
@@ -3933,22 +4045,40 @@ impl WalSyncCoordinator {
         self.epoch.load(Ordering::Acquire)
     }
 
-    fn observe_lane_tail(&self, lane: u32, submit_sequence: u64) -> io::Result<()> {
-        let tail = self.lane_tails.get(lane as usize).ok_or_else(|| {
+    fn observe_remote_lane_hwm(&self, lane: u32, hwm: u64) -> io::Result<()> {
+        let remote_hwm = self.remote_lane_hwms.get(lane as usize).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("WAL lane tail {lane} exceeds {} lanes", self.lanes),
+                format!("WAL remote lane HWM {lane} exceeds {} lanes", self.lanes),
             )
         })?;
-        // Each lane has one descriptor consumer, so this remains lane-local.
-        tail.store(submit_sequence, Ordering::Relaxed);
+        remote_hwm.fetch_max(hwm, Ordering::Release);
         Ok(())
     }
 
-    fn freeze_lane_tails(&self) {
-        for (live, frozen) in self.lane_tails.iter().zip(self.frozen_lane_tails.iter()) {
-            frozen.store(live.load(Ordering::Acquire), Ordering::Release);
+    fn freeze_lane_tails(&self, lane_tails: &[u64]) -> io::Result<()> {
+        if lane_tails.len() != self.frozen_lane_tails.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "WAL sync vector has {} lanes, expected {}",
+                    lane_tails.len(),
+                    self.frozen_lane_tails.len()
+                ),
+            ));
         }
+        for (&tail, frozen) in lane_tails.iter().zip(self.frozen_lane_tails.iter()) {
+            frozen.store(tail, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    fn vector_reached(&self, lane_tails: &[u64]) -> bool {
+        lane_tails.len() == self.remote_lane_hwms.len()
+            && lane_tails
+                .iter()
+                .zip(self.remote_lane_hwms.iter())
+                .all(|(&required, remote)| remote.load(Ordering::Acquire) >= required)
     }
 
     fn frozen_lane_tail(&self, lane: u32) -> io::Result<u64> {
@@ -3964,8 +4094,8 @@ impl WalSyncCoordinator {
     }
 
     #[cfg(test)]
-    fn begin(&self, epoch: u64) -> io::Result<()> {
-        if epoch == 0 {
+    fn begin(&self, epoch: u64, ordering_epoch: u64, lane_tails: &[u64]) -> io::Result<()> {
+        if epoch == 0 || ordering_epoch == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "WAL sync epoch zero is reserved",
@@ -3989,7 +4119,9 @@ impl WalSyncCoordinator {
         } else {
             self.acknowledged_lanes.store(0, Ordering::Relaxed);
             self.failed.store(false, Ordering::Relaxed);
-            self.freeze_lane_tails();
+            self.freeze_lane_tails(lane_tails)?;
+            self.active_ordering_epoch
+                .store(ordering_epoch, Ordering::Release);
             self.epoch.store(epoch, Ordering::Release);
             self.remote_epochs.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -3998,16 +4130,48 @@ impl WalSyncCoordinator {
         result
     }
 
-    fn announce(&self, epoch: u64) -> io::Result<()> {
-        if epoch == 0 {
+    fn announce(
+        &self,
+        epoch: u64,
+        ordering_epoch: u64,
+        lane_tails: Box<[u64]>,
+        required_global_hwm: u64,
+    ) -> io::Result<()> {
+        if epoch == 0 || ordering_epoch == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "WAL sync epoch zero is reserved",
             ));
         }
-        self.requested_epoch.fetch_max(epoch, Ordering::AcqRel);
+        if lane_tails.len() != self.remote_lane_hwms.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "WAL sync vector has {} lanes, expected {}",
+                    lane_tails.len(),
+                    self.remote_lane_hwms.len()
+                ),
+            ));
+        }
+        let mut requested = self
+            .requested_syncs
+            .lock()
+            .map_err(|_| io::Error::other("WAL sync request queue poisoned"))?;
+        requested.insert(
+            epoch,
+            WalSyncRequest {
+                ordering_epoch,
+                lane_tails,
+                required_global_hwm,
+            },
+        );
+        self.requested_epoch.store(
+            requested.first_key_value().map_or(0, |(&epoch, _)| epoch),
+            Ordering::Release,
+        );
         self.announcements.fetch_add(1, Ordering::AcqRel);
-        Ok(())
+        drop(requested);
+        self.wake_all_lanes()
     }
 
     fn retire_announcement(&self) -> io::Result<()> {
@@ -4036,7 +4200,7 @@ impl WalSyncCoordinator {
         self.coalesce_us
     }
 
-    fn try_begin_requested(&self, remote_hwm: u64) -> io::Result<Option<u64>> {
+    fn try_begin_requested(&self, remote_global_hwm: u64) -> io::Result<Option<u64>> {
         if self.epoch() != 0
             || self
                 .beginning
@@ -4048,29 +4212,57 @@ impl WalSyncCoordinator {
         let result = if self.epoch() != 0 {
             None
         } else {
-            let requested = self.requested_epoch();
-            if requested == 0 {
-                None
-            } else if requested <= self.committed_hwm() {
-                let _ = self.requested_epoch.compare_exchange(
-                    requested,
-                    0,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
+            let mut requested_syncs = self
+                .requested_syncs
+                .lock()
+                .map_err(|_| io::Error::other("WAL sync request queue poisoned"))?;
+            let committed = self.committed_hwm();
+            requested_syncs.retain(|&epoch, _| epoch > committed);
+            let mut prefix_tails = vec![0u64; self.remote_lane_hwms.len()];
+            let mut prefix_ordering_epoch = 0u64;
+            let mut prefix_global_hwm = 0u64;
+            let mut next = None;
+            for (&epoch, requested) in requested_syncs.iter() {
+                prefix_ordering_epoch = prefix_ordering_epoch.max(requested.ordering_epoch);
+                prefix_global_hwm = prefix_global_hwm.max(requested.required_global_hwm);
+                for (tail, &requested_tail) in
+                    prefix_tails.iter_mut().zip(requested.lane_tails.iter())
+                {
+                    *tail = (*tail).max(requested_tail);
+                }
+                if remote_global_hwm >= prefix_global_hwm && self.vector_reached(&prefix_tails) {
+                    next = Some((
+                        epoch,
+                        prefix_ordering_epoch,
+                        prefix_tails.clone().into_boxed_slice(),
+                    ));
+                }
+            }
+            if next.is_none() {
+                self.requested_epoch.store(
+                    requested_syncs
+                        .first_key_value()
+                        .map_or(0, |(&epoch, _)| epoch),
+                    Ordering::Release,
                 );
                 None
-            } else if remote_hwm < requested {
-                None
             } else {
+                let (requested, ordering_epoch, lane_tails) =
+                    next.expect("available requested sync");
                 self.acknowledged_lanes.store(0, Ordering::Relaxed);
                 self.failed.store(false, Ordering::Relaxed);
-                self.freeze_lane_tails();
+                self.freeze_lane_tails(&lane_tails)?;
+                self.active_ordering_epoch
+                    .store(ordering_epoch, Ordering::Release);
                 self.epoch.store(requested, Ordering::Release);
                 self.remote_epochs.fetch_add(1, Ordering::Relaxed);
                 Some(requested)
             }
         };
         self.beginning.store(false, Ordering::Release);
+        if result.is_some() {
+            self.wake_all_lanes()?;
+        }
         Ok(result)
     }
 
@@ -4078,7 +4270,7 @@ impl WalSyncCoordinator {
         self.committed_hwm.load(Ordering::Acquire)
     }
 
-    fn try_join(&self, epoch: u64) -> bool {
+    fn try_join(&self, epoch: u64, ordering_epoch: u64) -> bool {
         if epoch == 0
             || self
                 .beginning
@@ -4087,7 +4279,10 @@ impl WalSyncCoordinator {
         {
             return false;
         }
-        let joined = if self.epoch() != 0 || self.requested_epoch() != 0 {
+        let joined = if self.epoch() != 0
+            || self.requested_epoch() != 0
+            || ordering_epoch > self.committed_ordering_epoch.load(Ordering::Acquire)
+        {
             false
         } else {
             let required_hwm = epoch - 1;
@@ -4160,12 +4355,8 @@ impl WalSyncCoordinator {
         self.acknowledged_lanes.load(Ordering::Acquire)
     }
 
-    fn lane_acknowledged(&self, lane: u32) -> bool {
-        lane < 64 && self.acknowledged_lane_mask() & (1u64 << lane) != 0
-    }
-
-    fn lane_needs_service(&self, lane: u32) -> bool {
-        self.epoch() != 0 && (!self.independent_lane_release || !self.lane_acknowledged(lane))
+    fn lane_needs_service(&self, _lane: u32) -> bool {
+        self.epoch() != 0
     }
 
     fn frozen_vector(&self) -> String {
@@ -4173,6 +4364,15 @@ impl WalSyncCoordinator {
             .iter()
             .enumerate()
             .map(|(lane, tail)| format!("{lane}:{}", tail.load(Ordering::Acquire)))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn remote_vector(&self) -> String {
+        self.remote_lane_hwms
+            .iter()
+            .enumerate()
+            .map(|(lane, hwm)| format!("{lane}:{}", hwm.load(Ordering::Acquire)))
             .collect::<Vec<_>>()
             .join(",")
     }
@@ -4229,17 +4429,24 @@ impl WalSyncCoordinator {
                 return Ok(false);
             }
             self.committed_hwm.fetch_max(epoch, Ordering::AcqRel);
+            let ordering_epoch = self.active_ordering_epoch.load(Ordering::Acquire);
+            self.committed_ordering_epoch
+                .fetch_max(ordering_epoch, Ordering::AcqRel);
             match self
                 .epoch
                 .compare_exchange(epoch, 0, Ordering::Release, Ordering::Acquire)
             {
                 Ok(_) => {
-                    let _ = self.requested_epoch.compare_exchange(
-                        epoch,
-                        0,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
+                    let mut requested = self
+                        .requested_syncs
+                        .lock()
+                        .map_err(|_| io::Error::other("WAL sync request queue poisoned"))?;
+                    requested.retain(|&requested_epoch, _| requested_epoch > epoch);
+                    self.requested_epoch.store(
+                        requested.first_key_value().map_or(0, |(&epoch, _)| epoch),
+                        Ordering::Release,
                     );
+                    self.active_ordering_epoch.store(0, Ordering::Release);
                     Ok(true)
                 }
                 Err(0) if self.committed_hwm() >= epoch => Ok(false),
@@ -5130,6 +5337,39 @@ impl SharedTarget {
             self.mapping.len,
         )?;
         Ok(unsafe { self.mapping.ptr.add(offset).cast() })
+    }
+
+    fn flush_admission_vector(&self, ordering_epoch: u64) -> io::Result<Box<[u64]>> {
+        let mut tails = Vec::with_capacity(self.header.channels as usize);
+        for channel in 0..self.header.channels {
+            let control = self.channel_ptr(channel)?;
+            let published_epoch = unsafe {
+                atomic_load(
+                    ptr::addr_of!(
+                        (*control).request_producer_reserved[ZCNBLK_SHM_CHANNEL_FLUSH_EPOCH]
+                    ),
+                    Ordering::Acquire,
+                )
+            };
+            if published_epoch < ordering_epoch {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "flush epoch {ordering_epoch} lacks channel {channel} admission vector: published_epoch={published_epoch}"
+                    ),
+                ));
+            }
+            let tail = unsafe {
+                atomic_load(
+                    ptr::addr_of!(
+                        (*control).request_producer_reserved[ZCNBLK_SHM_CHANNEL_FLUSH_TAIL]
+                    ),
+                    Ordering::Acquire,
+                )
+            };
+            tails.push(tail);
+        }
+        Ok(tails.into_boxed_slice())
     }
 
     fn request_ptr(&self, channel: u32, sequence: u64) -> io::Result<*mut ZcnblkShmRequest> {
@@ -6639,6 +6879,8 @@ impl SharedTarget {
         channel: u32,
         batch: &[PendingRemoteRead],
         remote_completions: &WalCompletionTracker,
+        remote_lane_completions: &mut WalLaneReleaseTracker,
+        syncs: &WalSyncCoordinator,
         lane_completions: &mut WalLaneCompletionTracker,
         retained_writes: &mut VecDeque<PendingRemoteRead>,
         releases: &mut WalLaneReleaseTracker,
@@ -6664,6 +6906,7 @@ impl SharedTarget {
         remote_completions
             .mark_complete_batch(batch.iter().map(|pending| pending.request.submit_sequence))?;
         for pending in batch {
+            remote_lane_completions.mark_releasable(pending.request_sequence)?;
             let request = pending.request;
             match request.op {
                 ZCNBLK_SHM_OP_WRITE => retained_writes.push_back(*pending),
@@ -6677,6 +6920,7 @@ impl SharedTarget {
                 _ => unreachable!("lane batch validated request operation"),
             }
         }
+        syncs.observe_remote_lane_hwm(channel, remote_lane_completions.hwm)?;
         self.release_wal_lane_dirty_cache(
             channel,
             retained_writes,
@@ -6710,6 +6954,7 @@ impl SharedTarget {
         completions: &WalCompletionTracker,
         remote_completions: &WalCompletionTracker,
         syncs: &WalSyncCoordinator,
+        vector_hwm: bool,
         dirty: &WalConcurrentDirtyCache,
         cpu: Option<usize>,
         transport_cpu: Option<usize>,
@@ -6795,6 +7040,13 @@ impl SharedTarget {
         let mut pending_syncs = VecDeque::<PendingRemoteRead>::new();
         let mut retained_writes = VecDeque::<PendingRemoteRead>::new();
         let mut releases = WalLaneReleaseTracker::new(self.header.payload_entries as usize);
+        let remote_lane_capacity = (self.header.channels as usize)
+            .checked_mul(self.header.payload_entries as usize)
+            .and_then(|entries| entries.checked_mul(2))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "lane remote HWM overflow")
+            })?;
+        let mut remote_lane_completions = WalLaneReleaseTracker::new(remote_lane_capacity);
         let mut lane_completions =
             WalLaneCompletionTracker::new(self.header.payload_entries as usize);
         let mut completion_scratch = Vec::with_capacity(self.header.ring_entries as usize);
@@ -6813,10 +7065,9 @@ impl SharedTarget {
             || !pending_syncs.is_empty()
         {
             self.release_consumed_wal_read_refs(channel, &mut outstanding_read_refs, dirty)?;
-            if pending_send.is_empty()
-                && transport.in_flight_len() == 0
+            if transport.in_flight_len() == 0
                 && !transport.has_pending()
-                && syncs.epoch() != 0
+                && syncs.lane_needs_service(channel)
             {
                 let active_sync_epoch = syncs.epoch();
                 if syncs.service(channel, &mut last_synced_epoch, |epoch| {
@@ -6873,6 +7124,8 @@ impl SharedTarget {
                     channel,
                     &batch,
                     remote_completions,
+                    &mut remote_lane_completions,
+                    syncs,
                     &mut lane_completions,
                     &mut retained_writes,
                     &mut releases,
@@ -6911,6 +7164,13 @@ impl SharedTarget {
                     break;
                 }
                 let request = unsafe { ptr::read(request_ptr) };
+                let ordering_epoch = request.ordering_epoch();
+                if ordering_epoch == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "lane WAL descriptor has reserved ordering epoch zero",
+                    ));
+                }
                 if !completions.can_track(request.submit_sequence)
                     || !remote_completions.can_track(request.submit_sequence)
                 {
@@ -6935,8 +7195,14 @@ impl SharedTarget {
                     };
                     let required_hwm = request.submit_sequence.saturating_sub(1);
                     let joined = remote_completions.hwm() >= required_hwm
-                        && syncs.try_join(request.submit_sequence);
+                        && syncs.try_join(request.submit_sequence, ordering_epoch);
                     remote_completions.mark_complete(request.submit_sequence)?;
+                    // A sync descriptor carries no data to the leaf. Let the
+                    // transport HWM cross it immediately so a later flush
+                    // vector can conservatively include this sync without
+                    // waiting on the durable marker it is trying to start.
+                    remote_lane_completions.mark_releasable(consumed)?;
+                    syncs.observe_remote_lane_hwm(channel, remote_lane_completions.hwm)?;
                     if joined {
                         lane_completions.admit(pending, true)?;
                         let payload_hwm = self.mark_payload_releasable(&mut releases, consumed)?;
@@ -6950,7 +7216,20 @@ impl SharedTarget {
                         stats.lease_releases += 1;
                         sync_completion_ready = true;
                     } else {
-                        syncs.announce(request.submit_sequence)?;
+                        let (lane_tails, required_global_hwm) = if vector_hwm {
+                            (self.flush_admission_vector(ordering_epoch)?, 0)
+                        } else {
+                            (
+                                vec![0; self.header.channels as usize].into_boxed_slice(),
+                                required_hwm,
+                            )
+                        };
+                        syncs.announce(
+                            request.submit_sequence,
+                            ordering_epoch,
+                            lane_tails,
+                            required_global_hwm,
+                        )?;
                         lane_completions.admit(pending, false)?;
                         pending_syncs.push_back(pending);
                         sync_coalesce_started.get_or_insert_with(Instant::now);
@@ -6981,7 +7260,6 @@ impl SharedTarget {
                         "lane WAL request topology or range mismatch",
                     ));
                 }
-                syncs.observe_lane_tail(channel, request.submit_sequence)?;
                 if request.sector_predecessor != 0
                     && !completions.is_complete(request.sector_predecessor)
                 {
@@ -7033,6 +7311,8 @@ impl SharedTarget {
                         if dirty_hit {
                             stats.dirty_read_refs += u64::from(pending.dirty_ref.is_some());
                             remote_completions.mark_complete_deferred(request.submit_sequence)?;
+                            remote_lane_completions.mark_releasable(consumed)?;
+                            syncs.observe_remote_lane_hwm(channel, remote_lane_completions.hwm)?;
                             deferred_remote_completions += 1;
                             lane_completions.admit(pending, true)?;
                             let payload_hwm =
@@ -7086,8 +7366,7 @@ impl SharedTarget {
                 progressed = true;
             }
 
-            if pending_send.is_empty()
-                && transport.in_flight_len() == 0
+            if transport.in_flight_len() == 0
                 && !transport.has_pending()
                 && syncs.lane_needs_service(channel)
             {
@@ -7155,12 +7434,14 @@ impl SharedTarget {
             }
 
             let mut send_ready = 0usize;
-            for pending in pending_send.iter().take(extent_records) {
-                let predecessor = pending.request.sector_predecessor;
-                if predecessor != 0 && !remote_completions.is_complete(predecessor) {
-                    break;
+            if !syncs.lane_needs_service(channel) {
+                for pending in pending_send.iter().take(extent_records) {
+                    let predecessor = pending.request.sector_predecessor;
+                    if predecessor != 0 && !remote_completions.is_complete(predecessor) {
+                        break;
+                    }
+                    send_ready += 1;
                 }
-                send_ready += 1;
             }
             let channel_ready = self.channel_request_ready(channel)?;
             if send_ready != 0 && transport.in_flight_len() < lane_window {
@@ -7219,6 +7500,8 @@ impl SharedTarget {
                     channel,
                     &batch,
                     remote_completions,
+                    &mut remote_lane_completions,
+                    syncs,
                     &mut lane_completions,
                     &mut retained_writes,
                     &mut releases,
@@ -7307,12 +7590,19 @@ impl SharedTarget {
                     active_epoch.get_or_insert_with(Instant::now);
                     continue;
                 }
-                let mut pfd = libc::pollfd {
-                    fd: self.file.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                let ret = unsafe { libc::poll(&mut pfd, 1, 100) };
+                let mut pfds = [
+                    libc::pollfd {
+                        fd: self.file.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
+                    libc::pollfd {
+                        fd: syncs.lane_wake_fd(channel)?,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
+                ];
+                let ret = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as _, 100) };
                 unsafe {
                     atomic_store(
                         ptr::addr_of_mut!((*control).request_wake_armed),
@@ -7322,6 +7612,9 @@ impl SharedTarget {
                 }
                 if ret < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
                     return Err(io::Error::last_os_error());
+                }
+                if pfds[1].revents & libc::POLLIN != 0 {
+                    syncs.drain_lane_wake(channel)?;
                 }
                 stats.idle_polls += 1;
             }
@@ -7373,12 +7666,17 @@ impl SharedTarget {
             .transpose()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
             .unwrap_or(if self.header.channels > 1 { 20 } else { 0 });
-        let independent_lane_release = env_enabled_or("URING_PLAY_ZCNBLK_SHM_VECTOR_HWM", false);
-        let syncs = WalSyncCoordinator::new(
-            self.header.channels,
-            sync_coalesce_us,
-            independent_lane_release,
-        );
+        let vector_hwm = env_enabled_or("URING_PLAY_ZCNBLK_SHM_VECTOR_HWM", false);
+        let ordering_caps = ZCNBLK_SHM_CAP_ORDERING_EPOCH | ZCNBLK_SHM_CAP_ORDERING_VECTOR;
+        if vector_hwm
+            && self.header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] & ordering_caps != ordering_caps
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "vector WAL synchronization requires ordering epochs and per-lane admission cuts from zcnblk",
+            ));
+        }
+        let syncs = WalSyncCoordinator::new(self.header.channels, sync_coalesce_us)?;
         let logical_pages = usize::try_from(self.header.capacity_bytes / 4096).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -7498,6 +7796,7 @@ impl SharedTarget {
                         completions,
                         remote_completions,
                         syncs,
+                        vector_hwm,
                         dirty,
                         cpu,
                         transport_cpu,
@@ -7605,7 +7904,7 @@ impl SharedTarget {
         let transfer_total_slots =
             u64::from(self.header.channels) * u64::from(self.header.payload_entries);
         eprintln!(
-            "zcnblk-shm-target-summary: backend={} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} dirty_read_hits={} dirty_read_refs={} dirty_pressure_events={} dirty_pressure_evictions={} max_payload_slots_outstanding={} remote_read_misses={} completion_window_stalls={} remote_batches={} avg_remote_batch_records={:.2} payload_ownership={} payload_slots_free={}/{} completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order={} sync_boundary=remote-global-completion-hwm+all-owner-sync dirty_retention={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination={} kernel_payload_copies=one-per-direction writeback_materialization_copies=none-userspace;tcp-kernel-copy representative={}",
+            "zcnblk-shm-target-summary: backend={} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} dirty_read_hits={} dirty_read_refs={} dirty_pressure_events={} dirty_pressure_evictions={} max_payload_slots_outstanding={} remote_read_misses={} completion_window_stalls={} remote_batches={} avg_remote_batch_records={:.2} payload_ownership={} payload_slots_free={}/{} completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order={} sync_boundary={} dirty_retention={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination={} kernel_payload_copies=one-per-direction writeback_materialization_copies=none-userspace;tcp-kernel-copy representative={}",
             if owner_mode {
                 "WalTcpStableOwnerExtent"
             } else {
@@ -7646,6 +7945,11 @@ impl SharedTarget {
             } else {
                 "hashed-sector-predecessor+lock-free-dirty-directory"
             },
+            if vector_hwm {
+                "remote-per-lane-admission-vector+all-lane-marker"
+            } else {
+                "remote-global-publication-hwm+all-lane-marker"
+            },
             if self.transfer_payload_slots {
                 "transferred-page-reference-until-remote-sync-or-targeted-pressure-retire"
             } else {
@@ -7659,7 +7963,7 @@ impl SharedTarget {
             cpus.is_some() && env_enabled_or("URING_PLAY_TOPOLOGY_REPRESENTATIVE", false),
         );
         eprintln!(
-            "zcnblk-shm-target-sync-summary: logical_syncs={} remote_sync_epochs={} collapsed_syncs={} joined_syncs={} coalesce_us={} remote_lane_syncs_expected={} committed_submit_hwm={} pending_requested_epoch={} pending_announcements={} pending_ack_mask={:#x} expected_ack_mask={:#x} frozen_lane_hwm={} vector_hwm={}",
+            "zcnblk-shm-target-sync-summary: logical_syncs={} remote_sync_epochs={} collapsed_syncs={} joined_syncs={} coalesce_us={} remote_lane_syncs_expected={} committed_submit_hwm={} pending_requested_epoch={} pending_announcements={} pending_ack_mask={:#x} expected_ack_mask={:#x} frozen_lane_hwm={} remote_lane_hwm={} vector_hwm={} lane_release=coordinated-global-hwm",
             total.syncs,
             syncs.remote_epochs(),
             total.syncs.saturating_sub(syncs.remote_epochs()),
@@ -7674,7 +7978,8 @@ impl SharedTarget {
             syncs.acknowledged_lane_mask(),
             syncs.expected_lane_mask(),
             syncs.frozen_vector(),
-            independent_lane_release,
+            syncs.remote_vector(),
+            vector_hwm,
         );
         if let Some(first) = self.remote_leaves.first() {
             let write_batches = self
@@ -7817,7 +8122,7 @@ impl SharedTarget {
             );
             for remote in &self.remote_leaves {
                 eprintln!(
-                    "zcnblk-shm-target-remote-timing: lane={} tcp_nodelay={} quickack={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
+                    "zcnblk-shm-target-remote-timing: lane={} tcp_nodelay={} quickack={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} sync_calls={} sync_seconds={:.6} avg_sync_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
                     remote.lane_id,
                     remote.tcp_nodelay,
                     remote.quickack,
@@ -7829,6 +8134,9 @@ impl SharedTarget {
                     remote.result_recv_time.as_secs_f64(),
                     remote.result_recv_time.as_secs_f64() * 1_000_000.0
                         / remote.result_recv_calls.max(1) as f64,
+                    remote.syncs,
+                    remote.sync_time.as_secs_f64(),
+                    remote.sync_time.as_secs_f64() * 1_000_000.0 / remote.syncs.max(1) as f64,
                     remote.result_header_time.as_secs_f64(),
                     remote.result_descriptor_time.as_secs_f64(),
                     remote.result_payload_time.as_secs_f64(),
@@ -9387,10 +9695,10 @@ mod tests {
 
     #[test]
     fn wal_sync_coordinator_joins_contiguous_and_groups_announced_prefixes() {
-        let syncs = WalSyncCoordinator::new(2, 20, true);
-        assert!(!syncs.try_join(1));
+        let syncs = WalSyncCoordinator::new(2, 20).unwrap();
+        assert!(!syncs.try_join(1, 1));
 
-        syncs.begin(10).unwrap();
+        syncs.begin(10, 1, &[4, 9]).unwrap();
         let mut lane_zero_epoch = 0;
         let mut lane_one_epoch = 0;
         let mut remote_syncs = 0;
@@ -9415,16 +9723,22 @@ mod tests {
 
         assert_eq!(remote_syncs, 2);
         assert_eq!(syncs.committed_hwm(), 10);
-        assert!(syncs.try_join(11));
+        assert!(syncs.try_join(11, 1));
         assert_eq!(syncs.committed_hwm(), 11);
-        assert!(!syncs.try_join(13));
+        assert!(!syncs.try_join(13, 2));
 
-        syncs.announce(13).unwrap();
-        syncs.announce(15).unwrap();
-        assert_eq!(syncs.requested_epoch(), 15);
+        syncs
+            .announce(13, 2, vec![6, 12].into_boxed_slice(), 0)
+            .unwrap();
+        syncs
+            .announce(15, 3, vec![7, 14].into_boxed_slice(), 0)
+            .unwrap();
+        assert_eq!(syncs.requested_epoch(), 13);
         assert_eq!(syncs.announcement_count(), 2);
-        assert_eq!(syncs.try_begin_requested(14).unwrap(), None);
-        assert_eq!(syncs.try_begin_requested(15).unwrap(), Some(15));
+        assert_eq!(syncs.try_begin_requested(0).unwrap(), None);
+        syncs.observe_remote_lane_hwm(0, 7).unwrap();
+        syncs.observe_remote_lane_hwm(1, 14).unwrap();
+        assert_eq!(syncs.try_begin_requested(0).unwrap(), Some(15));
         assert!(!syncs.try_finish(10).unwrap());
         assert!(
             syncs
@@ -9453,8 +9767,10 @@ mod tests {
         assert_eq!(syncs.remote_epochs(), 2);
         assert_eq!(syncs.joined_syncs(), 1);
 
-        syncs.announce(15).unwrap();
-        assert_eq!(syncs.try_begin_requested(15).unwrap(), None);
+        syncs
+            .announce(15, 3, vec![7, 14].into_boxed_slice(), 0)
+            .unwrap();
+        assert_eq!(syncs.try_begin_requested(0).unwrap(), None);
         assert_eq!(syncs.epoch(), 0);
         assert_eq!(syncs.requested_epoch(), 0);
         assert_eq!(syncs.remote_epochs(), 2);
@@ -9462,11 +9778,30 @@ mod tests {
     }
 
     #[test]
-    fn wal_sync_vector_freezes_lane_tails_and_releases_lanes_independently() {
-        let syncs = WalSyncCoordinator::new(2, 0, true);
-        syncs.observe_lane_tail(0, 4).unwrap();
-        syncs.observe_lane_tail(1, 9).unwrap();
-        syncs.begin(10).unwrap();
+    fn wal_sync_announcement_wakes_every_lane() {
+        let syncs = WalSyncCoordinator::new(2, 20).unwrap();
+        syncs
+            .announce(1, 1, vec![0, 0].into_boxed_slice(), 0)
+            .unwrap();
+
+        for lane in 0..2 {
+            let mut pfd = libc::pollfd {
+                fd: syncs.lane_wake_fd(lane).unwrap(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert_eq!(unsafe { libc::poll(&mut pfd, 1, 0) }, 1);
+            assert_ne!(pfd.revents & libc::POLLIN, 0);
+            syncs.drain_lane_wake(lane).unwrap();
+            pfd.revents = 0;
+            assert_eq!(unsafe { libc::poll(&mut pfd, 1, 0) }, 0);
+        }
+    }
+
+    #[test]
+    fn wal_sync_vector_freezes_lane_tails_until_global_commit() {
+        let syncs = WalSyncCoordinator::new(2, 0).unwrap();
+        syncs.begin(10, 1, &[4, 9]).unwrap();
 
         assert_eq!(syncs.frozen_lane_tail(0).unwrap(), 4);
         assert_eq!(syncs.frozen_lane_tail(1).unwrap(), 9);
@@ -9475,17 +9810,69 @@ mod tests {
 
         let mut lane_zero_epoch = 0;
         syncs.service(0, &mut lane_zero_epoch, |_| Ok(())).unwrap();
-        assert!(!syncs.lane_needs_service(0));
+        assert!(syncs.lane_needs_service(0));
         assert!(syncs.lane_needs_service(1));
 
-        // Post-HWM traffic advances the live tail without changing the cut.
-        syncs.observe_lane_tail(0, 12).unwrap();
+        // Post-HWM traffic advances the live remote HWM without changing the cut.
+        syncs.observe_remote_lane_hwm(0, 12).unwrap();
         assert_eq!(syncs.frozen_lane_tail(0).unwrap(), 4);
 
         let mut lane_one_epoch = 0;
         syncs.service(1, &mut lane_one_epoch, |_| Ok(())).unwrap();
+        assert!(syncs.lane_needs_service(0));
+        assert!(syncs.lane_needs_service(1));
         syncs.finish(10).unwrap();
+        assert!(!syncs.lane_needs_service(0));
+        assert!(!syncs.lane_needs_service(1));
         assert_eq!(syncs.committed_hwm(), 10);
+    }
+
+    #[test]
+    fn wal_sync_scalar_fallback_waits_for_global_remote_hwm() {
+        let syncs = WalSyncCoordinator::new(2, 0).unwrap();
+        syncs
+            .announce(10, 1, vec![0, 0].into_boxed_slice(), 9)
+            .unwrap();
+        assert_eq!(syncs.try_begin_requested(8).unwrap(), None);
+        assert_eq!(syncs.try_begin_requested(9).unwrap(), Some(10));
+    }
+
+    #[test]
+    fn wal_sync_vector_crosses_queued_sync_descriptors() {
+        let syncs = WalSyncCoordinator::new(2, 0).unwrap();
+        let mut lane_zero = WalLaneReleaseTracker::new(8);
+        let mut lane_one = WalLaneReleaseTracker::new(8);
+
+        lane_zero.mark_releasable(0).unwrap();
+        lane_one.mark_releasable(0).unwrap();
+        syncs.observe_remote_lane_hwm(0, lane_zero.hwm).unwrap();
+        syncs.observe_remote_lane_hwm(1, lane_one.hwm).unwrap();
+        syncs
+            .announce(10, 1, vec![2, 2].into_boxed_slice(), 0)
+            .unwrap();
+        assert_eq!(syncs.try_begin_requested(0).unwrap(), None);
+
+        // Lane-local sequence 1 is a zero-payload sync descriptor. It may
+        // advance transport readiness before its block completion is durable.
+        lane_zero.mark_releasable(1).unwrap();
+        lane_one.mark_releasable(1).unwrap();
+        syncs.observe_remote_lane_hwm(0, lane_zero.hwm).unwrap();
+        syncs.observe_remote_lane_hwm(1, lane_one.hwm).unwrap();
+        assert_eq!(syncs.try_begin_requested(0).unwrap(), Some(10));
+    }
+
+    #[test]
+    fn shm_request_id_carries_ordering_epoch_without_growing_descriptor() {
+        let request = ZcnblkShmRequest {
+            request_id: (42 << ZCNBLK_SHM_REQUEST_ID_BITS) | 7,
+            ..ZcnblkShmRequest::default()
+        };
+        assert_eq!(request.ordering_epoch(), 42);
+        assert_eq!(request.client_request_id(), 7);
+        assert_eq!(
+            size_of::<ZcnblkShmRequest>(),
+            ZCNBLK_SHM_DESC_BYTES as usize
+        );
     }
 
     #[test]

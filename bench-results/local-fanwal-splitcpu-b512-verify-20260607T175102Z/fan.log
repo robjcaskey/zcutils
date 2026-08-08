@@ -1,0 +1,19 @@
+zcnblk-fan-wal: leaves=127.0.0.1:57100,127.0.0.2:57100 bind=127.0.0.1 base_port=56100 ports=4 connections_per_port=1 total_connections=4 bytes_per_connection=67108864 chunk_bytes=4096 stripe_bytes=4096 leaf_base_port=57100 source_ip=kernel-route source_ports=kernel-ephemeral pin_handlers=true placement=mirror order_mode=global-record order_shards=128 write_acks=false write_ack_mode=disabled batch_window=16 result_ranges=true result_arena=false result_arena_slots=64 result_arena_spin=false result_arena_spin_budget=unbounded coalesce_leaf_payloads=false split_mixed_writes=false async_writeback=true async_writeback_queue=1024 leaf_max_batch_records=64 result_arena_inline_primary=false result_wait_policy=blocking result_spin_budget=unbounded result_spin_min_outstanding=4 dirty_cache=enabled dirty_cache_shards=128 dirty_extent_shards=16 dirty_extent_shard_records=16384 writeback_dirty_budget=enabled soft_dirty_bytes=1503238553 hard_dirty_bytes=2147483648 plan=none placement_epoch=0 protocol=fan-wal-v2
+zcnblk-fan-wal-leaf-note: start each edge with zcnblk-wal-leaf; leaf block devices are terminal media only after userspace placement
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:56268 lane=0 port=56100 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:60236 lane=3 port=56103 conn=0 incoming_cpu=19 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:38210 lane=2 port=56102 conn=0 incoming_cpu=18 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:51320 lane=1 port=56101 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=2 target_cpu=10 status=ok
+zcnblk-fan-wal-handler: affinity_index=1 target_cpu=9 status=ok
+zcnblk-fan-wal-handler: affinity_index=0 target_cpu=8 status=ok
+zcnblk-fan-wal-handler: affinity_index=3 target_cpu=11 status=ok
+zcnblk-fan-wal-upstream: handler=2 peer=127.0.0.1:38210 lane=2 port=56102 conn=0 incoming_cpu=18 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=0 peer=127.0.0.1:56268 lane=0 port=56100 conn=0 incoming_cpu=16 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=1 peer=127.0.0.1:51320 lane=1 port=56101 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=3 peer=127.0.0.1:60236 lane=3 port=56103 conn=0 incoming_cpu=19 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=2 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=1 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=0 error=Connection refused (os error 111)
+zcnblk-fan-wal-handler-error: handler=3 error=Connection refused (os error 111)
+Error: Os { code: 111, kind: ConnectionRefused, message: "Connection refused" }

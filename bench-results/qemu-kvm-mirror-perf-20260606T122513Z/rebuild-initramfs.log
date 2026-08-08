@@ -1,0 +1,33 @@
+warning: associated function `open_rma_on_domain` is never used
+    --> src/lib.rs:9209:8
+     |
+9166 | impl ZcOfiEndpoint {
+     | ------------------ associated function in this implementation
+...
+9209 |     fn open_rma_on_domain(
+     |        ^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` on by default
+
+warning: function `zcnblk_fan_wal_recv_exact_dontwait_spin` is never used
+     --> src/lib.rs:24382:4
+      |
+24382 | fn zcnblk_fan_wal_recv_exact_dontwait_spin(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `zcnblk_fan_wal_read_frame_dontwait_spin` is never used
+     --> src/lib.rs:24463:4
+      |
+24463 | fn zcnblk_fan_wal_read_frame_dontwait_spin(stream: &TcpStream) -> io::Result<ZcnblkFanWalFrame> {
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `zcnblk_fan_wal_read_payload_dontwait_spin` is never used
+     --> src/lib.rs:24489:4
+      |
+24489 | fn zcnblk_fan_wal_read_payload_dontwait_spin(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `zcutils` (lib) generated 4 warnings
+    Finished `release` profile [optimized] target(s) in 0.04s
+66995 blocks
+34301440 /home/rob/zcutils/qemu-zcrx/initramfs.cpio

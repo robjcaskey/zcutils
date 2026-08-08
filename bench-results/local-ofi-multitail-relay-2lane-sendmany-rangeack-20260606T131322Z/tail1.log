@@ -1,0 +1,3 @@
+zcofi-wal-recv: provider=tcp endpoint=rdm bind=127.0.0.1 base_service=49000 lanes=2 bytes_per_lane=8388608 extent_bytes=65536 message_bytes=65664 workers=2 ack_enabled=yes ack_inject=yes compact_4k=no ofi_domain=auto records_per_extent=16 timeout_ms=10000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-recv-worker: affinity_index=0 target_cpu=2 status=ok
+zcofi-wal-recv-worker: affinity_index=1 target_cpu=3 status=ok

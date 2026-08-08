@@ -1,0 +1,21 @@
+[    0.024417] RDSEED32 is broken. Disabling the corresponding CPUID bit.
+ZCWORKLOAD_GUEST_BOOT role=client
+Linux (none) 7.0.8-io-slots-03 #slots3 SMP PREEMPT_DYNAMIC Sun May 31 09:43:13 EDT 2026 x86_64 GNU/Linux
+guest_cmdline=console=ttyS0 panic=-1 oops=panic quiet zcworkload_role=client
+guest_online_cpus=0-3
+guest_memlock_kib=8192
+guest_hugepages_total=0
+guest_hugepages_free=0
+client_topology=lane0:workload-worker0:guest-cpu1:kernel-kthread0:guest-cpu3:wal-onramp-worker0:guest-cpu2 frame_bytes=4096
+client_vcpu_host_map=vCPU0:hostCPU8,vCPU1:hostCPU9,vCPU2:hostCPU10,vCPU3:hostCPU11 emulator:hostCPU13
+client_block_edge=/dev/zcnblk0 transport=shm userspace_stage=zcnblk-shm-target:wal-tcp placement_owner=none block_client_placement=no
+PING 10.72.0.2 (10.72.0.2): 56 data bytes
+64 bytes from 10.72.0.2: seq=0 ttl=64 time=0.453 ms
+
+--- 10.72.0.2 ping statistics ---
+1 packets transmitted, 1 packets received, 0% packet loss
+round-trip min/avg/max = 0.453/0.453/0.453 ms
++ insmod /modules/zcnblk_client_mod.ko transport=shm lanes=1 connections_per_lane=1 shard_count=1 size_mib=128 logical_block_size=4096 max_frame_bytes=4096 queues=1 queue_depth=64 pipeline_depth=128 shm_ring_entries=128 shm_payload_entries=4096 shm_poll_us=50 batch_depth=1 write_acks=1 hctx_affinity=1 pin_threads=1 pin_base_cpu=3 pin_cpu_count=1 pin_stride=1
+insmod: can't insert '/modules/zcnblk_client_mod.ko': invalid module format
+ZCWORKLOAD_GUEST_FINAL role=client status=8
+[   15.217387] reboot: Power down

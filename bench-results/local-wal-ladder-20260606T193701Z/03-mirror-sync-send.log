@@ -1,0 +1,15 @@
+PERF WARNING: zcraid-mirror-send is running without a zcplan branch_topology JSON; numbers are topology smoke only
+zcraid-mirror-send-branch-topology: branch=0 domain=none lanes=0 leader_cpus=none workers=none block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches
+zcraid-mirror-send-branch-topology: branch=1 domain=none lanes=0 leader_cpus=none workers=none block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches
+zcraid-mirror-send-branch-port: branch=0 addr=127.0.0.1 base_port=47000 source_ip=kernel-route domain=auto
+zcraid-mirror-send-branch-port: branch=1 addr=127.0.0.1 base_port=49000 source_ip=kernel-route domain=auto
+zcraid-mirror-send: transport=tcp-mux-compatible addr=127.0.0.1 branches=2 lanes=0 lane_count=1 bytes_per_lane=134217728 extent_bytes=1048576 logical_record_bytes=4096 extents_per_lane=128 workers=1 ack_enabled=yes ack_policy=sync ack_window=32 ack_wait_window=128 zlane_coord=lane-owner zlane_lock_shards=0 provider=efa endpoint=rdm plan_json=no compact_4k=no payload_inject=no ack_inject=no tx_nowait=no prepost_ack=no
+zcraid-mirror-tcp-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcraid-mirror-tcp-send-lane: worker=0 branch=0 lane=0 addr=127.0.0.1 port=47000 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=0 branch=1 lane=0 addr=127.0.0.1 port=49000 source_ip=kernel-route
+zcraid-mirror-send-worker: worker=0 streams=2 payload_bytes=134217728 wire_bytes=268468224 extents=128 logical_records=32768 acks=128 seconds=0.021120 payload_Gbitps=50.839 logical_iops=1551479 thread_cpu_seconds=0.014728 cpu_wall_pct=69.7 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=0 involuntary_ctxt_switches=259 migrations=0
+zcraid-mirror-send-worker-latency: worker=0 ack_count=1 ack_avg_ns=28890 ack_min_ns=28890 ack_p50_ns=29000 ack_p95_ns=29000 ack_p99_ns=29000 ack_p999_ns=29000 ack_max_ns=28890
+zcraid-mirror-send-worker-wire: worker=0 branch_wire_bytes=268468224 branch_wire_Gbitps=101.690
+zcraid-mirror-send-summary: transport=tcp-mux-compatible branches=2 lanes=1 workers=1 extent_bytes=1048576 logical_record_bytes=4096 ack_policy=sync ack_window=128 zlane_coord=lane-owner zlane_lock_shards=0 logical_payload_bytes=134217728 branch_wire_bytes=268468224 extents=128 logical_records=32768 committed_acks=128 seconds=0.021120 logical_payload_Gbitps=50.839 branch_wire_Gbitps=101.690 logical_iops=1551479 voluntary_ctxt_switches=0 involuntary_ctxt_switches=259 migrations=0
+zcraid-mirror-send-latency-summary: mirror_sync_hwm_wait_count=1 mirror_sync_hwm_wait_avg_ns=28890 mirror_sync_hwm_wait_min_ns=28890 mirror_sync_hwm_wait_p50_ns=29000 mirror_sync_hwm_wait_p95_ns=29000 mirror_sync_hwm_wait_p99_ns=29000 mirror_sync_hwm_wait_p999_ns=29000 mirror_sync_hwm_wait_max_ns=28890
+zcraid-mirror-send-commit-contract: placement_owner=userspace-raid block_device_raid_primitive=false ack_policy=writeback-sync-hwm normal_write_ack=local-admit commit_point=sync-hwm-only ordering=per-lane-monotonic zlane_coord=lane-owner same_sector_order=local-wal-order

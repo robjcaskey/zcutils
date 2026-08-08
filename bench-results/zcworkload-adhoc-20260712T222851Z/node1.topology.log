@@ -1,0 +1,184 @@
+hostname=ip-172-31-39-40
+utc=2026-07-12T22:52:23Z
+kernel=6.17.0-1019-aws
+interface=ens34
+--- lscpu ---
+Architecture:                            aarch64
+CPU op-mode(s):                          64-bit
+Byte Order:                              Little Endian
+CPU(s):                                  8
+On-line CPU(s) list:                     0-7
+Vendor ID:                               ARM
+Model name:                              Neoverse-V2
+Model:                                   1
+Thread(s) per core:                      1
+Core(s) per socket:                      8
+Socket(s):                               1
+Stepping:                                r0p1
+BogoMIPS:                                2000.00
+Flags:                                   fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp sve2 sveaes svepmull svebitperm svesha3 flagm2 frint svei8mm svebf16 i8mm bf16 dgh rng bti
+L1d cache:                               512 KiB (8 instances)
+L1i cache:                               512 KiB (8 instances)
+L2 cache:                                16 MiB (8 instances)
+L3 cache:                                36 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-7
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Not affected
+Vulnerability Spec rstack overflow:      Not affected
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; CSV2, BHB
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Not affected
+--- numa ---
+available: 1 nodes (0)
+node 0 cpus: 0 1 2 3 4 5 6 7
+node 0 size: 15666 MB
+node 0 free: 12180 MB
+node distances:
+node   0 
+  0:  10 
+--- addresses ---
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens34            UP             172.31.39.40/20 metric 100 fe80::8cb:3eff:fecb:d32b/64 
+--- routes ---
+default via 172.31.32.1 dev ens34 proto dhcp src 172.31.39.40 metric 100 
+172.31.0.2 via 172.31.32.1 dev ens34 proto dhcp src 172.31.39.40 metric 100 
+172.31.32.0/20 dev ens34 proto kernel scope link src 172.31.39.40 metric 100 
+172.31.32.1 dev ens34 proto dhcp scope link src 172.31.39.40 metric 100 
+--- ethtool driver ---
+driver: ena
+version: 6.17.0-1019-aws
+firmware-version: 
+expansion-rom-version: 
+bus-info: 0000:27:00.0
+supports-statistics: yes
+supports-test: no
+supports-eeprom-access: no
+supports-register-dump: no
+supports-priv-flags: no
+--- ethtool channels ---
+Channel parameters for ens34:
+Pre-set maximums:
+RX:		n/a
+TX:		n/a
+Other:		n/a
+Combined:	8
+Current hardware settings:
+RX:		n/a
+TX:		n/a
+Other:		n/a
+Combined:	8
+--- nic numa ---
+0
+--- irq affinity ---
+ 94:          0        366          0          0        472          0          0          0 ITS-PCI-MSIX-0000:27:00.0   1 Edge      ens34-Tx-Rx-0
+ 95:          0          0         79          0          0       2637          0          0 ITS-PCI-MSIX-0000:27:00.0   2 Edge      ens34-Tx-Rx-1
+ 96:       3993          0          0         78          0          0          0          0 ITS-PCI-MSIX-0000:27:00.0   3 Edge      ens34-Tx-Rx-2
+ 97:          0      13037          0          0         67          0          0        622 ITS-PCI-MSIX-0000:27:00.0   4 Edge      ens34-Tx-Rx-3
+ 98:          0          0          0          0          0         84          0        754 ITS-PCI-MSIX-0000:27:00.0   5 Edge      ens34-Tx-Rx-4
+ 99:          0          0          0          0          0          0        732          0 ITS-PCI-MSIX-0000:27:00.0   6 Edge      ens34-Tx-Rx-5
+100:          0          0      18966          0          0          0          0        117 ITS-PCI-MSIX-0000:27:00.0   7 Edge      ens34-Tx-Rx-6
+101:         74          0          0       3100          0          0          0          0 ITS-PCI-MSIX-0000:27:00.0   8 Edge      ens34-Tx-Rx-7
+--- rps xps ---
+/sys/class/net/ens34/queues/rx-0/rps_cpus=00
+/sys/class/net/ens34/queues/rx-1/rps_cpus=00
+/sys/class/net/ens34/queues/rx-2/rps_cpus=00
+/sys/class/net/ens34/queues/rx-3/rps_cpus=00
+/sys/class/net/ens34/queues/rx-4/rps_cpus=00
+/sys/class/net/ens34/queues/rx-5/rps_cpus=00
+/sys/class/net/ens34/queues/rx-6/rps_cpus=00
+/sys/class/net/ens34/queues/rx-7/rps_cpus=00
+/sys/class/net/ens34/queues/tx-0/xps_cpus=00
+/sys/class/net/ens34/queues/tx-1/xps_cpus=00
+/sys/class/net/ens34/queues/tx-2/xps_cpus=00
+/sys/class/net/ens34/queues/tx-3/xps_cpus=00
+/sys/class/net/ens34/queues/tx-4/xps_cpus=00
+/sys/class/net/ens34/queues/tx-5/xps_cpus=00
+/sys/class/net/ens34/queues/tx-6/xps_cpus=00
+/sys/class/net/ens34/queues/tx-7/xps_cpus=00
+--- memory ---
+MemTotal:       16042920 kB
+Shmem:              1092 kB
+AnonHugePages:         0 kB
+ShmemHugePages:        0 kB
+ShmemPmdMapped:        0 kB
+FileHugePages:    598016 kB
+HugePages_Total:       0
+HugePages_Free:        0
+HugePages_Rsvd:        0
+HugePages_Surp:        0
+Hugepagesize:       2048 kB
+Hugetlb:               0 kB
+--- limits ---
+real-time non-blocking time  (microseconds, -R) unlimited
+core file size              (blocks, -c) 0
+data seg size               (kbytes, -d) unlimited
+scheduling priority                 (-e) 0
+file size                   (blocks, -f) unlimited
+pending signals                     (-i) 62627
+max locked memory           (kbytes, -l) 2005364
+max memory size             (kbytes, -m) unlimited
+open files                          (-n) 1024
+pipe size                (512 bytes, -p) 8
+POSIX message queues         (bytes, -q) 819200
+real-time priority                  (-r) 0
+stack size                  (kbytes, -s) 8192
+cpu time                   (seconds, -t) unlimited
+max user processes                  (-u) 62627
+virtual memory              (kbytes, -v) unlimited
+file locks                          (-x) unlimited
+--- governors ---
+--- process noise ---
+    PID     TID PSR %CPU COMMAND
+   7216    7216   4 12.1 systemd
+      1       1   0  0.9 systemd
+   1147    1147   6  0.1 amazon-ssm-agen
+    782     782   1  0.0 snapd
+    243     243   1  0.0 systemd-journal
+    171     171   0  0.0 kworker/u32:2-kvfree_rcu_reclaim
+    767     767   7  0.0 dbus-daemon
+    318     318   0  0.0 systemd-udevd
+    197     197   6  0.0 jbd2/nvme0n1p1-8
+     12      12   6  0.0 kworker/u32:0-ext4-rsv-conversion
+     70      70   6  0.0 kworker/u32:1-kvfree_rcu_reclaim
+    775     775   5  0.0 networkd-dispat
+    716     716   6  0.0 kworker/u32:7-events_unbound
+    523     523   6  0.0 systemd-resolve
+    959     959   6  0.0 ModemManager
+    784     784   3  0.0 systemd-logind
+     15      15   0  0.0 rcu_sched
+    900     900   2  0.0 unattended-upgr
+    777     777   1  0.0 polkitd
+    912     912   5  0.0 rsyslogd
+    786     786   6  0.0 udisksd
+    652     652   3  0.0 systemd-network
+    174     174   4  0.0 kworker/4:1-events
+    774     774   0  0.0 irqbalance
+    406     406   7  0.0 kworker/7:2-events
+    260     260   5  0.0 kworker/5:2-events
+    180     180   2  0.0 kworker/2:1-events
+     85      85   1  0.0 kworker/1:1-events
+     11      11   0  0.0 kworker/0:1-events
+     17      17   2  0.0 rcu_exp_gp_kthread_worker
+      2       2   1  0.0 kthreadd
+      3       3   0  0.0 pool_workqueue_release
+      4       4   0  0.0 kworker/R-rcu_gp
+      5       5   0  0.0 kworker/R-sync_wq
+      6       6   0  0.0 kworker/R-kvfree_rcu_reclaim
+      7       7   0  0.0 kworker/R-slub_flushwq
+      8       8   0  0.0 kworker/R-netns
+      9       9   0  0.0 kworker/0:0-events
+     10      10   0  0.0 kworker/0:0H-events_highpri

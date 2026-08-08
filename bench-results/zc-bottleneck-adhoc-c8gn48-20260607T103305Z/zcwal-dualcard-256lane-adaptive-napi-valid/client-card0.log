@@ -1,0 +1,384 @@
+zcwal-extent-send: addr=172.31.40.158 base_port=26000 lanes=256 connections_per_lane=1 total_connections=256 bytes_per_connection=402653184 extent_bytes=393216 record_size=4096 records_per_extent=96 workers=96 framing=stream data_path=uring ack_enabled=no sync_acks=no tcp_nodelay=yes socket_buffer_bytes=134217728 uring_send_bytes=1048576 uring_pipeline=32 uring_entries=8192 source_ports=base=46000:stride=1
+zcwal-extent-send-worker: affinity_index=1 target_cpu=1 status=ok
+zcwal-extent-send-worker: affinity_index=2 target_cpu=2 status=ok
+zcwal-extent-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcwal-extent-send-worker: affinity_index=3 target_cpu=3 status=ok
+zcwal-extent-send-worker: affinity_index=4 target_cpu=4 status=ok
+zcwal-extent-send-worker: affinity_index=5 target_cpu=5 status=ok
+zcwal-extent-send-worker: affinity_index=7 target_cpu=7 status=ok
+PERF WARNING: zcwal-extent-send workers=96 lanes=256; at least one worker will own multiple lanes
+PERF WARNING: zcwal send transport frame bytes 1048576 is not aligned with logical extent_bytes=393216; benchmark accounting remains correct, but WAL extent/frame boundaries are harder to reason about
+zcwal-extent-send-stream: worker=0 lane=0 port=26000 conn=0
+zcwal-extent-send-stream: worker=2 lane=2 port=26002 conn=0
+zcwal-extent-send-stream: worker=4 lane=4 port=26004 conn=0
+zcwal-extent-send-stream: worker=3 lane=3 port=26003 conn=0
+zcwal-extent-send-worker: affinity_index=9 target_cpu=9 status=ok
+zcwal-extent-send-worker: affinity_index=6 target_cpu=6 status=ok
+zcwal-extent-send-worker: affinity_index=8 target_cpu=8 status=ok
+zcwal-extent-send-stream: worker=5 lane=5 port=26005 conn=0
+zcwal-extent-send-stream: worker=7 lane=7 port=26007 conn=0
+zcwal-extent-send-worker: affinity_index=10 target_cpu=10 status=ok
+zcwal-extent-send-worker: affinity_index=11 target_cpu=11 status=ok
+zcwal-extent-send-worker: affinity_index=12 target_cpu=12 status=ok
+zcwal-extent-send-stream: worker=2 lane=98 port=26098 conn=0
+zcwal-extent-send-stream: worker=3 lane=99 port=26099 conn=0
+zcwal-extent-send-worker: affinity_index=14 target_cpu=14 status=ok
+zcwal-extent-send-stream: worker=5 lane=101 port=26101 conn=0
+zcwal-extent-send-stream: worker=4 lane=100 port=26100 conn=0
+zcwal-extent-send-stream: worker=0 lane=96 port=26096 conn=0
+zcwal-extent-send-worker: affinity_index=15 target_cpu=15 status=ok
+zcwal-extent-send-worker: affinity_index=17 target_cpu=17 status=ok
+zcwal-extent-send-worker: affinity_index=13 target_cpu=13 status=ok
+zcwal-extent-send-worker: affinity_index=16 target_cpu=16 status=ok
+zcwal-extent-send-stream: worker=8 lane=8 port=26008 conn=0
+zcwal-extent-send-stream: worker=6 lane=6 port=26006 conn=0
+zcwal-extent-send-stream: worker=9 lane=9 port=26009 conn=0
+zcwal-extent-send-worker: affinity_index=19 target_cpu=19 status=ok
+zcwal-extent-send-stream: worker=10 lane=10 port=26010 conn=0
+zcwal-extent-send-stream: worker=2 lane=194 port=26194 conn=0
+zcwal-extent-send-worker: affinity_index=20 target_cpu=20 status=ok
+zcwal-extent-send-stream: worker=12 lane=12 port=26012 conn=0
+zcwal-extent-send-stream: worker=5 lane=197 port=26197 conn=0
+zcwal-extent-send-worker: affinity_index=18 target_cpu=18 status=ok
+zcwal-extent-send-stream: worker=11 lane=11 port=26011 conn=0
+zcwal-extent-send-stream: worker=0 lane=192 port=26192 conn=0
+zcwal-extent-send-stream: worker=4 lane=196 port=26196 conn=0
+zcwal-extent-send-worker: affinity_index=21 target_cpu=21 status=ok
+zcwal-extent-send-worker: affinity_index=23 target_cpu=23 status=ok
+zcwal-extent-send-stream: worker=14 lane=14 port=26014 conn=0
+zcwal-extent-send-stream: worker=15 lane=15 port=26015 conn=0
+zcwal-extent-send-stream: worker=13 lane=13 port=26013 conn=0
+zcwal-extent-send-worker: affinity_index=22 target_cpu=22 status=ok
+zcwal-extent-send-stream: worker=9 lane=105 port=26105 conn=0
+zcwal-extent-send-stream: worker=3 lane=195 port=26195 conn=0
+zcwal-extent-send-stream: worker=16 lane=16 port=26016 conn=0
+zcwal-extent-send-stream: worker=6 lane=102 port=26102 conn=0
+zcwal-extent-send-stream: worker=12 lane=108 port=26108 conn=0
+zcwal-extent-send-stream: worker=19 lane=19 port=26019 conn=0
+zcwal-extent-send-stream: worker=7 lane=103 port=26103 conn=0
+zcwal-extent-send-stream: worker=10 lane=106 port=26106 conn=0
+zcwal-extent-send-stream: worker=8 lane=104 port=26104 conn=0
+zcwal-extent-send-stream: worker=17 lane=17 port=26017 conn=0
+zcwal-extent-send-stream: worker=14 lane=110 port=26110 conn=0
+zcwal-extent-send-stream: worker=13 lane=109 port=26109 conn=0
+zcwal-extent-send-stream: worker=11 lane=107 port=26107 conn=0
+zcwal-extent-send-stream: worker=18 lane=18 port=26018 conn=0
+zcwal-extent-send-worker: affinity_index=24 target_cpu=24 status=ok
+zcwal-extent-send-stream: worker=23 lane=23 port=26023 conn=0
+zcwal-extent-send-stream: worker=6 lane=198 port=26198 conn=0
+zcwal-extent-send-stream: worker=20 lane=20 port=26020 conn=0
+zcwal-extent-send-worker: affinity_index=25 target_cpu=25 status=ok
+zcwal-extent-send-stream: worker=12 lane=204 port=26204 conn=0
+zcwal-extent-send-stream: worker=15 lane=111 port=26111 conn=0
+zcwal-extent-send-stream: worker=21 lane=21 port=26021 conn=0
+zcwal-extent-send-stream: worker=9 lane=201 port=26201 conn=0
+zcwal-extent-send-stream: worker=17 lane=113 port=26113 conn=0
+zcwal-extent-send-worker: affinity_index=26 target_cpu=26 status=ok
+zcwal-extent-send-stream: worker=19 lane=115 port=26115 conn=0
+zcwal-extent-send-worker: affinity_index=27 target_cpu=27 status=ok
+zcwal-extent-send-stream: worker=13 lane=205 port=26205 conn=0
+zcwal-extent-send-stream: worker=14 lane=206 port=26206 conn=0
+zcwal-extent-send-stream: worker=10 lane=202 port=26202 conn=0
+zcwal-extent-send-stream: worker=16 lane=112 port=26112 conn=0
+zcwal-extent-send-worker: affinity_index=29 target_cpu=29 status=ok
+zcwal-extent-send-worker: affinity_index=28 target_cpu=28 status=ok
+zcwal-extent-send-stream: worker=1 lane=1 port=26001 conn=0
+zcwal-extent-send-stream: worker=11 lane=203 port=26203 conn=0
+zcwal-extent-send-worker: affinity_index=30 target_cpu=30 status=ok
+zcwal-extent-send-worker: affinity_index=31 target_cpu=31 status=ok
+zcwal-extent-send-stream: worker=7 lane=199 port=26199 conn=0
+zcwal-extent-send-stream: worker=8 lane=200 port=26200 conn=0
+zcwal-extent-send-stream: worker=22 lane=22 port=26022 conn=0
+zcwal-extent-send-worker: affinity_index=32 target_cpu=32 status=ok
+zcwal-extent-send-stream: worker=16 lane=208 port=26208 conn=0
+zcwal-extent-send-stream: worker=1 lane=97 port=26097 conn=0
+zcwal-extent-send-worker: affinity_index=33 target_cpu=33 status=ok
+zcwal-extent-send-worker: affinity_index=34 target_cpu=34 status=ok
+zcwal-extent-send-stream: worker=22 lane=118 port=26118 conn=0
+zcwal-extent-send-worker: affinity_index=35 target_cpu=35 status=ok
+zcwal-extent-send-worker: affinity_index=36 target_cpu=36 status=ok
+zcwal-extent-send-stream: worker=29 lane=29 port=26029 conn=0
+zcwal-extent-send-worker: affinity_index=37 target_cpu=37 status=ok
+zcwal-extent-send-stream: worker=28 lane=28 port=26028 conn=0
+zcwal-extent-send-worker: affinity_index=38 target_cpu=38 status=ok
+zcwal-extent-send-worker: affinity_index=39 target_cpu=39 status=ok
+zcwal-extent-send-worker: affinity_index=40 target_cpu=40 status=ok
+zcwal-extent-send-worker: affinity_index=41 target_cpu=41 status=ok
+zcwal-extent-send-worker: affinity_index=42 target_cpu=42 status=ok
+zcwal-extent-send-worker: affinity_index=43 target_cpu=43 status=ok
+zcwal-extent-send-worker: affinity_index=44 target_cpu=44 status=ok
+zcwal-extent-send-worker: affinity_index=45 target_cpu=45 status=ok
+zcwal-extent-send-worker: affinity_index=46 target_cpu=46 status=ok
+zcwal-extent-send-worker: affinity_index=47 target_cpu=47 status=ok
+zcwal-extent-send-worker: affinity_index=48 target_cpu=48 status=ok
+zcwal-extent-send-worker: affinity_index=49 target_cpu=49 status=ok
+zcwal-extent-send-worker: affinity_index=50 target_cpu=50 status=ok
+zcwal-extent-send-worker: affinity_index=51 target_cpu=51 status=ok
+zcwal-extent-send-worker: affinity_index=52 target_cpu=52 status=ok
+zcwal-extent-send-worker: affinity_index=53 target_cpu=53 status=ok
+zcwal-extent-send-worker: affinity_index=54 target_cpu=54 status=ok
+zcwal-extent-send-worker: affinity_index=55 target_cpu=55 status=ok
+zcwal-extent-send-worker: affinity_index=56 target_cpu=56 status=ok
+zcwal-extent-send-worker: affinity_index=57 target_cpu=57 status=ok
+zcwal-extent-send-worker: affinity_index=58 target_cpu=58 status=ok
+zcwal-extent-send-worker: affinity_index=59 target_cpu=59 status=ok
+zcwal-extent-send-worker: affinity_index=60 target_cpu=60 status=ok
+zcwal-extent-send-worker: affinity_index=61 target_cpu=61 status=ok
+zcwal-extent-send-worker: affinity_index=62 target_cpu=62 status=ok
+zcwal-extent-send-worker: affinity_index=63 target_cpu=63 status=ok
+zcwal-extent-send-worker: affinity_index=64 target_cpu=64 status=ok
+zcwal-extent-send-worker: affinity_index=65 target_cpu=65 status=ok
+zcwal-extent-send-worker: affinity_index=67 target_cpu=67 status=ok
+zcwal-extent-send-worker: affinity_index=66 target_cpu=66 status=ok
+zcwal-extent-send-worker: affinity_index=68 target_cpu=68 status=ok
+zcwal-extent-send-worker: affinity_index=69 target_cpu=69 status=ok
+zcwal-extent-send-worker: affinity_index=71 target_cpu=71 status=ok
+zcwal-extent-send-worker: affinity_index=70 target_cpu=70 status=ok
+zcwal-extent-send-worker: affinity_index=72 target_cpu=72 status=ok
+zcwal-extent-send-worker: affinity_index=73 target_cpu=73 status=ok
+zcwal-extent-send-worker: affinity_index=74 target_cpu=74 status=ok
+zcwal-extent-send-worker: affinity_index=75 target_cpu=75 status=ok
+zcwal-extent-send-worker: affinity_index=76 target_cpu=76 status=ok
+zcwal-extent-send-worker: affinity_index=77 target_cpu=77 status=ok
+zcwal-extent-send-worker: affinity_index=78 target_cpu=78 status=ok
+zcwal-extent-send-worker: affinity_index=79 target_cpu=79 status=ok
+zcwal-extent-send-worker: affinity_index=80 target_cpu=80 status=ok
+zcwal-extent-send-worker: affinity_index=82 target_cpu=82 status=ok
+zcwal-extent-send-worker: affinity_index=81 target_cpu=81 status=ok
+zcwal-extent-send-worker: affinity_index=83 target_cpu=83 status=ok
+zcwal-extent-send-worker: affinity_index=84 target_cpu=84 status=ok
+zcwal-extent-send-worker: affinity_index=85 target_cpu=85 status=ok
+zcwal-extent-send-worker: affinity_index=86 target_cpu=86 status=ok
+zcwal-extent-send-worker: affinity_index=87 target_cpu=87 status=ok
+zcwal-extent-send-worker: affinity_index=88 target_cpu=88 status=ok
+zcwal-extent-send-worker: affinity_index=89 target_cpu=89 status=ok
+zcwal-extent-send-worker: affinity_index=90 target_cpu=90 status=ok
+zcwal-extent-send-worker: affinity_index=91 target_cpu=91 status=ok
+zcwal-extent-send-worker: affinity_index=92 target_cpu=92 status=ok
+zcwal-extent-send-worker: affinity_index=93 target_cpu=93 status=ok
+zcwal-extent-send-worker: affinity_index=94 target_cpu=94 status=ok
+zcwal-extent-send-worker: affinity_index=95 target_cpu=95 status=ok
+zcwal-extent-send-stream: worker=18 lane=114 port=26114 conn=0
+zcwal-extent-send-stream: worker=29 lane=125 port=26125 conn=0
+zcwal-extent-send-stream: worker=28 lane=124 port=26124 conn=0
+zcwal-extent-send-stream: worker=93 lane=93 port=26093 conn=0
+zcwal-extent-send-stream: worker=94 lane=94 port=26094 conn=0
+zcwal-extent-send-stream: worker=95 lane=95 port=26095 conn=0
+zcwal-extent-send-stream: worker=91 lane=91 port=26091 conn=0
+zcwal-extent-send-stream: worker=81 lane=81 port=26081 conn=0
+tcp-bench-connect-route-probe: peer=172.31.40.158:26001 local_socket=172.31.35.97:46001 probe_src=172.31.35.97 route_dev=ens68 route_src=172.31.35.97 route="172.31.40.158 from 172.31.35.97 dev ens68 uid 1000 \ cache"
+zcwal-extent-send-stream: worker=84 lane=84 port=26084 conn=0
+zcwal-extent-send-stream: worker=86 lane=86 port=26086 conn=0
+zcwal-extent-send-stream: worker=89 lane=89 port=26089 conn=0
+zcwal-extent-send-stream: worker=90 lane=90 port=26090 conn=0
+zcwal-extent-send-stream: worker=85 lane=85 port=26085 conn=0
+zcwal-extent-send-stream: worker=87 lane=87 port=26087 conn=0
+zcwal-extent-send-stream: worker=66 lane=66 port=26066 conn=0
+zcwal-extent-send-stream: worker=52 lane=52 port=26052 conn=0
+zcwal-extent-send-stream: worker=56 lane=56 port=26056 conn=0
+zcwal-extent-send-stream: worker=63 lane=63 port=26063 conn=0
+zcwal-extent-send-stream: worker=45 lane=45 port=26045 conn=0
+zcwal-extent-send-stream: worker=58 lane=58 port=26058 conn=0
+zcwal-extent-send-stream: worker=55 lane=55 port=26055 conn=0
+zcwal-extent-send-stream: worker=77 lane=77 port=26077 conn=0
+zcwal-extent-send-stream: worker=39 lane=39 port=26039 conn=0
+zcwal-extent-send-stream: worker=70 lane=70 port=26070 conn=0
+zcwal-extent-send-stream: worker=44 lane=44 port=26044 conn=0
+zcwal-extent-send-stream: worker=60 lane=60 port=26060 conn=0
+zcwal-extent-send-stream: worker=51 lane=51 port=26051 conn=0
+zcwal-extent-send-stream: worker=35 lane=35 port=26035 conn=0
+zcwal-extent-send-stream: worker=73 lane=73 port=26073 conn=0
+zcwal-extent-send-stream: worker=69 lane=69 port=26069 conn=0
+zcwal-extent-send-stream: worker=92 lane=92 port=26092 conn=0
+zcwal-extent-send-stream: worker=41 lane=41 port=26041 conn=0
+zcwal-extent-send-stream: worker=46 lane=46 port=26046 conn=0
+zcwal-extent-send-stream: worker=47 lane=47 port=26047 conn=0
+zcwal-extent-send-stream: worker=83 lane=83 port=26083 conn=0
+zcwal-extent-send-stream: worker=67 lane=67 port=26067 conn=0
+zcwal-extent-send-stream: worker=78 lane=78 port=26078 conn=0
+zcwal-extent-send-stream: worker=59 lane=59 port=26059 conn=0
+zcwal-extent-send-stream: worker=57 lane=57 port=26057 conn=0
+zcwal-extent-send-stream: worker=76 lane=76 port=26076 conn=0
+zcwal-extent-send-stream: worker=65 lane=65 port=26065 conn=0
+zcwal-extent-send-stream: worker=80 lane=80 port=26080 conn=0
+zcwal-extent-send-stream: worker=42 lane=42 port=26042 conn=0
+zcwal-extent-send-stream: worker=40 lane=40 port=26040 conn=0
+zcwal-extent-send-stream: worker=71 lane=71 port=26071 conn=0
+zcwal-extent-send-stream: worker=38 lane=38 port=26038 conn=0
+zcwal-extent-send-stream: worker=88 lane=88 port=26088 conn=0
+zcwal-extent-send-stream: worker=68 lane=68 port=26068 conn=0
+zcwal-extent-send-stream: worker=54 lane=54 port=26054 conn=0
+zcwal-extent-send-stream: worker=82 lane=82 port=26082 conn=0
+zcwal-extent-send-stream: worker=43 lane=43 port=26043 conn=0
+zcwal-extent-send-stream: worker=72 lane=72 port=26072 conn=0
+zcwal-extent-send-stream: worker=48 lane=48 port=26048 conn=0
+zcwal-extent-send-stream: worker=64 lane=64 port=26064 conn=0
+zcwal-extent-send-stream: worker=74 lane=74 port=26074 conn=0
+zcwal-extent-send-stream: worker=79 lane=79 port=26079 conn=0
+zcwal-extent-send-stream: worker=61 lane=61 port=26061 conn=0
+zcwal-extent-send-stream: worker=49 lane=49 port=26049 conn=0
+zcwal-extent-send-stream: worker=50 lane=50 port=26050 conn=0
+zcwal-extent-send-stream: worker=75 lane=75 port=26075 conn=0
+zcwal-extent-send-stream: worker=53 lane=53 port=26053 conn=0
+zcwal-extent-send-stream: worker=18 lane=210 port=26210 conn=0
+zcwal-extent-send-stream: worker=29 lane=221 port=26221 conn=0
+zcwal-extent-send-stream: worker=37 lane=37 port=26037 conn=0
+zcwal-extent-send-stream: worker=50 lane=146 port=26146 conn=0
+zcwal-extent-send-stream: worker=43 lane=139 port=26139 conn=0
+zcwal-extent-send-stream: worker=22 lane=214 port=26214 conn=0
+zcwal-extent-send-stream: worker=48 lane=144 port=26144 conn=0
+zcwal-extent-send-stream: worker=61 lane=157 port=26157 conn=0
+zcwal-extent-send-stream: worker=82 lane=178 port=26178 conn=0
+zcwal-extent-send-stream: worker=53 lane=149 port=26149 conn=0
+zcwal-extent-send-stream: worker=86 lane=182 port=26182 conn=0
+zcwal-extent-send-stream: worker=51 lane=147 port=26147 conn=0
+zcwal-extent-send-stream: worker=89 lane=185 port=26185 conn=0
+zcwal-extent-send-stream: worker=84 lane=180 port=26180 conn=0
+zcwal-extent-send-stream: worker=42 lane=138 port=26138 conn=0
+zcwal-extent-send-stream: worker=17 lane=209 port=26209 conn=0
+zcwal-extent-send-stream: worker=39 lane=135 port=26135 conn=0
+zcwal-extent-send-stream: worker=70 lane=166 port=26166 conn=0
+zcwal-extent-send-stream: worker=41 lane=137 port=26137 conn=0
+zcwal-extent-send-stream: worker=40 lane=136 port=26136 conn=0
+zcwal-extent-send-stream: worker=62 lane=62 port=26062 conn=0
+zcwal-extent-send-stream: worker=71 lane=167 port=26167 conn=0
+zcwal-extent-send-stream: worker=57 lane=153 port=26153 conn=0
+zcwal-extent-send-stream: worker=92 lane=188 port=26188 conn=0
+zcwal-extent-send-stream: worker=54 lane=150 port=26150 conn=0
+zcwal-extent-send-stream: worker=79 lane=175 port=26175 conn=0
+zcwal-extent-send-stream: worker=35 lane=131 port=26131 conn=0
+zcwal-extent-send-stream: worker=23 lane=119 port=26119 conn=0
+zcwal-extent-send-stream: worker=38 lane=134 port=26134 conn=0
+zcwal-extent-send-stream: worker=90 lane=186 port=26186 conn=0
+zcwal-extent-send-stream: worker=56 lane=152 port=26152 conn=0
+zcwal-extent-send-stream: worker=64 lane=160 port=26160 conn=0
+zcwal-extent-send-stream: worker=24 lane=24 port=26024 conn=0
+zcwal-extent-send-stream: worker=85 lane=181 port=26181 conn=0
+zcwal-extent-send-stream: worker=34 lane=34 port=26034 conn=0
+zcwal-extent-send-stream: worker=47 lane=143 port=26143 conn=0
+zcwal-extent-send-stream: worker=88 lane=184 port=26184 conn=0
+zcwal-extent-send-stream: worker=37 lane=133 port=26133 conn=0
+zcwal-extent-send-stream: worker=44 lane=140 port=26140 conn=0
+zcwal-extent-send-stream: worker=63 lane=159 port=26159 conn=0
+zcwal-extent-send-stream: worker=28 lane=220 port=26220 conn=0
+zcwal-extent-send-stream: worker=27 lane=27 port=26027 conn=0
+zcwal-extent-send-stream: worker=68 lane=164 port=26164 conn=0
+zcwal-extent-send-stream: worker=55 lane=151 port=26151 conn=0
+zcwal-extent-send-stream: worker=87 lane=183 port=26183 conn=0
+zcwal-extent-send-stream: worker=25 lane=25 port=26025 conn=0
+zcwal-extent-send-stream: worker=73 lane=169 port=26169 conn=0
+zcwal-extent-send-stream: worker=81 lane=177 port=26177 conn=0
+zcwal-extent-send-stream: worker=74 lane=170 port=26170 conn=0
+zcwal-extent-send-stream: worker=93 lane=189 port=26189 conn=0
+zcwal-extent-send-stream: worker=72 lane=168 port=26168 conn=0
+zcwal-extent-send-stream: worker=69 lane=165 port=26165 conn=0
+zcwal-extent-send-stream: worker=32 lane=32 port=26032 conn=0
+zcwal-extent-send-stream: worker=1 lane=193 port=26193 conn=0
+zcwal-extent-send-stream: worker=59 lane=155 port=26155 conn=0
+zcwal-extent-send-stream: worker=83 lane=179 port=26179 conn=0
+zcwal-extent-send-stream: worker=52 lane=148 port=26148 conn=0
+zcwal-extent-send-stream: worker=33 lane=33 port=26033 conn=0
+zcwal-extent-send-stream: worker=50 lane=242 port=26242 conn=0
+zcwal-extent-send-stream: worker=20 lane=116 port=26116 conn=0
+zcwal-extent-send-stream: worker=46 lane=142 port=26142 conn=0
+zcwal-extent-send-stream: worker=95 lane=191 port=26191 conn=0
+zcwal-extent-send-stream: worker=58 lane=154 port=26154 conn=0
+zcwal-extent-send-stream: worker=45 lane=141 port=26141 conn=0
+zcwal-extent-send-stream: worker=31 lane=31 port=26031 conn=0
+zcwal-extent-send-stream: worker=36 lane=36 port=26036 conn=0
+zcwal-extent-send-stream: worker=21 lane=117 port=26117 conn=0
+zcwal-extent-send-stream: worker=15 lane=207 port=26207 conn=0
+zcwal-extent-send-stream: worker=53 lane=245 port=26245 conn=0
+zcwal-extent-send-stream: worker=77 lane=173 port=26173 conn=0
+zcwal-extent-send-stream: worker=67 lane=163 port=26163 conn=0
+zcwal-extent-send-stream: worker=65 lane=161 port=26161 conn=0
+zcwal-extent-send-stream: worker=75 lane=171 port=26171 conn=0
+zcwal-extent-send-stream: worker=94 lane=190 port=26190 conn=0
+zcwal-extent-send-stream: worker=76 lane=172 port=26172 conn=0
+zcwal-extent-send-stream: worker=51 lane=243 port=26243 conn=0
+zcwal-extent-send-stream: worker=19 lane=211 port=26211 conn=0
+zcwal-extent-send-stream: worker=30 lane=30 port=26030 conn=0
+zcwal-extent-send-stream: worker=49 lane=145 port=26145 conn=0
+zcwal-extent-send-stream: worker=26 lane=26 port=26026 conn=0
+zcwal-extent-send-stream: worker=91 lane=187 port=26187 conn=0
+zcwal-extent-send-stream: worker=48 lane=240 port=26240 conn=0
+zcwal-extent-send-stream: worker=66 lane=162 port=26162 conn=0
+zcwal-extent-send-stream: worker=43 lane=235 port=26235 conn=0
+zcwal-extent-send-stream: worker=78 lane=174 port=26174 conn=0
+zcwal-extent-send-stream: worker=61 lane=253 port=26253 conn=0
+zcwal-extent-send-stream: worker=80 lane=176 port=26176 conn=0
+zcwal-extent-send-stream: worker=23 lane=215 port=26215 conn=0
+zcwal-extent-send-stream: worker=56 lane=248 port=26248 conn=0
+zcwal-extent-send-stream: worker=24 lane=120 port=26120 conn=0
+zcwal-extent-send-stream: worker=41 lane=233 port=26233 conn=0
+zcwal-extent-send-stream: worker=25 lane=121 port=26121 conn=0
+zcwal-extent-send-stream: worker=35 lane=227 port=26227 conn=0
+zcwal-extent-send-stream: worker=63 lane=255 port=26255 conn=0
+zcwal-extent-send-stream: worker=62 lane=158 port=26158 conn=0
+zcwal-extent-send-stream: worker=60 lane=156 port=26156 conn=0
+zcwal-extent-send-stream: worker=54 lane=246 port=26246 conn=0
+zcwal-extent-send-stream: worker=57 lane=249 port=26249 conn=0
+zcwal-extent-send-stream: worker=34 lane=130 port=26130 conn=0
+zcwal-extent-send-stream: worker=42 lane=234 port=26234 conn=0
+zcwal-extent-send-stream: worker=45 lane=237 port=26237 conn=0
+zcwal-extent-send-stream: worker=46 lane=238 port=26238 conn=0
+zcwal-extent-send-stream: worker=20 lane=212 port=26212 conn=0
+zcwal-extent-send-stream: worker=21 lane=213 port=26213 conn=0
+zcwal-extent-send-stream: worker=37 lane=229 port=26229 conn=0
+zcwal-extent-send-stream: worker=47 lane=239 port=26239 conn=0
+zcwal-extent-send-stream: worker=39 lane=231 port=26231 conn=0
+zcwal-extent-send-stream: worker=27 lane=123 port=26123 conn=0
+zcwal-extent-send-stream: worker=40 lane=232 port=26232 conn=0
+zcwal-extent-send-stream: worker=44 lane=236 port=26236 conn=0
+zcwal-extent-send-stream: worker=31 lane=127 port=26127 conn=0
+zcwal-extent-send-stream: worker=30 lane=126 port=26126 conn=0
+zcwal-extent-send-stream: worker=25 lane=217 port=26217 conn=0
+zcwal-extent-send-stream: worker=32 lane=128 port=26128 conn=0
+zcwal-extent-send-stream: worker=58 lane=250 port=26250 conn=0
+zcwal-extent-send-stream: worker=59 lane=251 port=26251 conn=0
+zcwal-extent-send-stream: worker=52 lane=244 port=26244 conn=0
+zcwal-extent-send-stream: worker=24 lane=216 port=26216 conn=0
+zcwal-extent-send-stream: worker=36 lane=132 port=26132 conn=0
+zcwal-extent-send-stream: worker=33 lane=129 port=26129 conn=0
+zcwal-extent-send-stream: worker=55 lane=247 port=26247 conn=0
+zcwal-extent-send-stream: worker=49 lane=241 port=26241 conn=0
+zcwal-extent-send-stream: worker=34 lane=226 port=26226 conn=0
+zcwal-extent-send-stream: worker=26 lane=122 port=26122 conn=0
+zcwal-extent-send-stream: worker=38 lane=230 port=26230 conn=0
+zcwal-extent-send-stream: worker=62 lane=254 port=26254 conn=0
+zcwal-extent-send-stream: worker=60 lane=252 port=26252 conn=0
+zcwal-extent-send-stream: worker=27 lane=219 port=26219 conn=0
+zcwal-extent-send-stream: worker=31 lane=223 port=26223 conn=0
+zcwal-extent-send-stream: worker=32 lane=224 port=26224 conn=0
+zcwal-extent-send-stream: worker=30 lane=222 port=26222 conn=0
+zcwal-extent-send-stream: worker=26 lane=218 port=26218 conn=0
+zcwal-extent-send-stream: worker=33 lane=225 port=26225 conn=0
+zcwal-extent-send-stream: worker=36 lane=228 port=26228 conn=0
+zcwal-extent-send-worker: worker=0 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=1.928335 payload_Gbitps=5.011 logical_iops=152936 thread_cpu_seconds=0.262055 cpu_wall_pct=13.6 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=454 involuntary_ctxt_switches=307 migrations=0
+zcwal-extent-send-worker: worker=1 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=1.962415 payload_Gbitps=4.924 logical_iops=150280 thread_cpu_seconds=0.261793 cpu_wall_pct=13.3 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=329 involuntary_ctxt_switches=547 migrations=0
+zcwal-extent-send-worker: worker=2 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=2.390665 payload_Gbitps=4.042 logical_iops=123360 thread_cpu_seconds=0.253937 cpu_wall_pct=10.6 target_cpu=2 affinity_applied=true start_cpu=2 end_cpu=2 voluntary_ctxt_switches=290 involuntary_ctxt_switches=251 migrations=0
+Error: Os { code: 32, kind: BrokenPipe, message: "Broken pipe" }
+Command exited with non-zero status 1
+	Command being timed: "taskset -c 0-95 target/release/zcutils zcwal-extent-send 172.31.40.158 26000 256 1 384M 384K 96 false stream uring"
+	User time (seconds): 0.09
+	System time (seconds): 24.40
+	Percent of CPU this job got: 372%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:06.58
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 152104
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 60127
+	Voluntary context switches: 384902
+	Involuntary context switches: 22529
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1

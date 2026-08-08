@@ -1,0 +1,912 @@
+zcwal-extent-recv: bind=172.31.35.23 base_port=26300 lanes=256 connections_per_lane=1 total_connections=256 bytes_per_connection=402653184 extent_bytes=393216 record_size=4096 records_per_extent=96 workers=96 framing=stream data_path=uring ack_enabled=no socket_buffer_bytes=134217728 uring_recv_bytes=4194304 uring_recv_pipeline=1 uring_entries=8192 cqe_spin=0 cqe_adaptive_spin=yes cqe_adaptive_spin_min=256 cqe_adaptive_spin_max=8192 cqe_adaptive_wait_ns=50000 cqe_hot_poll=no enter_no_iowait=no
+PERF WARNING: zcwal-extent-recv workers=96 lanes=256; at least one worker will own multiple lanes
+PERF WARNING: zcwal recv transport frame bytes 4194304 is not aligned with logical extent_bytes=393216; benchmark accounting remains correct, but WAL extent/frame boundaries are harder to reason about
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47000 lane=0 port=26300 conn=0 incoming_cpu=105 incoming_napi_id=576
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47003 lane=3 port=26303 conn=0 incoming_cpu=125 incoming_napi_id=554
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47002 lane=2 port=26302 conn=0 incoming_cpu=161 incoming_napi_id=558
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47005 lane=5 port=26305 conn=0 incoming_cpu=171 incoming_napi_id=566
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47007 lane=7 port=26307 conn=0 incoming_cpu=135 incoming_napi_id=552
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47008 lane=8 port=26308 conn=0 incoming_cpu=109 incoming_napi_id=573
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47010 lane=10 port=26310 conn=0 incoming_cpu=100 incoming_napi_id=559
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47009 lane=9 port=26309 conn=0 incoming_cpu=129 incoming_napi_id=569
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47099 lane=99 port=26399 conn=0 incoming_cpu=181 incoming_napi_id=574
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47011 lane=11 port=26311 conn=0 incoming_cpu=165 incoming_napi_id=555
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47006 lane=6 port=26306 conn=0 incoming_cpu=133 incoming_napi_id=548
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47004 lane=4 port=26304 conn=0 incoming_cpu=163 incoming_napi_id=562
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47100 lane=100 port=26400 conn=0 incoming_cpu=153 incoming_napi_id=564
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47097 lane=97 port=26397 conn=0 incoming_cpu=173 incoming_napi_id=560
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47104 lane=104 port=26404 conn=0 incoming_cpu=153 incoming_napi_id=564
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47098 lane=98 port=26398 conn=0 incoming_cpu=107 incoming_napi_id=570
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47103 lane=103 port=26403 conn=0 incoming_cpu=145 incoming_napi_id=550
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47017 lane=17 port=26317 conn=0 incoming_cpu=167 incoming_napi_id=549
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47015 lane=15 port=26315 conn=0 incoming_cpu=167 incoming_napi_id=549
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47012 lane=12 port=26312 conn=0 incoming_cpu=175 incoming_napi_id=563
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47107 lane=107 port=26407 conn=0 incoming_cpu=145 incoming_napi_id=550
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47101 lane=101 port=26401 conn=0 incoming_cpu=139 incoming_napi_id=568
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47013 lane=13 port=26313 conn=0 incoming_cpu=117 incoming_napi_id=567
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47014 lane=14 port=26314 conn=0 incoming_cpu=137 incoming_napi_id=545
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47016 lane=16 port=26316 conn=0 incoming_cpu=137 incoming_napi_id=545
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47019 lane=19 port=26319 conn=0 incoming_cpu=117 incoming_napi_id=567
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47108 lane=108 port=26408 conn=0 incoming_cpu=181 incoming_napi_id=574
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47195 lane=195 port=26495 conn=0 incoming_cpu=167 incoming_napi_id=549
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47106 lane=106 port=26406 conn=0 incoming_cpu=115 incoming_napi_id=546
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47102 lane=102 port=26402 conn=0 incoming_cpu=115 incoming_napi_id=546
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47196 lane=196 port=26496 conn=0 incoming_cpu=135 incoming_napi_id=552
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47199 lane=199 port=26499 conn=0 incoming_cpu=163 incoming_napi_id=562
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47203 lane=203 port=26503 conn=0 incoming_cpu=109 incoming_napi_id=573
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47194 lane=194 port=26494 conn=0 incoming_cpu=137 incoming_napi_id=545
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47200 lane=200 port=26500 conn=0 incoming_cpu=165 incoming_napi_id=555
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47020 lane=20 port=26320 conn=0 incoming_cpu=171 incoming_napi_id=566
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47193 lane=193 port=26493 conn=0 incoming_cpu=117 incoming_napi_id=567
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47111 lane=111 port=26411 conn=0 incoming_cpu=143 incoming_napi_id=556
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47105 lane=105 port=26405 conn=0 incoming_cpu=139 incoming_napi_id=568
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47204 lane=204 port=26504 conn=0 incoming_cpu=167 incoming_napi_id=549
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47018 lane=18 port=26318 conn=0 incoming_cpu=175 incoming_napi_id=563
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47022 lane=22 port=26322 conn=0 incoming_cpu=135 incoming_napi_id=552
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47021 lane=21 port=26321 conn=0 incoming_cpu=163 incoming_napi_id=562
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47202 lane=202 port=26502 conn=0 incoming_cpu=129 incoming_napi_id=569
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47198 lane=198 port=26498 conn=0 incoming_cpu=171 incoming_napi_id=566
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47114 lane=114 port=26414 conn=0 incoming_cpu=181 incoming_napi_id=574
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47201 lane=201 port=26501 conn=0 incoming_cpu=100 incoming_napi_id=559
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47027 lane=27 port=26327 conn=0 incoming_cpu=167 incoming_napi_id=549
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47197 lane=197 port=26497 conn=0 incoming_cpu=133 incoming_napi_id=548
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47112 lane=112 port=26412 conn=0 incoming_cpu=173 incoming_napi_id=560
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47023 lane=23 port=26323 conn=0 incoming_cpu=133 incoming_napi_id=548
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47025 lane=25 port=26325 conn=0 incoming_cpu=117 incoming_napi_id=567
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47115 lane=115 port=26415 conn=0 incoming_cpu=107 incoming_napi_id=570
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47110 lane=110 port=26410 conn=0 incoming_cpu=173 incoming_napi_id=560
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47109 lane=109 port=26409 conn=0 incoming_cpu=107 incoming_napi_id=570
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47113 lane=113 port=26413 conn=0 incoming_cpu=143 incoming_napi_id=556
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47024 lane=24 port=26324 conn=0 incoming_cpu=175 incoming_napi_id=563
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47207 lane=207 port=26507 conn=0 incoming_cpu=175 incoming_napi_id=563
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47030 lane=30 port=26330 conn=0 incoming_cpu=100 incoming_napi_id=559
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47001 lane=1 port=26301 conn=0 incoming_cpu=97 incoming_napi_id=572
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47096 lane=96 port=26396 conn=0 incoming_cpu=143 incoming_napi_id=556
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47118 lane=118 port=26418 conn=0 incoming_cpu=147 incoming_napi_id=553
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47192 lane=192 port=26492 conn=0 incoming_cpu=175 incoming_napi_id=563
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47126 lane=126 port=26426 conn=0 incoming_cpu=115 incoming_napi_id=546
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47089 lane=89 port=26389 conn=0 incoming_cpu=153 incoming_napi_id=564
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47038 lane=38 port=26338 conn=0 incoming_cpu=167 incoming_napi_id=549
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47063 lane=63 port=26363 conn=0 incoming_cpu=147 incoming_napi_id=553
+tcp-bench-mux-accept-route-probe: peer=172.31.43.226:47001 local_socket=172.31.35.23:26301 probe_src=172.31.35.23 route_dev=ens146 route_src=172.31.35.23 route="172.31.43.226 from 172.31.35.23 dev ens146 table 101 uid 1000 \ cache"
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47061 lane=61 port=26361 conn=0 incoming_cpu=119 incoming_napi_id=571
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47078 lane=78 port=26378 conn=0 incoming_cpu=145 incoming_napi_id=550
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47083 lane=83 port=26383 conn=0 incoming_cpu=153 incoming_napi_id=564
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47090 lane=90 port=26390 conn=0 incoming_cpu=145 incoming_napi_id=550
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47073 lane=73 port=26373 conn=0 incoming_cpu=181 incoming_napi_id=574
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47067 lane=67 port=26367 conn=0 incoming_cpu=119 incoming_napi_id=571
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47093 lane=93 port=26393 conn=0 incoming_cpu=181 incoming_napi_id=574
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47060 lane=60 port=26360 conn=0 incoming_cpu=127 incoming_napi_id=575
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47041 lane=41 port=26341 conn=0 incoming_cpu=119 incoming_napi_id=571
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47036 lane=36 port=26336 conn=0 incoming_cpu=117 incoming_napi_id=567
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47040 lane=40 port=26340 conn=0 incoming_cpu=127 incoming_napi_id=575
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47072 lane=72 port=26372 conn=0 incoming_cpu=107 incoming_napi_id=570
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47062 lane=62 port=26362 conn=0 incoming_cpu=183 incoming_napi_id=557
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47086 lane=86 port=26386 conn=0 incoming_cpu=155 incoming_napi_id=547
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47084 lane=84 port=26384 conn=0 incoming_cpu=185 incoming_napi_id=561
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47091 lane=91 port=26391 conn=0 incoming_cpu=115 incoming_napi_id=546
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47055 lane=55 port=26355 conn=0 incoming_cpu=115 incoming_napi_id=546
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47047 lane=47 port=26347 conn=0 incoming_cpu=157 incoming_napi_id=551
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47080 lane=80 port=26380 conn=0 incoming_cpu=145 incoming_napi_id=550
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47079 lane=79 port=26379 conn=0 incoming_cpu=115 incoming_napi_id=546
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47043 lane=43 port=26343 conn=0 incoming_cpu=147 incoming_napi_id=553
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47065 lane=65 port=26365 conn=0 incoming_cpu=147 incoming_napi_id=553
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47056 lane=56 port=26356 conn=0 incoming_cpu=185 incoming_napi_id=561
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47087 lane=87 port=26387 conn=0 incoming_cpu=157 incoming_napi_id=551
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47070 lane=70 port=26370 conn=0 incoming_cpu=157 incoming_napi_id=551
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47053 lane=53 port=26353 conn=0 incoming_cpu=153 incoming_napi_id=564
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47050 lane=50 port=26350 conn=0 incoming_cpu=185 incoming_napi_id=561
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47051 lane=51 port=26351 conn=0 incoming_cpu=99 incoming_napi_id=565
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47037 lane=37 port=26337 conn=0 incoming_cpu=175 incoming_napi_id=563
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47064 lane=64 port=26364 conn=0 incoming_cpu=183 incoming_napi_id=557
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47095 lane=95 port=26395 conn=0 incoming_cpu=173 incoming_napi_id=560
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47066 lane=66 port=26366 conn=0 incoming_cpu=127 incoming_napi_id=575
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47068 lane=68 port=26368 conn=0 incoming_cpu=99 incoming_napi_id=565
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47075 lane=75 port=26375 conn=0 incoming_cpu=173 incoming_napi_id=560
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47049 lane=49 port=26349 conn=0 incoming_cpu=157 incoming_napi_id=551
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47069 lane=69 port=26369 conn=0 incoming_cpu=185 incoming_napi_id=561
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47082 lane=82 port=26382 conn=0 incoming_cpu=139 incoming_napi_id=568
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47076 lane=76 port=26376 conn=0 incoming_cpu=139 incoming_napi_id=568
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47054 lane=54 port=26354 conn=0 incoming_cpu=145 incoming_napi_id=550
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47035 lane=35 port=26335 conn=0 incoming_cpu=129 incoming_napi_id=569
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47077 lane=77 port=26377 conn=0 incoming_cpu=153 incoming_napi_id=564
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47059 lane=59 port=26359 conn=0 incoming_cpu=157 incoming_napi_id=551
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47071 lane=71 port=26371 conn=0 incoming_cpu=155 incoming_napi_id=547
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47042 lane=42 port=26342 conn=0 incoming_cpu=183 incoming_napi_id=557
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47074 lane=74 port=26374 conn=0 incoming_cpu=143 incoming_napi_id=556
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47045 lane=45 port=26345 conn=0 incoming_cpu=99 incoming_napi_id=565
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47057 lane=57 port=26357 conn=0 incoming_cpu=99 incoming_napi_id=565
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47094 lane=94 port=26394 conn=0 incoming_cpu=143 incoming_napi_id=556
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47214 lane=214 port=26514 conn=0 incoming_cpu=163 incoming_napi_id=562
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47044 lane=44 port=26344 conn=0 incoming_cpu=185 incoming_napi_id=561
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47081 lane=81 port=26381 conn=0 incoming_cpu=115 incoming_napi_id=546
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47088 lane=88 port=26388 conn=0 incoming_cpu=139 incoming_napi_id=568
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47092 lane=92 port=26392 conn=0 incoming_cpu=107 incoming_napi_id=570
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47058 lane=58 port=26358 conn=0 incoming_cpu=155 incoming_napi_id=547
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47046 lane=46 port=26346 conn=0 incoming_cpu=155 incoming_napi_id=547
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47085 lane=85 port=26385 conn=0 incoming_cpu=99 incoming_napi_id=565
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47052 lane=52 port=26352 conn=0 incoming_cpu=139 incoming_napi_id=568
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47048 lane=48 port=26348 conn=0 incoming_cpu=155 incoming_napi_id=547
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47131 lane=131 port=26431 conn=0 incoming_cpu=139 incoming_napi_id=568
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47142 lane=142 port=26442 conn=0 incoming_cpu=127 incoming_napi_id=575
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47173 lane=173 port=26473 conn=0 incoming_cpu=165 incoming_napi_id=555
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47148 lane=148 port=26448 conn=0 incoming_cpu=143 incoming_napi_id=556
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47162 lane=162 port=26462 conn=0 incoming_cpu=155 incoming_napi_id=547
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47140 lane=140 port=26440 conn=0 incoming_cpu=183 incoming_napi_id=557
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47176 lane=176 port=26476 conn=0 incoming_cpu=109 incoming_napi_id=573
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47156 lane=156 port=26456 conn=0 incoming_cpu=155 incoming_napi_id=547
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47210 lane=210 port=26510 conn=0 incoming_cpu=167 incoming_napi_id=549
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47178 lane=178 port=26478 conn=0 incoming_cpu=100 incoming_napi_id=559
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47191 lane=191 port=26491 conn=0 incoming_cpu=117 incoming_napi_id=567
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47150 lane=150 port=26450 conn=0 incoming_cpu=107 incoming_napi_id=570
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47034 lane=34 port=26334 conn=0 incoming_cpu=109 incoming_napi_id=573
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47171 lane=171 port=26471 conn=0 incoming_cpu=117 incoming_napi_id=567
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47206 lane=206 port=26506 conn=0 incoming_cpu=117 incoming_napi_id=567
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47183 lane=183 port=26483 conn=0 incoming_cpu=105 incoming_napi_id=576
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47139 lane=139 port=26439 conn=0 incoming_cpu=99 incoming_napi_id=565
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47164 lane=164 port=26464 conn=0 incoming_cpu=147 incoming_napi_id=553
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47211 lane=211 port=26511 conn=0 incoming_cpu=137 incoming_napi_id=545
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47154 lane=154 port=26454 conn=0 incoming_cpu=127 incoming_napi_id=575
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47169 lane=169 port=26469 conn=0 incoming_cpu=167 incoming_napi_id=549
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47121 lane=121 port=26421 conn=0 incoming_cpu=107 incoming_napi_id=570
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47145 lane=145 port=26445 conn=0 incoming_cpu=119 incoming_napi_id=571
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47144 lane=144 port=26444 conn=0 incoming_cpu=127 incoming_napi_id=575
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47028 lane=28 port=26328 conn=0 incoming_cpu=109 incoming_napi_id=573
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47185 lane=185 port=26485 conn=0 incoming_cpu=165 incoming_napi_id=555
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47180 lane=180 port=26480 conn=0 incoming_cpu=125 incoming_napi_id=554
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47116 lane=116 port=26416 conn=0 incoming_cpu=119 incoming_napi_id=571
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47189 lane=189 port=26489 conn=0 incoming_cpu=167 incoming_napi_id=549
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47123 lane=123 port=26423 conn=0 incoming_cpu=143 incoming_napi_id=556
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47158 lane=158 port=26458 conn=0 incoming_cpu=185 incoming_napi_id=561
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47172 lane=172 port=26472 conn=0 incoming_cpu=100 incoming_napi_id=559
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47182 lane=182 port=26482 conn=0 incoming_cpu=97 incoming_napi_id=572
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47187 lane=187 port=26487 conn=0 incoming_cpu=129 incoming_napi_id=569
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47033 lane=33 port=26333 conn=0 incoming_cpu=165 incoming_napi_id=555
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47177 lane=177 port=26477 conn=0 incoming_cpu=129 incoming_napi_id=569
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47160 lane=160 port=26460 conn=0 incoming_cpu=185 incoming_napi_id=561
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47157 lane=157 port=26457 conn=0 incoming_cpu=157 incoming_napi_id=551
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47190 lane=190 port=26490 conn=0 incoming_cpu=175 incoming_napi_id=563
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47227 lane=227 port=26527 conn=0 incoming_cpu=100 incoming_napi_id=559
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47166 lane=166 port=26466 conn=0 incoming_cpu=119 incoming_napi_id=571
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47165 lane=165 port=26465 conn=0 incoming_cpu=183 incoming_napi_id=557
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47184 lane=184 port=26484 conn=0 incoming_cpu=100 incoming_napi_id=559
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47155 lane=155 port=26455 conn=0 incoming_cpu=119 incoming_napi_id=571
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47163 lane=163 port=26463 conn=0 incoming_cpu=157 incoming_napi_id=551
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47143 lane=143 port=26443 conn=0 incoming_cpu=119 incoming_napi_id=571
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47170 lane=170 port=26470 conn=0 incoming_cpu=175 incoming_napi_id=563
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47186 lane=186 port=26486 conn=0 incoming_cpu=109 incoming_napi_id=573
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47167 lane=167 port=26467 conn=0 incoming_cpu=127 incoming_napi_id=575
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47208 lane=208 port=26508 conn=0 incoming_cpu=117 incoming_napi_id=567
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47146 lane=146 port=26446 conn=0 incoming_cpu=183 incoming_napi_id=557
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47149 lane=149 port=26449 conn=0 incoming_cpu=173 incoming_napi_id=560
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47222 lane=222 port=26522 conn=0 incoming_cpu=129 incoming_napi_id=569
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47132 lane=132 port=26432 conn=0 incoming_cpu=173 incoming_napi_id=560
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47168 lane=168 port=26468 conn=0 incoming_cpu=137 incoming_napi_id=545
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47209 lane=209 port=26509 conn=0 incoming_cpu=175 incoming_napi_id=563
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47174 lane=174 port=26474 conn=0 incoming_cpu=109 incoming_napi_id=573
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47245 lane=245 port=26545 conn=0 incoming_cpu=139 incoming_napi_id=568
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47244 lane=244 port=26544 conn=0 incoming_cpu=153 incoming_napi_id=564
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47151 lane=151 port=26451 conn=0 incoming_cpu=181 incoming_napi_id=574
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47026 lane=26 port=26326 conn=0 incoming_cpu=137 incoming_napi_id=545
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47133 lane=133 port=26433 conn=0 incoming_cpu=143 incoming_napi_id=556
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47137 lane=137 port=26437 conn=0 incoming_cpu=157 incoming_napi_id=551
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47153 lane=153 port=26453 conn=0 incoming_cpu=147 incoming_napi_id=553
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47175 lane=175 port=26475 conn=0 incoming_cpu=129 incoming_napi_id=569
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47138 lane=138 port=26438 conn=0 incoming_cpu=185 incoming_napi_id=561
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47141 lane=141 port=26441 conn=0 incoming_cpu=147 incoming_napi_id=553
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47127 lane=127 port=26427 conn=0 incoming_cpu=145 incoming_napi_id=550
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47246 lane=246 port=26546 conn=0 incoming_cpu=115 incoming_napi_id=546
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47134 lane=134 port=26434 conn=0 incoming_cpu=181 incoming_napi_id=574
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47179 lane=179 port=26479 conn=0 incoming_cpu=165 incoming_napi_id=555
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47117 lane=117 port=26417 conn=0 incoming_cpu=127 incoming_napi_id=575
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47181 lane=181 port=26481 conn=0 incoming_cpu=161 incoming_napi_id=558
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47120 lane=120 port=26420 conn=0 incoming_cpu=181 incoming_napi_id=574
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47031 lane=31 port=26331 conn=0 incoming_cpu=165 incoming_napi_id=555
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47205 lane=205 port=26505 conn=0 incoming_cpu=137 incoming_napi_id=545
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47147 lane=147 port=26447 conn=0 incoming_cpu=147 incoming_napi_id=553
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47119 lane=119 port=26419 conn=0 incoming_cpu=183 incoming_napi_id=557
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47216 lane=216 port=26516 conn=0 incoming_cpu=167 incoming_napi_id=549
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47136 lane=136 port=26436 conn=0 incoming_cpu=155 incoming_napi_id=547
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47130 lane=130 port=26430 conn=0 incoming_cpu=153 incoming_napi_id=564
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47235 lane=235 port=26535 conn=0 incoming_cpu=183 incoming_napi_id=557
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47039 lane=39 port=26339 conn=0 incoming_cpu=137 incoming_napi_id=545
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47029 lane=29 port=26329 conn=0 incoming_cpu=129 incoming_napi_id=569
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47232 lane=232 port=26532 conn=0 incoming_cpu=119 incoming_napi_id=571
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47159 lane=159 port=26459 conn=0 incoming_cpu=99 incoming_napi_id=565
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47188 lane=188 port=26488 conn=0 incoming_cpu=137 incoming_napi_id=545
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47252 lane=252 port=26552 conn=0 incoming_cpu=119 incoming_napi_id=571
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47152 lane=152 port=26452 conn=0 incoming_cpu=183 incoming_napi_id=557
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47254 lane=254 port=26554 conn=0 incoming_cpu=147 incoming_napi_id=553
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47253 lane=253 port=26553 conn=0 incoming_cpu=127 incoming_napi_id=575
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47032 lane=32 port=26332 conn=0 incoming_cpu=100 incoming_napi_id=559
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47129 lane=129 port=26429 conn=0 incoming_cpu=145 incoming_napi_id=550
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47215 lane=215 port=26515 conn=0 incoming_cpu=171 incoming_napi_id=566
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47233 lane=233 port=26533 conn=0 incoming_cpu=127 incoming_napi_id=575
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47135 lane=135 port=26435 conn=0 incoming_cpu=107 incoming_napi_id=570
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47223 lane=223 port=26523 conn=0 incoming_cpu=109 incoming_napi_id=573
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47242 lane=242 port=26542 conn=0 incoming_cpu=99 incoming_napi_id=565
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47212 lane=212 port=26512 conn=0 incoming_cpu=133 incoming_napi_id=548
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47128 lane=128 port=26428 conn=0 incoming_cpu=115 incoming_napi_id=546
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47229 lane=229 port=26529 conn=0 incoming_cpu=167 incoming_napi_id=549
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47247 lane=247 port=26547 conn=0 incoming_cpu=145 incoming_napi_id=550
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47213 lane=213 port=26513 conn=0 incoming_cpu=135 incoming_napi_id=552
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47237 lane=237 port=26537 conn=0 incoming_cpu=185 incoming_napi_id=561
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47124 lane=124 port=26424 conn=0 incoming_cpu=153 incoming_napi_id=564
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47125 lane=125 port=26425 conn=0 incoming_cpu=139 incoming_napi_id=568
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47122 lane=122 port=26422 conn=0 incoming_cpu=173 incoming_napi_id=560
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47250 lane=250 port=26550 conn=0 incoming_cpu=157 incoming_napi_id=551
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47238 lane=238 port=26538 conn=0 incoming_cpu=157 incoming_napi_id=551
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47249 lane=249 port=26549 conn=0 incoming_cpu=185 incoming_napi_id=561
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47240 lane=240 port=26540 conn=0 incoming_cpu=157 incoming_napi_id=551
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47219 lane=219 port=26519 conn=0 incoming_cpu=175 incoming_napi_id=563
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47243 lane=243 port=26543 conn=0 incoming_cpu=185 incoming_napi_id=561
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47161 lane=161 port=26461 conn=0 incoming_cpu=99 incoming_napi_id=565
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47236 lane=236 port=26536 conn=0 incoming_cpu=99 incoming_napi_id=565
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47255 lane=255 port=26555 conn=0 incoming_cpu=183 incoming_napi_id=557
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47234 lane=234 port=26534 conn=0 incoming_cpu=147 incoming_napi_id=553
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47231 lane=231 port=26531 conn=0 incoming_cpu=117 incoming_napi_id=567
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47248 lane=248 port=26548 conn=0 incoming_cpu=99 incoming_napi_id=565
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47226 lane=226 port=26526 conn=0 incoming_cpu=165 incoming_napi_id=555
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47221 lane=221 port=26521 conn=0 incoming_cpu=100 incoming_napi_id=559
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47217 lane=217 port=26517 conn=0 incoming_cpu=137 incoming_napi_id=545
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47228 lane=228 port=26528 conn=0 incoming_cpu=137 incoming_napi_id=545
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47239 lane=239 port=26539 conn=0 incoming_cpu=155 incoming_napi_id=547
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47241 lane=241 port=26541 conn=0 incoming_cpu=155 incoming_napi_id=547
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47251 lane=251 port=26551 conn=0 incoming_cpu=155 incoming_napi_id=547
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47220 lane=220 port=26520 conn=0 incoming_cpu=165 incoming_napi_id=555
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47230 lane=230 port=26530 conn=0 incoming_cpu=175 incoming_napi_id=563
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47218 lane=218 port=26518 conn=0 incoming_cpu=117 incoming_napi_id=567
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47225 lane=225 port=26525 conn=0 incoming_cpu=109 incoming_napi_id=573
+tcp-bench-uring-mux-server: accepted peer=172.31.43.226:47224 lane=224 port=26524 conn=0 incoming_cpu=129 incoming_napi_id=569
+zcwal-extent-recv-mux-assignment: worker=0 policy=port-lane peer=172.31.43.226:47000 listener_lane=0 listener_port=26300 conn=0 incoming_cpu=105 incoming_napi_id=576
+zcwal-extent-recv-mux-assignment: worker=1 policy=port-lane peer=172.31.43.226:47001 listener_lane=1 listener_port=26301 conn=0 incoming_cpu=97 incoming_napi_id=572
+zcwal-extent-recv-mux-assignment: worker=2 policy=port-lane peer=172.31.43.226:47002 listener_lane=2 listener_port=26302 conn=0 incoming_cpu=161 incoming_napi_id=558
+zcwal-extent-recv-mux-assignment: worker=3 policy=port-lane peer=172.31.43.226:47003 listener_lane=3 listener_port=26303 conn=0 incoming_cpu=125 incoming_napi_id=554
+zcwal-extent-recv-mux-assignment: worker=4 policy=port-lane peer=172.31.43.226:47004 listener_lane=4 listener_port=26304 conn=0 incoming_cpu=163 incoming_napi_id=562
+zcwal-extent-recv-mux-assignment: worker=5 policy=port-lane peer=172.31.43.226:47005 listener_lane=5 listener_port=26305 conn=0 incoming_cpu=171 incoming_napi_id=566
+zcwal-extent-recv-mux-assignment: worker=6 policy=port-lane peer=172.31.43.226:47006 listener_lane=6 listener_port=26306 conn=0 incoming_cpu=133 incoming_napi_id=548
+zcwal-extent-recv-mux-assignment: worker=7 policy=port-lane peer=172.31.43.226:47007 listener_lane=7 listener_port=26307 conn=0 incoming_cpu=135 incoming_napi_id=552
+zcwal-extent-recv-mux-assignment: worker=8 policy=port-lane peer=172.31.43.226:47008 listener_lane=8 listener_port=26308 conn=0 incoming_cpu=109 incoming_napi_id=573
+zcwal-extent-recv-mux-assignment: worker=9 policy=port-lane peer=172.31.43.226:47009 listener_lane=9 listener_port=26309 conn=0 incoming_cpu=129 incoming_napi_id=569
+zcwal-extent-recv-mux-assignment: worker=10 policy=port-lane peer=172.31.43.226:47010 listener_lane=10 listener_port=26310 conn=0 incoming_cpu=100 incoming_napi_id=559
+zcwal-extent-recv-mux-assignment: worker=11 policy=port-lane peer=172.31.43.226:47011 listener_lane=11 listener_port=26311 conn=0 incoming_cpu=165 incoming_napi_id=555
+zcwal-extent-recv-mux-assignment: worker=12 policy=port-lane peer=172.31.43.226:47012 listener_lane=12 listener_port=26312 conn=0 incoming_cpu=175 incoming_napi_id=563
+zcwal-extent-recv-mux-assignment: worker=13 policy=port-lane peer=172.31.43.226:47013 listener_lane=13 listener_port=26313 conn=0 incoming_cpu=117 incoming_napi_id=567
+zcwal-extent-recv-mux-assignment: worker=14 policy=port-lane peer=172.31.43.226:47014 listener_lane=14 listener_port=26314 conn=0 incoming_cpu=137 incoming_napi_id=545
+zcwal-extent-recv-mux-assignment: worker=15 policy=port-lane peer=172.31.43.226:47015 listener_lane=15 listener_port=26315 conn=0 incoming_cpu=167 incoming_napi_id=549
+zcwal-extent-recv-mux-assignment: worker=16 policy=port-lane peer=172.31.43.226:47016 listener_lane=16 listener_port=26316 conn=0 incoming_cpu=137 incoming_napi_id=545
+zcwal-extent-recv-mux-assignment: worker=17 policy=port-lane peer=172.31.43.226:47017 listener_lane=17 listener_port=26317 conn=0 incoming_cpu=167 incoming_napi_id=549
+zcwal-extent-recv-mux-assignment: worker=18 policy=port-lane peer=172.31.43.226:47018 listener_lane=18 listener_port=26318 conn=0 incoming_cpu=175 incoming_napi_id=563
+zcwal-extent-recv-mux-assignment: worker=19 policy=port-lane peer=172.31.43.226:47019 listener_lane=19 listener_port=26319 conn=0 incoming_cpu=117 incoming_napi_id=567
+zcwal-extent-recv-mux-assignment: worker=20 policy=port-lane peer=172.31.43.226:47020 listener_lane=20 listener_port=26320 conn=0 incoming_cpu=171 incoming_napi_id=566
+zcwal-extent-recv-mux-assignment: worker=21 policy=port-lane peer=172.31.43.226:47021 listener_lane=21 listener_port=26321 conn=0 incoming_cpu=163 incoming_napi_id=562
+zcwal-extent-recv-mux-assignment: worker=22 policy=port-lane peer=172.31.43.226:47022 listener_lane=22 listener_port=26322 conn=0 incoming_cpu=135 incoming_napi_id=552
+zcwal-extent-recv-mux-assignment: worker=23 policy=port-lane peer=172.31.43.226:47023 listener_lane=23 listener_port=26323 conn=0 incoming_cpu=133 incoming_napi_id=548
+zcwal-extent-recv-mux-assignment: worker=24 policy=port-lane peer=172.31.43.226:47024 listener_lane=24 listener_port=26324 conn=0 incoming_cpu=175 incoming_napi_id=563
+zcwal-extent-recv-mux-assignment: worker=25 policy=port-lane peer=172.31.43.226:47025 listener_lane=25 listener_port=26325 conn=0 incoming_cpu=117 incoming_napi_id=567
+zcwal-extent-recv-mux-assignment: worker=26 policy=port-lane peer=172.31.43.226:47026 listener_lane=26 listener_port=26326 conn=0 incoming_cpu=137 incoming_napi_id=545
+zcwal-extent-recv-mux-assignment: worker=27 policy=port-lane peer=172.31.43.226:47027 listener_lane=27 listener_port=26327 conn=0 incoming_cpu=167 incoming_napi_id=549
+zcwal-extent-recv-mux-assignment: worker=28 policy=port-lane peer=172.31.43.226:47028 listener_lane=28 listener_port=26328 conn=0 incoming_cpu=109 incoming_napi_id=573
+zcwal-extent-recv-mux-assignment: worker=29 policy=port-lane peer=172.31.43.226:47029 listener_lane=29 listener_port=26329 conn=0 incoming_cpu=129 incoming_napi_id=569
+zcwal-extent-recv-mux-assignment: worker=30 policy=port-lane peer=172.31.43.226:47030 listener_lane=30 listener_port=26330 conn=0 incoming_cpu=100 incoming_napi_id=559
+zcwal-extent-recv-mux-assignment: worker=31 policy=port-lane peer=172.31.43.226:47031 listener_lane=31 listener_port=26331 conn=0 incoming_cpu=165 incoming_napi_id=555
+zcwal-extent-recv-mux-assignment: worker=32 policy=port-lane peer=172.31.43.226:47032 listener_lane=32 listener_port=26332 conn=0 incoming_cpu=100 incoming_napi_id=559
+zcwal-extent-recv-mux-assignment: worker=33 policy=port-lane peer=172.31.43.226:47033 listener_lane=33 listener_port=26333 conn=0 incoming_cpu=165 incoming_napi_id=555
+zcwal-extent-recv-mux-assignment: worker=34 policy=port-lane peer=172.31.43.226:47034 listener_lane=34 listener_port=26334 conn=0 incoming_cpu=109 incoming_napi_id=573
+zcwal-extent-recv-mux-assignment: worker=35 policy=port-lane peer=172.31.43.226:47035 listener_lane=35 listener_port=26335 conn=0 incoming_cpu=129 incoming_napi_id=569
+zcwal-extent-recv-mux-assignment: worker=36 policy=port-lane peer=172.31.43.226:47036 listener_lane=36 listener_port=26336 conn=0 incoming_cpu=117 incoming_napi_id=567
+zcwal-extent-recv-mux-assignment: worker=37 policy=port-lane peer=172.31.43.226:47037 listener_lane=37 listener_port=26337 conn=0 incoming_cpu=175 incoming_napi_id=563
+zcwal-extent-recv-mux-assignment: worker=38 policy=port-lane peer=172.31.43.226:47038 listener_lane=38 listener_port=26338 conn=0 incoming_cpu=167 incoming_napi_id=549
+zcwal-extent-recv-mux-assignment: worker=39 policy=port-lane peer=172.31.43.226:47039 listener_lane=39 listener_port=26339 conn=0 incoming_cpu=137 incoming_napi_id=545
+zcwal-extent-recv-mux-assignment: worker=40 policy=port-lane peer=172.31.43.226:47040 listener_lane=40 listener_port=26340 conn=0 incoming_cpu=127 incoming_napi_id=575
+zcwal-extent-recv-mux-assignment: worker=41 policy=port-lane peer=172.31.43.226:47041 listener_lane=41 listener_port=26341 conn=0 incoming_cpu=119 incoming_napi_id=571
+zcwal-extent-recv-mux-assignment: worker=42 policy=port-lane peer=172.31.43.226:47042 listener_lane=42 listener_port=26342 conn=0 incoming_cpu=183 incoming_napi_id=557
+zcwal-extent-recv-mux-assignment: worker=43 policy=port-lane peer=172.31.43.226:47043 listener_lane=43 listener_port=26343 conn=0 incoming_cpu=147 incoming_napi_id=553
+zcwal-extent-recv-mux-assignment: worker=44 policy=port-lane peer=172.31.43.226:47044 listener_lane=44 listener_port=26344 conn=0 incoming_cpu=185 incoming_napi_id=561
+zcwal-extent-recv-mux-assignment: worker=45 policy=port-lane peer=172.31.43.226:47045 listener_lane=45 listener_port=26345 conn=0 incoming_cpu=99 incoming_napi_id=565
+zcwal-extent-recv-mux-assignment: worker=46 policy=port-lane peer=172.31.43.226:47046 listener_lane=46 listener_port=26346 conn=0 incoming_cpu=155 incoming_napi_id=547
+zcwal-extent-recv-mux-assignment: worker=47 policy=port-lane peer=172.31.43.226:47047 listener_lane=47 listener_port=26347 conn=0 incoming_cpu=157 incoming_napi_id=551
+zcwal-extent-recv-mux-assignment: worker=48 policy=port-lane peer=172.31.43.226:47048 listener_lane=48 listener_port=26348 conn=0 incoming_cpu=155 incoming_napi_id=547
+zcwal-extent-recv-mux-assignment: worker=49 policy=port-lane peer=172.31.43.226:47049 listener_lane=49 listener_port=26349 conn=0 incoming_cpu=157 incoming_napi_id=551
+zcwal-extent-recv-mux-assignment: worker=50 policy=port-lane peer=172.31.43.226:47050 listener_lane=50 listener_port=26350 conn=0 incoming_cpu=185 incoming_napi_id=561
+zcwal-extent-recv-mux-assignment: worker=51 policy=port-lane peer=172.31.43.226:47051 listener_lane=51 listener_port=26351 conn=0 incoming_cpu=99 incoming_napi_id=565
+zcwal-extent-recv-mux-assignment: worker=52 policy=port-lane peer=172.31.43.226:47052 listener_lane=52 listener_port=26352 conn=0 incoming_cpu=139 incoming_napi_id=568
+zcwal-extent-recv-mux-assignment: worker=53 policy=port-lane peer=172.31.43.226:47053 listener_lane=53 listener_port=26353 conn=0 incoming_cpu=153 incoming_napi_id=564
+zcwal-extent-recv-mux-assignment: worker=54 policy=port-lane peer=172.31.43.226:47054 listener_lane=54 listener_port=26354 conn=0 incoming_cpu=145 incoming_napi_id=550
+zcwal-extent-recv-mux-assignment: worker=55 policy=port-lane peer=172.31.43.226:47055 listener_lane=55 listener_port=26355 conn=0 incoming_cpu=115 incoming_napi_id=546
+zcwal-extent-recv-mux-assignment: worker=56 policy=port-lane peer=172.31.43.226:47056 listener_lane=56 listener_port=26356 conn=0 incoming_cpu=185 incoming_napi_id=561
+zcwal-extent-recv-mux-assignment: worker=57 policy=port-lane peer=172.31.43.226:47057 listener_lane=57 listener_port=26357 conn=0 incoming_cpu=99 incoming_napi_id=565
+zcwal-extent-recv-mux-assignment: worker=58 policy=port-lane peer=172.31.43.226:47058 listener_lane=58 listener_port=26358 conn=0 incoming_cpu=155 incoming_napi_id=547
+zcwal-extent-recv-mux-assignment: worker=59 policy=port-lane peer=172.31.43.226:47059 listener_lane=59 listener_port=26359 conn=0 incoming_cpu=157 incoming_napi_id=551
+zcwal-extent-recv-mux-assignment: worker=60 policy=port-lane peer=172.31.43.226:47060 listener_lane=60 listener_port=26360 conn=0 incoming_cpu=127 incoming_napi_id=575
+zcwal-extent-recv-mux-assignment: worker=61 policy=port-lane peer=172.31.43.226:47061 listener_lane=61 listener_port=26361 conn=0 incoming_cpu=119 incoming_napi_id=571
+zcwal-extent-recv-mux-assignment: worker=62 policy=port-lane peer=172.31.43.226:47062 listener_lane=62 listener_port=26362 conn=0 incoming_cpu=183 incoming_napi_id=557
+zcwal-extent-recv-mux-assignment: worker=63 policy=port-lane peer=172.31.43.226:47063 listener_lane=63 listener_port=26363 conn=0 incoming_cpu=147 incoming_napi_id=553
+zcwal-extent-recv-mux-assignment: worker=64 policy=port-lane peer=172.31.43.226:47064 listener_lane=64 listener_port=26364 conn=0 incoming_cpu=183 incoming_napi_id=557
+zcwal-extent-recv-mux-assignment: worker=65 policy=port-lane peer=172.31.43.226:47065 listener_lane=65 listener_port=26365 conn=0 incoming_cpu=147 incoming_napi_id=553
+zcwal-extent-recv-mux-assignment: worker=66 policy=port-lane peer=172.31.43.226:47066 listener_lane=66 listener_port=26366 conn=0 incoming_cpu=127 incoming_napi_id=575
+zcwal-extent-recv-mux-assignment: worker=67 policy=port-lane peer=172.31.43.226:47067 listener_lane=67 listener_port=26367 conn=0 incoming_cpu=119 incoming_napi_id=571
+zcwal-extent-recv-mux-assignment: worker=68 policy=port-lane peer=172.31.43.226:47068 listener_lane=68 listener_port=26368 conn=0 incoming_cpu=99 incoming_napi_id=565
+zcwal-extent-recv-mux-assignment: worker=69 policy=port-lane peer=172.31.43.226:47069 listener_lane=69 listener_port=26369 conn=0 incoming_cpu=185 incoming_napi_id=561
+zcwal-extent-recv-mux-assignment: worker=70 policy=port-lane peer=172.31.43.226:47070 listener_lane=70 listener_port=26370 conn=0 incoming_cpu=157 incoming_napi_id=551
+zcwal-extent-recv-mux-assignment: worker=71 policy=port-lane peer=172.31.43.226:47071 listener_lane=71 listener_port=26371 conn=0 incoming_cpu=155 incoming_napi_id=547
+zcwal-extent-recv-mux-assignment: worker=72 policy=port-lane peer=172.31.43.226:47072 listener_lane=72 listener_port=26372 conn=0 incoming_cpu=107 incoming_napi_id=570
+zcwal-extent-recv-mux-assignment: worker=73 policy=port-lane peer=172.31.43.226:47073 listener_lane=73 listener_port=26373 conn=0 incoming_cpu=181 incoming_napi_id=574
+zcwal-extent-recv-mux-assignment: worker=74 policy=port-lane peer=172.31.43.226:47074 listener_lane=74 listener_port=26374 conn=0 incoming_cpu=143 incoming_napi_id=556
+zcwal-extent-recv-mux-assignment: worker=75 policy=port-lane peer=172.31.43.226:47075 listener_lane=75 listener_port=26375 conn=0 incoming_cpu=173 incoming_napi_id=560
+zcwal-extent-recv-mux-assignment: worker=76 policy=port-lane peer=172.31.43.226:47076 listener_lane=76 listener_port=26376 conn=0 incoming_cpu=139 incoming_napi_id=568
+zcwal-extent-recv-mux-assignment: worker=77 policy=port-lane peer=172.31.43.226:47077 listener_lane=77 listener_port=26377 conn=0 incoming_cpu=153 incoming_napi_id=564
+zcwal-extent-recv-mux-assignment: worker=78 policy=port-lane peer=172.31.43.226:47078 listener_lane=78 listener_port=26378 conn=0 incoming_cpu=145 incoming_napi_id=550
+zcwal-extent-recv-mux-assignment: worker=79 policy=port-lane peer=172.31.43.226:47079 listener_lane=79 listener_port=26379 conn=0 incoming_cpu=115 incoming_napi_id=546
+zcwal-extent-recv-mux-assignment: worker=80 policy=port-lane peer=172.31.43.226:47080 listener_lane=80 listener_port=26380 conn=0 incoming_cpu=145 incoming_napi_id=550
+zcwal-extent-recv-mux-assignment: worker=81 policy=port-lane peer=172.31.43.226:47081 listener_lane=81 listener_port=26381 conn=0 incoming_cpu=115 incoming_napi_id=546
+zcwal-extent-recv-mux-assignment: worker=82 policy=port-lane peer=172.31.43.226:47082 listener_lane=82 listener_port=26382 conn=0 incoming_cpu=139 incoming_napi_id=568
+zcwal-extent-recv-mux-assignment: worker=83 policy=port-lane peer=172.31.43.226:47083 listener_lane=83 listener_port=26383 conn=0 incoming_cpu=153 incoming_napi_id=564
+zcwal-extent-recv-mux-assignment: worker=84 policy=port-lane peer=172.31.43.226:47084 listener_lane=84 listener_port=26384 conn=0 incoming_cpu=185 incoming_napi_id=561
+zcwal-extent-recv-mux-assignment: worker=85 policy=port-lane peer=172.31.43.226:47085 listener_lane=85 listener_port=26385 conn=0 incoming_cpu=99 incoming_napi_id=565
+zcwal-extent-recv-mux-assignment: worker=86 policy=port-lane peer=172.31.43.226:47086 listener_lane=86 listener_port=26386 conn=0 incoming_cpu=155 incoming_napi_id=547
+zcwal-extent-recv-mux-assignment: worker=87 policy=port-lane peer=172.31.43.226:47087 listener_lane=87 listener_port=26387 conn=0 incoming_cpu=157 incoming_napi_id=551
+zcwal-extent-recv-mux-assignment: worker=88 policy=port-lane peer=172.31.43.226:47088 listener_lane=88 listener_port=26388 conn=0 incoming_cpu=139 incoming_napi_id=568
+zcwal-extent-recv-mux-assignment: worker=89 policy=port-lane peer=172.31.43.226:47089 listener_lane=89 listener_port=26389 conn=0 incoming_cpu=153 incoming_napi_id=564
+zcwal-extent-recv-mux-assignment: worker=90 policy=port-lane peer=172.31.43.226:47090 listener_lane=90 listener_port=26390 conn=0 incoming_cpu=145 incoming_napi_id=550
+zcwal-extent-recv-mux-assignment: worker=91 policy=port-lane peer=172.31.43.226:47091 listener_lane=91 listener_port=26391 conn=0 incoming_cpu=115 incoming_napi_id=546
+zcwal-extent-recv-mux-assignment: worker=92 policy=port-lane peer=172.31.43.226:47092 listener_lane=92 listener_port=26392 conn=0 incoming_cpu=107 incoming_napi_id=570
+zcwal-extent-recv-mux-assignment: worker=93 policy=port-lane peer=172.31.43.226:47093 listener_lane=93 listener_port=26393 conn=0 incoming_cpu=181 incoming_napi_id=574
+zcwal-extent-recv-mux-assignment: worker=94 policy=port-lane peer=172.31.43.226:47094 listener_lane=94 listener_port=26394 conn=0 incoming_cpu=143 incoming_napi_id=556
+zcwal-extent-recv-mux-assignment: worker=95 policy=port-lane peer=172.31.43.226:47095 listener_lane=95 listener_port=26395 conn=0 incoming_cpu=173 incoming_napi_id=560
+zcwal-extent-recv-mux-assignment: worker=0 policy=port-lane peer=172.31.43.226:47096 listener_lane=96 listener_port=26396 conn=0 incoming_cpu=143 incoming_napi_id=556
+zcwal-extent-recv-mux-assignment: worker=1 policy=port-lane peer=172.31.43.226:47097 listener_lane=97 listener_port=26397 conn=0 incoming_cpu=173 incoming_napi_id=560
+zcwal-extent-recv-mux-assignment: worker=2 policy=port-lane peer=172.31.43.226:47098 listener_lane=98 listener_port=26398 conn=0 incoming_cpu=107 incoming_napi_id=570
+zcwal-extent-recv-mux-assignment: worker=3 policy=port-lane peer=172.31.43.226:47099 listener_lane=99 listener_port=26399 conn=0 incoming_cpu=181 incoming_napi_id=574
+zcwal-extent-recv-mux-assignment: worker=4 policy=port-lane peer=172.31.43.226:47100 listener_lane=100 listener_port=26400 conn=0 incoming_cpu=153 incoming_napi_id=564
+zcwal-extent-recv-mux-assignment: worker=5 policy=port-lane peer=172.31.43.226:47101 listener_lane=101 listener_port=26401 conn=0 incoming_cpu=139 incoming_napi_id=568
+zcwal-extent-recv-mux-assignment: worker=6 policy=port-lane peer=172.31.43.226:47102 listener_lane=102 listener_port=26402 conn=0 incoming_cpu=115 incoming_napi_id=546
+zcwal-extent-recv-mux-assignment: worker=7 policy=port-lane peer=172.31.43.226:47103 listener_lane=103 listener_port=26403 conn=0 incoming_cpu=145 incoming_napi_id=550
+zcwal-extent-recv-mux-assignment: worker=8 policy=port-lane peer=172.31.43.226:47104 listener_lane=104 listener_port=26404 conn=0 incoming_cpu=153 incoming_napi_id=564
+zcwal-extent-recv-mux-assignment: worker=9 policy=port-lane peer=172.31.43.226:47105 listener_lane=105 listener_port=26405 conn=0 incoming_cpu=139 incoming_napi_id=568
+zcwal-extent-recv-mux-assignment: worker=10 policy=port-lane peer=172.31.43.226:47106 listener_lane=106 listener_port=26406 conn=0 incoming_cpu=115 incoming_napi_id=546
+zcwal-extent-recv-mux-assignment: worker=11 policy=port-lane peer=172.31.43.226:47107 listener_lane=107 listener_port=26407 conn=0 incoming_cpu=145 incoming_napi_id=550
+zcwal-extent-recv-mux-assignment: worker=12 policy=port-lane peer=172.31.43.226:47108 listener_lane=108 listener_port=26408 conn=0 incoming_cpu=181 incoming_napi_id=574
+zcwal-extent-recv-mux-assignment: worker=13 policy=port-lane peer=172.31.43.226:47109 listener_lane=109 listener_port=26409 conn=0 incoming_cpu=107 incoming_napi_id=570
+zcwal-extent-recv-mux-assignment: worker=14 policy=port-lane peer=172.31.43.226:47110 listener_lane=110 listener_port=26410 conn=0 incoming_cpu=173 incoming_napi_id=560
+zcwal-extent-recv-mux-assignment: worker=15 policy=port-lane peer=172.31.43.226:47111 listener_lane=111 listener_port=26411 conn=0 incoming_cpu=143 incoming_napi_id=556
+zcwal-extent-recv-mux-assignment: worker=16 policy=port-lane peer=172.31.43.226:47112 listener_lane=112 listener_port=26412 conn=0 incoming_cpu=173 incoming_napi_id=560
+zcwal-extent-recv-mux-assignment: worker=17 policy=port-lane peer=172.31.43.226:47113 listener_lane=113 listener_port=26413 conn=0 incoming_cpu=143 incoming_napi_id=556
+zcwal-extent-recv-mux-assignment: worker=18 policy=port-lane peer=172.31.43.226:47114 listener_lane=114 listener_port=26414 conn=0 incoming_cpu=181 incoming_napi_id=574
+zcwal-extent-recv-mux-assignment: worker=19 policy=port-lane peer=172.31.43.226:47115 listener_lane=115 listener_port=26415 conn=0 incoming_cpu=107 incoming_napi_id=570
+zcwal-extent-recv-mux-assignment: worker=20 policy=port-lane peer=172.31.43.226:47116 listener_lane=116 listener_port=26416 conn=0 incoming_cpu=119 incoming_napi_id=571
+zcwal-extent-recv-mux-assignment: worker=21 policy=port-lane peer=172.31.43.226:47117 listener_lane=117 listener_port=26417 conn=0 incoming_cpu=127 incoming_napi_id=575
+zcwal-extent-recv-mux-assignment: worker=22 policy=port-lane peer=172.31.43.226:47118 listener_lane=118 listener_port=26418 conn=0 incoming_cpu=147 incoming_napi_id=553
+zcwal-extent-recv-mux-assignment: worker=23 policy=port-lane peer=172.31.43.226:47119 listener_lane=119 listener_port=26419 conn=0 incoming_cpu=183 incoming_napi_id=557
+zcwal-extent-recv-mux-assignment: worker=24 policy=port-lane peer=172.31.43.226:47120 listener_lane=120 listener_port=26420 conn=0 incoming_cpu=181 incoming_napi_id=574
+zcwal-extent-recv-mux-assignment: worker=25 policy=port-lane peer=172.31.43.226:47121 listener_lane=121 listener_port=26421 conn=0 incoming_cpu=107 incoming_napi_id=570
+zcwal-extent-recv-mux-assignment: worker=26 policy=port-lane peer=172.31.43.226:47122 listener_lane=122 listener_port=26422 conn=0 incoming_cpu=173 incoming_napi_id=560
+zcwal-extent-recv-mux-assignment: worker=27 policy=port-lane peer=172.31.43.226:47123 listener_lane=123 listener_port=26423 conn=0 incoming_cpu=143 incoming_napi_id=556
+zcwal-extent-recv-mux-assignment: worker=28 policy=port-lane peer=172.31.43.226:47124 listener_lane=124 listener_port=26424 conn=0 incoming_cpu=153 incoming_napi_id=564
+zcwal-extent-recv-mux-assignment: worker=29 policy=port-lane peer=172.31.43.226:47125 listener_lane=125 listener_port=26425 conn=0 incoming_cpu=139 incoming_napi_id=568
+zcwal-extent-recv-mux-assignment: worker=30 policy=port-lane peer=172.31.43.226:47126 listener_lane=126 listener_port=26426 conn=0 incoming_cpu=115 incoming_napi_id=546
+zcwal-extent-recv-mux-assignment: worker=31 policy=port-lane peer=172.31.43.226:47127 listener_lane=127 listener_port=26427 conn=0 incoming_cpu=145 incoming_napi_id=550
+zcwal-extent-recv-mux-assignment: worker=32 policy=port-lane peer=172.31.43.226:47128 listener_lane=128 listener_port=26428 conn=0 incoming_cpu=115 incoming_napi_id=546
+zcwal-extent-recv-mux-assignment: worker=33 policy=port-lane peer=172.31.43.226:47129 listener_lane=129 listener_port=26429 conn=0 incoming_cpu=145 incoming_napi_id=550
+zcwal-extent-recv-mux-assignment: worker=34 policy=port-lane peer=172.31.43.226:47130 listener_lane=130 listener_port=26430 conn=0 incoming_cpu=153 incoming_napi_id=564
+zcwal-extent-recv-mux-assignment: worker=35 policy=port-lane peer=172.31.43.226:47131 listener_lane=131 listener_port=26431 conn=0 incoming_cpu=139 incoming_napi_id=568
+zcwal-extent-recv-mux-assignment: worker=36 policy=port-lane peer=172.31.43.226:47132 listener_lane=132 listener_port=26432 conn=0 incoming_cpu=173 incoming_napi_id=560
+zcwal-extent-recv-mux-assignment: worker=37 policy=port-lane peer=172.31.43.226:47133 listener_lane=133 listener_port=26433 conn=0 incoming_cpu=143 incoming_napi_id=556
+zcwal-extent-recv-mux-assignment: worker=38 policy=port-lane peer=172.31.43.226:47134 listener_lane=134 listener_port=26434 conn=0 incoming_cpu=181 incoming_napi_id=574
+zcwal-extent-recv-mux-assignment: worker=39 policy=port-lane peer=172.31.43.226:47135 listener_lane=135 listener_port=26435 conn=0 incoming_cpu=107 incoming_napi_id=570
+zcwal-extent-recv-mux-assignment: worker=40 policy=port-lane peer=172.31.43.226:47136 listener_lane=136 listener_port=26436 conn=0 incoming_cpu=155 incoming_napi_id=547
+zcwal-extent-recv-mux-assignment: worker=41 policy=port-lane peer=172.31.43.226:47137 listener_lane=137 listener_port=26437 conn=0 incoming_cpu=157 incoming_napi_id=551
+zcwal-extent-recv-mux-assignment: worker=42 policy=port-lane peer=172.31.43.226:47138 listener_lane=138 listener_port=26438 conn=0 incoming_cpu=185 incoming_napi_id=561
+zcwal-extent-recv-mux-assignment: worker=43 policy=port-lane peer=172.31.43.226:47139 listener_lane=139 listener_port=26439 conn=0 incoming_cpu=99 incoming_napi_id=565
+zcwal-extent-recv-mux-assignment: worker=44 policy=port-lane peer=172.31.43.226:47140 listener_lane=140 listener_port=26440 conn=0 incoming_cpu=183 incoming_napi_id=557
+zcwal-extent-recv-mux-assignment: worker=45 policy=port-lane peer=172.31.43.226:47141 listener_lane=141 listener_port=26441 conn=0 incoming_cpu=147 incoming_napi_id=553
+zcwal-extent-recv-mux-assignment: worker=46 policy=port-lane peer=172.31.43.226:47142 listener_lane=142 listener_port=26442 conn=0 incoming_cpu=127 incoming_napi_id=575
+zcwal-extent-recv-mux-assignment: worker=47 policy=port-lane peer=172.31.43.226:47143 listener_lane=143 listener_port=26443 conn=0 incoming_cpu=119 incoming_napi_id=571
+zcwal-extent-recv-mux-assignment: worker=48 policy=port-lane peer=172.31.43.226:47144 listener_lane=144 listener_port=26444 conn=0 incoming_cpu=127 incoming_napi_id=575
+zcwal-extent-recv-mux-assignment: worker=49 policy=port-lane peer=172.31.43.226:47145 listener_lane=145 listener_port=26445 conn=0 incoming_cpu=119 incoming_napi_id=571
+zcwal-extent-recv-mux-assignment: worker=50 policy=port-lane peer=172.31.43.226:47146 listener_lane=146 listener_port=26446 conn=0 incoming_cpu=183 incoming_napi_id=557
+zcwal-extent-recv-mux-assignment: worker=51 policy=port-lane peer=172.31.43.226:47147 listener_lane=147 listener_port=26447 conn=0 incoming_cpu=147 incoming_napi_id=553
+zcwal-extent-recv-mux-assignment: worker=52 policy=port-lane peer=172.31.43.226:47148 listener_lane=148 listener_port=26448 conn=0 incoming_cpu=143 incoming_napi_id=556
+zcwal-extent-recv-mux-assignment: worker=53 policy=port-lane peer=172.31.43.226:47149 listener_lane=149 listener_port=26449 conn=0 incoming_cpu=173 incoming_napi_id=560
+zcwal-extent-recv-mux-assignment: worker=54 policy=port-lane peer=172.31.43.226:47150 listener_lane=150 listener_port=26450 conn=0 incoming_cpu=107 incoming_napi_id=570
+zcwal-extent-recv-mux-assignment: worker=55 policy=port-lane peer=172.31.43.226:47151 listener_lane=151 listener_port=26451 conn=0 incoming_cpu=181 incoming_napi_id=574
+zcwal-extent-recv-mux-assignment: worker=56 policy=port-lane peer=172.31.43.226:47152 listener_lane=152 listener_port=26452 conn=0 incoming_cpu=183 incoming_napi_id=557
+zcwal-extent-recv-mux-assignment: worker=57 policy=port-lane peer=172.31.43.226:47153 listener_lane=153 listener_port=26453 conn=0 incoming_cpu=147 incoming_napi_id=553
+zcwal-extent-recv-mux-assignment: worker=58 policy=port-lane peer=172.31.43.226:47154 listener_lane=154 listener_port=26454 conn=0 incoming_cpu=127 incoming_napi_id=575
+zcwal-extent-recv-mux-assignment: worker=59 policy=port-lane peer=172.31.43.226:47155 listener_lane=155 listener_port=26455 conn=0 incoming_cpu=119 incoming_napi_id=571
+zcwal-extent-recv-mux-assignment: worker=60 policy=port-lane peer=172.31.43.226:47156 listener_lane=156 listener_port=26456 conn=0 incoming_cpu=155 incoming_napi_id=547
+zcwal-extent-recv-mux-assignment: worker=61 policy=port-lane peer=172.31.43.226:47157 listener_lane=157 listener_port=26457 conn=0 incoming_cpu=157 incoming_napi_id=551
+zcwal-extent-recv-mux-assignment: worker=62 policy=port-lane peer=172.31.43.226:47158 listener_lane=158 listener_port=26458 conn=0 incoming_cpu=185 incoming_napi_id=561
+zcwal-extent-recv-mux-assignment: worker=63 policy=port-lane peer=172.31.43.226:47159 listener_lane=159 listener_port=26459 conn=0 incoming_cpu=99 incoming_napi_id=565
+zcwal-extent-recv-mux-assignment: worker=64 policy=port-lane peer=172.31.43.226:47160 listener_lane=160 listener_port=26460 conn=0 incoming_cpu=185 incoming_napi_id=561
+zcwal-extent-recv-mux-assignment: worker=65 policy=port-lane peer=172.31.43.226:47161 listener_lane=161 listener_port=26461 conn=0 incoming_cpu=99 incoming_napi_id=565
+zcwal-extent-recv-mux-assignment: worker=66 policy=port-lane peer=172.31.43.226:47162 listener_lane=162 listener_port=26462 conn=0 incoming_cpu=155 incoming_napi_id=547
+zcwal-extent-recv-mux-assignment: worker=67 policy=port-lane peer=172.31.43.226:47163 listener_lane=163 listener_port=26463 conn=0 incoming_cpu=157 incoming_napi_id=551
+zcwal-extent-recv-mux-assignment: worker=68 policy=port-lane peer=172.31.43.226:47164 listener_lane=164 listener_port=26464 conn=0 incoming_cpu=147 incoming_napi_id=553
+zcwal-extent-recv-mux-assignment: worker=69 policy=port-lane peer=172.31.43.226:47165 listener_lane=165 listener_port=26465 conn=0 incoming_cpu=183 incoming_napi_id=557
+zcwal-extent-recv-mux-assignment: worker=70 policy=port-lane peer=172.31.43.226:47166 listener_lane=166 listener_port=26466 conn=0 incoming_cpu=119 incoming_napi_id=571
+zcwal-extent-recv-mux-assignment: worker=71 policy=port-lane peer=172.31.43.226:47167 listener_lane=167 listener_port=26467 conn=0 incoming_cpu=127 incoming_napi_id=575
+zcwal-extent-recv-mux-assignment: worker=72 policy=port-lane peer=172.31.43.226:47168 listener_lane=168 listener_port=26468 conn=0 incoming_cpu=137 incoming_napi_id=545
+zcwal-extent-recv-mux-assignment: worker=73 policy=port-lane peer=172.31.43.226:47169 listener_lane=169 listener_port=26469 conn=0 incoming_cpu=167 incoming_napi_id=549
+zcwal-extent-recv-mux-assignment: worker=74 policy=port-lane peer=172.31.43.226:47170 listener_lane=170 listener_port=26470 conn=0 incoming_cpu=175 incoming_napi_id=563
+zcwal-extent-recv-mux-assignment: worker=75 policy=port-lane peer=172.31.43.226:47171 listener_lane=171 listener_port=26471 conn=0 incoming_cpu=117 incoming_napi_id=567
+zcwal-extent-recv-mux-assignment: worker=76 policy=port-lane peer=172.31.43.226:47172 listener_lane=172 listener_port=26472 conn=0 incoming_cpu=100 incoming_napi_id=559
+zcwal-extent-recv-mux-assignment: worker=77 policy=port-lane peer=172.31.43.226:47173 listener_lane=173 listener_port=26473 conn=0 incoming_cpu=165 incoming_napi_id=555
+zcwal-extent-recv-mux-assignment: worker=78 policy=port-lane peer=172.31.43.226:47174 listener_lane=174 listener_port=26474 conn=0 incoming_cpu=109 incoming_napi_id=573
+zcwal-extent-recv-mux-assignment: worker=79 policy=port-lane peer=172.31.43.226:47175 listener_lane=175 listener_port=26475 conn=0 incoming_cpu=129 incoming_napi_id=569
+zcwal-extent-recv-mux-assignment: worker=80 policy=port-lane peer=172.31.43.226:47176 listener_lane=176 listener_port=26476 conn=0 incoming_cpu=109 incoming_napi_id=573
+zcwal-extent-recv-mux-assignment: worker=81 policy=port-lane peer=172.31.43.226:47177 listener_lane=177 listener_port=26477 conn=0 incoming_cpu=129 incoming_napi_id=569
+zcwal-extent-recv-mux-assignment: worker=82 policy=port-lane peer=172.31.43.226:47178 listener_lane=178 listener_port=26478 conn=0 incoming_cpu=100 incoming_napi_id=559
+zcwal-extent-recv-mux-assignment: worker=83 policy=port-lane peer=172.31.43.226:47179 listener_lane=179 listener_port=26479 conn=0 incoming_cpu=165 incoming_napi_id=555
+zcwal-extent-recv-mux-assignment: worker=84 policy=port-lane peer=172.31.43.226:47180 listener_lane=180 listener_port=26480 conn=0 incoming_cpu=125 incoming_napi_id=554
+zcwal-extent-recv-mux-assignment: worker=85 policy=port-lane peer=172.31.43.226:47181 listener_lane=181 listener_port=26481 conn=0 incoming_cpu=161 incoming_napi_id=558
+zcwal-extent-recv-mux-assignment: worker=86 policy=port-lane peer=172.31.43.226:47182 listener_lane=182 listener_port=26482 conn=0 incoming_cpu=97 incoming_napi_id=572
+zcwal-extent-recv-mux-assignment: worker=87 policy=port-lane peer=172.31.43.226:47183 listener_lane=183 listener_port=26483 conn=0 incoming_cpu=105 incoming_napi_id=576
+zcwal-extent-recv-mux-assignment: worker=88 policy=port-lane peer=172.31.43.226:47184 listener_lane=184 listener_port=26484 conn=0 incoming_cpu=100 incoming_napi_id=559
+zcwal-extent-recv-mux-assignment: worker=89 policy=port-lane peer=172.31.43.226:47185 listener_lane=185 listener_port=26485 conn=0 incoming_cpu=165 incoming_napi_id=555
+zcwal-extent-recv-mux-assignment: worker=90 policy=port-lane peer=172.31.43.226:47186 listener_lane=186 listener_port=26486 conn=0 incoming_cpu=109 incoming_napi_id=573
+zcwal-extent-recv-mux-assignment: worker=91 policy=port-lane peer=172.31.43.226:47187 listener_lane=187 listener_port=26487 conn=0 incoming_cpu=129 incoming_napi_id=569
+zcwal-extent-recv-mux-assignment: worker=92 policy=port-lane peer=172.31.43.226:47188 listener_lane=188 listener_port=26488 conn=0 incoming_cpu=137 incoming_napi_id=545
+zcwal-extent-recv-mux-assignment: worker=93 policy=port-lane peer=172.31.43.226:47189 listener_lane=189 listener_port=26489 conn=0 incoming_cpu=167 incoming_napi_id=549
+zcwal-extent-recv-mux-assignment: worker=94 policy=port-lane peer=172.31.43.226:47190 listener_lane=190 listener_port=26490 conn=0 incoming_cpu=175 incoming_napi_id=563
+zcwal-extent-recv-mux-assignment: worker=95 policy=port-lane peer=172.31.43.226:47191 listener_lane=191 listener_port=26491 conn=0 incoming_cpu=117 incoming_napi_id=567
+zcwal-extent-recv-mux-assignment: worker=0 policy=port-lane peer=172.31.43.226:47192 listener_lane=192 listener_port=26492 conn=0 incoming_cpu=175 incoming_napi_id=563
+zcwal-extent-recv-mux-assignment: worker=1 policy=port-lane peer=172.31.43.226:47193 listener_lane=193 listener_port=26493 conn=0 incoming_cpu=117 incoming_napi_id=567
+zcwal-extent-recv-mux-assignment: worker=2 policy=port-lane peer=172.31.43.226:47194 listener_lane=194 listener_port=26494 conn=0 incoming_cpu=137 incoming_napi_id=545
+zcwal-extent-recv-mux-assignment: worker=3 policy=port-lane peer=172.31.43.226:47195 listener_lane=195 listener_port=26495 conn=0 incoming_cpu=167 incoming_napi_id=549
+zcwal-extent-recv-mux-assignment: worker=4 policy=port-lane peer=172.31.43.226:47196 listener_lane=196 listener_port=26496 conn=0 incoming_cpu=135 incoming_napi_id=552
+zcwal-extent-recv-mux-assignment: worker=5 policy=port-lane peer=172.31.43.226:47197 listener_lane=197 listener_port=26497 conn=0 incoming_cpu=133 incoming_napi_id=548
+zcwal-extent-recv-mux-assignment: worker=6 policy=port-lane peer=172.31.43.226:47198 listener_lane=198 listener_port=26498 conn=0 incoming_cpu=171 incoming_napi_id=566
+zcwal-extent-recv-mux-assignment: worker=7 policy=port-lane peer=172.31.43.226:47199 listener_lane=199 listener_port=26499 conn=0 incoming_cpu=163 incoming_napi_id=562
+zcwal-extent-recv-mux-assignment: worker=8 policy=port-lane peer=172.31.43.226:47200 listener_lane=200 listener_port=26500 conn=0 incoming_cpu=165 incoming_napi_id=555
+zcwal-extent-recv-mux-assignment: worker=9 policy=port-lane peer=172.31.43.226:47201 listener_lane=201 listener_port=26501 conn=0 incoming_cpu=100 incoming_napi_id=559
+zcwal-extent-recv-mux-assignment: worker=10 policy=port-lane peer=172.31.43.226:47202 listener_lane=202 listener_port=26502 conn=0 incoming_cpu=129 incoming_napi_id=569
+zcwal-extent-recv-mux-assignment: worker=11 policy=port-lane peer=172.31.43.226:47203 listener_lane=203 listener_port=26503 conn=0 incoming_cpu=109 incoming_napi_id=573
+zcwal-extent-recv-mux-assignment: worker=12 policy=port-lane peer=172.31.43.226:47204 listener_lane=204 listener_port=26504 conn=0 incoming_cpu=167 incoming_napi_id=549
+zcwal-extent-recv-mux-assignment: worker=13 policy=port-lane peer=172.31.43.226:47205 listener_lane=205 listener_port=26505 conn=0 incoming_cpu=137 incoming_napi_id=545
+zcwal-extent-recv-mux-assignment: worker=14 policy=port-lane peer=172.31.43.226:47206 listener_lane=206 listener_port=26506 conn=0 incoming_cpu=117 incoming_napi_id=567
+zcwal-extent-recv-mux-assignment: worker=15 policy=port-lane peer=172.31.43.226:47207 listener_lane=207 listener_port=26507 conn=0 incoming_cpu=175 incoming_napi_id=563
+zcwal-extent-recv-mux-assignment: worker=16 policy=port-lane peer=172.31.43.226:47208 listener_lane=208 listener_port=26508 conn=0 incoming_cpu=117 incoming_napi_id=567
+zcwal-extent-recv-mux-assignment: worker=17 policy=port-lane peer=172.31.43.226:47209 listener_lane=209 listener_port=26509 conn=0 incoming_cpu=175 incoming_napi_id=563
+zcwal-extent-recv-mux-assignment: worker=18 policy=port-lane peer=172.31.43.226:47210 listener_lane=210 listener_port=26510 conn=0 incoming_cpu=167 incoming_napi_id=549
+zcwal-extent-recv-mux-assignment: worker=19 policy=port-lane peer=172.31.43.226:47211 listener_lane=211 listener_port=26511 conn=0 incoming_cpu=137 incoming_napi_id=545
+zcwal-extent-recv-mux-assignment: worker=20 policy=port-lane peer=172.31.43.226:47212 listener_lane=212 listener_port=26512 conn=0 incoming_cpu=133 incoming_napi_id=548
+zcwal-extent-recv-mux-assignment: worker=21 policy=port-lane peer=172.31.43.226:47213 listener_lane=213 listener_port=26513 conn=0 incoming_cpu=135 incoming_napi_id=552
+zcwal-extent-recv-mux-assignment: worker=22 policy=port-lane peer=172.31.43.226:47214 listener_lane=214 listener_port=26514 conn=0 incoming_cpu=163 incoming_napi_id=562
+zcwal-extent-recv-mux-assignment: worker=23 policy=port-lane peer=172.31.43.226:47215 listener_lane=215 listener_port=26515 conn=0 incoming_cpu=171 incoming_napi_id=566
+zcwal-extent-recv-mux-assignment: worker=24 policy=port-lane peer=172.31.43.226:47216 listener_lane=216 listener_port=26516 conn=0 incoming_cpu=167 incoming_napi_id=549
+zcwal-extent-recv-mux-assignment: worker=25 policy=port-lane peer=172.31.43.226:47217 listener_lane=217 listener_port=26517 conn=0 incoming_cpu=137 incoming_napi_id=545
+zcwal-extent-recv-mux-assignment: worker=26 policy=port-lane peer=172.31.43.226:47218 listener_lane=218 listener_port=26518 conn=0 incoming_cpu=117 incoming_napi_id=567
+zcwal-extent-recv-mux-assignment: worker=27 policy=port-lane peer=172.31.43.226:47219 listener_lane=219 listener_port=26519 conn=0 incoming_cpu=175 incoming_napi_id=563
+zcwal-extent-recv-mux-assignment: worker=28 policy=port-lane peer=172.31.43.226:47220 listener_lane=220 listener_port=26520 conn=0 incoming_cpu=165 incoming_napi_id=555
+zcwal-extent-recv-mux-assignment: worker=29 policy=port-lane peer=172.31.43.226:47221 listener_lane=221 listener_port=26521 conn=0 incoming_cpu=100 incoming_napi_id=559
+zcwal-extent-recv-mux-assignment: worker=30 policy=port-lane peer=172.31.43.226:47222 listener_lane=222 listener_port=26522 conn=0 incoming_cpu=129 incoming_napi_id=569
+zcwal-extent-recv-mux-assignment: worker=31 policy=port-lane peer=172.31.43.226:47223 listener_lane=223 listener_port=26523 conn=0 incoming_cpu=109 incoming_napi_id=573
+zcwal-extent-recv-mux-assignment: worker=32 policy=port-lane peer=172.31.43.226:47224 listener_lane=224 listener_port=26524 conn=0 incoming_cpu=129 incoming_napi_id=569
+zcwal-extent-recv-mux-assignment: worker=33 policy=port-lane peer=172.31.43.226:47225 listener_lane=225 listener_port=26525 conn=0 incoming_cpu=109 incoming_napi_id=573
+zcwal-extent-recv-mux-assignment: worker=34 policy=port-lane peer=172.31.43.226:47226 listener_lane=226 listener_port=26526 conn=0 incoming_cpu=165 incoming_napi_id=555
+zcwal-extent-recv-mux-assignment: worker=35 policy=port-lane peer=172.31.43.226:47227 listener_lane=227 listener_port=26527 conn=0 incoming_cpu=100 incoming_napi_id=559
+zcwal-extent-recv-mux-assignment: worker=36 policy=port-lane peer=172.31.43.226:47228 listener_lane=228 listener_port=26528 conn=0 incoming_cpu=137 incoming_napi_id=545
+zcwal-extent-recv-mux-assignment: worker=37 policy=port-lane peer=172.31.43.226:47229 listener_lane=229 listener_port=26529 conn=0 incoming_cpu=167 incoming_napi_id=549
+zcwal-extent-recv-mux-assignment: worker=38 policy=port-lane peer=172.31.43.226:47230 listener_lane=230 listener_port=26530 conn=0 incoming_cpu=175 incoming_napi_id=563
+zcwal-extent-recv-mux-assignment: worker=39 policy=port-lane peer=172.31.43.226:47231 listener_lane=231 listener_port=26531 conn=0 incoming_cpu=117 incoming_napi_id=567
+zcwal-extent-recv-mux-assignment: worker=40 policy=port-lane peer=172.31.43.226:47232 listener_lane=232 listener_port=26532 conn=0 incoming_cpu=119 incoming_napi_id=571
+zcwal-extent-recv-mux-assignment: worker=41 policy=port-lane peer=172.31.43.226:47233 listener_lane=233 listener_port=26533 conn=0 incoming_cpu=127 incoming_napi_id=575
+zcwal-extent-recv-mux-assignment: worker=42 policy=port-lane peer=172.31.43.226:47234 listener_lane=234 listener_port=26534 conn=0 incoming_cpu=147 incoming_napi_id=553
+zcwal-extent-recv-mux-assignment: worker=43 policy=port-lane peer=172.31.43.226:47235 listener_lane=235 listener_port=26535 conn=0 incoming_cpu=183 incoming_napi_id=557
+zcwal-extent-recv-mux-assignment: worker=44 policy=port-lane peer=172.31.43.226:47236 listener_lane=236 listener_port=26536 conn=0 incoming_cpu=99 incoming_napi_id=565
+zcwal-extent-recv-mux-assignment: worker=45 policy=port-lane peer=172.31.43.226:47237 listener_lane=237 listener_port=26537 conn=0 incoming_cpu=185 incoming_napi_id=561
+zcwal-extent-recv-mux-assignment: worker=46 policy=port-lane peer=172.31.43.226:47238 listener_lane=238 listener_port=26538 conn=0 incoming_cpu=157 incoming_napi_id=551
+zcwal-extent-recv-mux-assignment: worker=47 policy=port-lane peer=172.31.43.226:47239 listener_lane=239 listener_port=26539 conn=0 incoming_cpu=155 incoming_napi_id=547
+zcwal-extent-recv-mux-assignment: worker=48 policy=port-lane peer=172.31.43.226:47240 listener_lane=240 listener_port=26540 conn=0 incoming_cpu=157 incoming_napi_id=551
+zcwal-extent-recv-mux-assignment: worker=49 policy=port-lane peer=172.31.43.226:47241 listener_lane=241 listener_port=26541 conn=0 incoming_cpu=155 incoming_napi_id=547
+zcwal-extent-recv-mux-assignment: worker=50 policy=port-lane peer=172.31.43.226:47242 listener_lane=242 listener_port=26542 conn=0 incoming_cpu=99 incoming_napi_id=565
+zcwal-extent-recv-mux-assignment: worker=51 policy=port-lane peer=172.31.43.226:47243 listener_lane=243 listener_port=26543 conn=0 incoming_cpu=185 incoming_napi_id=561
+zcwal-extent-recv-mux-assignment: worker=52 policy=port-lane peer=172.31.43.226:47244 listener_lane=244 listener_port=26544 conn=0 incoming_cpu=153 incoming_napi_id=564
+zcwal-extent-recv-mux-assignment: worker=53 policy=port-lane peer=172.31.43.226:47245 listener_lane=245 listener_port=26545 conn=0 incoming_cpu=139 incoming_napi_id=568
+zcwal-extent-recv-mux-assignment: worker=54 policy=port-lane peer=172.31.43.226:47246 listener_lane=246 listener_port=26546 conn=0 incoming_cpu=115 incoming_napi_id=546
+zcwal-extent-recv-mux-assignment: worker=55 policy=port-lane peer=172.31.43.226:47247 listener_lane=247 listener_port=26547 conn=0 incoming_cpu=145 incoming_napi_id=550
+zcwal-extent-recv-mux-assignment: worker=56 policy=port-lane peer=172.31.43.226:47248 listener_lane=248 listener_port=26548 conn=0 incoming_cpu=99 incoming_napi_id=565
+zcwal-extent-recv-mux-assignment: worker=57 policy=port-lane peer=172.31.43.226:47249 listener_lane=249 listener_port=26549 conn=0 incoming_cpu=185 incoming_napi_id=561
+zcwal-extent-recv-mux-assignment: worker=58 policy=port-lane peer=172.31.43.226:47250 listener_lane=250 listener_port=26550 conn=0 incoming_cpu=157 incoming_napi_id=551
+zcwal-extent-recv-mux-assignment: worker=59 policy=port-lane peer=172.31.43.226:47251 listener_lane=251 listener_port=26551 conn=0 incoming_cpu=155 incoming_napi_id=547
+zcwal-extent-recv-mux-assignment: worker=60 policy=port-lane peer=172.31.43.226:47252 listener_lane=252 listener_port=26552 conn=0 incoming_cpu=119 incoming_napi_id=571
+zcwal-extent-recv-mux-assignment: worker=61 policy=port-lane peer=172.31.43.226:47253 listener_lane=253 listener_port=26553 conn=0 incoming_cpu=127 incoming_napi_id=575
+zcwal-extent-recv-mux-assignment: worker=62 policy=port-lane peer=172.31.43.226:47254 listener_lane=254 listener_port=26554 conn=0 incoming_cpu=147 incoming_napi_id=553
+zcwal-extent-recv-mux-assignment: worker=63 policy=port-lane peer=172.31.43.226:47255 listener_lane=255 listener_port=26555 conn=0 incoming_cpu=183 incoming_napi_id=557
+zcwal-extent-recv-mux-assignment-summary: policy=port-lane workers=96 streams_by_worker=0:3,1:3,2:3,3:3,4:3,5:3,6:3,7:3,8:3,9:3,10:3,11:3,12:3,13:3,14:3,15:3,16:3,17:3,18:3,19:3,20:3,21:3,22:3,23:3,24:3,25:3,26:3,27:3,28:3,29:3,30:3,31:3,32:3,33:3,34:3,35:3,36:3,37:3,38:3,39:3,40:3,41:3,42:3,43:3,44:3,45:3,46:3,47:3,48:3,49:3,50:3,51:3,52:3,53:3,54:3,55:3,56:3,57:3,58:3,59:3,60:3,61:3,62:3,63:3,64:2,65:2,66:2,67:2,68:2,69:2,70:2,71:2,72:2,73:2,74:2,75:2,76:2,77:2,78:2,79:2,80:2,81:2,82:2,83:2,84:2,85:2,86:2,87:2,88:2,89:2,90:2,91:2,92:2,93:2,94:2,95:2
+zcwal-extent-recv-worker: affinity_index=1 target_cpu=97 status=ok
+zcwal-extent-recv-worker: affinity_index=2 target_cpu=98 status=ok
+zcwal-extent-recv-worker: affinity_index=3 target_cpu=99 status=ok
+zcwal-extent-recv-worker: affinity_index=4 target_cpu=100 status=ok
+zcwal-extent-recv-worker: affinity_index=5 target_cpu=101 status=ok
+zcwal-extent-recv-worker: affinity_index=6 target_cpu=102 status=ok
+zcwal-extent-recv-worker: affinity_index=8 target_cpu=104 status=ok
+zcwal-extent-recv-worker: affinity_index=10 target_cpu=106 status=ok
+zcwal-extent-recv-worker: affinity_index=7 target_cpu=103 status=ok
+zcwal-extent-recv-worker: affinity_index=9 target_cpu=105 status=ok
+zcwal-extent-recv-worker: affinity_index=11 target_cpu=107 status=ok
+zcwal-extent-recv-worker: affinity_index=12 target_cpu=108 status=ok
+zcwal-extent-recv-worker: affinity_index=13 target_cpu=109 status=ok
+zcwal-extent-recv-worker: affinity_index=15 target_cpu=111 status=ok
+zcwal-extent-recv-worker: affinity_index=16 target_cpu=112 status=ok
+zcwal-extent-recv-worker: affinity_index=0 target_cpu=96 status=ok
+zcwal-extent-recv-worker: affinity_index=17 target_cpu=113 status=ok
+zcwal-extent-recv-worker: affinity_index=18 target_cpu=114 status=ok
+zcwal-extent-recv-worker: affinity_index=14 target_cpu=110 status=ok
+zcwal-extent-recv-worker: affinity_index=19 target_cpu=115 status=ok
+zcwal-extent-recv-worker: affinity_index=20 target_cpu=116 status=ok
+zcwal-extent-recv-worker: affinity_index=21 target_cpu=117 status=ok
+zcwal-extent-recv-worker: affinity_index=22 target_cpu=118 status=ok
+zcwal-extent-recv-worker: affinity_index=23 target_cpu=119 status=ok
+zcwal-extent-recv-worker: affinity_index=24 target_cpu=120 status=ok
+zcwal-extent-recv-worker: affinity_index=25 target_cpu=121 status=ok
+zcwal-extent-recv-worker: affinity_index=26 target_cpu=122 status=ok
+zcwal-extent-recv-worker: affinity_index=27 target_cpu=123 status=ok
+zcwal-extent-recv-worker: affinity_index=28 target_cpu=124 status=ok
+zcwal-extent-recv-worker: affinity_index=29 target_cpu=125 status=ok
+zcwal-extent-recv-worker: affinity_index=30 target_cpu=126 status=ok
+zcwal-extent-recv-worker: affinity_index=31 target_cpu=127 status=ok
+zcwal-extent-recv-worker: affinity_index=32 target_cpu=128 status=ok
+zcwal-extent-recv-worker: affinity_index=33 target_cpu=129 status=ok
+zcwal-extent-recv-worker: affinity_index=34 target_cpu=130 status=ok
+zcwal-extent-recv-worker: affinity_index=36 target_cpu=132 status=ok
+zcwal-extent-recv-worker: affinity_index=37 target_cpu=133 status=ok
+zcwal-extent-recv-worker: affinity_index=35 target_cpu=131 status=ok
+zcwal-extent-recv-worker: affinity_index=38 target_cpu=134 status=ok
+zcwal-extent-recv-worker: affinity_index=39 target_cpu=135 status=ok
+zcwal-extent-recv-worker: affinity_index=40 target_cpu=136 status=ok
+zcwal-extent-recv-worker: affinity_index=41 target_cpu=137 status=ok
+zcwal-extent-recv-worker: affinity_index=42 target_cpu=138 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=43 target_cpu=139 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=44 target_cpu=140 status=ok
+zcwal-extent-recv-worker: affinity_index=45 target_cpu=141 status=ok
+zcwal-extent-recv-worker: affinity_index=46 target_cpu=142 status=ok
+zcwal-extent-recv-worker: affinity_index=47 target_cpu=143 status=ok
+zcwal-extent-recv-worker: affinity_index=49 target_cpu=145 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=48 target_cpu=144 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=50 target_cpu=146 status=ok
+zcwal-extent-recv-worker: affinity_index=51 target_cpu=147 status=ok
+zcwal-extent-recv-worker: affinity_index=52 target_cpu=148 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=53 target_cpu=149 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=54 target_cpu=150 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=55 target_cpu=151 status=ok
+zcwal-extent-recv-worker: affinity_index=56 target_cpu=152 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=57 target_cpu=153 status=ok
+zcwal-extent-recv-worker: affinity_index=58 target_cpu=154 status=ok
+zcwal-extent-recv-worker: affinity_index=59 target_cpu=155 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=60 target_cpu=156 status=ok
+zcwal-extent-recv-worker: affinity_index=61 target_cpu=157 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=62 target_cpu=158 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=63 target_cpu=159 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=65 target_cpu=161 status=ok
+zcwal-extent-recv-worker: affinity_index=64 target_cpu=160 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=66 target_cpu=162 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=67 target_cpu=163 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=69 target_cpu=165 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=68 target_cpu=164 status=ok
+zcwal-extent-recv-worker: affinity_index=70 target_cpu=166 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=72 target_cpu=168 status=ok
+zcwal-extent-recv-worker: affinity_index=71 target_cpu=167 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=74 target_cpu=170 status=ok
+zcwal-extent-recv-worker: affinity_index=73 target_cpu=169 status=ok
+zcwal-extent-recv-worker: affinity_index=75 target_cpu=171 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=77 target_cpu=173 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=76 target_cpu=172 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=78 target_cpu=174 status=ok
+zcwal-extent-recv-worker: affinity_index=79 target_cpu=175 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=80 target_cpu=176 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=81 target_cpu=177 status=ok
+zcwal-extent-recv-worker: affinity_index=82 target_cpu=178 status=ok
+zcwal-extent-recv-worker: affinity_index=83 target_cpu=179 status=ok
+zcwal-extent-recv-worker: affinity_index=85 target_cpu=181 status=ok
+zcwal-extent-recv-worker: affinity_index=84 target_cpu=180 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=87 target_cpu=183 status=ok
+zcwal-extent-recv-worker: affinity_index=86 target_cpu=182 status=ok
+zcwal-extent-recv-worker: affinity_index=89 target_cpu=185 status=ok
+zcwal-extent-recv-worker: affinity_index=88 target_cpu=184 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=90 target_cpu=186 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=91 target_cpu=187 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=93 target_cpu=189 status=ok
+zcwal-extent-recv-worker: affinity_index=92 target_cpu=188 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: affinity_index=94 target_cpu=190 status=ok
+zcwal-extent-recv-worker: affinity_index=95 target_cpu=191 status=ok
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: worker=0 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=3.061729 payload_Gbitps=3.156 logical_iops=96322 thread_cpu_seconds=1.726666 cpu_wall_pct=56.4 target_cpu=96 affinity_applied=true start_cpu=96 end_cpu=96 voluntary_ctxt_switches=4285 involuntary_ctxt_switches=14 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=0 bytes=1207959552 data_cqes=21013 avg_cqe_len=57486 min_cqe_len=2006 max_cqe_len=4194304 full_chunk_cqes=30 partial_cqes=20983 ring_sqes_queued=21013 ring_sqes_submitted=21013 ring_submit_syscalls=21013 ring_wait_cqe_calls=21013 ring_wait_syscalls=18252 ring_cqes_popped=21013 ring_try_pop_empty=87581004 ring_cqe_spin_loops=87562752 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=3869 ring_cqe_adaptive_shrinks=3856 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: worker=1 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=3.365432 payload_Gbitps=2.871 logical_iops=87630 thread_cpu_seconds=1.389045 cpu_wall_pct=41.3 target_cpu=97 affinity_applied=true start_cpu=97 end_cpu=97 voluntary_ctxt_switches=5701 involuntary_ctxt_switches=62 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=1 bytes=1207959552 data_cqes=17876 avg_cqe_len=67574 min_cqe_len=8949 max_cqe_len=4194304 full_chunk_cqes=47 partial_cqes=17829 ring_sqes_queued=17876 ring_sqes_submitted=17876 ring_submit_syscalls=17876 ring_wait_cqe_calls=17876 ring_wait_syscalls=15830 ring_cqes_popped=17876 ring_try_pop_empty=51856086 ring_cqe_spin_loops=51840256 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=3950 ring_cqe_adaptive_shrinks=3935 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+zcwal-extent-recv-worker: worker=2 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=3.268673 payload_Gbitps=2.956 logical_iops=90224 thread_cpu_seconds=1.707783 cpu_wall_pct=52.2 target_cpu=98 affinity_applied=true start_cpu=98 end_cpu=98 voluntary_ctxt_switches=5357 involuntary_ctxt_switches=21 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=2 bytes=1207959552 data_cqes=21314 avg_cqe_len=56674 min_cqe_len=8949 max_cqe_len=4194304 full_chunk_cqes=39 partial_cqes=21275 ring_sqes_queued=21314 ring_sqes_submitted=21314 ring_submit_syscalls=21314 ring_wait_cqe_calls=21314 ring_wait_syscalls=19484 ring_cqes_popped=21314 ring_try_pop_empty=76199964 ring_cqe_spin_loops=76180480 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=5537 ring_cqe_adaptive_shrinks=5527 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+zcwal-extent-recv-worker: worker=3 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=3.062520 payload_Gbitps=3.155 logical_iops=96297 thread_cpu_seconds=1.911246 cpu_wall_pct=62.4 target_cpu=99 affinity_applied=true start_cpu=99 end_cpu=99 voluntary_ctxt_switches=5405 involuntary_ctxt_switches=55 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=3 bytes=1207959552 data_cqes=22660 avg_cqe_len=53308 min_cqe_len=1878 max_cqe_len=4194304 full_chunk_cqes=42 partial_cqes=22618 ring_sqes_queued=22660 ring_sqes_submitted=22660 ring_submit_syscalls=22660 ring_wait_cqe_calls=22660 ring_wait_syscalls=20614 ring_cqes_popped=22660 ring_try_pop_empty=69518726 ring_cqe_spin_loops=69498112 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=5929 ring_cqe_adaptive_shrinks=5919 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+uring-recv-worker: registered io_uring NAPI requested_busy_poll_to=50us requested_prefer_busy_poll=true requested_tracking=dynamic effective_busy_poll_to=0us effective_prefer_busy_poll=false effective_tracking=inactive
+zcwal-extent-recv-worker: worker=4 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=3.504401 payload_Gbitps=2.758 logical_iops=84155 thread_cpu_seconds=1.686200 cpu_wall_pct=48.1 target_cpu=100 affinity_applied=true start_cpu=100 end_cpu=100 voluntary_ctxt_switches=4465 involuntary_ctxt_switches=66 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=4 bytes=1207959552 data_cqes=18368 avg_cqe_len=65764 min_cqe_len=1878 max_cqe_len=4194304 full_chunk_cqes=51 partial_cqes=18317 ring_sqes_queued=18368 ring_sqes_submitted=18368 ring_submit_syscalls=18368 ring_wait_cqe_calls=18368 ring_wait_syscalls=16395 ring_cqes_popped=18368 ring_try_pop_empty=66678795 ring_cqe_spin_loops=66662400 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=4729 ring_cqe_adaptive_shrinks=4719 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+zcwal-extent-recv-worker: worker=5 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=3.976640 payload_Gbitps=2.430 logical_iops=74161 thread_cpu_seconds=1.676869 cpu_wall_pct=42.2 target_cpu=101 affinity_applied=true start_cpu=101 end_cpu=101 voluntary_ctxt_switches=5141 involuntary_ctxt_switches=17 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=5 bytes=1207959552 data_cqes=20430 avg_cqe_len=59126 min_cqe_len=8949 max_cqe_len=4194304 full_chunk_cqes=45 partial_cqes=20385 ring_sqes_queued=20430 ring_sqes_submitted=20430 ring_submit_syscalls=20430 ring_wait_cqe_calls=20430 ring_wait_syscalls=19211 ring_cqes_popped=20430 ring_try_pop_empty=76025867 ring_cqe_spin_loops=76006656 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=4595 ring_cqe_adaptive_shrinks=4585 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+zcwal-extent-recv-worker: worker=6 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=3.053918 payload_Gbitps=3.164 logical_iops=96568 thread_cpu_seconds=1.868856 cpu_wall_pct=61.2 target_cpu=102 affinity_applied=true start_cpu=102 end_cpu=102 voluntary_ctxt_switches=6668 involuntary_ctxt_switches=27 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=6 bytes=1207959552 data_cqes=23789 avg_cqe_len=50778 min_cqe_len=8949 max_cqe_len=4194304 full_chunk_cqes=42 partial_cqes=23747 ring_sqes_queued=23789 ring_sqes_submitted=23789 ring_submit_syscalls=23789 ring_wait_cqe_calls=23789 ring_wait_syscalls=22255 ring_cqes_popped=23789 ring_try_pop_empty=78279919 ring_cqe_spin_loops=78257664 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=7106 ring_cqe_adaptive_shrinks=7099 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+zcwal-extent-recv-worker: worker=7 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=3.726446 payload_Gbitps=2.593 logical_iops=79140 thread_cpu_seconds=1.515607 cpu_wall_pct=40.7 target_cpu=103 affinity_applied=true start_cpu=103 end_cpu=103 voluntary_ctxt_switches=6754 involuntary_ctxt_switches=13 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=7 bytes=1207959552 data_cqes=20021 avg_cqe_len=60334 min_cqe_len=8949 max_cqe_len=4194304 full_chunk_cqes=48 partial_cqes=19973 ring_sqes_queued=20021 ring_sqes_submitted=20021 ring_submit_syscalls=20021 ring_wait_cqe_calls=20021 ring_wait_syscalls=18953 ring_cqes_popped=20021 ring_try_pop_empty=57959177 ring_cqe_spin_loops=57940224 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=4896 ring_cqe_adaptive_shrinks=4881 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+zcwal-extent-recv-worker: worker=8 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=3.619591 payload_Gbitps=2.670 logical_iops=81477 thread_cpu_seconds=1.692512 cpu_wall_pct=46.8 target_cpu=104 affinity_applied=true start_cpu=104 end_cpu=104 voluntary_ctxt_switches=7416 involuntary_ctxt_switches=19 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=8 bytes=1207959552 data_cqes=22816 avg_cqe_len=52943 min_cqe_len=1878 max_cqe_len=4194304 full_chunk_cqes=44 partial_cqes=22772 ring_sqes_queued=22816 ring_sqes_submitted=22816 ring_submit_syscalls=22816 ring_wait_cqe_calls=22816 ring_wait_syscalls=21036 ring_cqes_popped=22816 ring_try_pop_empty=61176364 ring_cqe_spin_loops=61155328 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=6519 ring_cqe_adaptive_shrinks=6504 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+zcwal-extent-recv-worker: worker=9 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=2.897910 payload_Gbitps=3.335 logical_iops=101767 thread_cpu_seconds=1.733025 cpu_wall_pct=59.8 target_cpu=105 affinity_applied=true start_cpu=105 end_cpu=105 voluntary_ctxt_switches=4146 involuntary_ctxt_switches=59 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=9 bytes=1207959552 data_cqes=19287 avg_cqe_len=62630 min_cqe_len=8949 max_cqe_len=4194304 full_chunk_cqes=45 partial_cqes=19242 ring_sqes_queued=19287 ring_sqes_submitted=19287 ring_submit_syscalls=19287 ring_wait_cqe_calls=19287 ring_wait_syscalls=16687 ring_cqes_popped=19287 ring_try_pop_empty=81268783 ring_cqe_spin_loops=81252096 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=4143 ring_cqe_adaptive_shrinks=4129 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+zcwal-extent-recv-worker: worker=10 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=3.507924 payload_Gbitps=2.755 logical_iops=84070 thread_cpu_seconds=1.644007 cpu_wall_pct=46.9 target_cpu=106 affinity_applied=true start_cpu=106 end_cpu=106 voluntary_ctxt_switches=7399 involuntary_ctxt_switches=20 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=10 bytes=1207959552 data_cqes=22098 avg_cqe_len=54663 min_cqe_len=8949 max_cqe_len=4194304 full_chunk_cqes=47 partial_cqes=22051 ring_sqes_queued=22098 ring_sqes_submitted=22098 ring_submit_syscalls=22098 ring_wait_cqe_calls=22098 ring_wait_syscalls=20681 ring_cqes_popped=22098 ring_try_pop_empty=57612233 ring_cqe_spin_loops=57591552 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=6550 ring_cqe_adaptive_shrinks=6539 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+zcwal-extent-recv-worker: worker=11 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=3.250383 payload_Gbitps=2.973 logical_iops=90731 thread_cpu_seconds=1.797817 cpu_wall_pct=55.3 target_cpu=107 affinity_applied=true start_cpu=107 end_cpu=107 voluntary_ctxt_switches=4158 involuntary_ctxt_switches=55 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=11 bytes=1207959552 data_cqes=19253 avg_cqe_len=62741 min_cqe_len=1878 max_cqe_len=4194304 full_chunk_cqes=47 partial_cqes=19206 ring_sqes_queued=19253 ring_sqes_submitted=19253 ring_submit_syscalls=19253 ring_wait_cqe_calls=19253 ring_wait_syscalls=16935 ring_cqes_popped=19253 ring_try_pop_empty=74369319 ring_cqe_spin_loops=74352384 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=4616 ring_cqe_adaptive_shrinks=4608 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+zcwal-extent-recv-worker: worker=12 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=3.151337 payload_Gbitps=3.067 logical_iops=93583 thread_cpu_seconds=1.757769 cpu_wall_pct=55.8 target_cpu=108 affinity_applied=true start_cpu=108 end_cpu=108 voluntary_ctxt_switches=5113 involuntary_ctxt_switches=12 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=12 bytes=1207959552 data_cqes=21179 avg_cqe_len=57035 min_cqe_len=1878 max_cqe_len=4194304 full_chunk_cqes=46 partial_cqes=21133 ring_sqes_queued=21179 ring_sqes_submitted=21179 ring_submit_syscalls=21179 ring_wait_cqe_calls=21179 ring_wait_syscalls=18965 ring_cqes_popped=21179 ring_try_pop_empty=81633301 ring_cqe_spin_loops=81614336 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=5155 ring_cqe_adaptive_shrinks=5140 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+zcwal-extent-recv-worker: worker=13 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=2.225015 payload_Gbitps=4.343 logical_iops=132544 thread_cpu_seconds=1.485516 cpu_wall_pct=66.8 target_cpu=109 affinity_applied=true start_cpu=109 end_cpu=109 voluntary_ctxt_switches=3408 involuntary_ctxt_switches=71 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=13 bytes=1207959552 data_cqes=16207 avg_cqe_len=74533 min_cqe_len=8949 max_cqe_len=4194304 full_chunk_cqes=47 partial_cqes=16160 ring_sqes_queued=16207 ring_sqes_submitted=16207 ring_submit_syscalls=16207 ring_wait_cqe_calls=16207 ring_wait_syscalls=13682 ring_cqes_popped=16207 ring_try_pop_empty=62967666 ring_cqe_spin_loops=62953984 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=2219 ring_cqe_adaptive_shrinks=2213 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+zcwal-extent-recv-worker: worker=14 streams=3 payload_bytes=1207959552 wire_bytes=1207959936 extents=3072 logical_records=294912 acks=0 seconds=3.298812 payload_Gbitps=2.929 logical_iops=89399 thread_cpu_seconds=1.865515 cpu_wall_pct=56.6 target_cpu=110 affinity_applied=true start_cpu=110 end_cpu=110 voluntary_ctxt_switches=5503 involuntary_ctxt_switches=22 migrations=0
+zcwal-extent-recv-worker-uring-recv: worker=14 bytes=1207959552 data_cqes=21844 avg_cqe_len=55299 min_cqe_len=8949 max_cqe_len=4194304 full_chunk_cqes=49 partial_cqes=21795 ring_sqes_queued=21844 ring_sqes_submitted=21844 ring_submit_syscalls=21844 ring_wait_cqe_calls=21844 ring_wait_syscalls=19825 ring_cqes_popped=21844 ring_try_pop_empty=86665841 ring_cqe_spin_loops=86646016 ring_cqe_hot_poll_waits=0 ring_cqe_adaptive_grows=5467 ring_cqe_adaptive_shrinks=5457 ring_cqe_adaptive_spin_max_seen=8192 ring_submit_short=0
+Error: Os { code: 104, kind: ConnectionReset, message: "Connection reset by peer" }
+Command exited with non-zero status 1
+	Command being timed: "taskset -c 96-191 target/release/zcutils zcwal-extent-recv 172.31.35.23 26300 256 1 384M 384K 96 false stream uring"
+	User time (seconds): 74.98
+	System time (seconds): 60.31
+	Percent of CPU this job got: 1488%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:09.08
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 384336
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 152384
+	Voluntary context switches: 422465
+	Involuntary context switches: 2695
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1

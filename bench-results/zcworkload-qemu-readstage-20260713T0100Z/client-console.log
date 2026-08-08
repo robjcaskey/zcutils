@@ -1,0 +1,221 @@
+[    0.021807] RDSEED32 is broken. Disabling the corresponding CPUID bit.
+ZCWORKLOAD_GUEST_BOOT role=client
+Linux (none) 7.0.8-io-slots-03 #slots3 SMP PREEMPT_DYNAMIC Sun May 31 09:43:13 EDT 2026 x86_64 GNU/Linux
+guest_cmdline=console=ttyS0 panic=-1 oops=panic quiet zcworkload_role=client
+guest_online_cpus=0-3
+guest_memlock_kib=8192
+guest_hugepages_total=0
+guest_hugepages_free=0
+client_topology=lane0:workload-worker0:guest-cpu1:kernel-kthread0:guest-cpu3:wal-onramp-worker0:guest-cpu2 frame_bytes=4096
+client_vcpu_host_map=vCPU0:hostCPU8,vCPU1:hostCPU9,vCPU2:hostCPU10,vCPU3:hostCPU11 emulator:hostCPU13
+client_block_edge=/dev/zcnblk0 transport=shm userspace_stage=zcnblk-shm-target:wal-tcp placement_owner=none block_client_placement=no
+PING 10.72.0.2 (10.72.0.2): 56 data bytes
+64 bytes from 10.72.0.2: seq=0 ttl=64 time=0.557 ms
+
+--- 10.72.0.2 ping statistics ---
+1 packets transmitted, 1 packets received, 0% packet loss
+round-trip min/avg/max = 0.557/0.557/0.557 ms
++ insmod /modules/zcnblk_client_mod.ko transport=shm lanes=1 connections_per_lane=1 shard_count=1 size_mib=128 logical_block_size=4096 max_frame_bytes=4096 queues=1 queue_depth=64 pipeline_depth=128 shm_ring_entries=128 shm_payload_entries=4096 shm_poll_us=50 batch_depth=1 write_acks=1 hctx_affinity=1 pin_threads=1 pin_base_cpu=3 pin_cpu_count=1 pin_stride=1
++ URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE=/tmp/zcworkload-onramp.pid URING_PLAY_ZCNBLK_SHM_LEAF_ADDR=10.72.0.2:29000 URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH=1 URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=2 /zcnblk-shm-target /dev/zcnblk-shmctl wal-tcp 128 2 1000 1000 10000
+wal-onramp-pid=109 comm=zcnblk-shm-targ
+zcnblk-shm-target: device=/dev/zcnblk-shmctl backend=WalTcp channels=1 ring_entries=128 payload_entries=4096 slot_bytes=4096 region_bytes=16834560 capacity_bytes=134217728 kick_batch=128 lease_release_batch=1 writeback_batch=2048 read_batch=128 read_batch_fill_us=0 read_batch_fill_min=32 write_batch_fill_us=0 write_batch_fill_min=128 remote_leaf=10.72.0.1:33132->10.72.0.2:29000 cpu_list=2 owner_dispatch=false owner_count=1 owner_extent_records=256 owner_max_tx_iovecs=960 split_transport=false transport_cpu_list=inline transport_wait=adaptive poll_us=1000 busy_poll_us=1000 busy_hysteresis_us=10000 poll_clock_check_spins=64 wait_policy=fixed-active ordering=per-lane-batch+sector-predecessor+global-sync-hwm shared_payload_slots=true payload_ownership=submit-sequence-token-transfer placement_owner=downstream-userspace-stage block_client_placement=no representative=false 
+--- zcnblk module parameters ---
+transport=shm
+lanes=1
+connections_per_lane=1
+size_mib=128
+logical_block_size=4096
+max_frame_bytes=4096
+queues=1
+queue_depth=64
+pipeline_depth=128
+shm_ring_entries=128
+shm_payload_entries=4096
+shm_poll_us=50
+batch_depth=1
+write_acks=Y
+hctx_affinity=Y
+pin_threads=Y
+pin_base_cpu=3
+pin_cpu_count=1
+pin_stride=1
+--- hctx maps ---
+/sys/block/zcnblk0/mq/0/cpu_list=0, 1, 2, 3
+ 24:          0          0          0          0 PCI-MSIX-0000:00:01.0   0-edge      virtio0-config
+ 25:          0          0          0          4 PCI-MSIX-0000:00:01.0   1-edge      virtio0-input.0
+ 26:         12          0          0          0 PCI-MSIX-0000:00:01.0   2-edge      virtio0-output.0
+--- zcnblk thread contexts: before ---
+zcnblk-kthread-context: phase=before tid=108 comm=zcnblk-shm-0-0 voluntary=3 involuntary=0
+zcnblk-kthread-context: phase=before tid=109 comm=zcnblk-shm-targ voluntary=2 involuntary=0
+zcnblk-kthread-context: phase=before tid=111 comm=zcnblk-shm-targ voluntary=11 involuntary=0
++ /bin/busybox ping -q -c 20 -W 2 10.72.0.2
+PING 10.72.0.2 (10.72.0.2): 56 data bytes
+
+--- 10.72.0.2 ping statistics ---
+20 packets transmitted, 20 packets received, 0% packet loss
+round-trip min/avg/max = 0.187/0.249/0.393 ms
+measured_transport_rtt_ns=249000 semantics=ICMP_guest_to_guest_not_block_completion
++ /zcworkload sample --capacity 64M --requests 100000 --seed 42 --json
+{
+  "profile": "enterprise-mixed-v1",
+  "seed": 42,
+  "capacity": 67108864,
+  "requests": 100000,
+  "counters": {
+    "ops": 100000,
+    "reads": 39606,
+    "writes": 60394,
+    "bytes": 1073713152,
+    "stream_ops": [
+      3446,
+      28217,
+      7016,
+      21254,
+      1701,
+      7134,
+      3405,
+      27827
+    ],
+    "size_ops": [
+      15243,
+      70983,
+      7578,
+      3065,
+      3131
+    ]
+  },
+  "invalid_alignment": 0,
+  "out_of_bounds": 0,
+  "streams": [
+    {
+      "index": 0,
+      "name": "data-uniform",
+      "area": "data",
+      "target_percent": 3.5,
+      "observed_percent": 3.446,
+      "operations": 3446
+    },
+    {
+      "index": 1,
+      "name": "data-reuse-a",
+      "area": "data",
+      "target_percent": 28.1,
+      "observed_percent": 28.217,
+      "operations": 28217
+    },
+    {
+      "index": 2,
+      "name": "data-scan",
+      "area": "data",
+      "target_percent": 7.0,
+      "observed_percent": 7.016,
+      "operations": 7016
+    },
+    {
+      "index": 3,
+      "name": "data-reuse-b",
+      "area": "data",
+      "target_percent": 21.0,
+      "observed_percent": 21.254,
+      "operations": 21254
+    },
+    {
+      "index": 4,
+      "name": "user-uniform",
+      "area": "user",
+      "target_percent": 1.8,
+      "observed_percent": 1.701,
+      "operations": 1701
+    },
+    {
+      "index": 5,
+      "name": "user-reuse",
+      "area": "user",
+      "target_percent": 7.0,
+      "observed_percent": 7.134,
+      "operations": 7134
+    },
+    {
+      "index": 6,
+      "name": "user-scan",
+      "area": "user",
+      "target_percent": 3.5,
+      "observed_percent": 3.405,
+      "operations": 3405
+    },
+    {
+      "index": 7,
+      "name": "journal-append",
+      "area": "journal",
+      "target_percent": 28.1,
+      "observed_percent": 27.827,
+      "operations": 27827
+    }
+  ],
+  "sizes": [
+    {
+      "bytes": 4096,
+      "operations": 15243,
+      "observed_percent": 15.243
+    },
+    {
+      "bytes": 8192,
+      "operations": 70983,
+      "observed_percent": 70.983
+    },
+    {
+      "bytes": 16384,
+      "operations": 7578,
+      "observed_percent": 7.578
+    },
+    {
+      "bytes": 32768,
+      "operations": 3065,
+      "observed_percent": 3.065
+    },
+    {
+      "bytes": 65536,
+      "operations": 3131,
+      "observed_percent": 3.131
+    }
+  ]
+}
+sample-validation: PASS requests=100000 invalid_alignment=0 out_of_bounds=0
++ URING_PLAY_TOPOLOGY_STRICT=1 /zcworkload run --target /dev/zcnblk0 --capacity 64M --engine sync --workers 1 --depth 1 --completion-batch 1 --ops-per-worker 8 --buffers small-pages --pin false --completion remote-ack
+PERF WARNING: zcworkload: workers are not pinned
+PERF WARNING: zcworkload: small-page buffers are a smoke setting; use hugetlb for representative runs
+PERF WARNING: zcworkload: lane-to-worker/CPU mapping is unreported; pass --lane-map
+PERF WARNING: zcworkload: client kthread CPU mapping is unreported; pass --kthread-map
+PERF WARNING: zcworkload: low-depth network run has no measured transport RTT; pass --transport-rtt-ns
+Error: Custom { kind: Other, error: "TOPOLOGY ERROR: zcworkload has 5 unresolved performance preflight issue(s)" }
+strict-negative-unmapped: PASS status=1 no_result=true
++ URING_PLAY_TOPOLOGY_FATAL=1 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1 /zcworkload run --target /dev/zcnblk0 --capacity 64M --engine uring --workers 1 --depth 2 --ring-entries 64 --completion-batch 2 --ops-per-worker 8 --buffers small-pages --pin true --lane-map lane0:worker0:cpu1 --kthread-map kthread0:cpu3 --completion remote-ack --transport-rtt-ns 249000
+PERF WARNING: zcworkload: small-page buffers are a smoke setting; use hugetlb for representative runs
+PERF WARNING: zcworkload: URING_PLAY_ENTER_NO_IOWAIT is disabled
+Error: Custom { kind: Other, error: "TOPOLOGY ERROR: zcworkload has 2 unresolved performance preflight issue(s)" }
+strict-negative-fastpath: PASS status=1 no_result=true
++ sync pure 4K read QD1
+PERF WARNING: zcblockbench: small-page buffers are fine for smoke tests; use --buffer-mode hugetlb with enough huge pages for high-IOPS claims
+PERF WARNING: zcblockbench: iodepth below 32 is a latency shape, not an IOPS ceiling run
+zcblockbench-plan: target=/dev/zcnblk0 engine=sync mode=read workers=1 ops_per_worker=128 chunk_bytes=4096 iodepth=1 ring_entries=256 read_percent=80 region_bytes_per_worker=67108864 ring_mode=normal cqe=16 registered_ring=false sqpoll_idle_ms=1000 buffers=small-pages pin_workers=true latency_sample_rate=1 target_kind=block
+zcblockbench-target: target=/dev/zcnblk0 total_region_bytes=67108864 device_bytes=134217728 required_alignment=4096 segment_bytes=4096
+zcblockbench-worker: affinity_index=0 target_cpu=1 status=ok
+zcblockbench-worker: engine=sync worker=0 ops=128 reads=128 writes=0 seconds=5.496348 ops_per_sec=23 cpu_seconds=0.004118 cpu_percent=0.07 cpu_ns_per_op=32168.4 voluntary_ctxt_switches=128 involuntary_ctxt_switches=0 migrations=0 base_offset=0 region_bytes=67108864 depth=1 completion_batch=1 wait_min_completions=1 target_cpu=1 affinity_applied=true local_cpu=1 worker_numa_node=0 sqpoll_cpu=-1 buffers=small-pages buffer_base=0x7fc3f7ad4000 buffer_alignment=16384 buffer_stride=4096 buffer_map_len=4096 memory_policy=first-touch
+zcblockbench-context: workers=1 voluntary_ctxt_switches=128 involuntary_ctxt_switches=0 migrations=0 ctxt_switches_per_1k_ops=1000.000
+zcblockbench-result: target=/dev/zcnblk0 engine=sync mode=read workers=1 ops_per_worker=128 total_ops=128 reads=128 writes=0 read_percent=80 chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=1 total_pipeline=1 wait_min_completions=1 ring_entries=256 ring_mode=normal cqe=16 registered_ring=false buffers=small-pages pin_workers=true wall_seconds=5.496738 io_seconds=5.496348 slowest_worker_seconds=5.496348 total_cpu_seconds=0.004118 aggregate_cpu_percent=0.07 cpu_ns_per_op=32168.4 MiBps=0.09 ops_per_sec=23
+zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=1 all_count=128 all_avg_ns=42939513 all_min_ns=4069602 all_p50_ns=44000000 all_p95_ns=45000000 all_p99_ns=47000000 all_p999_ns=47000000 all_max_ns=46784022 read_count=128 read_avg_ns=42939513 read_min_ns=4069602 read_p50_ns=44000000 read_p95_ns=45000000 read_p99_ns=47000000 read_p999_ns=47000000 read_max_ns=46784022 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+--- zcnblk thread contexts: after-pure-read ---
+zcnblk-kthread-context: phase=after-pure-read tid=108 comm=zcnblk-shm-0-0 voluntary=167 involuntary=0
+zcnblk-kthread-context: phase=after-pure-read tid=109 comm=zcnblk-shm-targ voluntary=2 involuntary=0
+zcnblk-kthread-context: phase=after-pure-read tid=111 comm=zcnblk-shm-targ voluntary=458 involuntary=0
+client-cleanup: inspect pid=109 comm=zcnblk-shm-targ
+zcnblk-shm-target: device=/dev/zcnblk-shmctl backend=WalTcp channels=1 ring_entries=128 payload_entries=4096 slot_bytes=4096 region_bytes=16834560 capacity_bytes=134217728 kick_batch=128 lease_release_batch=1 writeback_batch=2048 read_batch=128 read_batch_fill_us=0 read_batch_fill_min=32 write_batch_fill_us=0 write_batch_fill_min=128 remote_leaf=10.72.0.1:33132->10.72.0.2:29000 cpu_list=2 owner_dispatch=false owner_count=1 owner_extent_records=256 owner_max_tx_iovecs=960 split_transport=false transport_cpu_list=inline transport_wait=adaptive poll_us=1000 busy_poll_us=1000 busy_hysteresis_us=10000 poll_clock_check_spins=64 wait_policy=fixed-active ordering=per-lane-batch+sector-predecessor+global-sync-hwm shared_payload_slots=true payload_ownership=submit-sequence-token-transfer placement_owner=downstream-userspace-stage block_client_placement=no representative=false 
+zcnblk-shm-target-wal-lane: channel=0 cpu=2 transport_cpu=inline requests=128 writes=0 reads=128 syncs=0 early_write_acks=0 dirty_read_hits=0 dirty_read_refs=0 dirty_pressure_events=0 dirty_pressure_evictions=0 max_payload_slots_outstanding=1 remote_read_misses=128 completion_window_stalls=0 active_seconds=5.496482 active_iops=23 remote_batches=128 avg_remote_batch_records=1.00 kicks=128 idle_polls=203
+zcnblk-shm-target-summary: backend=WalTcpLaneExtent channels=1 requests=128 writes=0 reads=128 syncs=0 write_bytes=0 read_bytes=524288 wall_seconds=25.818263 active_seconds=5.496482 active_descriptor_iops=23 active_4k_equivalent_iops=23 active_payload_Gibitps=0.00 kicks=128 idle_polls=203 lease_releases=128 early_write_acks=0 dirty_read_hits=0 dirty_read_refs=0 dirty_pressure_events=0 dirty_pressure_evictions=0 max_payload_slots_outstanding=1 remote_read_misses=128 completion_window_stalls=0 remote_batches=128 avg_remote_batch_records=1.00 payload_ownership=submit-sequence-token-transfer payload_slots_free=4096/4096 completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order=hashed-sector-predecessor+lock-free-dirty-directory sync_boundary=remote-global-completion-hwm+all-owner-sync dirty_retention=transferred-page-reference-until-remote-sync-or-targeted-pressure-retire placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination=dirty-shared-slot-reference-or-remote-direct kernel_payload_copies=one-per-direction writeback_materialization_copies=none-userspace;tcp-kernel-copy representative=false
+zcnblk-shm-target-remote-leaf-summary: address=10.72.0.1:33132->10.72.0.2:29000 lanes=1 transport=tcp send_mode=blocking-writev recv_policy=adaptive recv_spin_hits=0 recv_blocking_fallbacks=255 recv_would_block_polls=382 recv_grows=127 recv_shrinks=127 fan_stage=userspace placement=single-leaf write_batches=0 write_records=0 write_bytes=0 compact_write_batches=0 request_descriptor_bytes=16384 wire_descriptor_bytes=16384 descriptor_bytes_saved=0 write_payload_iovecs=0 write_payload_tx_iovecs=0 write_payload_runs=0 avg_write_iovecs_per_batch=0.00 avg_write_tx_iovecs_per_batch=0.00 avg_write_run_bytes=0 max_write_payload_run_bytes=0 read_batches=128 read_records=128 read_bytes=524288 syncs=0 control_writev_batches=0 send_zc_notifications=0 send_zc_copied_notifications=0 payload_source=shared-slot-coalesced-iovec read_payload_destination=shared-slot-direct result_contract=fifo-mixed-request-batch+global-sync-epoch
+zcnblk-shm-target-remote-timing: lane=0 request_send_calls=128 request_send_seconds=0.002955 avg_request_send_us=23.082 result_recv_calls=128 result_recv_seconds=5.479536 avg_result_recv_us=42808.876 result_header_seconds=0.025212 result_descriptor_seconds=0.000107 result_payload_seconds=5.453918
+client-cleanup: onramp_wait_status=0
+client-cleanup: onramp_stopped=true module_unloaded=true
+ZCWORKLOAD_CLIENT_VALIDATION PASS frame_bytes=4096 pure_sync_read_ops=128 representative=false
+ZCWORKLOAD_GUEST_FINAL role=client status=0
+[   41.225297] reboot: Power down

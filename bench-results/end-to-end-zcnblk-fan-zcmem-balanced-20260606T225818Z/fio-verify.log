@@ -1,0 +1,44 @@
+fio: multiple writers may overwrite blocks that belong to other jobs. This can cause verification failures.
+zcmem-verify: (g=0): rw=randwrite, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=io_uring, iodepth=8
+...
+fio-3.39
+Starting 2 processes
+
+zcmem-verify: (groupid=0, jobs=2): err= 0: pid=76952: Sat Jun  6 18:58:30 2026
+  read: IOPS=96.7k, BW=378MiB/s (396MB/s)(80.9MiB/214msec)
+    slat (nsec): min=430, max=11840, avg=876.13, stdev=527.19
+    clat (usec): min=118, max=441, avg=161.44, stdev=13.19
+     lat (usec): min=119, max=442, avg=162.31, stdev=13.23
+    clat percentiles (usec):
+     |  1.00th=[  143],  5.00th=[  157], 10.00th=[  157], 20.00th=[  159],
+     | 30.00th=[  159], 40.00th=[  159], 50.00th=[  161], 60.00th=[  161],
+     | 70.00th=[  163], 80.00th=[  163], 90.00th=[  165], 95.00th=[  167],
+     | 99.00th=[  190], 99.50th=[  217], 99.90th=[  351], 99.95th=[  441],
+     | 99.99th=[  441]
+  write: IOPS=94.7k, BW=370MiB/s (388MB/s)(128MiB/346msec); 0 zone resets
+    slat (nsec): min=1250, max=37720, avg=2502.71, stdev=1116.49
+    clat (usec): min=109, max=2950, avg=162.41, stdev=66.72
+     lat (usec): min=110, max=2953, avg=164.91, stdev=66.76
+    clat percentiles (usec):
+     |  1.00th=[  143],  5.00th=[  153], 10.00th=[  155], 20.00th=[  157],
+     | 30.00th=[  157], 40.00th=[  159], 50.00th=[  159], 60.00th=[  159],
+     | 70.00th=[  161], 80.00th=[  161], 90.00th=[  165], 95.00th=[  167],
+     | 99.00th=[  200], 99.50th=[  260], 99.90th=[ 1237], 99.95th=[ 1663],
+     | 99.99th=[ 2966]
+   bw (  KiB/s): min=262144, max=262144, per=69.20%, avg=262144.00, stdev= 0.00, samples=2
+   iops        : min=65536, max=65536, avg=65536.00, stdev= 0.00, samples=2
+  lat (usec)   : 250=99.53%, 500=0.34%, 750=0.03%, 1000=0.01%
+  lat (msec)   : 2=0.06%, 4=0.03%
+  cpu          : usr=7.38%, sys=5.01%, ctx=6688, majf=0, minf=638
+  IO depths    : 1=0.1%, 2=0.1%, 4=0.1%, 8=99.9%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.1%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=20698,32768,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=8
+
+Run status group 0 (all jobs):
+   READ: bw=378MiB/s (396MB/s), 378MiB/s-378MiB/s (396MB/s-396MB/s), io=80.9MiB (84.8MB), run=214-214msec
+  WRITE: bw=370MiB/s (388MB/s), 370MiB/s-370MiB/s (388MB/s-388MB/s), io=128MiB (134MB), run=346-346msec
+
+Disk stats (read/write):
+  zcnblk0: ios=5488/32768, sectors=43904/262144, merge=0/0, ticks=868/4935, in_queue=5803, util=79.84%

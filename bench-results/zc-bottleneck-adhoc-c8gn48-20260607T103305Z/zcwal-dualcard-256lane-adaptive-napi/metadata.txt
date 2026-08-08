@@ -1,0 +1,24 @@
+run=zc-bottleneck-adhoc-c8gn48-20260607T103305Z
+shape=zcwal-dualcard-256lane-adaptive-napi
+card0_path=client:172.31.35.97 -> fan:172.31.40.158 iface=ens68 numa=0 cpu_list=0-95
+card1_path=client:172.31.43.226 -> fan:172.31.35.23 iface=ens146 numa=1 cpu_list=96-191
+lanes_per_card=256
+workers_per_card=96
+connections_per_lane=1
+bytes_per_connection=384M
+extent_bytes=384K
+logical_record_bytes=4K
+mux_shard=port-lane
+framing=stream
+data_path=uring
+ack=false
+send_bytes=1M
+recv_bytes=4M
+recv_cqe_adaptive_spin=1
+recv_cqe_adaptive_spin_min=256
+recv_cqe_adaptive_spin_max=8192
+recv_register_napi=1
+recv_napi_busy_poll_us=50
+recv_napi_prefer_busy_poll=1
+hugepages=8192
+memlock=unlimited

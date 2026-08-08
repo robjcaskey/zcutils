@@ -1,0 +1,13 @@
+zcofi-wal-send: provider=tcp endpoint=rdm addr=127.0.0.1 base_service=36000 lanes=2 bytes_per_lane=67108864 extent_bytes=65536 message_bytes=65664 workers=2 ack_enabled=yes tx_nowait_requested=no tx_nowait_effective=no prepost_ack_requested=no prepost_ack_effective=no compact_4k=no payload_inject=no ack_window=256 range_ack_receive=yes ofi_domain=auto records_per_extent=16 timeout_ms=10000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-send-worker: affinity_index=0 target_cpu=6 status=ok
+zcofi-wal-send-worker: affinity_index=1 target_cpu=7 status=ok
+zcofi-control-client: addr=127.0.0.1:37001 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=1 lane=1 provider=tcp endpoint=rdm addr=127.0.0.1 service=36001 control_port=37001 max_msg_size=18446744073709551615 inject_size=128
+zcofi-control-client: addr=127.0.0.1:37000 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=0 lane=0 provider=tcp endpoint=rdm addr=127.0.0.1 service=36000 control_port=37000 max_msg_size=18446744073709551615 inject_size=128
+zcofi-wal-send-worker: worker=0 streams=1 payload_bytes=67108864 wire_bytes=67239936 extents=1024 logical_records=16384 acks=4 seconds=0.043898 payload_Gbitps=12.230 logical_iops=373229 thread_cpu_seconds=0.046282 cpu_wall_pct=105.4 target_cpu=6 affinity_applied=true start_cpu=6 end_cpu=6 voluntary_ctxt_switches=7 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-send-worker-latency: worker=0 ack_count=1024 ack_avg_ns=10524412 ack_min_ns=6844018 ack_p50_ns=8000000 ack_p95_ns=21000000 ack_p99_ns=21000000 ack_p999_ns=21000000 ack_max_ns=20465024
+zcofi-wal-send-worker: worker=1 streams=1 payload_bytes=67108864 wire_bytes=67239936 extents=1024 logical_records=16384 acks=4 seconds=0.043780 payload_Gbitps=12.263 logical_iops=374235 thread_cpu_seconds=0.047038 cpu_wall_pct=107.4 target_cpu=7 affinity_applied=true start_cpu=7 end_cpu=7 voluntary_ctxt_switches=4 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-send-worker-latency: worker=1 ack_count=1024 ack_avg_ns=10485087 ack_min_ns=6723477 ack_p50_ns=8000000 ack_p95_ns=21000000 ack_p99_ns=21000000 ack_p999_ns=21000000 ack_max_ns=20358552
+zcofi-wal-send-summary: payload_bytes=134217728 wire_bytes=134479872 extents=2048 logical_records=32768 acks=8 seconds=0.043898 payload_Gbitps=24.460 logical_iops=746458 voluntary_ctxt_switches=11 involuntary_ctxt_switches=2 migrations=0
+zcofi-wal-send-latency-summary: ack_count=2048 ack_avg_ns=10504749 ack_min_ns=6723477 ack_p50_ns=8000000 ack_p95_ns=21000000 ack_p99_ns=21000000 ack_p999_ns=21000000 ack_max_ns=20465024

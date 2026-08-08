@@ -1,0 +1,124 @@
+******************** Stress Settings ********************
+Command:
+  Type: read
+  Count: 2,000
+  No Warmup: true
+  Consistency Level: ONE
+  Target Uncertainty: not applicable
+  Key Size (bytes): 10
+  Counter Increment Distibution: add=fixed(1)
+Rate:
+  Auto: false
+  Thread Count: 8
+  OpsPer Sec: 0
+Population:
+  Distribution: Uniform:  min=1,max=1000
+  Order: ARBITRARY
+  Wrap: false
+Insert:
+  Revisits: Uniform:  min=1,max=1000000
+  Visits: Fixed:  key=1
+  Row Population Ratio: Ratio: divisor=1.000000;delegate=Fixed:  key=1
+  Batch Type: not batching
+Columns:
+  Max Columns Per Key: 1
+  Column Names: [C0]
+  Comparator: AsciiType
+  Timestamp: null
+  Variable Column Count: false
+  Slice: false
+  Size Distribution: Fixed:  key=256
+  Count Distribution: Fixed:  key=1
+Errors:
+  Ignore: false
+  Tries: 10
+Log:
+  No Summary: false
+  No Settings: false
+  File: null
+  Interval Millis: 1000
+  Level: NORMAL
+Mode:
+  API: JAVA_DRIVER_NATIVE
+  Connection Style: CQL_PREPARED
+  Protocol Version: V5
+  Username: null
+  Password: null
+  Auth Provide Class: null
+  Max Pending Per Connection: 128
+  Connections Per Host: 2
+  Compression: NONE
+Node:
+  Nodes: [127.0.0.1]
+  Is White List: false
+  Datacenter: null
+Schema:
+  Keyspace: keyspace1
+  Replication Strategy: org.apache.cassandra.locator.SimpleStrategy
+  Replication Strategy Options: {replication_factor=1}
+  Table Compression: null
+  Table Compaction Strategy: null
+  Table Compaction Strategy Options: {}
+Transport:
+  Truststore: null
+  Truststore Password: null
+  Keystore: null
+  Keystore Password: null
+  SSL Protocol: TLS
+  SSL Algorithm: null
+  SSL Ciphers: null
+Port:
+  Native Port: 9142
+  JMX Port: 7299
+JMX:
+  Username: null
+  Password: *not set*
+Graph:
+  File: null
+  Revision: unknown
+  Title: null
+  Operation: READ
+TokenRange:
+  Wrap: false
+  Split Factor: 1
+Credentials file:
+  File: *not set*
+  CQL username: *not set*
+  CQL password: *not set*
+  JMX username: *not set*
+  JMX password: *not set*
+  Transport truststore password: *not set*
+  Transport keystore password: *not set*
+Reporting:
+  Output frequency: 1s
+  Header frequency: *not set*
+
+Sleeping 2s...
+Running READ with 8 threads for 2000 iteration
+Connected to cluster: zcutils-cassandra-bench, max pending requests per connection 128, max connections per host 2
+Datacenter: datacenter1; Host: /127.0.0.1:9142; Rack: rack1
+type                                               total ops,    op/s,    pk/s,   row/s,    mean,     med,     .95,     .99,    .999,     max,   time,   stderr, errors,  gc: #,  max ms,  sum ms,  sdv ms,      mb
+WARN  10:58:07,266 Query 'com.datastax.driver.core.Statement$1@72f9f290;' generated server side warning(s): `USE <keyspace>` with prepared statements is considered to be an anti-pattern due to ambiguity in non-qualified table names. Please consider removing instances of `Session#setKeyspace(<keyspace>)`, `Session#execute("USE <keyspace>")` and `cluster.newSession(<keyspace>)` from your code, and always use fully qualified table names (e.g. <keyspace>.<table>). Keyspace used: keyspace1, statement keyspace: keyspace1, statement id: 5ada370bcda2c42205a5d0cab373032c
+total,                                                  2000,    5480,    5480,    5480,     0.4,     0.3,     0.7,     1.2,     9.4,     9.7,    0.4,  0.00000,      0,      0,       0,       0,       0,       0
+
+
+Results:
+Op rate                   :    5,480 op/s  [READ: 5,480 op/s]
+Partition rate            :    5,480 pk/s  [READ: 5,480 pk/s]
+Row rate                  :    5,480 row/s [READ: 5,480 row/s]
+Latency mean              :    0.4 ms [READ: 0.4 ms]
+Latency median            :    0.3 ms [READ: 0.3 ms]
+Latency 95th percentile   :    0.7 ms [READ: 0.7 ms]
+Latency 99th percentile   :    1.2 ms [READ: 1.2 ms]
+Latency 99.9th percentile :    9.4 ms [READ: 9.4 ms]
+Latency max               :    9.7 ms [READ: 9.7 ms]
+Total partitions          :      2,000 [READ: 2,000]
+Total errors              :          0 [READ: 0]
+Total GC count            : 0
+Total GC memory           : 0 B
+Total GC time             :    0.0 seconds
+Avg GC time               :    NaN ms
+StdDev GC time            :    0.0 ms
+Total operation time      : 00:00:00
+
+END

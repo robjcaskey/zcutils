@@ -1,0 +1,19 @@
+cpu_map=0-7 lanes=8 workers=8 branches=2 records_per_lane=1000000 payload=4K window=4096 skew=0 strict=1
+zcfanout-logzip-bench: mode=mirror-write lanes=8 branches=2 records_per_lane=1000000 payload_bytes=4096 window=4096 workers=8 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-worker: affinity_index=0 target_cpu=0 status=ok
+zcfanout-logzip-worker: affinity_index=3 target_cpu=3 status=ok
+zcfanout-logzip-worker: affinity_index=1 target_cpu=1 status=ok
+zcfanout-logzip-worker: affinity_index=2 target_cpu=2 status=ok
+zcfanout-logzip-worker: affinity_index=4 target_cpu=4 status=ok
+zcfanout-logzip-worker: affinity_index=5 target_cpu=5 status=ok
+zcfanout-logzip-worker: affinity_index=7 target_cpu=7 status=ok
+zcfanout-logzip-worker: affinity_index=6 target_cpu=6 status=ok
+zcfanout-logzip-worker: worker=0 lanes=1 result_records=2000000 emitted=1000000 duplicate_results=0 logical_bytes=4096000000 branch_bytes=8192000000 checksum=0x000002ba7e79b480 seconds=0.011002 result_records_per_sec=181785923 emitted_per_sec=90892962 logical_4k_iops=90892962 branch_Gibitps=5956.761 target_cpu=0 affinity_applied=true
+zcfanout-logzip-worker: worker=1 lanes=1 result_records=2000000 emitted=1000000 duplicate_results=0 logical_bytes=4096000000 branch_bytes=8192000000 checksum=0xc6c002ba7e79b480 seconds=0.010446 result_records_per_sec=191469498 emitted_per_sec=95734749 logical_4k_iops=95734749 branch_Gibitps=6274.073 target_cpu=1 affinity_applied=true
+zcfanout-logzip-worker: worker=2 lanes=1 result_records=2000000 emitted=1000000 duplicate_results=0 logical_bytes=4096000000 branch_bytes=8192000000 checksum=0x8d8002ba7e79b480 seconds=0.010502 result_records_per_sec=190435057 emitted_per_sec=95217528 logical_4k_iops=95217528 branch_Gibitps=6240.176 target_cpu=2 affinity_applied=true
+zcfanout-logzip-worker: worker=3 lanes=1 result_records=2000000 emitted=1000000 duplicate_results=0 logical_bytes=4096000000 branch_bytes=8192000000 checksum=0x544002ba7e79b480 seconds=0.010489 result_records_per_sec=190679618 emitted_per_sec=95339809 logical_4k_iops=95339809 branch_Gibitps=6248.190 target_cpu=3 affinity_applied=true
+zcfanout-logzip-worker: worker=4 lanes=1 result_records=2000000 emitted=1000000 duplicate_results=0 logical_bytes=4096000000 branch_bytes=8192000000 checksum=0x1b0002ba7e79b480 seconds=0.010637 result_records_per_sec=188030027 emitted_per_sec=94015014 logical_4k_iops=94015014 branch_Gibitps=6161.368 target_cpu=4 affinity_applied=true
+zcfanout-logzip-worker: worker=5 lanes=1 result_records=2000000 emitted=1000000 duplicate_results=0 logical_bytes=4096000000 branch_bytes=8192000000 checksum=0xe1c002ba7e79b480 seconds=0.010612 result_records_per_sec=188469990 emitted_per_sec=94234995 logical_4k_iops=94234995 branch_Gibitps=6175.785 target_cpu=5 affinity_applied=true
+zcfanout-logzip-worker: worker=6 lanes=1 result_records=2000000 emitted=1000000 duplicate_results=0 logical_bytes=4096000000 branch_bytes=8192000000 checksum=0xa88002ba7e79b480 seconds=0.011997 result_records_per_sec=166713082 emitted_per_sec=83356541 logical_4k_iops=83356541 branch_Gibitps=5462.854 target_cpu=6 affinity_applied=true
+zcfanout-logzip-worker: worker=7 lanes=1 result_records=2000000 emitted=1000000 duplicate_results=0 logical_bytes=4096000000 branch_bytes=8192000000 checksum=0x6f4002ba7e79b480 seconds=0.010587 result_records_per_sec=188910589 emitted_per_sec=94455295 logical_4k_iops=94455295 branch_Gibitps=6190.222 target_cpu=7 affinity_applied=true
+zcfanout-logzip-summary: mode=mirror-write lanes=8 branches=2 result_records=16000000 emitted=8000000 duplicate_results=0 logical_bytes=32768000000 branch_bytes=65536000000 checksum=0xbd0015d3f3cda400 seconds=0.011997 result_records_per_sec=1333704659 emitted_per_sec=666852329 logical_4k_iops=666852329 logical_GiBps=2543.840 branch_Gibitps=43702.834 sort=no global_queue=no payload_copy=no deep_payload_inspection=no

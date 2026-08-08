@@ -1,0 +1,5 @@
+scenario=local WAL dirty-cache admission-ack smoke
+client=zcutils zcnblk-send write wait_acks=1 ports=4 bytes_per_connection=16M chunk=4K workers=4 cpus=24-31
+fan=zcnblk-fan wal mirror admission dirty_cache=enabled ports=4 handlers pinned cpus=8-31 batch_depth=512 batch_window=8
+leaf0=zcnblk-wal-leaf zcdevnull0 bind=127.0.0.1 ports=4 workers=4 cpus=0-7
+leaf1=zcnblk-wal-leaf zcdevnull1 bind=127.0.0.2 ports=4 workers=4 cpus=16-23

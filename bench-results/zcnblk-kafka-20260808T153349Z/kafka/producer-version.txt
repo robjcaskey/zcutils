@@ -1,0 +1,104 @@
+usage: kafka-producer-perf-test
+       [-h] [--bootstrap-server BOOTSTRAP-SERVER] --topic TOPIC
+       --num-records NUM-RECORDS [--payload-delimiter PAYLOAD-DELIMITER]
+       --throughput THROUGHPUT
+       [--producer-props PROP-NAME=PROP-VALUE [PROP-NAME=PROP-VALUE ...]]
+       [--command-property PROP-NAME=PROP-VALUE [PROP-NAME=PROP-VALUE ...]]
+       [--producer.config CONFIG-FILE] [--command-config CONFIG-FILE]
+       [--print-metrics] [--transactional-id TRANSACTIONAL-ID]
+       [--transaction-duration-ms TRANSACTION-DURATION]
+       [--warmup-records WARMUP-RECORDS] [--reporting-interval INTERVAL-MS]
+       (--record-size RECORD-SIZE | --payload-file PAYLOAD-FILE |
+       --payload-monotonic)
+
+This  tool  is  used  to   verify   the  producer  performance.  To  enable
+transactions, you can  specify  a  transactional  id  or  set a transaction
+duration using --transaction-duration-ms. There  are  three ways to specify
+the transactional  id:  set  transactional.id=<id>  via --command-property,
+set transactional.id=<id> in the config  file  via --command-config, or use
+--transactional-id <id>.
+
+optional arguments:
+  -h, --help             show this help message and exit
+  --bootstrap-server BOOTSTRAP-SERVER
+                         The server(s) to  connect  to.  This  config takes
+                         precedence over bootstrap.servers specified via --
+                         command-property or --command-config.
+  --topic TOPIC          Produce records to this topic.
+  --num-records NUM-RECORDS
+                         Number of records to produce.
+  --payload-delimiter PAYLOAD-DELIMITER
+                         Provides the delimiter to  be used when --payload-
+                         file is provided. Defaults to  new line. Note that
+                         this parameter will  be  ignored if --payload-file
+                         is not provided. (default: \n)
+  --throughput THROUGHPUT
+                         Throttle    maximum    record     throughput    to
+                         *approximately* THROUGHPUT  records/sec.  Set this
+                         to -1 to disable throttling.
+  --producer-props PROP-NAME=PROP-VALUE [PROP-NAME=PROP-VALUE ...]
+                         (DEPRECATED) Kafka producer  related configuration
+                         properties  like  client.id.  These  configs  take
+                         precedence over those  passed via --command-config
+                         or --producer.config. This option  will be removed
+                         in  a  future   version.   Use  --command-property
+                         instead. Example:  --command-property linger.ms=10
+                         batch.size=32768
+  --command-property PROP-NAME=PROP-VALUE [PROP-NAME=PROP-VALUE ...]
+                         Kafka producer  related  configuration  properties
+                         like  client.id.  These  configs  take  precedence
+                         over  those  passed  via  --command-config  or  --
+                         producer.config.    Example:    --command-property
+                         linger.ms=10 batch.size=32768
+  --producer.config CONFIG-FILE
+                         (DEPRECATED)  Producer  config   properties  file.
+                         This option will be  removed  in a future version.
+                         Use --command-config instead.
+  --command-config CONFIG-FILE
+                         Producer config properties file.
+  --print-metrics        Print  out  metrics  at  the   end  of  the  test.
+                         (default: false)
+  --transactional-id TRANSACTIONAL-ID
+                         The transactional id  to  use.  This  config takes
+                         precedence  over  the  transactional.id  specified
+                         via --command-property  or  --command-config. Note
+                         that if  the  transactional  id  is  not specified
+                         while --transaction-duration-ms  is  provided, the
+                         default value for  the  transactional  id  will be
+                         performance-producer- followed by a random uuid.
+  --transaction-duration-ms TRANSACTION-DURATION
+                         The maximum  duration  of  each  transaction.  The
+                         commitTransaction will be  called  after this time
+                         has elapsed. The value  should  be greater than 0.
+                         If  the  transactional  id  is  specified  via  --
+                         command-property,    --command-config     or    --
+                         transactional-id but  --transaction-duration-ms is
+                         not specified, the default value will be 3000.
+  --warmup-records WARMUP-RECORDS
+                         The number of records  to  treat  as warmup. These
+                         initial records will  not  be  included in steady-
+                         state statistics. An additional  summary line will
+                         be    printed    describing    the    steady-state
+                         statistics. (default: 0)
+  --reporting-interval INTERVAL-MS
+                         Interval  in  milliseconds   at   which  to  print
+                         progress info. (default: 5000)
+
+  Note that you must provide  exactly  one of --record-size, --payload-file
+  or --payload-monotonic.
+
+  --record-size RECORD-SIZE
+                         Record size in bytes.  Note  that you must provide
+                         exactly one of --record-size, --payload-file or --
+                         payload-monotonic.
+  --payload-file PAYLOAD-FILE
+                         File to read the record  payloads from. This works
+                         only for UTF-8 encoded  text  files. Payloads will
+                         be read from  this  file  and  a  payload  will be
+                         randomly selected when sending  records. Note that
+                         you must provide exactly  one of --record-size, --
+                         payload-file or --payload-monotonic.
+  --payload-monotonic    Payload is  a  monotonically  increasing  integer.
+                         Note that  you  must  provide  exactly  one  of --
+                         record-size,    --payload-file    or    --payload-
+                         monotonic. (default: false)

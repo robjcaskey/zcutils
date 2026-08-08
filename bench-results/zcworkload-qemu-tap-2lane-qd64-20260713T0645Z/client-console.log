@@ -1,0 +1,24 @@
+[    0.021584] RDSEED32 is broken. Disabling the corresponding CPUID bit.
+ZCWORKLOAD_GUEST_BOOT role=client
+Linux (none) 7.0.8-io-slots-03 #slots3 SMP PREEMPT_DYNAMIC Sun May 31 09:43:13 EDT 2026 x86_64 GNU/Linux
+guest_cmdline=console=ttyS0 panic=-1 oops=panic quiet zcworkload_role=client
+guest_online_cpus=0-6
+guest_memlock_kib=8192
+guest_hugepages_total=0
+guest_hugepages_free=0
+client_topology=lane0:workload-worker0:guest-cpu2:wal-onramp-worker0:guest-cpu3:kernel-kthread0:guest-cpu5,lane1:workload-worker1:guest-cpu1:wal-onramp-worker1:guest-cpu4:kernel-kthread1:guest-cpu6 frame_bytes=4096
+client_vcpu_host_map=vCPU0:hostCPU8,vCPU1:hostCPU9,vCPU2:hostCPU10,vCPU3:hostCPU11,vCPU4:hostCPU12,vCPU5:hostCPU13,vCPU6:hostCPU14 emulator:hostCPU15
+client_block_edge=/dev/zcnblk0 transport=shm userspace_stage=zcnblk-shm-target:wal-tcp placement_owner=none block_client_placement=no
+PING 10.72.0.2 (10.72.0.2): 56 data bytes
+64 bytes from 10.72.0.2: seq=0 ttl=64 time=0.344 ms
+
+--- 10.72.0.2 ping statistics ---
+1 packets transmitted, 1 packets received, 0% packet loss
+round-trip min/avg/max = 0.344/0.344/0.344 ms
++ insmod /modules/zcnblk_client_mod.ko transport=shm lanes=2 connections_per_lane=1 shard_count=1 size_mib=128 logical_block_size=4096 max_frame_bytes=4096 queues=2 queue_depth=128 pipeline_depth=128 shm_ring_entries=256 shm_payload_entries=4096 shm_poll_us=50 batch_depth=1 write_acks=1 hctx_affinity=1 pin_threads=1 pin_base_cpu=5 pin_cpu_count=2 pin_stride=1
++ URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE=/tmp/zcworkload-onramp.pid URING_PLAY_ZCNBLK_SHM_LEAF_ADDR=10.72.0.2:29000 URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH=1 URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=3,4 /zcnblk-shm-target /dev/zcnblk-shmctl wal-tcp 128 2 1000 1000 10000
+zcnblk-shm-target-remote-connect: lane=0 address=10.72.0.1:47092->10.72.0.2:29000 tcp_nodelay=true quickack=false
+zcnblk-shm-target-remote-connect: lane=1 address=10.72.0.1:42[   16.245667] reboot: Power down
+670->10.72.0.2:29001 tcp_nodelay=true quickack=false
+Error: Custom { kind: InvalidInput, error: "CPU list has 1 entries but shared transport has 2 channels" }
+ZCWORKLOAD_GUEST_FINAL role=client status=32

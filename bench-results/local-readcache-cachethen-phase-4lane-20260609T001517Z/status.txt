@@ -1,0 +1,6 @@
+run=stream-direct mode=stream-direct prefill=0 client_cpus=0-3 fan_cpus=4-7 fan_recv0=8-11 fan_recv1=12-15 leaf0_cpus=16-19 leaf1_cpus=20-23 client_port=47100 leaf_port=47200
+run=stream-direct leaf0_ret=0 leaf1_ret=0 fan_ret=0 client_ret=0
+run=cache-prefill-full mode=cache-then-send prefill=134217728 client_cpus=0-3 fan_cpus=4-7 fan_recv0=8-11 fan_recv1=12-15 leaf0_cpus=16-19 leaf1_cpus=20-23 client_port=47300 leaf_port=47400
+run=cache-prefill-full leaf0_ret=0 leaf1_ret=0 fan_ret=0 client_ret=0
+run=cache-pipeline mode=cache-then-send prefill=0 client_cpus=0-3 fan_cpus=4-7 fan_recv0=8-11 fan_recv1=12-15 leaf0_cpus=16-19 leaf1_cpus=20-23 client_port=47500 leaf_port=47600
+run=cache-pipeline leaf0_ret=0 leaf1_ret=0 fan_ret=0 client_ret=0

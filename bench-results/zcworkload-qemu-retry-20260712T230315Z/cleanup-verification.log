@@ -1,0 +1,22 @@
++ for pidfile in "$outdir/target-qemu.pid" "$outdir/client-qemu.pid" "$outdir/attempt1-target-qemu.pid" "$outdir/attempt1-client-qemu.pid"
++ '[' -s bench-results/zcworkload-qemu-retry-20260712T230315Z/target-qemu.pid ']'
++ for pidfile in "$outdir/target-qemu.pid" "$outdir/client-qemu.pid" "$outdir/attempt1-target-qemu.pid" "$outdir/attempt1-client-qemu.pid"
++ '[' -s bench-results/zcworkload-qemu-retry-20260712T230315Z/client-qemu.pid ']'
++ for pidfile in "$outdir/target-qemu.pid" "$outdir/client-qemu.pid" "$outdir/attempt1-target-qemu.pid" "$outdir/attempt1-client-qemu.pid"
++ '[' -s bench-results/zcworkload-qemu-retry-20260712T230315Z/attempt1-target-qemu.pid ']'
++ for pidfile in "$outdir/target-qemu.pid" "$outdir/client-qemu.pid" "$outdir/attempt1-target-qemu.pid" "$outdir/attempt1-client-qemu.pid"
++ '[' -s bench-results/zcworkload-qemu-retry-20260712T230315Z/attempt1-client-qemu.pid ']'
++ ss -H -ltn 'sport = :36200'
++ grep -q .
++ echo port_36200_listening=false
+port_36200_listening=false
++ /home/rob/.local/bin/agent-coord list
+agent-coord-lease: token=l18c1ad3298ed6108-1e1019 owner=codex:zcworkload-adhoc-retry pid=1970201 mode=shared sensitivity=normal priority=30 expires=1783903350 ttl_remaining=5045 honored=true resource=nic=*;cpu=0;memory-bandwidth=* note=orchestrate two-node EC2 zcworkload retry and retain logs
++ /home/rob/.local/bin/agent-coord list
++ grep -q codex:qemu-retry:c3455884
++ test '!' -e bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/modules/null_blk.ko
++ test '!' -e bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/modules/zcbrd_mod.ko
++ test '!' -e bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/modules/zcstripe.ko
++ grep -q '^sample-validation: PASS' bench-results/zcworkload-qemu-retry-20260712T230315Z/client-console.log
++ grep -q 'chunk-bytes=65536 exceeds block queue max_hw_sectors_kb=4' bench-results/zcworkload-qemu-retry-20260712T230315Z/client-console.log
++ grep -q '^zcworkload-result:' bench-results/zcworkload-qemu-retry-20260712T230315Z/client-console.log

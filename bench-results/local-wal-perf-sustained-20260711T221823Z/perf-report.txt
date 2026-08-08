@@ -1,0 +1,174 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 32K of event 'cycles:P'
+# Event count (approx.): 42598321823
+#
+# Overhead  Command          Shared Object                                   Symbol                                                                                                                                          IPC   [IPC Coverage]
+# ........  ...............  ..............................................  ..............................................................................................................................................  ....................
+#
+     7.99%  zcnblk-wal-leaf  libc.so.6                                       [.] getenv                                                                                                                                      -      -            
+            |
+            ---getenv
+               |          
+                --2.36%--_RNvNtCs75vJTIYSa2J_3std3env4__var
+                          zcutils::env_usize_or
+                          zcutils::ZcnblkWalLeafBackend::write_at_mode
+                          |          
+                          |--1.44%--zcutils::zcnblk_wal_leaf_process_stream
+                          |          std::sys::backtrace::__rust_begin_short_backtrace
+                          |          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h4ae198556e436b47
+                          |          _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                          |          0x7fabb995db7a
+                          |          
+                           --0.92%--zcutils::zcnblk_wal_leaf_write_contiguous_runs
+                                     zcutils::zcnblk_wal_leaf_process_stream
+                                     std::sys::backtrace::__rust_begin_short_backtrace
+                                     core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h4ae198556e436b47
+                                     _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                                     0x7fabb995db7a
+
+     6.15%  zcnblk-wal-leaf  zcnblk-wal-leaf                                 [.] zcutils::zcnblk_wal_leaf_process_stream                                                                                                     -      -            
+            |          
+             --5.95%--zcutils::zcnblk_wal_leaf_process_stream
+                       |          
+                       |--1.16%--std::sys::backtrace::__rust_begin_short_backtrace
+                       |          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h4ae198556e436b47
+                       |          _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                       |          0x7fabb995db7a
+                       |          
+                        --0.58%--0xfffffffe
+
+     4.03%  zcnblk-wal-leaf  zcnblk-wal-leaf                                 [.] zcutils::zcnblk_wal_leaf_write_contiguous_runs                                                                                              -      -            
+            |
+            ---zcutils::zcnblk_wal_leaf_write_contiguous_runs
+               |          
+               |--1.51%--0x555f59414c45445e
+               |          
+               |--0.60%--0x7fab84021c7f
+               |          
+               |--0.58%--0x7fab7400fd2f
+               |          
+                --0.57%--0x7fab800211df
+
+     3.86%  zcnblk-wal-leaf  [kernel.kallsyms]                               [k] 0xffffffffa295f088                                                                                                                          -      -            
+            |          
+             --3.14%--0xffffffffa295f088
+                       0xffffffffa2d38d38
+                       0xffffffffa2d38ef6
+                       0xffffffffa2e30ff1
+                       0xffffffffa2e32196
+                       0xffffffffa2e771d3
+                       0xffffffffa2d1c0d7
+                       0xffffffffa2d1f07d
+                       0xffffffffa2d1f124
+                       0xffffffffa2fdbb1f
+                       0xffffffffa200012f
+                       0x7fabb99659ee
+
+     3.76%  zcnblk-wal-leaf  zcnblk-wal-leaf                                 [.] zcutils::ZcnblkWalLeafBackend::write_at                                                                                                     -      -            
+            |
+            ---zcutils::ZcnblkWalLeafBackend::write_at
+               |          
+                --0.80%--_RNvNtCs75vJTIYSa2J_3std3env4__var
+
+     2.64%  zcnblk-wal-leaf  libc.so.6                                       [.] 0x000000000017d594                                                                                                                          -      -            
+            |
+            ---0x7fabb9a48594
+               |          
+                --0.69%--_RNvNtCs75vJTIYSa2J_3std3env4__var
+                          zcutils::env_usize_or
+                          zcutils::ZcnblkWalLeafBackend::write_at_mode
+                          zcutils::zcnblk_wal_leaf_write_contiguous_runs
+                          zcutils::zcnblk_wal_leaf_process_stream
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h4ae198556e436b47
+                          _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                          0x7fabb995db7a
+
+     2.42%  zcnblk-wal-leaf  libc.so.6                                       [.] 0x000000000017d58e                                                                                                                          -      -            
+            |
+            ---0x7fabb9a4858e
+               |          
+                --0.55%--_RNvNtCs75vJTIYSa2J_3std3env4__var
+                          zcutils::env_usize_or
+                          zcutils::ZcnblkWalLeafBackend::write_at_mode
+                          zcutils::zcnblk_wal_leaf_write_contiguous_runs
+                          zcutils::zcnblk_wal_leaf_process_stream
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h4ae198556e436b47
+                          _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                          0x7fabb995db7a
+
+     1.73%  zcnblk-wal-leaf  [nf_tables]                                     [k] nft_meta_get_eval                                                                                                                           -      -            
+            |          
+             --0.94%--nft_do_chain
+                       nft_do_chain_ipv4
+                       0xffffffffa2e0bbe5
+                       |          
+                        --0.59%--0xffffffffa2e1e9b3
+                                  0xffffffffa2e1ea4b
+                                  0xffffffffa2e1ec39
+                                  0xffffffffa2e470f2
+
+     1.61%  zcnblk-wal-leaf  zcnblk-wal-leaf                                 [.] _RNvMs3_NtNtCs27Vx93FoQ6z_4core3ffi5c_strNtB5_4CStr19from_bytes_with_nul                                                                    -      -            
+            |          
+             --1.60%--_RNvMs3_NtNtCs27Vx93FoQ6z_4core3ffi5c_strNtB5_4CStr19from_bytes_with_nul
+                       |          
+                        --1.01%--0x29
+
+     1.37%  zcnblk-wal-leaf  [nf_tables]                                     [k] nft_do_chain                                                                                                                                -      -            
+            |          
+             --0.57%--nft_do_chain
+                       nft_do_chain_ipv4
+                       0xffffffffa2e0bbe5
+
+     1.37%  zcnblk-wal-leaf  zcnblk-wal-leaf                                 [.] _RNCNvNtNtNtCs75vJTIYSa2J_3std3sys3env4unix6getenv0B9_                                                                                      -      -            
+            |
+            ---_RNCNvNtNtNtCs75vJTIYSa2J_3std3sys3env4unix6getenv0B9_
+
+     1.24%  zcnblk-wal-leaf  libc.so.6                                       [.] 0x000000000017d59a                                                                                                                          -      -            
+            |
+            ---0x7fabb9a4859a
+
+     1.07%  zcnblk-wal-leaf  zcnblk-wal-leaf                                 [.] _RNvNtCs75vJTIYSa2J_3std3env4__var                                                                                                          -      -            
+            |
+            ---_RNvNtCs75vJTIYSa2J_3std3env4__var
+
+     0.99%  zcnblk-wal-leaf  [vdso]                                          [.] __vdso_clock_gettime                                                                                                                        -      -            
+            |          
+             --0.73%--__vdso_clock_gettime
+
+     0.91%  zcnblk-wal-leaf  [nft_compat]                                    [k] nft_match_large_eval                                                                                                                        -      -            
+            |          
+             --0.63%--nft_do_chain
+                       nft_do_chain_ipv4
+                       0xffffffffa2e0bbe5
+
+     0.78%  zcnblk-wal-leaf  zcnblk-wal-leaf                                 [.] zcutils::ZcnblkWalLeafBackend::write_at_mode                                                                                                -      -            
+            |
+            ---zcutils::ZcnblkWalLeafBackend::write_at_mode
+
+     0.61%  zcnblk-wal-leaf  [nf_tables]                                     [k] nft_do_chain_ipv4                                                                                                                           -      -            
+     0.61%  zcnblk-wal-leaf  libc.so.6                                       [.] 0x000000000017d552                                                                                                                          -      -            
+            |
+            ---0x7fabb9a48552
+
+     0.60%  zcnblk-wal-leaf  [kernel.kallsyms]                               [k] 0xffffffffa27bcb09                                                                                                                          -      -            
+     0.59%  zcnblk-wal-leaf  libc.so.6                                       [.] 0x00000000001784ff                                                                                                                          -      -            
+            |
+            ---0x7fabb9a434ff
+
+     0.58%  zcnblk-wal-leaf  libc.so.6                                       [.] __open64_nocancel                                                                                                                           -      -            
+     0.56%  zcnblk-wal-leaf  [kernel.kallsyms]                               [k] 0xffffffffa27bcb04                                                                                                                          -      -            
+     0.55%  zcnblk-wal-leaf  [nf_tables]                                     [k] nft_immediate_eval                                                                                                                          -      -            
+     0.53%  zcnblk-wal-leaf  [kernel.kallsyms]                               [k] 0xffffffffa27bb87b                                                                                                                          -      -            
+     0.53%  zcnblk-wal-leaf  [kernel.kallsyms]                               [k] 0xffffffffa263048a                                                                                                                          -      -            
+     0.50%  zcnblk-wal-leaf  [kernel.kallsyms]                               [k] 0xffffffffa2c9a8e9                                                                                                                          -      -            
+
+
+#
+# (Tip: Treat branches as callchains: perf record -b ... ; perf report --branch-history)
+#

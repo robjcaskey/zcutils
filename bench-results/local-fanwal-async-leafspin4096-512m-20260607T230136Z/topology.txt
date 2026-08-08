@@ -1,0 +1,10 @@
+root=bench-results/local-fanwal-async-leafspin4096-512m-20260607T230136Z
+topology=sender zcnblk-send -> zcnblk-fan WAL mirror async deferred -> two zcnblk-wal-leaf zcleasemem targets
+block_raid=no
+label=async_leafspin4096
+leaf_spin=1
+sender_cpus=0,1,2,3
+fan_cpus=4,5,6,7
+leaf0_cpus=8,9,10,11
+leaf1_cpus=12,13,14,15
+lanes=4 bytes_per_connection=512M chunk=4K stripe=256K batch_depth=64 read_window=1024 physical_core_separated=yes async_writeback=1 defer_unsynced=1 leaf_base=59732 fan_base=61023

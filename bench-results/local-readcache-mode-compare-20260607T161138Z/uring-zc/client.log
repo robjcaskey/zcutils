@@ -1,0 +1,18 @@
+zcfan-readcache-config: role=client-recv bind=127.0.0.1 branch_binds=- peer=127.0.0.1 source_ip=- base_port=27000 leaf_base_port=34000 downstream_base_port=33000 lanes=8 branches=2 bytes_per_lane=536870912 branch_bytes_per_lane=536870912 cache_bytes_per_lane=67108864 chunk_bytes=1048576 extent_bytes=1048576 workers=8 pin=false cpu_list=- verify=false client_sink=splice-null wait_mode=spin cold_mode=stream-tee slab_slots=4 prefill_bytes=0 transport=sendfile/splice/tee/slab/lane-splice/io_uring-sendzc page_cache=memfd block_devices=no kernel_raid=no
+zcfan-readcache-topology: worker=0 target_cpu=unpinned
+zcfan-readcache-topology: worker=1 target_cpu=unpinned
+zcfan-readcache-topology: worker=2 target_cpu=unpinned
+zcfan-readcache-topology: worker=3 target_cpu=unpinned
+zcfan-readcache-topology: worker=4 target_cpu=unpinned
+zcfan-readcache-topology: worker=5 target_cpu=unpinned
+zcfan-readcache-topology: worker=6 target_cpu=unpinned
+zcfan-readcache-topology: worker=7 target_cpu=unpinned
+zcfan-readcache-accept: role=client-recv lane=0 peer=127.0.0.1:52988 local=127.0.0.1:27000
+zcfan-readcache-accept: role=client-recv lane=1 peer=127.0.0.1:60672 local=127.0.0.1:27001
+zcfan-readcache-accept: role=client-recv lane=2 peer=127.0.0.1:34558 local=127.0.0.1:27002
+zcfan-readcache-accept: role=client-recv lane=3 peer=127.0.0.1:36920 local=127.0.0.1:27003
+zcfan-readcache-accept: role=client-recv lane=4 peer=127.0.0.1:32862 local=127.0.0.1:27004
+zcfan-readcache-accept: role=client-recv lane=5 peer=127.0.0.1:46012 local=127.0.0.1:27005
+zcfan-readcache-accept: role=client-recv lane=6 peer=127.0.0.1:48436 local=127.0.0.1:27006
+zcfan-readcache-accept: role=client-recv lane=7 peer=127.0.0.1:45116 local=127.0.0.1:27007
+Error: Custom { kind: UnexpectedEof, error: "socket ended during socket->pipe splice" }

@@ -1,0 +1,11 @@
+zcfan-readcache-config: role=fan-hot bind=0.0.0.0 branch_binds=- peer=127.0.0.1 source_ip=- base_port=33100 leaf_base_port=34000 downstream_base_port=33000 lanes=3 branches=2 bytes_per_lane=268435456 branch_bytes_per_lane=536870912 cache_bytes_per_lane=67108864 chunk_bytes=1048576 extent_bytes=1048576 workers=3 pin=true cpu_list=3,4,5 verify=false client_sink=read wait_mode=spin cold_mode=stream-tee slab_slots=4 prefill_bytes=0 transport=sendfile/splice/tee/slab/lane-splice/io_uring-sendzc page_cache=memfd block_devices=no kernel_raid=no
+zcfan-readcache-topology: worker=0 target_cpu=3
+zcfan-readcache-topology: worker=1 target_cpu=4
+zcfan-readcache-topology: worker=2 target_cpu=5
+zcfan-readcache-connect: lane=0 peer=127.0.0.1:33100 local=127.0.0.1:47918
+zcfan-readcache-connect: lane=1 peer=127.0.0.1:33101 local=127.0.0.1:50680
+zcfan-readcache-connect: lane=2 peer=127.0.0.1:33102 local=127.0.0.1:41662
+zcfan-readcache-fan-hot-worker: worker=0 lanes=1 bytes=268435456 aux_bytes=0 waits=0 seconds=0.020368 Gbitps=105.434 aux_Gbitps=0.000 target_cpu=3 affinity_applied=true start_cpu=3 end_cpu=3 voluntary_ctxt_switches=0 involuntary_ctxt_switches=1 migrations=0 checksum=0x0000000000000000 recv_ops=0 send_ops=0 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-fan-hot-worker: worker=1 lanes=1 bytes=268435456 aux_bytes=0 waits=0 seconds=0.018722 Gbitps=114.706 aux_Gbitps=0.000 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=3 involuntary_ctxt_switches=1 migrations=0 checksum=0x0000000000000000 recv_ops=0 send_ops=0 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-fan-hot-worker: worker=2 lanes=1 bytes=268435456 aux_bytes=0 waits=0 seconds=0.020385 Gbitps=105.344 aux_Gbitps=0.000 target_cpu=5 affinity_applied=true start_cpu=5 end_cpu=5 voluntary_ctxt_switches=2 involuntary_ctxt_switches=1 migrations=0 checksum=0x0000000000000000 recv_ops=0 send_ops=0 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-fan-hot-summary: workers=3 bytes=805306368 aux_bytes=0 waits=0 seconds=0.020385 Gbitps=316.033 aux_Gbitps=0.000 voluntary_ctxt_switches=5 involuntary_ctxt_switches=3 migrations=0 checksum=0x0000000000000000 recv_ops=0 send_ops=0 zc_notifications=0 zc_copied_notifications=0 block_devices=no stripe_in_kernel=no mirror_in_kernel=no

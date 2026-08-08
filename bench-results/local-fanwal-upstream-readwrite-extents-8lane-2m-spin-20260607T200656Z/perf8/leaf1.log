@@ -1,0 +1,60 @@
+zcnblk-wal-leaf: target=zcleasemem:17179869184 bind=127.0.0.2 base_port=50300 ports=8 connections_per_port=1 total_connections=8 chunk_bytes=4096 workers=8 pin_workers=true submit_mode=blocking ring_entries=64 ring_cq_entries=128 cqe_hot_poll=false leaf_sqpoll=false leaf_spin_reads=true leaf_spin_budget=200000 uninit_read_buffers=false result_ranges_configured=true device_bytes=17179869184 required_alignment=4096 memory_policy=lease-cache memory_hugetlb=false preferred_numa_node=0 protocol=fan-wal-v2
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:58826 lane=2 port=50302 conn=0 incoming_cpu=10 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:32816 lane=1 port=50301 conn=0 incoming_cpu=9 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:49180 lane=4 port=50304 conn=0 incoming_cpu=12 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:36432 lane=3 port=50303 conn=0 incoming_cpu=11 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:42288 lane=5 port=50305 conn=0 incoming_cpu=13 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:46924 lane=0 port=50300 conn=0 incoming_cpu=8 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:34416 lane=7 port=50307 conn=0 incoming_cpu=15 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:44642 lane=6 port=50306 conn=0 incoming_cpu=14 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=0 policy=port-lane peer=127.0.0.1:46924 listener_lane=0 listener_port=50300 conn=0 incoming_cpu=8 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=1 policy=port-lane peer=127.0.0.1:32816 listener_lane=1 listener_port=50301 conn=0 incoming_cpu=9 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=2 policy=port-lane peer=127.0.0.1:58826 listener_lane=2 listener_port=50302 conn=0 incoming_cpu=10 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=3 policy=port-lane peer=127.0.0.1:36432 listener_lane=3 listener_port=50303 conn=0 incoming_cpu=11 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=4 policy=port-lane peer=127.0.0.1:49180 listener_lane=4 listener_port=50304 conn=0 incoming_cpu=12 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=5 policy=port-lane peer=127.0.0.1:42288 listener_lane=5 listener_port=50305 conn=0 incoming_cpu=13 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=6 policy=port-lane peer=127.0.0.1:44642 listener_lane=6 listener_port=50306 conn=0 incoming_cpu=14 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=7 policy=port-lane peer=127.0.0.1:34416 listener_lane=7 listener_port=50307 conn=0 incoming_cpu=15 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment-summary: policy=port-lane workers=8 streams_by_worker=0:1,1:1,2:1,3:1,4:1,5:1,6:1,7:1
+zcnblk-wal-leaf-worker: affinity_index=1 target_cpu=25 status=ok
+zcnblk-wal-leaf-stream: affinity_index=1 target_cpu=25 status=ok
+zcnblk-wal-leaf-worker: affinity_index=2 target_cpu=26 status=ok
+zcnblk-wal-leaf-stream: worker=1 slot=0 peer=127.0.0.1:32816 lane=1 port=50301 conn=0 incoming_cpu=9 incoming_napi_id=unknown
+zcnblk-wal-leaf-worker: affinity_index=4 target_cpu=28 status=ok
+zcnblk-wal-leaf-worker: affinity_index=3 target_cpu=27 status=ok
+zcnblk-wal-leaf-worker: affinity_index=0 target_cpu=24 status=ok
+zcnblk-wal-leaf-worker: affinity_index=5 target_cpu=29 status=ok
+zcnblk-wal-leaf-stream: affinity_index=2 target_cpu=26 status=ok
+zcnblk-wal-leaf-stream: worker=2 slot=0 peer=127.0.0.1:58826 lane=2 port=50302 conn=0 incoming_cpu=10 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=3 target_cpu=27 status=ok
+zcnblk-wal-leaf-stream: worker=3 slot=0 peer=127.0.0.1:36432 lane=3 port=50303 conn=0 incoming_cpu=11 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=0 target_cpu=24 status=ok
+zcnblk-wal-leaf-stream: worker=0 slot=0 peer=127.0.0.1:46924 lane=0 port=50300 conn=0 incoming_cpu=8 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=4 target_cpu=28 status=ok
+zcnblk-wal-leaf-stream: worker=4 slot=0 peer=127.0.0.1:49180 lane=4 port=50304 conn=0 incoming_cpu=12 incoming_napi_id=unknown
+zcnblk-wal-leaf-worker: affinity_index=6 target_cpu=30 status=ok
+zcnblk-wal-leaf-stream: affinity_index=5 target_cpu=29 status=ok
+zcnblk-wal-leaf-stream: worker=5 slot=0 peer=127.0.0.1:42288 lane=5 port=50305 conn=0 incoming_cpu=13 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=6 target_cpu=30 status=ok
+zcnblk-wal-leaf-stream: worker=6 slot=0 peer=127.0.0.1:44642 lane=6 port=50306 conn=0 incoming_cpu=14 incoming_napi_id=unknown
+zcnblk-wal-leaf-worker: affinity_index=7 target_cpu=31 status=ok
+zcnblk-wal-leaf-stream: affinity_index=7 target_cpu=31 status=ok
+zcnblk-wal-leaf-stream: worker=7 slot=0 peer=127.0.0.1:34416 lane=7 port=50307 conn=0 incoming_cpu=15 incoming_napi_id=unknown
+zcnblk-wal-leaf-write-extent-batch-topology: worker=0 slot=0 stream_lane=0 branch=1 records=1 extents=1 batch_payload_bytes=2097184 first_leaf_offset=0 first_payload_len=2097152 desc_preferred_cpu=8 desc_numa_node=0 leaf_target_cpu=24 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=24
+zcnblk-wal-leaf-write-extent-batch-topology: worker=1 slot=0 stream_lane=1 branch=1 records=1 extents=1 batch_payload_bytes=2097184 first_leaf_offset=1073741824 first_payload_len=2097152 desc_preferred_cpu=9 desc_numa_node=0 leaf_target_cpu=25 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=25
+zcnblk-wal-leaf-write-extent-batch-topology: worker=3 slot=0 stream_lane=3 branch=1 records=1 extents=1 batch_payload_bytes=2097184 first_leaf_offset=3221225472 first_payload_len=2097152 desc_preferred_cpu=11 desc_numa_node=0 leaf_target_cpu=27 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=27
+zcnblk-wal-leaf-write-extent-batch-topology: worker=4 slot=0 stream_lane=4 branch=1 records=1 extents=1 batch_payload_bytes=2097184 first_leaf_offset=4294967296 first_payload_len=2097152 desc_preferred_cpu=12 desc_numa_node=0 leaf_target_cpu=28 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=28
+zcnblk-wal-leaf-write-extent-batch-topology: worker=2 slot=0 stream_lane=2 branch=1 records=1 extents=1 batch_payload_bytes=2097184 first_leaf_offset=2147483648 first_payload_len=2097152 desc_preferred_cpu=10 desc_numa_node=0 leaf_target_cpu=26 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=26
+zcnblk-wal-leaf-write-extent-batch-topology: worker=6 slot=0 stream_lane=6 branch=1 records=1 extents=1 batch_payload_bytes=2097184 first_leaf_offset=6442450944 first_payload_len=2097152 desc_preferred_cpu=14 desc_numa_node=0 leaf_target_cpu=30 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=30
+zcnblk-wal-leaf-write-extent-batch-topology: worker=7 slot=0 stream_lane=7 branch=1 records=1 extents=1 batch_payload_bytes=2097184 first_leaf_offset=7516192768 first_payload_len=2097152 desc_preferred_cpu=15 desc_numa_node=0 leaf_target_cpu=31 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=31
+zcnblk-wal-leaf-write-extent-batch-topology: worker=5 slot=0 stream_lane=5 branch=1 records=1 extents=1 batch_payload_bytes=2097184 first_leaf_offset=5368709120 first_payload_len=2097152 desc_preferred_cpu=13 desc_numa_node=0 leaf_target_cpu=29 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=29
+zcnblk-wal-leaf-worker: worker=0 streams=1 read_bytes=0 write_bytes=536870912 result_records=257 result_batches=256 result_range_batches=256 frames=256 blocking_io_frames=256 uring_io_frames=0 write_submit_runs=256 max_write_submit_run_frames=1 frames_per_sec=117 seconds=2.187826 logical_MiBps=234.02 stream_thread_cpu_seconds=0.637495 stream_cpu_wall_pct=29.1 target_cpu=24 affinity_applied=true voluntary_ctxt_switches=1558 involuntary_ctxt_switches=77 migrations=0
+zcnblk-wal-leaf-worker: worker=1 streams=1 read_bytes=0 write_bytes=536870912 result_records=257 result_batches=256 result_range_batches=256 frames=256 blocking_io_frames=256 uring_io_frames=0 write_submit_runs=256 max_write_submit_run_frames=1 frames_per_sec=117 seconds=2.178896 logical_MiBps=234.98 stream_thread_cpu_seconds=0.625098 stream_cpu_wall_pct=28.7 target_cpu=25 affinity_applied=true voluntary_ctxt_switches=1572 involuntary_ctxt_switches=80 migrations=0
+zcnblk-wal-leaf-worker: worker=2 streams=1 read_bytes=0 write_bytes=536870912 result_records=257 result_batches=256 result_range_batches=256 frames=256 blocking_io_frames=256 uring_io_frames=0 write_submit_runs=256 max_write_submit_run_frames=1 frames_per_sec=116 seconds=2.202892 logical_MiBps=232.42 stream_thread_cpu_seconds=0.628726 stream_cpu_wall_pct=28.5 target_cpu=26 affinity_applied=true voluntary_ctxt_switches=1597 involuntary_ctxt_switches=77 migrations=0
+zcnblk-wal-leaf-worker: worker=3 streams=1 read_bytes=0 write_bytes=536870912 result_records=257 result_batches=256 result_range_batches=256 frames=256 blocking_io_frames=256 uring_io_frames=0 write_submit_runs=256 max_write_submit_run_frames=1 frames_per_sec=117 seconds=2.197207 logical_MiBps=233.02 stream_thread_cpu_seconds=0.638527 stream_cpu_wall_pct=29.1 target_cpu=27 affinity_applied=true voluntary_ctxt_switches=1616 involuntary_ctxt_switches=88 migrations=0
+zcnblk-wal-leaf-worker: worker=4 streams=1 read_bytes=0 write_bytes=536870912 result_records=257 result_batches=256 result_range_batches=256 frames=256 blocking_io_frames=256 uring_io_frames=0 write_submit_runs=256 max_write_submit_run_frames=1 frames_per_sec=116 seconds=2.200768 logical_MiBps=232.65 stream_thread_cpu_seconds=0.627954 stream_cpu_wall_pct=28.5 target_cpu=28 affinity_applied=true voluntary_ctxt_switches=1602 involuntary_ctxt_switches=75 migrations=0
+zcnblk-wal-leaf-worker: worker=5 streams=1 read_bytes=0 write_bytes=536870912 result_records=257 result_batches=256 result_range_batches=256 frames=256 blocking_io_frames=256 uring_io_frames=0 write_submit_runs=256 max_write_submit_run_frames=1 frames_per_sec=117 seconds=2.188169 logical_MiBps=233.99 stream_thread_cpu_seconds=0.625830 stream_cpu_wall_pct=28.6 target_cpu=29 affinity_applied=true voluntary_ctxt_switches=1572 involuntary_ctxt_switches=81 migrations=0
+zcnblk-wal-leaf-worker: worker=6 streams=1 read_bytes=0 write_bytes=536870912 result_records=257 result_batches=256 result_range_batches=256 frames=256 blocking_io_frames=256 uring_io_frames=0 write_submit_runs=256 max_write_submit_run_frames=1 frames_per_sec=117 seconds=2.185202 logical_MiBps=234.30 stream_thread_cpu_seconds=0.628288 stream_cpu_wall_pct=28.8 target_cpu=30 affinity_applied=true voluntary_ctxt_switches=1628 involuntary_ctxt_switches=55 migrations=0
+zcnblk-wal-leaf-worker: worker=7 streams=1 read_bytes=0 write_bytes=536870912 result_records=257 result_batches=256 result_range_batches=256 frames=256 blocking_io_frames=256 uring_io_frames=0 write_submit_runs=256 max_write_submit_run_frames=1 frames_per_sec=118 seconds=2.161413 logical_MiBps=236.88 stream_thread_cpu_seconds=0.621989 stream_cpu_wall_pct=28.8 target_cpu=31 affinity_applied=true voluntary_ctxt_switches=1613 involuntary_ctxt_switches=75 migrations=0
+zcnblk-wal-leaf-summary: streams=8 read_bytes=0 write_bytes=4294967296 result_records=2056 result_batches=2048 result_range_batches=2048 frames=2048 blocking_io_frames=2048 uring_io_frames=0 write_submit_runs=2048 max_write_submit_run_frames=1 stream_thread_cpu_seconds=5.033908 stream_cpu_wall_ratio=2.285 voluntary_ctxt_switches=12758 involuntary_ctxt_switches=608 migrations=0 frames_per_sec=930
+zcnblk-wal-leaf: bytes=4294967296 seconds=2.202892 GiBps=1.816 Gbitps=15.598

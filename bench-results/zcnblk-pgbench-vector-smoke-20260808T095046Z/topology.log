@@ -1,0 +1,10 @@
+classification=local-shared-system
+coordination_honored=false
+lane0=target:1,kthread:2,leaf:3,hctx:0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23
+lane1=target:9,kthread:10,leaf:11,hctx:8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31
+sync_coordinator_cpu=17
+postgres_cpus=4-7,12-15,20-23,28-31
+pgbench_cpus=0,8,16,24
+scale=10 clients=32 jobs=4 duration=5 repeats=1
+completion=early-local-write-ack; durability=remote-all-lane-sync-hwm
+hugepages_total=0 memlock_kib=8192 loadavg=1.24 0.58 0.34 2/2963 2351562

@@ -1,0 +1,34 @@
+zcfan-readcache-config: role=client-recv bind=127.0.0.1 branch_binds=- peer=127.0.0.1 source_ip=- base_port=37400 leaf_base_port=34000 downstream_base_port=33000 lanes=8 branches=2 bytes_per_lane=268435456 branch_bytes_per_lane=536870912 cache_bytes_per_lane=67108864 chunk_bytes=1048576 extent_bytes=1048576 workers=8 pin=true cpu_list=0,1,2,3,4,5,6,7 verify=false client_sink=splice-null rcvlowat_bytes=262144 wait_mode=spin cold_mode=stream-tee slab_slots=4 prefill_bytes=0 transport=sendfile/splice/tee/slab/lane-splice/io_uring-sendzc page_cache=memfd block_devices=no kernel_raid=no
+zcfan-readcache-topology: worker=0 target_cpu=0
+zcfan-readcache-topology: worker=1 target_cpu=1
+zcfan-readcache-topology: worker=2 target_cpu=2
+zcfan-readcache-topology: worker=3 target_cpu=3
+zcfan-readcache-topology: worker=4 target_cpu=4
+zcfan-readcache-topology: worker=5 target_cpu=5
+zcfan-readcache-topology: worker=6 target_cpu=6
+zcfan-readcache-topology: worker=7 target_cpu=7
+zcfan-readcache-socket: client-recv SO_RCVLOWAT=262144
+zcfan-readcache-accept: role=client-recv lane=0 peer=127.0.0.1:53568 local=127.0.0.1:37400
+zcfan-readcache-socket: client-recv SO_RCVLOWAT=262144
+zcfan-readcache-accept: role=client-recv lane=1 peer=127.0.0.1:37166 local=127.0.0.1:37401
+zcfan-readcache-socket: client-recv SO_RCVLOWAT=262144
+zcfan-readcache-accept: role=client-recv lane=2 peer=127.0.0.1:34192 local=127.0.0.1:37402
+zcfan-readcache-socket: client-recv SO_RCVLOWAT=262144
+zcfan-readcache-accept: role=client-recv lane=3 peer=127.0.0.1:38820 local=127.0.0.1:37403
+zcfan-readcache-socket: client-recv SO_RCVLOWAT=262144
+zcfan-readcache-accept: role=client-recv lane=4 peer=127.0.0.1:58574 local=127.0.0.1:37404
+zcfan-readcache-socket: client-recv SO_RCVLOWAT=262144
+zcfan-readcache-accept: role=client-recv lane=5 peer=127.0.0.1:34632 local=127.0.0.1:37405
+zcfan-readcache-socket: client-recv SO_RCVLOWAT=262144
+zcfan-readcache-accept: role=client-recv lane=6 peer=127.0.0.1:49666 local=127.0.0.1:37406
+zcfan-readcache-socket: client-recv SO_RCVLOWAT=262144
+zcfan-readcache-accept: role=client-recv lane=7 peer=127.0.0.1:48956 local=127.0.0.1:37407
+zcfan-readcache-client-recv-worker: worker=0 lanes=1 bytes=268435456 aux_bytes=0 waits=0 seconds=0.115430 Gbitps=18.604 aux_Gbitps=0.000 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=302 involuntary_ctxt_switches=1 migrations=0 checksum=0x0000000000000000 recv_ops=809 send_ops=809 short_recv_ops=808 short_send_ops=0 max_recv_op_bytes=1028096 max_send_op_bytes=1028096 pipe_capacity_bytes=1048576 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-client-recv-worker: worker=1 lanes=1 bytes=268435456 aux_bytes=0 waits=0 seconds=0.114198 Gbitps=18.805 aux_Gbitps=0.000 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=343 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000 recv_ops=819 send_ops=819 short_recv_ops=818 short_send_ops=0 max_recv_op_bytes=995487 max_send_op_bytes=995487 pipe_capacity_bytes=1048576 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-client-recv-worker: worker=2 lanes=1 bytes=268435456 aux_bytes=0 waits=0 seconds=0.105650 Gbitps=20.326 aux_Gbitps=0.000 target_cpu=2 affinity_applied=true start_cpu=2 end_cpu=2 voluntary_ctxt_switches=345 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000 recv_ops=847 send_ops=847 short_recv_ops=846 short_send_ops=0 max_recv_op_bytes=1003520 max_send_op_bytes=1003520 pipe_capacity_bytes=1048576 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-client-recv-worker: worker=3 lanes=1 bytes=268435456 aux_bytes=0 waits=0 seconds=0.116261 Gbitps=18.471 aux_Gbitps=0.000 target_cpu=3 affinity_applied=true start_cpu=3 end_cpu=3 voluntary_ctxt_switches=331 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000 recv_ops=827 send_ops=827 short_recv_ops=826 short_send_ops=0 max_recv_op_bytes=1011712 max_send_op_bytes=1011712 pipe_capacity_bytes=1048576 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-client-recv-worker: worker=4 lanes=1 bytes=268435456 aux_bytes=0 waits=0 seconds=0.119548 Gbitps=17.963 aux_Gbitps=0.000 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=355 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000 recv_ops=865 send_ops=865 short_recv_ops=864 short_send_ops=0 max_recv_op_bytes=1015808 max_send_op_bytes=1015808 pipe_capacity_bytes=1048576 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-client-recv-worker: worker=5 lanes=1 bytes=268435456 aux_bytes=0 waits=0 seconds=0.116574 Gbitps=18.422 aux_Gbitps=0.000 target_cpu=5 affinity_applied=true start_cpu=5 end_cpu=5 voluntary_ctxt_switches=356 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000 recv_ops=860 send_ops=860 short_recv_ops=859 short_send_ops=0 max_recv_op_bytes=995434 max_send_op_bytes=995434 pipe_capacity_bytes=1048576 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-client-recv-worker: worker=6 lanes=1 bytes=268435456 aux_bytes=0 waits=0 seconds=0.123451 Gbitps=17.395 aux_Gbitps=0.000 target_cpu=6 affinity_applied=true start_cpu=6 end_cpu=6 voluntary_ctxt_switches=316 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000 recv_ops=817 send_ops=817 short_recv_ops=816 short_send_ops=0 max_recv_op_bytes=1011712 max_send_op_bytes=1011712 pipe_capacity_bytes=1048576 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-client-recv-worker: worker=7 lanes=1 bytes=268435456 aux_bytes=0 waits=0 seconds=0.126344 Gbitps=16.997 aux_Gbitps=0.000 target_cpu=7 affinity_applied=true start_cpu=7 end_cpu=7 voluntary_ctxt_switches=310 involuntary_ctxt_switches=1 migrations=0 checksum=0x0000000000000000 recv_ops=827 send_ops=827 short_recv_ops=826 short_send_ops=0 max_recv_op_bytes=1011712 max_send_op_bytes=1011712 pipe_capacity_bytes=1048576 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-client-recv-summary: workers=8 bytes=2147483648 aux_bytes=0 waits=0 seconds=0.126344 Gbitps=135.977 aux_Gbitps=0.000 voluntary_ctxt_switches=2658 involuntary_ctxt_switches=2 migrations=0 checksum=0x0000000000000000 recv_ops=6671 send_ops=6671 short_recv_ops=6663 short_send_ops=0 max_recv_op_bytes=1028096 max_send_op_bytes=1028096 pipe_capacity_bytes=1048576 zc_notifications=0 zc_copied_notifications=0 block_devices=no stripe_in_kernel=no mirror_in_kernel=no

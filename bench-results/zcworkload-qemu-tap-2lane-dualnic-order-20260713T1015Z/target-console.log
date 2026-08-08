@@ -1,0 +1,41 @@
+[    0.019181] RDSEED32 is broken. Disabling the corresponding CPUID bit.
+ZCWORKLOAD_GUEST_BOOT role=target
+Linux (none) 7.0.8-io-slots-03 #slots3 SMP PREEMPT_DYNAMIC Sun May 31 09:43:13 EDT 2026 x86_64 GNU/Linux
+guest_cmdline=console=ttyS0 panic=-1 oops=panic quiet zcworkload_role=target
+guest_online_cpus=0-3
+guest_memlock_kib=8192
+guest_hugepages_total=0
+guest_hugepages_free=0
+target-rx-map: lane0:eth0:irq25:guest-cpu1 lane1:eth1:irq28:guest-cpu2
+target_topology=wal-tcp-lane0:eth0:leaf-worker0:guest-cpu1,wal-tcp-lane1:eth1:leaf-worker1:guest-cpu2 backend=zcmem:128M frame_bytes=4096 submit_mode=blocking
+target_vcpu_host_map=vCPU0:hostCPU4,vCPU1:hostCPU5,vCPU2:hostCPU6,vCPU3:hostCPU7 emulator:hostCPU2
+target_no_raid=true target_no_terminal_block_media=true
+ 24:          0          0          0          0 PCI-MSIX-0000:00:01.0   0-edge      virtio0-config
+ 25:          0          0          0          1 PCI-MSIX-0000:00:01.0   1-edge      virtio0-input.0
+ 26:          0          0          0          0 PCI-MSIX-0000:00:01.0   2-edge      virtio0-output.0
+ 27:          0          0          0          0 PCI-MSIX-0000:00:02.0   0-edge      virtio1-config
+ 28:          0          0          1          0 PCI-MSIX-0000:00:02.0   1-edge      virtio1-input.0
+ 29:          0          0          0          0 PCI-MSIX-0000:00:02.0   2-edge      virtio1-output.0
++ URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1,2 URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1 /uring-play zcnblk-wal-leaf zcmem:128M 0.0.0.0 29000 2 1 4096 2 true blocking
+zcnblk-wal-leaf: target=zcmem:134217728 bind=0.0.0.0 base_port=29000 ports=2 connections_per_port=1 total_connections=2 chunk_bytes=4096 workers=2 pin_workers=true submit_mode=blocking ring_entries=64 ring_cq_entries=128 cqe_hot_poll=false leaf_sqpoll=false leaf_spin_reads=false leaf_spin_policy=off leaf_spin_budget=unbounded leaf_adaptive_spin_min=off leaf_adaptive_spin_max=off leaf_adaptive_wait_ns=off leaf_adaptive_hysteresis_ns=off uninit_read_buffers=true zero_copy_strict=false result_ranges_configured=true device_bytes=134217728 required_alignment=4096 memory_policy=first-touch memory_hugetlb=false preferred_numa_node=0 protocol=fan-wal-v2
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+tcp-bench-uring-mux-server: accepted peer=10.72.0.1:45287 lane=0 port=29000 conn=0 incoming_cpu=1 incoming_napi_id=8193
+tcp-bench-uring-mux-server: accepted peer=10.73.0.1:58997 lane=1 port=29001 conn=0 incoming_cpu=2 incoming_napi_id=8194
+zcnblk-wal-leaf-mux-assignment: worker=0 policy=port-lane peer=10.72.0.1:45287 listener_lane=0 listener_port=29000 conn=0 incoming_cpu=1 incoming_napi_id=8193
+zcnblk-wal-leaf-mux-assignment: worker=1 policy=port-lane peer=10.73.0.1:58997 listener_lane=1 listener_port=29001 conn=0 incoming_cpu=2 incoming_napi_id=8194
+zcnblk-wal-leaf-mux-assignment-summary: policy=port-lane workers=2 streams_by_worker=0:1,1:1
+zcnblk-wal-leaf-worker: affinity_index=1 target_cpu=2 status=ok
+zcnblk-wal-leaf-stream: affinity_index=1 target_cpu=2 status=ok
+zcnblk-wal-leaf-stream: worker=1 slot=0 peer=10.73.0.1:58997 lane=1 port=29001 conn=0 incoming_cpu=2 incoming_napi_id=8194
+zcnblk-wal-leaf-worker: affinity_index=0 target_cpu=1 status=ok
+zcnblk-wal-leaf-stream: affinity_index=0 target_cpu=1 status=ok
+zcnblk-wal-leaf-stream: worker=0 slot=0 peer=10.72.0.1:45287 lane=0 port=29000 conn=0 incoming_cpu=1 incoming_napi_id=8193
+zcnblk-wal-leaf-request-batch-topology: worker=1 slot=0 stream_lane=1 branch=0 records=2 batch_payload_bytes=8448 desc_lane=1 desc_queue=1 desc_preferred_worker=1 desc_preferred_cpu=-1 desc_numa_node=-1 leaf_target_cpu=2 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=2 payload_destination=direct-memory-scatter
+zcnblk-wal-leaf-request-batch-topology: worker=0 slot=0 stream_lane=0 branch=0 records=1 batch_payload_bytes=4224 desc_lane=0 desc_queue=0 desc_preferred_worker=0 desc_preferred_cpu=-1 desc_numa_node=-1 leaf_target_cpu=1 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=1 payload_destination=direct-memory-scatter
+zcnblk-wal-leaf-worker: worker=0 streams=1 read_bytes=204701696 write_bytes=204439552 payload_read_bytes=217225216 heap_payload_bytes=12785664 heap_payload_descriptor_bytes=12785664 heap_payload_data_bytes=0 direct_memory_recv_bytes=204439552 memfd_payload_bytes=0 lease_submit_bytes=0 memfd_lease_submit_bytes=0 copy_submit_bytes=0 result_records=99892 result_batches=4623 result_range_batches=17 frames=99888 blocking_io_frames=99888 uring_io_frames=0 write_submit_runs=49908 max_write_submit_run_frames=2 phase_payload_read_seconds=0.033964 phase_payload_alloc_seconds=0.001673 phase_payload_recv_seconds=0.027304 phase_decode_seconds=0.003868 phase_submit_seconds=0.025431 phase_result_write_seconds=0.071345 frames_per_sec=60126 seconds=1.661316 logical_MiBps=234.87 stream_thread_cpu_seconds=0.224414 stream_cpu_wall_pct=13.5 target_cpu=1 affinity_applied=true voluntary_ctxt_switches=569 involuntary_ctxt_switches=8 migrations=0
+zcnblk-wal-leaf-worker: worker=1 streams=1 read_bytes=205438976 write_bytes=204509184 payload_read_bytes=217320064 heap_payload_bytes=12810880 heap_payload_descriptor_bytes=12810880 heap_payload_data_bytes=0 direct_memory_recv_bytes=204509184 memfd_payload_bytes=0 lease_submit_bytes=0 memfd_lease_submit_bytes=0 copy_submit_bytes=0 result_records=100089 result_batches=4688 result_range_batches=34 frames=100085 blocking_io_frames=100085 uring_io_frames=0 write_submit_runs=49849 max_write_submit_run_frames=32 phase_payload_read_seconds=0.034082 phase_payload_alloc_seconds=0.001863 phase_payload_recv_seconds=0.026836 phase_decode_seconds=0.004303 phase_submit_seconds=0.025215 phase_result_write_seconds=0.071769 frames_per_sec=59927 seconds=1.670128 logical_MiBps=234.09 stream_thread_cpu_seconds=0.221516 stream_cpu_wall_pct=13.3 target_cpu=2 affinity_applied=true voluntary_ctxt_switches=621 involuntary_ctxt_switches=9 migrations=0
+zcnblk-wal-leaf-summary: streams=2 read_bytes=410140672 write_bytes=408948736 payload_read_bytes=434545280 heap_payload_bytes=25596544 heap_payload_descriptor_bytes=25596544 heap_payload_data_bytes=0 direct_memory_recv_bytes=408948736 memfd_payload_bytes=0 lease_submit_bytes=0 memfd_lease_submit_bytes=0 copy_submit_bytes=0 phase_payload_read_seconds=0.068046 phase_payload_alloc_seconds=0.003536 phase_payload_recv_seconds=0.054140 phase_decode_seconds=0.008172 phase_submit_seconds=0.050647 phase_result_write_seconds=0.143113 result_records=199981 result_batches=9311 result_range_batches=51 frames=199973 blocking_io_frames=199973 uring_io_frames=0 write_submit_runs=99757 max_write_submit_run_frames=32 stream_thread_cpu_seconds=0.445931 stream_cpu_wall_ratio=0.267 voluntary_ctxt_switches=1190 involuntary_ctxt_switches=17 migrations=0 frames_per_sec=119735
+zcnblk-wal-leaf: bytes=819089408 seconds=1.670128 GiBps=0.457 Gbitps=3.923
+ZCWORKLOAD_GUEST_FINAL role=target status=0
+[   17.061808] reboot: Power down

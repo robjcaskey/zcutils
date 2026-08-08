@@ -1,0 +1,34 @@
++ taskset -c 4-7 make -C kmods KDIR=/home/rob/src/linux-7.0.8-zcslots all
+make: Entering directory '/home/rob/zcutils/kmods'
+make -C /home/rob/src/linux-7.0.8-zcslots M=/home/rob/zcutils/kmods modules
+make[1]: Entering directory '/home/rob/dev-workspace/src/linux-7.0.8-zcslots'
+make[2]: Entering directory '/home/rob/zcutils/kmods'
+  CC [M]  zcbrd_mod.o
+  CC [M]  zcnblk_client_mod.o
+  CC [M]  zcwalblk_mod.o
+  MODPOST Module.symvers
+  CC [M]  zcbrd_mod.mod.o
+  CC [M]  .module-common.o
+  LD [M]  zcbrd_mod.ko
+  BTF [M] zcbrd_mod.ko
+  CC [M]  zcnblk_client_mod.mod.o
+  LD [M]  zcnblk_client_mod.ko
+  BTF [M] zcnblk_client_mod.ko
+  CC [M]  zcwalblk_mod.mod.o
+  LD [M]  zcwalblk_mod.ko
+  BTF [M] zcwalblk_mod.ko
+make[2]: Leaving directory '/home/rob/zcutils/kmods'
+make[1]: Leaving directory '/home/rob/dev-workspace/src/linux-7.0.8-zcslots'
+make: Leaving directory '/home/rob/zcutils/kmods'
++ strings kmods/zcnblk_client_mod.ko
++ grep -F 'vermagic=7.0.8-io-slots-03 '
+vermagic=7.0.8-io-slots-03 SMP preempt mod_unload modversions 
++ cp kmods/zcnblk_client_mod.ko /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/modules/zcnblk_client_mod.ko
++ strings /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/modules/zcnblk_client_mod.ko
++ grep -F 'vermagic=7.0.8-io-slots-03 '
+vermagic=7.0.8-io-slots-03 SMP preempt mod_unload modversions 
++ cd /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs
++ find . -print0
++ cpio --null -o --format=newc
+78748 blocks
++ sha256sum /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/zcworkload-two-vm-initramfs.cpio /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/init /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/host-run.sh /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/uring-play /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/zcworkload /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/zcnblk-shm-target /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/modules/zcnblk_client_mod.ko

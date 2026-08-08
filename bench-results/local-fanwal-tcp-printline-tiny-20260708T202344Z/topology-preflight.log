@@ -1,0 +1,57 @@
+topology_preflight=1
+run_mode=local
+strict=1
+topology_preflight_fatal=0
+topology_busy_pct=1.0
+local_mapped_cpus=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
+local_mapped_cpu_count=15
+stage=client cpus=0-2 unique_cpus=3
+stage=fan-handler cpus=3-5 unique_cpus=3
+stage=fan-async cpus=6-8 unique_cpus=3
+stage=leaf0 cpus=9-11 unique_cpus=3
+stage=leaf1 cpus=12-14 unique_cpus=3
+cpu=0 governor=powersave
+cpu=1 governor=powersave
+cpu=2 governor=powersave
+cpu=3 governor=powersave
+cpu=4 governor=powersave
+cpu=5 governor=powersave
+cpu=6 governor=powersave
+cpu=7 governor=powersave
+cpu=8 governor=powersave
+cpu=9 governor=powersave
+cpu=10 governor=powersave
+cpu=11 governor=powersave
+cpu=12 governor=powersave
+cpu=13 governor=powersave
+cpu=14 governor=powersave
+PERF WARNING: mapped CPUs are not all using performance governor: cpu0=powersave,cpu1=powersave,cpu2=powersave,cpu3=powersave,cpu4=powersave,cpu5=powersave,cpu6=powersave,cpu7=powersave,cpu8=powersave,cpu9=powersave,cpu10=powersave,cpu11=powersave,cpu12=powersave,cpu13=powersave,cpu14=powersave
+== mapped cpu mhz sample ==
+CPU CORE SOCKET NODE L1d:L1i:L2:L3 ONLINE    MAXMHZ   MINMHZ       MHZ
+  0    0      0    0 0:0:0:0          yes 5756.4521 624.1940 5538.0820
+  1    1      0    0 1:1:1:0          yes 5756.4521 624.1940 3759.0591
+  2    2      0    0 2:2:2:0          yes 5756.4521 624.1940 5560.8979
+  3    3      0    0 3:3:3:0          yes 5756.4521 624.1940 5506.5259
+  4    4      0    0 4:4:4:0          yes 5756.4521 624.1940 4825.2842
+  5    5      0    0 5:5:5:0          yes 5756.4521 624.1940 3944.3459
+  6    6      0    0 6:6:6:0          yes 5756.4521 624.1940 5549.2568
+  7    7      0    0 7:7:7:0          yes 5756.4521 624.1940 2732.2180
+  8    8      0    0 8:8:8:1          yes 5756.4521 624.1940 5561.4951
+  9    9      0    0 9:9:9:1          yes 5756.4521 624.1940 5552.9580
+ 10   10      0    0 10:10:10:1       yes 5756.4521 624.1940 5534.2979
+ 11   11      0    0 11:11:11:1       yes 5756.4521 624.1940 5394.3281
+ 12   12      0    0 12:12:12:1       yes 5756.4521 624.1940 5565.7329
+ 13   13      0    0 13:13:13:1       yes 5756.4521 624.1940 5561.6270
+ 14   14      0    0 14:14:14:1       yes 5756.4521 624.1940 5358.0889
+PERF WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+busy_cpu=0 pcpu=1.0 pid=1334 tid=1334 comm=shard-01-sandbo
+busy_cpu=12 pcpu=3.7 pid=1915 tid=1915 comm=sway
+busy_cpu=13 pcpu=2.4 pid=2358 tid=2358 comm=alacritty
+busy_cpu=10 pcpu=6.7 pid=1416555 tid=1416555 comm=postgres
+busy_cpu=12 pcpu=6.6 pid=1462717 tid=1462717 comm=postgres
+busy_cpu=9 pcpu=6.7 pid=1655128 tid=1655128 comm=postgres
+busy_cpu=13 pcpu=8.0 pid=1767439 tid=1767439 comm=postgres
+memlock_limit=8192
+PERF WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+nr_hugepages=0
+PERF WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons

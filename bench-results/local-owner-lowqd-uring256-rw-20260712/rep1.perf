@@ -1,0 +1,18 @@
+# started on Sat Jul 11 23:47:49 2026
+
+
+ Performance counter stats for 'env URING_PLAY_PIN_CPU_LIST=0,8 URING_PLAY_TOPOLOGY_STRICT=0 URING_PLAY_BLOCKBENCH_RING_STATS=1 URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS=1 URING_PLAY_CQE_SPIN=0 URING_PLAY_CQE_ADAPTIVE_SPIN=0 URING_PLAY_CQE_ADAPTIVE_SPIN_MIN=0 URING_PLAY_CQE_ADAPTIVE_SPIN_MAX=4096 URING_PLAY_CQE_ADAPTIVE_WAIT_NS=50000 URING_PLAY_CQE_HOT_POLL=1 URING_PLAY_CQE_HOT_POLL_PROGRESS_SPINS=256 /home/rob/zcutils/target/release/zcblockbench /dev/zcnblk0 --engine uring-fixed --mode rw --workers 2 --ops-per-worker 50000 --bs 4096 --iodepth 1 --region-bytes-per-worker 67108864 --read-percent 50 --ring-entries 64 --ring-mode normal --sqpoll-idle-ms 1000 --buffer-mode small-pages --pin true --latency-sample-rate 64':
+
+           1117.96 msec task-clock                       #    1.691 CPUs utilized             
+               592      context-switches                 #  529.536 /sec                      
+                 4      cpu-migrations                   #    3.578 /sec                      
+        6145691135      cycles                           #    5.497 GHz                       
+        2095579830      instructions                     #    0.34  insn per cycle            
+           2266001      cache-misses                                                          
+
+       0.661077565 seconds time elapsed
+
+       1.038396000 seconds user
+       0.080185000 seconds sys
+
+

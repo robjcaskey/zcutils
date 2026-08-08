@@ -1,0 +1,48 @@
+agent-coord-result: acquired=true honored=true token=l18c15dbc0ed8da4e-37ec44 owner=codex:zcutils-zcnblk-shm mode=exclusive sensitivity=high priority=50 expires=1783811789 resource=block=zcnblk0 conflicts=none
+[22:46:29] loading placement-free shared-memory client edge
+agent-coord-result: acquired=true honored=false token=l18c15dbc147e75bb-37ec94 owner=codex:zcutils-zcnblk-shm mode=soft-exclusive sensitivity=critical priority=50 expires=1783811789 resource=cpu=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15;memory-bandwidth=*;port=29000 conflicts=l18c13a106497d7c8-c5bb3:codex:osbot-raw-replay:shared:priority=40:sensitivity=low,l18c142603b2abccb-163e07:codex:vein-volume-build:shared:priority=55:sensitivity=normal,l18c14377a94bdb1b-17c4f9:codex:vein-volume-viewer:shared:priority=60:sensitivity=normal,l18c15c6434232ba0-338430:monogs-eye-smoke:soft-exclusive:priority=70:sensitivity=high
+classification=noisy-local-control
+coordination_scope=shared-host
+bootstrap_manifest=/home/rob/.local/state/zcutils/adhoc-bootstrap.env
+lane_count=4
+topology_cpu_list=0-15
+coordinator_cpu=none
+lane=0 client_cpu=0 target_cpu=1 kernel_cpu=2 leaf_cpu=3,7,11,15 hctx_cpus=0, 1, 2, 3, 16, 17, 18, 19
+lane=1 client_cpu=4 target_cpu=5 kernel_cpu=6 leaf_cpu=3,7,11,15 hctx_cpus=4, 5, 6, 7, 20, 21, 22, 23
+lane=2 client_cpu=8 target_cpu=9 kernel_cpu=10 leaf_cpu=3,7,11,15 hctx_cpus=8, 9, 10, 11, 24, 25, 26, 27
+lane=3 client_cpu=12 target_cpu=13 kernel_cpu=14 leaf_cpu=3,7,11,15 hctx_cpus=12, 13, 14, 15, 28, 29, 30, 31
+hugepages_total=4096
+hugepages_free=4096
+hugepage_size_kib=2048
+memlock_kib=8192
+loadavg=1.76 2.00 1.67 2/5647 3665063
+coordination_honored=false
+target_poll_us=1000
+target_busy_poll_us=1000
+target_busy_hysteresis_us=10000
+kernel_completion_poll_us=1000
+block_ring_mode=normal sqpoll_cpu_list=none sqpoll_idle_ms=1000
+block_engine=uring-fixed
+block_latency_sample_rate=0
+block_ring_stats=1 block_wait_min_completions=16 block_cqe_spin=0 block_cqe_adaptive_spin=0 block_cqe_adaptive_spin_min=0 block_cqe_adaptive_spin_max=4096 block_cqe_adaptive_wait_ns=50000 block_cqe_hot_poll=0
+shm_descriptor_entries_per_channel=512
+shm_payload_entries_per_channel=65536
+writeback_batch_requested=8192 writeback_batch_effective=8192
+request_batch=512 request_batch_fill_us=0 request_batch_fill_min=32
+wal_lane_batch=1 representative_eligible=true
+transfer_payload_slots=1
+wal_extent_records=2048 wal_extent_fill_us=0
+dirty_pressure_reserve=0
+remote_recv_spins=0 leaf_spin_reads=1 leaf_spin_budget=4096
+remote_recv_policy=adaptive remote_recv_adaptive_spin_min=0 remote_recv_adaptive_spin_max=4096 remote_recv_adaptive_wait_ns=50000
+remote_send_mode=blocking remote_send_ring_entries=256 remote_send_zc_required=1 allow_unsafe_send_zc=0
+order_smoke_pairs=0
+shm_payload_slot_bytes=4096
+shm_lease_release_batch=1
+backend=wal-tcp local_leaf=1 leaf_target=zcdevnull:512M leaf_addr=127.0.0.1 leaf_port=29000 leaf_submit_mode=blocking
+leaf_source_addr=kernel-route
+leaf_addrs=single-address leaf_source_addrs=single-source
+hugetlb_preflight: free_pages=4096 required_pages=512 reason=one-hugepage-per-registered-slot
+PERF WARNING: CPU governor is unchanged; record it before interpreting spread
+[22:46:29] starting terminal userspace WAL leaf on cpu 3,7,11,15
+zcnblk-shm-block-bench: ERROR: WAL leaf exited before listening; see /home/rob/zcutils/bench-results/local-wal-profile-after-hwm-20260711T2250Z/leaf.log

@@ -1,0 +1,8 @@
+CASE fabric=efa-direct domain=efa_0-rdm cpu=0 size=14 iterations=200000
+bytes   #sent   #ack     total       time     MB/sec    usec/xfer   Mxfers/sec
+14      200k    =200k    5.3m        4.39s      1.28      10.98       0.09
+TIME voluntary=25 involuntary=24 cpu=99% elapsed=4.40
+CASE fabric=efa-direct domain=efa_0-rdm cpu=0 size=4096 iterations=100000
+bytes   #sent   #ack     total       time     MB/sec    usec/xfer   Mxfers/sec
+4k      100k    =100k    781m        2.50s    327.31      12.51       0.08
+TIME voluntary=25 involuntary=17 cpu=99% elapsed=2.51

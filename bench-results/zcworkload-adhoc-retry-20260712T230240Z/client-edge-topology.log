@@ -1,0 +1,58 @@
+target_pid=8867 comm=zcnblk-shm-targ affinity=pid 8867's current affinity list: 2
+module_parameters:
+transport=shm
+lanes=1
+queues=1
+queue_depth=64
+logical_block_size=4096
+max_frame_bytes=4096
+write_acks=Y
+hctx_affinity=Y
+pin_threads=Y
+pin_base_cpu=3
+pin_cpu_count=1
+devices:
+crw------- 1 root root  10, 261 Jul 12 23:20 /dev/zcnblk-shmctl
+brw-rw---- 1 root disk 251,   0 Jul 12 23:20 /dev/zcnblk0
+hctx_maps:
+/sys/block/zcnblk0/mq/0/cpu_list
+0, 1, 2, 3, 4, 5, 6, 7
+kthreads:
+   8803 zcnblk-shm-0-0    3
+   8867 zcnblk-shm-targ   2
+pid 8803's current affinity list: 3
+pid 8867's current affinity list: 2
+target_log:
+zcnblk-shm-target: device=/dev/zcnblk-shmctl backend=WalTcp channels=1 ring_entries=128 payload_entries=4096 slot_bytes=4096 region_bytes=16834560 capacity_bytes=268435456 kick_batch=128 lease_release_batch=1 writeback_batch=2048 read_batch=128 read_batch_fill_us=0 read_batch_fill_min=32 write_batch_fill_us=0 write_batch_fill_min=128 remote_leaf=172.31.37.177:59703->172.31.43.91:29000 cpu_list=2 owner_dispatch=false owner_count=1 owner_extent_records=256 owner_max_tx_iovecs=960 split_transport=false transport_cpu_list=inline transport_wait=adaptive poll_us=1000 busy_poll_us=1000 busy_hysteresis_us=10000 poll_clock_check_spins=64 wait_policy=fixed-active ordering=global-submit-order shared_payload_slots=true payload_ownership=legacy-contiguous-hwm placement_owner=downstream-userspace-stage block_client_placement=no representative=false 
+zcnblk-shm-target-owner-worker: lane=0 cpu=unpinned command_result_spins=0 pipeline_batches=16
+dmesg_tail:
+[    2.083736] systemd[1]: Started systemd-journald.service - Journal Service.
+[    2.181288] EXT4-fs (nvme0n1p1): re-mounted 3b4a499d-5e2c-482e-a8a6-4b177b758c7d r/w.
+[    2.201018] systemd-journald[245]: Received client request to flush runtime journal.
+[    2.263564] loop0: detected capacity change from 0 to 49568
+[    2.265177] loop1: detected capacity change from 0 to 141232
+[    2.266858] loop2: detected capacity change from 0 to 87312
+[    2.377749] ena 0000:27:00.0 ens34: renamed from eth0
+[    2.399272] nvme nvme0: using unchecked data buffer
+[    3.078544] EXT4-fs (nvme0n1p16): Supports (experimental) DIO atomic writes awu_min: 4096, awu_max: 4096
+[    3.080362] EXT4-fs (nvme0n1p16): mounted filesystem 2f42c0a7-b4c1-4266-99cb-7e610b8131a4 r/w with ordered data mode. Quota mode: none.
+[    3.147959] audit: type=1400 audit(1783898286.371:2): apparmor="STATUS" operation="profile_load" profile="unconfined" name="balena-etcher" pid=448 comm="apparmor_parser"
+[    3.147964] audit: type=1400 audit(1783898286.371:3): apparmor="STATUS" operation="profile_load" profile="unconfined" name="brave" pid=449 comm="apparmor_parser"
+[    3.147966] audit: type=1400 audit(1783898286.371:4): apparmor="STATUS" operation="profile_load" profile="unconfined" name="1password" pid=444 comm="apparmor_parser"
+[    3.147981] audit: type=1400 audit(1783898286.372:5): apparmor="STATUS" operation="profile_load" profile="unconfined" name="cam" pid=451 comm="apparmor_parser"
+[    3.148015] audit: type=1400 audit(1783898286.372:6): apparmor="STATUS" operation="profile_load" profile="unconfined" name=4D6F6E676F444220436F6D70617373 pid=446 comm="apparmor_parser"
+[    3.148135] audit: type=1400 audit(1783898286.372:7): apparmor="STATUS" operation="profile_load" profile="unconfined" name="QtWebEngineProcess" pid=447 comm="apparmor_parser"
+[    3.148201] audit: type=1400 audit(1783898286.372:8): apparmor="STATUS" operation="profile_load" profile="unconfined" name="Discord" pid=445 comm="apparmor_parser"
+[    3.148291] audit: type=1400 audit(1783898286.372:9): apparmor="STATUS" operation="profile_load" profile="unconfined" name="buildah" pid=450 comm="apparmor_parser"
+[    3.149890] audit: type=1400 audit(1783898286.374:10): apparmor="STATUS" operation="profile_load" profile="unconfined" name="chrome" pid=460 comm="apparmor_parser"
+[    3.849581] 8021q: 802.1Q VLAN Support v1.8
+[    7.564061] EXT4-fs (nvme0n1p1): resizing filesystem from 1834747 to 8126203 blocks
+[    7.848479] EXT4-fs (nvme0n1p1): resized filesystem to 8126203
+[    9.204459] kauditd_printk_skb: 113 callbacks suppressed
+[    9.204463] audit: type=1400 audit(1783898292.428:124): apparmor="STATUS" operation="profile_replace" info="same as current profile, skipping" profile="unconfined" name="rsyslogd" pid=788 comm="apparmor_parser"
+[    9.467348] loop3: detected capacity change from 0 to 8
+[    9.553414] audit: type=1400 audit(1783898292.777:125): apparmor="STATUS" operation="profile_replace" profile="unconfined" name="/usr/lib/snapd/snap-confine" pid=1065 comm="apparmor_parser"
+[   20.175944] audit: type=1400 audit(1783898303.212:126): apparmor="DENIED" operation="capable" class="cap" profile="ubuntu_pro_esm_cache_systemd_detect_virt" pid=1547 comm="systemd-detect-" capability=38  capname="perfmon"
+[  157.523317] zcnblk_client_mod: loading out-of-tree module taints kernel.
+[  157.523328] zcnblk_client_mod: module verification failed: signature and/or required key missing - tainting kernel
+[  157.524961] zcnblk: /dev/zcnblk0 transport=shm remote=127.0.0.1 remote_ips=- remote_count=0 port_base=19600 lanes=1 connections_per_lane=1 total_conns=1 shards=1 bytes=268435456 frame=4096 queues=1 depth=64 pipeline_depth=128 batch_depth=1 batch_fill_timeout_us=0 fill_timeout_ms=0 write_acks=1 null_backend=0 null_read_zero=1 hctx_affinity=1 pin_threads=1 pin_base_cpu=3 pin_cpu_count=1 pin_stride=1 shard_affinity=0 encryption=none aes_frame=65536 publish_delay_ms=0 shm_ring_entries=128 shm_payload_entries=4096 shm_region_bytes=16834560 shm_poll_us=50 placement_owner=userspace block_client_placement=no

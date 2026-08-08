@@ -1983,6 +1983,16 @@ context-switch counts, strict topology preflight, and repeated-run spread.
 See [enterprise-workload-benchmark.md](enterprise-workload-benchmark.md) for
 the workload shape, safety rules, commands, and result interpretation.
 
+## Application And NFS Filer Benchmarks
+
+`scripts/zcnblk-fs-app-bench.sh` creates a topology-explicit two-lane zcnblk
+WAL edge and runs the etcd, Cassandra, Kafka, or NFSv4.2 harness against its
+ext4 filesystem. The application harnesses record their distinct durability
+contracts, latency, throughput, and context switches; the wrapper records the
+target, kernel-lane, leaf-lane, application CPU, and hctx mappings. See
+[zcnblk-application-benchmarks.md](zcnblk-application-benchmarks.md) for setup,
+commands, completion semantics, and current local proof results.
+
 ## Compatibility
 
 Existing benchmark subcommands remain available, including

@@ -1,0 +1,53 @@
+host=ip-172-31-32-153
+/usr/bin/gcc
+/usr/bin/jq
+212992
+212992
+0
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens68            UP             172.31.32.153/20 metric 100 fe80::81d:bfff:fefb:b047/64 
+ens146           UP             172.31.43.163/20 fe80::87b:3fff:fe5a:bb45/64 
+CPU(s):                                  192
+NUMA node(s):                            2
+NUMA node0 CPU(s):                       0-95
+NUMA node1 CPU(s):                       96-191
+host=ip-172-31-36-120
+/usr/bin/jq
+212992
+212992
+0
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens68            UP             172.31.36.120/20 metric 100 fe80::88c:3ff:fec7:83e9/64 
+ens146           UP             172.31.43.162/20 fe80::8a2:72ff:fe80:b87/64 
+CPU(s):                                  192
+NUMA node(s):                            2
+NUMA node0 CPU(s):                       0-95
+NUMA node1 CPU(s):                       96-191
+host=ip-172-31-45-130
+/usr/bin/jq
+212992
+212992
+0
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens68            UP             172.31.45.130/20 metric 100 fe80::826:29ff:fec0:6ed/64 
+ens146           UP             172.31.36.209/20 fe80::80e:d2ff:fe43:457b/64 
+CPU(s):                                  192
+NUMA node(s):                            2
+NUMA node0 CPU(s):                       0-95
+NUMA node1 CPU(s):                       96-191
+host=ip-172-31-38-46
+/usr/bin/jq
+212992
+212992
+0
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens68            UP             172.31.38.46/20 metric 100 fe80::8d7:60ff:fed6:e437/64 
+ens146           UP             172.31.41.153/20 fe80::8f8:d7ff:fe16:8e65/64 
+CPU(s):                                  192
+NUMA node(s):                            2
+NUMA node0 CPU(s):                       0-95
+NUMA node1 CPU(s):                       96-191
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.150.178.0 'URING_NODE_INDEX=1 URING_RUN_ID=zc-asyncwb-adhoc-c8gn48-20260607T094602Z URING_PRIVATE_IPS=172.31.32.153,172.31.36.120,172.31.45.130,172.31.38.46 printf "host=%s\n" "$(hostname)"; command -v cargo || true; command -v rustc || true; command -v gcc; command -v jq; sysctl -n net.core.rmem_max net.core.wmem_max net.ipv4.tcp_no_metrics_save; ip -br addr; lscpu | egrep "^CPU\(s\)|NUMA node"'
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.19.202.142 'URING_NODE_INDEX=2 URING_RUN_ID=zc-asyncwb-adhoc-c8gn48-20260607T094602Z URING_PRIVATE_IPS=172.31.32.153,172.31.36.120,172.31.45.130,172.31.38.46 printf "host=%s\n" "$(hostname)"; command -v cargo || true; command -v rustc || true; command -v gcc; command -v jq; sysctl -n net.core.rmem_max net.core.wmem_max net.ipv4.tcp_no_metrics_save; ip -br addr; lscpu | egrep "^CPU\(s\)|NUMA node"'
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.136.237.149 'URING_NODE_INDEX=3 URING_RUN_ID=zc-asyncwb-adhoc-c8gn48-20260607T094602Z URING_PRIVATE_IPS=172.31.32.153,172.31.36.120,172.31.45.130,172.31.38.46 printf "host=%s\n" "$(hostname)"; command -v cargo || true; command -v rustc || true; command -v gcc; command -v jq; sysctl -n net.core.rmem_max net.core.wmem_max net.ipv4.tcp_no_metrics_save; ip -br addr; lscpu | egrep "^CPU\(s\)|NUMA node"'
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.13.236.119 'URING_NODE_INDEX=4 URING_RUN_ID=zc-asyncwb-adhoc-c8gn48-20260607T094602Z URING_PRIVATE_IPS=172.31.32.153,172.31.36.120,172.31.45.130,172.31.38.46 printf "host=%s\n" "$(hostname)"; command -v cargo || true; command -v rustc || true; command -v gcc; command -v jq; sysctl -n net.core.rmem_max net.core.wmem_max net.ipv4.tcp_no_metrics_save; ip -br addr; lscpu | egrep "^CPU\(s\)|NUMA node"'

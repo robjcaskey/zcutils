@@ -1,0 +1,99 @@
+zcfan-readcache-config: role=client-recv bind=172.31.39.140 peer=127.0.0.1 source_ip=- base_port=38200 leaf_base_port=34000 downstream_base_port=33000 lanes=32 branches=2 bytes_per_lane=1073741824 branch_bytes_per_lane=536870912 cache_bytes_per_lane=67108864 chunk_bytes=1048576 extent_bytes=1048576 workers=32 pin=true cpu_list=96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127 verify=false client_sink=splice-null wait_mode=spin cold_mode=stream-tee slab_slots=4 transport=sendfile/splice/tee/slab page_cache=memfd block_devices=no kernel_raid=no
+zcfan-readcache-topology: worker=0 target_cpu=96
+zcfan-readcache-topology: worker=1 target_cpu=97
+zcfan-readcache-topology: worker=2 target_cpu=98
+zcfan-readcache-topology: worker=3 target_cpu=99
+zcfan-readcache-topology: worker=4 target_cpu=100
+zcfan-readcache-topology: worker=5 target_cpu=101
+zcfan-readcache-topology: worker=6 target_cpu=102
+zcfan-readcache-topology: worker=7 target_cpu=103
+zcfan-readcache-topology: worker=8 target_cpu=104
+zcfan-readcache-topology: worker=9 target_cpu=105
+zcfan-readcache-topology: worker=10 target_cpu=106
+zcfan-readcache-topology: worker=11 target_cpu=107
+zcfan-readcache-topology: worker=12 target_cpu=108
+zcfan-readcache-topology: worker=13 target_cpu=109
+zcfan-readcache-topology: worker=14 target_cpu=110
+zcfan-readcache-topology: worker=15 target_cpu=111
+zcfan-readcache-topology: worker=16 target_cpu=112
+zcfan-readcache-topology: worker=17 target_cpu=113
+zcfan-readcache-topology: worker=18 target_cpu=114
+zcfan-readcache-topology: worker=19 target_cpu=115
+zcfan-readcache-topology: worker=20 target_cpu=116
+zcfan-readcache-topology: worker=21 target_cpu=117
+zcfan-readcache-topology: worker=22 target_cpu=118
+zcfan-readcache-topology: worker=23 target_cpu=119
+zcfan-readcache-topology: worker=24 target_cpu=120
+zcfan-readcache-topology: worker=25 target_cpu=121
+zcfan-readcache-topology: worker=26 target_cpu=122
+zcfan-readcache-topology: worker=27 target_cpu=123
+zcfan-readcache-topology: worker=28 target_cpu=124
+zcfan-readcache-topology: worker=29 target_cpu=125
+zcfan-readcache-topology: worker=30 target_cpu=126
+zcfan-readcache-topology: worker=31 target_cpu=127
+zcfan-readcache-client-accept-route-probe: peer=172.31.33.152:34553 local_socket=172.31.39.140:38200 probe_src=172.31.39.140 route_dev=ens146 route_src=172.31.39.140 route="172.31.33.152 from 172.31.39.140 dev ens146 table 101 uid 1000 \ cache"
+zcfan-readcache-accept: role=client-recv lane=0 peer=172.31.33.152:34553 local=172.31.39.140:38200
+zcfan-readcache-accept: role=client-recv lane=1 peer=172.31.33.152:53225 local=172.31.39.140:38201
+zcfan-readcache-accept: role=client-recv lane=2 peer=172.31.33.152:57033 local=172.31.39.140:38202
+zcfan-readcache-accept: role=client-recv lane=3 peer=172.31.33.152:49165 local=172.31.39.140:38203
+zcfan-readcache-accept: role=client-recv lane=4 peer=172.31.33.152:55189 local=172.31.39.140:38204
+zcfan-readcache-accept: role=client-recv lane=5 peer=172.31.33.152:59223 local=172.31.39.140:38205
+zcfan-readcache-accept: role=client-recv lane=6 peer=172.31.33.152:36105 local=172.31.39.140:38206
+zcfan-readcache-accept: role=client-recv lane=7 peer=172.31.33.152:56445 local=172.31.39.140:38207
+zcfan-readcache-accept: role=client-recv lane=8 peer=172.31.33.152:37449 local=172.31.39.140:38208
+zcfan-readcache-accept: role=client-recv lane=9 peer=172.31.33.152:38065 local=172.31.39.140:38209
+zcfan-readcache-accept: role=client-recv lane=10 peer=172.31.33.152:35415 local=172.31.39.140:38210
+zcfan-readcache-accept: role=client-recv lane=11 peer=172.31.33.152:34349 local=172.31.39.140:38211
+zcfan-readcache-accept: role=client-recv lane=12 peer=172.31.33.152:34643 local=172.31.39.140:38212
+zcfan-readcache-accept: role=client-recv lane=13 peer=172.31.33.152:53893 local=172.31.39.140:38213
+zcfan-readcache-accept: role=client-recv lane=14 peer=172.31.33.152:55303 local=172.31.39.140:38214
+zcfan-readcache-accept: role=client-recv lane=15 peer=172.31.33.152:44041 local=172.31.39.140:38215
+zcfan-readcache-accept: role=client-recv lane=16 peer=172.31.33.152:45753 local=172.31.39.140:38216
+zcfan-readcache-accept: role=client-recv lane=17 peer=172.31.33.152:58581 local=172.31.39.140:38217
+zcfan-readcache-accept: role=client-recv lane=18 peer=172.31.33.152:42189 local=172.31.39.140:38218
+zcfan-readcache-accept: role=client-recv lane=19 peer=172.31.33.152:44287 local=172.31.39.140:38219
+zcfan-readcache-accept: role=client-recv lane=20 peer=172.31.33.152:57545 local=172.31.39.140:38220
+zcfan-readcache-accept: role=client-recv lane=21 peer=172.31.33.152:48613 local=172.31.39.140:38221
+zcfan-readcache-accept: role=client-recv lane=22 peer=172.31.33.152:59189 local=172.31.39.140:38222
+zcfan-readcache-accept: role=client-recv lane=23 peer=172.31.33.152:57387 local=172.31.39.140:38223
+zcfan-readcache-accept: role=client-recv lane=24 peer=172.31.33.152:50807 local=172.31.39.140:38224
+zcfan-readcache-accept: role=client-recv lane=25 peer=172.31.33.152:43679 local=172.31.39.140:38225
+zcfan-readcache-accept: role=client-recv lane=26 peer=172.31.33.152:57025 local=172.31.39.140:38226
+zcfan-readcache-accept: role=client-recv lane=27 peer=172.31.33.152:47827 local=172.31.39.140:38227
+zcfan-readcache-accept: role=client-recv lane=28 peer=172.31.33.152:42071 local=172.31.39.140:38228
+zcfan-readcache-accept: role=client-recv lane=29 peer=172.31.33.152:52649 local=172.31.39.140:38229
+zcfan-readcache-accept: role=client-recv lane=30 peer=172.31.33.152:33659 local=172.31.39.140:38230
+zcfan-readcache-accept: role=client-recv lane=31 peer=172.31.33.152:49537 local=172.31.39.140:38231
+zcfan-readcache-client-recv-worker: worker=0 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.681610 Gbitps=5.108 aux_Gbitps=0.000 target_cpu=96 affinity_applied=true start_cpu=96 end_cpu=96 voluntary_ctxt_switches=9867 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=1 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.658117 Gbitps=5.181 aux_Gbitps=0.000 target_cpu=97 affinity_applied=true start_cpu=97 end_cpu=97 voluntary_ctxt_switches=8779 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=2 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=0.970977 Gbitps=8.847 aux_Gbitps=0.000 target_cpu=98 affinity_applied=true start_cpu=98 end_cpu=98 voluntary_ctxt_switches=9388 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=3 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=0.964213 Gbitps=8.909 aux_Gbitps=0.000 target_cpu=99 affinity_applied=true start_cpu=99 end_cpu=99 voluntary_ctxt_switches=6808 involuntary_ctxt_switches=6 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=4 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.092744 Gbitps=7.861 aux_Gbitps=0.000 target_cpu=100 affinity_applied=true start_cpu=100 end_cpu=100 voluntary_ctxt_switches=6532 involuntary_ctxt_switches=14 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=5 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=2.068210 Gbitps=4.153 aux_Gbitps=0.000 target_cpu=101 affinity_applied=true start_cpu=101 end_cpu=101 voluntary_ctxt_switches=14527 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=6 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.522092 Gbitps=5.644 aux_Gbitps=0.000 target_cpu=102 affinity_applied=true start_cpu=102 end_cpu=102 voluntary_ctxt_switches=13249 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=7 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.224737 Gbitps=7.014 aux_Gbitps=0.000 target_cpu=103 affinity_applied=true start_cpu=103 end_cpu=103 voluntary_ctxt_switches=12380 involuntary_ctxt_switches=1 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=8 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.065345 Gbitps=8.063 aux_Gbitps=0.000 target_cpu=104 affinity_applied=true start_cpu=104 end_cpu=104 voluntary_ctxt_switches=10089 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=9 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.397786 Gbitps=6.145 aux_Gbitps=0.000 target_cpu=105 affinity_applied=true start_cpu=105 end_cpu=105 voluntary_ctxt_switches=5482 involuntary_ctxt_switches=7 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=10 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.180096 Gbitps=7.279 aux_Gbitps=0.000 target_cpu=106 affinity_applied=true start_cpu=106 end_cpu=106 voluntary_ctxt_switches=10804 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=11 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=0.982454 Gbitps=8.743 aux_Gbitps=0.000 target_cpu=107 affinity_applied=true start_cpu=107 end_cpu=107 voluntary_ctxt_switches=7217 involuntary_ctxt_switches=8 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=12 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.974118 Gbitps=4.351 aux_Gbitps=0.000 target_cpu=108 affinity_applied=true start_cpu=108 end_cpu=108 voluntary_ctxt_switches=16974 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=13 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.770174 Gbitps=4.853 aux_Gbitps=0.000 target_cpu=109 affinity_applied=true start_cpu=109 end_cpu=109 voluntary_ctxt_switches=14149 involuntary_ctxt_switches=1 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=14 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.177471 Gbitps=7.295 aux_Gbitps=0.000 target_cpu=110 affinity_applied=true start_cpu=110 end_cpu=110 voluntary_ctxt_switches=10677 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=15 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.060820 Gbitps=8.097 aux_Gbitps=0.000 target_cpu=111 affinity_applied=true start_cpu=111 end_cpu=111 voluntary_ctxt_switches=12847 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=16 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.632691 Gbitps=5.261 aux_Gbitps=0.000 target_cpu=112 affinity_applied=true start_cpu=112 end_cpu=112 voluntary_ctxt_switches=9954 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=17 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.156190 Gbitps=7.430 aux_Gbitps=0.000 target_cpu=113 affinity_applied=true start_cpu=113 end_cpu=113 voluntary_ctxt_switches=8039 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=18 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.742676 Gbitps=4.929 aux_Gbitps=0.000 target_cpu=114 affinity_applied=true start_cpu=114 end_cpu=114 voluntary_ctxt_switches=13435 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=19 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.314743 Gbitps=6.534 aux_Gbitps=0.000 target_cpu=115 affinity_applied=true start_cpu=115 end_cpu=115 voluntary_ctxt_switches=9481 involuntary_ctxt_switches=2 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=20 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.006859 Gbitps=8.531 aux_Gbitps=0.000 target_cpu=116 affinity_applied=true start_cpu=116 end_cpu=116 voluntary_ctxt_switches=9491 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=21 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.067725 Gbitps=8.045 aux_Gbitps=0.000 target_cpu=117 affinity_applied=true start_cpu=117 end_cpu=117 voluntary_ctxt_switches=10264 involuntary_ctxt_switches=2 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=22 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=0.985293 Gbitps=8.718 aux_Gbitps=0.000 target_cpu=118 affinity_applied=true start_cpu=118 end_cpu=118 voluntary_ctxt_switches=13021 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=23 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.722339 Gbitps=4.987 aux_Gbitps=0.000 target_cpu=119 affinity_applied=true start_cpu=119 end_cpu=119 voluntary_ctxt_switches=11675 involuntary_ctxt_switches=3 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=24 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.316468 Gbitps=6.525 aux_Gbitps=0.000 target_cpu=120 affinity_applied=true start_cpu=120 end_cpu=120 voluntary_ctxt_switches=13083 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=25 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.004557 Gbitps=8.551 aux_Gbitps=0.000 target_cpu=121 affinity_applied=true start_cpu=121 end_cpu=121 voluntary_ctxt_switches=13230 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=26 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.760822 Gbitps=4.878 aux_Gbitps=0.000 target_cpu=122 affinity_applied=true start_cpu=122 end_cpu=122 voluntary_ctxt_switches=12898 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=27 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.714131 Gbitps=5.011 aux_Gbitps=0.000 target_cpu=123 affinity_applied=true start_cpu=123 end_cpu=123 voluntary_ctxt_switches=12827 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=28 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=2.069209 Gbitps=4.151 aux_Gbitps=0.000 target_cpu=124 affinity_applied=true start_cpu=124 end_cpu=124 voluntary_ctxt_switches=13590 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=29 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.070340 Gbitps=8.025 aux_Gbitps=0.000 target_cpu=125 affinity_applied=true start_cpu=125 end_cpu=125 voluntary_ctxt_switches=8702 involuntary_ctxt_switches=2 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=30 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.413736 Gbitps=6.076 aux_Gbitps=0.000 target_cpu=126 affinity_applied=true start_cpu=126 end_cpu=126 voluntary_ctxt_switches=11813 involuntary_ctxt_switches=0 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-worker: worker=31 lanes=1 bytes=1073741824 aux_bytes=0 waits=0 seconds=1.872504 Gbitps=4.587 aux_Gbitps=0.000 target_cpu=127 affinity_applied=true start_cpu=127 end_cpu=127 voluntary_ctxt_switches=8634 involuntary_ctxt_switches=7 migrations=0 checksum=0x0000000000000000
+zcfan-readcache-client-recv-summary: workers=32 bytes=34359738368 aux_bytes=0 waits=0 seconds=2.069209 Gbitps=132.842 aux_Gbitps=0.000 voluntary_ctxt_switches=349906 involuntary_ctxt_switches=53 migrations=0 checksum=0x0000000000000000 block_devices=no stripe_in_kernel=no mirror_in_kernel=no

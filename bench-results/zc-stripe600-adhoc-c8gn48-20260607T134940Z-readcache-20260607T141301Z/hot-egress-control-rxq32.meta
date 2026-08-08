@@ -1,0 +1,10 @@
+role=hot-egress-control-rxq32
+client_public=3.15.253.8
+fan_public=3.12.61.75
+client_data=172.31.43.35
+fan_data=172.31.39.140
+base=31100 ports=64 conns=1 bytes_per_conn=2147483648 chunk=1048576 recv=4194304 pipeline=64 send_workers=64 recv_workers=32 ring=8192
+server_cpu_list=96-127
+sender_cpu_list=96-159
+zero_copy_send=send-zc fixed-file override
+zero_copy_recv=zcrx ens146 rxq0 count32

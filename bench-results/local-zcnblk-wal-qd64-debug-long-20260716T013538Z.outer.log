@@ -1,0 +1,71 @@
+agent-coord-result: acquired=true honored=true token=l18c2a14965618574-28d39f owner=codex:zcutils-zcnblk-shm mode=exclusive sensitivity=high priority=50 expires=1784167538 resource=block=zcnblk0 conflicts=none
+[01:35:39] loading placement-free shared-memory client edge
+agent-coord-result: acquired=true honored=true token=l18c2a1496905c849-28d3ec owner=codex:zcutils-zcnblk-shm mode=soft-exclusive sensitivity=critical priority=50 expires=1784167539 resource=cpu=4,8,5,9,6,10,7,11;memory-bandwidth=*;port=29000 conflicts=none
+classification=representative
+coordination_scope=shared-host
+bootstrap_manifest=/home/rob/.local/state/zcutils/adhoc-bootstrap.env
+lane_count=2
+topology_cpu_list=unrestricted
+coordinator_cpu=none
+lane=0 client_cpu=4 target_cpu=5 transport_cpu=inline kernel_cpu=6 leaf_cpu=7,11 hctx_cpus=0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23
+lane=1 client_cpu=8 target_cpu=9 transport_cpu=inline kernel_cpu=10 leaf_cpu=7,11 hctx_cpus=8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31
+hugepages_total=256
+hugepages_free=256
+hugepage_size_kib=2048
+memlock_kib=8192
+loadavg=1.26 1.16 1.29 4/5544 2675710
+coordination_honored=true
+target_poll_us=1000
+target_busy_poll_us=1000
+target_busy_hysteresis_us=10000
+target_poll_clock_check_spins=64
+kernel_completion_poll_us=1000
+kernel_state_interval_ms=1000
+block_ring_mode=normal sqpoll_cpu_list=none sqpoll_idle_ms=1000
+block_engine=uring-fixed
+block_latency_sample_rate=0
+block_ring_stats=1 block_wait_min_completions=1 block_cqe_spin=0 block_cqe_adaptive_spin=0 block_cqe_adaptive_spin_min=0 block_cqe_adaptive_spin_max=4096 block_cqe_adaptive_wait_ns=50000 block_cqe_hot_poll=0 block_cqe_hot_poll_progress_spins=4096
+shm_descriptor_entries_per_channel=512
+shm_sector_order_slots=65536
+shm_payload_entries_per_channel=8192
+writeback_batch_requested=4096 writeback_batch_effective=4096
+request_batch=512 request_batch_fill_us=0 request_batch_fill_min=32
+wal_lane_batch=1 representative_eligible=true
+wal_owner_dispatch=0 wal_owner_extent_records=256 wal_owner_worker_spins=65536 wal_owner_worker_adaptive_spin=1 wal_owner_worker_spin_min=4096 wal_owner_worker_adaptive_wait_ns=50000
+wal_owner_ingress=0 wal_owner_count=2 wal_owner_cpu_list=none
+wal_owner_write_fill_us=0 wal_owner_write_fill_min=256 wal_owner_pipeline_batches=16 wal_owner_pipeline_refill_spins=256 wal_owner_mixed_hysteresis_us=10000
+wal_owner_debounce_us=2 wal_owner_backlog_low_records=16 wal_owner_backlog_high_records=256
+wal_owner_batch_records=2048 wal_owner_fragment_records=2 wal_owner_fragment_fill_us=500 wal_owner_queue_depth=128
+wal_owner_foreground_immediate_limit=1
+wal_owner_max_tx_iovecs=960
+wal_lane_window=4
+wal_split_transport=0 wal_transport_cpu_list=inline
+wal_transport_wait_policy=greedy
+transfer_payload_slots_requested=1 transfer_payload_slots_effective=1
+wal_extent_records=512 wal_extent_fill_us=20 wal_split_min_batch_records=64
+wal_compact_writes=1
+dirty_pressure_reserve=0
+remote_recv_spins=0 leaf_spin_reads=0 leaf_spin_policy=adaptive leaf_spin_budget=adaptive leaf_adaptive_spin_min=256 leaf_adaptive_spin_max=65536 leaf_adaptive_wait_ns=50000 leaf_adaptive_hysteresis_ns=10000000
+remote_recv_policy=adaptive remote_recv_adaptive_spin_min=0 remote_recv_adaptive_spin_max=65536 remote_recv_adaptive_wait_ns=50000 remote_recv_adaptive_hysteresis_ns=10000000
+remote_send_mode=blocking remote_send_ring_entries=256 remote_send_zc_required=1 allow_unsafe_send_zc=0
+order_smoke_pairs=32
+shm_payload_slot_bytes=4096
+shm_lease_release_batch=1
+backend=wal-tcp local_leaf=1 leaf_target=zcmem:256M leaf_addr=127.0.0.1 leaf_port=29000 leaf_submit_mode=blocking
+leaf_source_addr=kernel-route
+leaf_addrs=single-address leaf_source_addrs=single-source
+hugetlb_preflight: free_pages=256 required_pages=128 reason=one-hugepage-per-registered-slot
+PERF WARNING: CPU governor is unchanged; record it before interpreting spread
+[01:35:39] starting terminal userspace WAL leaf on cpu 7,11
+[01:35:39] starting userspace shared target/fan; no placement decision exists in the kernel edge
+[01:35:39] proving same-sector ordering and sync across the live 2-lane path
+zcnblk-order-smoke: PASS target=/dev/zcnblk0 pairs=32 uring_dependency=io-link read_before_write=old-value write_before_read=new-value sync_terminal_state=true cross_lane_same_sector=true cross_lane_cpus=4,8
+[01:35:39] running 1 repeated rw controls on the shared host
+repeat=1 target_context_switches=309 target_per_1k_logical_io=0.015 leaf_context_switches=320 leaf_per_1k_logical_io=0.016 kernel_context_switches=126 kernel_per_1k_logical_io=0.006
+repeat=1 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=rw workers=2 ops_per_worker=10000000 total_ops=20000000 reads=9998661 writes=10001339 read_percent=50 chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=256 ring_mode=normal cqe=16 registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=10.600941 io_seconds=10.590301 slowest_worker_seconds=10.590301 total_cpu_seconds=9.119001 aggregate_cpu_percent=86.11 cpu_ns_per_op=456.0 MiBps=7377.03 ops_per_sec=1888520
+repeat=1 zcblockbench-ring: workers=2 submit_syscalls=5096966 wait_cqe_calls=5097036 wait_syscalls=5097036 cqes_popped=20000000 try_pop_empty=10194070 cqe_spin_loops=0 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+runs=1 min_iops=1888520 mean_iops=1888520 max_iops=1888520 spread_pct=0.00
+zcnblk-shm-target-summary: backend=WalTcpLaneExtent channels=2 requests=20000232 writes=10001437 reads=9998791 syncs=4 write_bytes=40965885952 read_bytes=40955047936 wall_seconds=10.910059 active_seconds=10.554546 active_descriptor_iops=1894940 active_4k_equivalent_iops=1894940 active_payload_Gibitps=57.83 kicks=2 idle_polls=125 lease_releases=20000232 early_write_acks=10001437 dirty_read_hits=2883967 dirty_read_refs=2883967 dirty_pressure_events=3480840 dirty_pressure_evictions=8579627 max_payload_slots_outstanding=5674 remote_read_misses=7114824 completion_window_stalls=0 remote_batches=550753 avg_remote_batch_records=31.08 payload_ownership=submit-sequence-token-transfer payload_slots_free=16384/16384 completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order=hashed-sector-predecessor+lock-free-dirty-directory sync_boundary=remote-global-completion-hwm+all-owner-sync dirty_retention=transferred-page-reference-until-remote-sync-or-targeted-pressure-retire placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination=dirty-shared-slot-reference-or-remote-direct kernel_payload_copies=one-per-direction writeback_materialization_copies=none-userspace;tcp-kernel-copy representative=true
+zcnblk-shm-target-remote-leaf-summary: address=127.0.0.1:59514->127.0.0.1:29000 lanes=2 transport=tcp send_mode=blocking-writev recv_policy=adaptive recv_spin_hits=17357 recv_blocking_fallbacks=18 recv_would_block_polls=2481476 recv_grows=37 recv_shrinks=3 fan_stage=userspace placement=single-leaf write_batches=548508 write_records=10001437 write_bytes=40965885952 compact_write_batches=3676 request_descriptor_bytes=2190881408 wire_descriptor_bytes=2190013088 descriptor_bytes_saved=868320 write_payload_iovecs=10001437 write_payload_tx_iovecs=7576748 write_payload_runs=7576748 avg_write_iovecs_per_batch=18.23 avg_write_tx_iovecs_per_batch=13.81 avg_write_run_bytes=5407 max_write_payload_run_bytes=131072 read_batches=547077 read_records=7114824 read_bytes=29142319104 syncs=8 control_writev_batches=0 send_zc_notifications=0 send_zc_copied_notifications=0 payload_source=shared-slot-coalesced-iovec read_payload_destination=shared-slot-direct result_contract=fifo-mixed-request-batch+global-sync-epoch
+zcnblk-wal-leaf-summary: streams=2 read_bytes=29142319104 write_bytes=40965885952 payload_read_bytes=43155899040 heap_payload_bytes=2190013088 heap_payload_descriptor_bytes=2190013088 heap_payload_data_bytes=0 direct_memory_recv_bytes=40965885952 memfd_payload_bytes=0 lease_submit_bytes=0 memfd_lease_submit_bytes=0 copy_submit_bytes=0 phase_payload_read_seconds=3.569984 phase_payload_alloc_seconds=0.031913 phase_payload_recv_seconds=3.182041 phase_decode_seconds=0.299656 phase_submit_seconds=2.491987 phase_result_write_seconds=2.443301 result_records=17116269 result_batches=550753 result_range_batches=3676 frames=17116261 blocking_io_frames=17116261 uring_io_frames=0 write_submit_runs=10000754 max_write_submit_run_frames=32 stream_thread_cpu_seconds=20.117576 stream_cpu_wall_ratio=1.844 voluntary_ctxt_switches=104 involuntary_ctxt_switches=224 migrations=0 frames_per_sec=1568955
+artifact=/home/rob/zcutils/bench-results/local-zcnblk-wal-qd64-debug-long-20260716T013538Z

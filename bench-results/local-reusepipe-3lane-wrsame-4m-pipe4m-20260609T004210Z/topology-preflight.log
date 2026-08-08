@@ -1,0 +1,63 @@
+topology_preflight=1
+run_mode=local
+strict=1
+topology_preflight_fatal=0
+topology_busy_pct=1.0
+local_mapped_cpus=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
+local_mapped_cpu_count=15
+stage=client cpus=0-2 unique_cpus=3
+stage=fan-handler cpus=3-5 unique_cpus=3
+stage=fan-async cpus=6-8 unique_cpus=3
+stage=leaf0 cpus=9-11 unique_cpus=3
+stage=leaf1 cpus=12-14 unique_cpus=3
+cpu=0 governor=performance
+cpu=1 governor=performance
+cpu=2 governor=performance
+cpu=3 governor=performance
+cpu=4 governor=performance
+cpu=5 governor=performance
+cpu=6 governor=performance
+cpu=7 governor=performance
+cpu=8 governor=performance
+cpu=9 governor=performance
+cpu=10 governor=performance
+cpu=11 governor=performance
+cpu=12 governor=performance
+cpu=13 governor=performance
+cpu=14 governor=performance
+== mapped cpu mhz sample ==
+CPU CORE SOCKET NODE L1d:L1i:L2:L3 ONLINE    MAXMHZ   MINMHZ       MHZ
+  0    0      0    0 0:0:0:0          yes 5756.4521 624.1940 5443.6030
+  1    1      0    0 1:1:1:0          yes 5756.4521 624.1940 5446.5781
+  2    2      0    0 2:2:2:0          yes 5756.4521 624.1940 4752.5239
+  3    3      0    0 3:3:3:0          yes 5756.4521 624.1940 5446.9512
+  4    4      0    0 4:4:4:0          yes 5756.4521 624.1940 5450.6128
+  5    5      0    0 5:5:5:0          yes 5756.4521 624.1940  624.1940
+  6    6      0    0 6:6:6:0          yes 5756.4521 624.1940 5412.3140
+  7    7      0    0 7:7:7:0          yes 5756.4521 624.1940 5430.1089
+  8    8      0    0 8:8:8:1          yes 5756.4521 624.1940 5481.7861
+  9    9      0    0 9:9:9:1          yes 5756.4521 624.1940 5421.3579
+ 10   10      0    0 10:10:10:1       yes 5756.4521 624.1940 4177.8779
+ 11   11      0    0 11:11:11:1       yes 5756.4521 624.1940 5406.6099
+ 12   12      0    0 12:12:12:1       yes 5756.4521 624.1940 5476.9048
+ 13   13      0    0 13:13:13:1       yes 5756.4521 624.1940 5027.0801
+ 14   14      0    0 14:14:14:1       yes 5756.4521 624.1940 3841.6689
+PERF WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+busy_cpu=13 pcpu=1.2 pid=11400 tid=3801265 comm=sqlx-sqlite-wor
+busy_cpu=11 pcpu=1.0 pid=447708 tid=448014 comm=qtp1497170291-6
+busy_cpu=13 pcpu=1.0 pid=447708 tid=448373 comm=qtp1497170291-1
+busy_cpu=13 pcpu=1.0 pid=447708 tid=448374 comm=qtp1497170291-1
+busy_cpu=14 pcpu=1.0 pid=447708 tid=448483 comm=qtp1497170291-1
+busy_cpu=11 pcpu=2.6 pid=447708 tid=3778301 comm=qtp1497170291-3
+busy_cpu=9 pcpu=2.2 pid=447708 tid=3778428 comm=qtp1497170291-3
+busy_cpu=12 pcpu=5.8 pid=3796928 tid=3796945 comm=C2
+busy_cpu=9 pcpu=5.8 pid=3796928 tid=3797006 comm=Daemon
+busy_cpu=9 pcpu=800 pid=3803552 tid=3803552 comm=ps
+busy_cpu=10 pcpu=1.2 pid=3926032 tid=3715773 comm=sqlx-sqlite-wor
+busy_cpu=9 pcpu=1.2 pid=3926032 tid=3722777 comm=sqlx-sqlite-wor
+busy_cpu=13 pcpu=1.2 pid=3926032 tid=3794552 comm=tokio-runtime-w
+busy_cpu=13 pcpu=1.2 pid=3926032 tid=3794725 comm=tokio-runtime-w
+memlock_limit=8192
+PERF WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+nr_hugepages=0
+PERF WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons

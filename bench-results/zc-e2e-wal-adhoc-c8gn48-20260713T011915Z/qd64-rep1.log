@@ -1,0 +1,6 @@
+unlimited
+128
+zcblockbench-plan: target=/dev/zcnblk0 engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 chunk_bytes=4096 iodepth=64 ring_entries=256 read_percent=50 region_bytes_per_worker=134217728 ring_mode=normal cqe=16 registered_ring=false sqpoll_idle_ms=1000 buffers=hugetlb pin_workers=true latency_sample_rate=1 target_kind=block
+zcblockbench-target: target=/dev/zcnblk0 total_region_bytes=268435456 device_bytes=268435456 required_alignment=4096 segment_bytes=2097152
+zcblockbench-worker: affinity_index=0 target_cpu=2 status=ok
+zcblockbench-worker: affinity_index=1 target_cpu=98 status=ok

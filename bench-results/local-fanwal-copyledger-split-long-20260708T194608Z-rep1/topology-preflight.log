@@ -1,0 +1,44 @@
+topology_preflight=1
+run_mode=local
+strict=1
+topology_preflight_fatal=0
+topology_busy_pct=1.0
+local_mapped_cpus=0,1,2,3,4,5,6,7,8,9,10,11
+local_mapped_cpu_count=12
+stage=client cpus=0-3 unique_cpus=4
+stage=fan-handler cpus=4-7 unique_cpus=4
+stage=fan-async cpus=8-11 unique_cpus=4
+cpu=0 governor=powersave
+cpu=1 governor=powersave
+cpu=2 governor=powersave
+cpu=3 governor=powersave
+cpu=4 governor=powersave
+cpu=5 governor=powersave
+cpu=6 governor=powersave
+cpu=7 governor=powersave
+cpu=8 governor=powersave
+cpu=9 governor=powersave
+cpu=10 governor=powersave
+cpu=11 governor=powersave
+PERF WARNING: mapped CPUs are not all using performance governor: cpu0=powersave,cpu1=powersave,cpu2=powersave,cpu3=powersave,cpu4=powersave,cpu5=powersave,cpu6=powersave,cpu7=powersave,cpu8=powersave,cpu9=powersave,cpu10=powersave,cpu11=powersave
+== mapped cpu mhz sample ==
+CPU CORE SOCKET NODE L1d:L1i:L2:L3 ONLINE    MAXMHZ   MINMHZ       MHZ
+  0    0      0    0 0:0:0:0          yes 5756.4521 624.1940 5554.9712
+  1    1      0    0 1:1:1:0          yes 5756.4521 624.1940 5558.7549
+  2    2      0    0 2:2:2:0          yes 5756.4521 624.1940 2779.1550
+  3    3      0    0 3:3:3:0          yes 5756.4521 624.1940 5508.3110
+  4    4      0    0 4:4:4:0          yes 5756.4521 624.1940 5539.8130
+  5    5      0    0 5:5:5:0          yes 5756.4521 624.1940 5563.0879
+  6    6      0    0 6:6:6:0          yes 5756.4521 624.1940 5559.4219
+  7    7      0    0 7:7:7:0          yes 5756.4521 624.1940 5556.2949
+  8    8      0    0 8:8:8:1          yes 5756.4521 624.1940 5589.3208
+  9    9      0    0 9:9:9:1          yes 5756.4521 624.1940 4618.3901
+ 10   10      0    0 10:10:10:1       yes 5756.4521 624.1940 5615.3999
+ 11   11      0    0 11:11:11:1       yes 5756.4521 624.1940 5562.5029
+PERF WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+busy_cpu=11 pcpu=7.0 pid=1416555 tid=1416555 comm=postgres
+busy_cpu=9 pcpu=6.9 pid=1590277 tid=1590277 comm=postgres
+memlock_limit=8192
+PERF WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+nr_hugepages=0
+PERF WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons

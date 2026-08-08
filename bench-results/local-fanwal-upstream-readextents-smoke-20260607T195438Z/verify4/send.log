@@ -1,0 +1,5 @@
+zcnblk-send: addr=127.0.0.1 shard_count=1 base_port=41300 ports=4 connections_per_port=1 total_connections=4 bytes_per_connection=8388608 chunk_bytes=4096 workers=4 op_mode=write-sync-read read_window=4096 write_window=8192 access=linear verify_reads=yes wait_write_acks=no batch_depth=512 drain_ready_responses=yes payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral latency=no encryption=none aes_frame_bytes=65536
+zcnblk-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcnblk-send-worker: affinity_index=2 target_cpu=2 status=ok
+zcnblk-send-worker: affinity_index=1 target_cpu=1 status=ok
+zcnblk-send-worker: affinity_index=3 target_cpu=3 status=ok

@@ -1,0 +1,20 @@
+2026-07-16 08:41:54.481 EDT [1592464] LOG:  starting PostgreSQL 17.10 (Debian 17.10-0+deb13u1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+2026-07-16 08:41:54.481 EDT [1592464] LOG:  listening on Unix socket "/tmp/zc-pgbench-sync-hwm-socket/.s.PGSQL.55432"
+2026-07-16 08:41:54.787 EDT [1592488] LOG:  database system was shut down at 2026-07-16 08:41:54 EDT
+2026-07-16 08:41:54.787 EDT [1592489] FATAL:  the database system is starting up
+2026-07-16 08:41:54.840 EDT [1592495] FATAL:  the database system is starting up
+2026-07-16 08:41:54.889 EDT [1592464] LOG:  database system is ready to accept connections
+2026-07-16 08:41:54.991 EDT [1592504] FATAL:  role "rob" does not exist
+2026-07-16 08:43:52.584 EDT [1592641] PANIC:  could not fdatasync file "00000001000000000000000C": Input/output error
+2026-07-16 08:43:52.584 EDT [1592641] STATEMENT:  END;
+2026-07-16 08:43:52.585 EDT [1595387] WARNING:  could not create relation-cache initialization file "global/pg_internal.init.1595387": Input/output error
+2026-07-16 08:43:52.585 EDT [1595387] DETAIL:  Continuing anyway, but there's something wrong.
+2026-07-16 08:43:52.585 EDT [1595387] WARNING:  could not create relation-cache initialization file "base/1/pg_internal.init.1595387": Read-only file system
+2026-07-16 08:43:52.585 EDT [1595387] DETAIL:  Continuing anyway, but there's something wrong.
+2026-07-16 08:43:52.585 EDT [1595387] ERROR:  could not open file "base/1/1247": Read-only file system
+2026-07-16 08:43:52.585 EDT [1595387] CONTEXT:  automatic analyze of table "template1.pg_catalog.pg_type"
+2026-07-16 08:43:52.592 EDT [1592464] LOG:  server process (PID 1592641) was terminated by signal 6: Aborted
+2026-07-16 08:43:52.592 EDT [1592464] DETAIL:  Failed process was running: END;
+2026-07-16 08:43:52.592 EDT [1592464] LOG:  terminating any other active server processes
+2026-07-16 08:43:52.607 EDT [1592464] LOG:  all server processes terminated; reinitializing
+2026-07-16 08:43:52.617 EDT [1592464] PANIC:  could not open file "global/pg_control": Read-only file system

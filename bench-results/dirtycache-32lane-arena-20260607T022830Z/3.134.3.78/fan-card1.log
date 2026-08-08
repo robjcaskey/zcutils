@@ -1,0 +1,238 @@
+zcnblk-fan-wal: leaves=172.31.40.9:39200 bind=172.31.41.126 base_port=38200 ports=32 connections_per_port=1 total_connections=32 bytes_per_connection=536870912 chunk_bytes=4096 stripe_bytes=4096 leaf_base_port=39200 source_ip=172.31.41.126 source_ports=kernel-ephemeral pin_handlers=true placement=stripe order=per-4k-record order_shards=768 write_acks=true write_ack_mode=admit batch_window=128 result_ranges=true result_arena=true result_arena_slots=512 result_arena_spin=true result_arena_spin_budget=100000 coalesce_leaf_payloads=false split_mixed_writes=false result_arena_inline_primary=false result_wait_policy=greedy result_spin_budget=100000 result_spin_min_outstanding=32 dirty_cache=enabled dirty_cache_shards=768 writeback_dirty_budget=enabled soft_dirty_bytes=12884901888 hard_dirty_bytes=17179869184 plan=none placement_epoch=0 protocol=fan-wal-v2
+zcnblk-fan-wal-leaf-note: start each edge with zcnblk-wal-leaf; leaf block devices are terminal media only after userspace placement
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:47437 lane=2 port=38202 conn=0 incoming_cpu=162 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:38899 lane=4 port=38204 conn=0 incoming_cpu=164 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:46403 lane=0 port=38200 conn=0 incoming_cpu=160 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:48849 lane=1 port=38201 conn=0 incoming_cpu=161 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:49387 lane=7 port=38207 conn=0 incoming_cpu=167 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:57131 lane=5 port=38205 conn=0 incoming_cpu=165 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:52649 lane=9 port=38209 conn=0 incoming_cpu=169 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:35929 lane=6 port=38206 conn=0 incoming_cpu=166 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:50401 lane=10 port=38210 conn=0 incoming_cpu=170 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:41055 lane=8 port=38208 conn=0 incoming_cpu=168 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:50169 lane=11 port=38211 conn=0 incoming_cpu=171 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:60067 lane=12 port=38212 conn=0 incoming_cpu=172 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:47507 lane=13 port=38213 conn=0 incoming_cpu=173 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:54693 lane=14 port=38214 conn=0 incoming_cpu=174 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:48267 lane=15 port=38215 conn=0 incoming_cpu=175 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:35471 lane=18 port=38218 conn=0 incoming_cpu=178 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:41719 lane=17 port=38217 conn=0 incoming_cpu=177 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:44139 lane=16 port=38216 conn=0 incoming_cpu=176 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:39141 lane=20 port=38220 conn=0 incoming_cpu=180 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:44413 lane=22 port=38222 conn=0 incoming_cpu=182 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:46849 lane=19 port=38219 conn=0 incoming_cpu=179 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:51143 lane=21 port=38221 conn=0 incoming_cpu=181 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:58943 lane=23 port=38223 conn=0 incoming_cpu=183 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:60429 lane=24 port=38224 conn=0 incoming_cpu=184 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:40835 lane=25 port=38225 conn=0 incoming_cpu=185 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:59623 lane=26 port=38226 conn=0 incoming_cpu=186 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:41845 lane=28 port=38228 conn=0 incoming_cpu=188 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:34281 lane=29 port=38229 conn=0 incoming_cpu=189 incoming_napi_id=unknown
+tcp-bench-mux-accept-route-probe: peer=172.31.41.126:54025 local_socket=172.31.41.126:38203 probe_src=tcp-bench-uring-mux-server: accepted peer=172.31.41.126:39923 lane=30 port=38230 conn=0 incoming_cpu=190 incoming_napi_id=unknown
+172.31.41.126 route_dev=lo route_src=172.31.41.126 route="local 172.31.41.126 from 172.31.41.126 dev lo table local uid 1000 \ cache <local>"
+PERF WARNING: tcp-bench-mux-accept: route to peer=172.31.41.126tcp-bench-uring-mux-server: accepted peer=172.31.41.126:35867 lane=31 port=38231 conn=0 incoming_cpu=191 incoming_napi_id=unknown
+ uses dev=lo but expected ens146; fix host routes, source binding, or data-NIC selection before treating this run as topologically aligned
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:54025 lane=3 port=38203 conn=0 incoming_cpu=163 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=172.31.41.126:46603 lane=27 port=38227 conn=0 incoming_cpu=187 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=0 target_cpu=96 status=ok
+zcnblk-fan-wal-upstream: handler=0 peer=172.31.41.126:46403 lane=0 port=38200 conn=0 incoming_cpu=160 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=1 target_cpu=97 status=ok
+zcnblk-fan-wal-handler: affinity_index=2 target_cpu=98 status=ok
+zcnblk-fan-wal-upstream: handler=1 peer=172.31.41.126:48849 lane=1 port=38201 conn=0 incoming_cpu=161 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=2 peer=172.31.41.126:47437 lane=2 port=38202 conn=0 incoming_cpu=162 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=3 target_cpu=99 status=ok
+zcnblk-fan-wal-upstream: handler=3 peer=172.31.41.126:54025 lane=3 port=38203 conn=0 incoming_cpu=163 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=4 target_cpu=100 status=ok
+zcnblk-fan-wal-handler: affinity_index=5 target_cpu=101 status=ok
+zcnblk-fan-wal-upstream: handler=4 peer=172.31.41.126:38899 lane=4 port=38204 conn=0 incoming_cpu=164 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=6 target_cpu=102 status=ok
+zcnblk-fan-wal-upstream: handler=5 peer=172.31.41.126:57131 lane=5 port=38205 conn=0 incoming_cpu=165 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=7 target_cpu=103 status=ok
+zcnblk-fan-wal-upstream: handler=6 peer=172.31.41.126:35929 lane=6 port=38206 conn=0 incoming_cpu=166 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=7 peer=172.31.41.126:49387 lane=7 port=38207 conn=0 incoming_cpu=167 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=8 target_cpu=104 status=ok
+zcnblk-fan-wal-leaf-stream: handler=3 leaf=0 addr=172.31.40.9 port=39203 lane=3 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=3 lane=3 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-leaf-stream: handler=1 leaf=0 addr=172.31.40.9 port=39201 lane=1 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=1 lane=1 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-upstream: handler=8 peer=172.31.41.126:41055 lane=8 port=38208 conn=0 incoming_cpu=168 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=9 target_cpu=105 status=ok
+zcnblk-fan-wal-leaf-stream: handler=0 leaf=0 addr=172.31.40.9 port=39200 lane=0 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=0 lane=0 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-handler: affinity_index=10 target_cpu=106 status=ok
+zcnblk-fan-wal-upstream: handler=9 peer=172.31.41.126:52649 lane=9 port=38209 conn=0 incoming_cpu=169 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=4 leaf=0 addr=172.31.40.9 port=39204 lane=4 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=4 lane=4 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-upstream: handler=10 peer=172.31.41.126:50401 lane=10 port=38210 conn=0 incoming_cpu=170 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=6 leaf=0 addr=172.31.40.9 port=39206 lane=6 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=6 lane=6 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-leaf-stream: handler=5 leaf=0 addr=172.31.40.9 port=39205 lane=5 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=5 lane=5 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-leaf-stream: handler=7 leaf=0 addr=172.31.40.9 port=39207 lane=7 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=7 lane=7 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-handler: affinity_index=12 target_cpu=108 status=ok
+zcnblk-fan-wal-handler: affinity_index=13 target_cpu=109 status=ok
+zcnblk-fan-wal-upstream: handler=12 peer=172.31.41.126:60067 lane=12 port=38212 conn=0 incoming_cpu=172 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=11 target_cpu=107 status=ok
+zcnblk-fan-wal-upstream: handler=13 peer=172.31.41.126:47507 lane=13 port=38213 conn=0 incoming_cpu=173 incoming_napi_id=unknown
+zcnblk-fan-wal-result-receiver: affinity_index=35 target_cpu=131 status=ok
+zcnblk-fan-wal-upstream: handler=11 peer=172.31.41.126:50169 lane=11 port=38211 conn=0 incoming_cpu=171 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=14 target_cpu=110 status=ok
+zcnblk-fan-wal-upstream: handler=14 peer=172.31.41.126:54693 lane=14 port=38214 conn=0 incoming_cpu=174 incoming_napi_id=unknown
+zcnblk-fan-wal-result-receiver: affinity_index=33 target_cpu=129 status=ok
+zcnblk-fan-wal-handler: affinity_index=15 target_cpu=111 status=ok
+zcnblk-fan-wal-leaf-stream: handler=12 leaf=0 addr=172.31.40.9 port=39212 lane=12 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=12 lane=12 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-upstream: handler=15 peer=172.31.41.126:48267 lane=15 port=38215 conn=0 incoming_cpu=175 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=13 leaf=0 addr=172.31.40.9 port=39213 lane=13 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=13 lane=13 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-handler: affinity_index=16 target_cpu=112 status=ok
+zcnblk-fan-wal-upstream: handler=16 peer=172.31.41.126:44139 lane=16 port=38216 conn=0 incoming_cpu=176 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=8 leaf=0 addr=172.31.40.9 port=39208 lane=8 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=8 lane=8 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-leaf-stream: handler=15 leaf=0 addr=172.31.40.9 port=39215 lane=15 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=15 lane=15 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-leaf-stream: handler=9 leaf=0 addr=172.31.40.9 port=39209 lane=9 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=9 lane=9 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-leaf-stream: handler=10 leaf=0 addr=172.31.40.9 port=39210 lane=10 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=10 lane=10 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-leaf-stream: handler=14 leaf=0 addr=172.31.40.9 port=39214 lane=14 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=14 lane=14 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-leaf-stream: handler=11 leaf=0 addr=172.31.40.9 port=39211 lane=11 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=11 lane=11 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-leaf-stream: handler=16 leaf=0 addr=172.31.40.9 port=39216 lane=16 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=16 lane=16 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+tcp-bench-connect-route-probe: peer=172.31.40.9:39202 local_socket=172.31.41.126:38959 probe_src=172.31.41.126 route_dev=ens146 route_src=172.31.41.126 route="172.31.40.9 from 172.31.41.126 dev ens146 table 101 uid 1000 \ cache"
+zcnblk-fan-wal-leaf-stream: handler=2 leaf=0 addr=172.31.40.9 port=39202 lane=2 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=2 lane=2 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-result-receiver: affinity_index=38 target_cpu=134 status=ok
+zcnblk-fan-wal-handler-error: handler=3 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-result-receiver: affinity_index=37 target_cpu=133 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=32 target_cpu=128 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=36 target_cpu=132 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=34 target_cpu=130 status=ok
+zcnblk-fan-wal-handler: affinity_index=17 target_cpu=113 status=ok
+zcnblk-fan-wal-upstream: handler=17 peer=172.31.41.126:41719 lane=17 port=38217 conn=0 incoming_cpu=177 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=17 leaf=0 addr=172.31.40.9 port=39217 lane=17 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=17 lane=17 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-result-receiver: affinity_index=41 target_cpu=137 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=39 target_cpu=135 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=44 target_cpu=140 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=45 target_cpu=141 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=47 target_cpu=143 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=42 target_cpu=138 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=40 target_cpu=136 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=43 target_cpu=139 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=46 target_cpu=142 status=ok
+zcnblk-fan-wal-handler-error: handler=14 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler: affinity_index=18 target_cpu=114 status=ok
+zcnblk-fan-wal-upstream: handler=18 peer=172.31.41.126:35471 lane=18 port=38218 conn=0 incoming_cpu=178 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=9 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=7 error=fan WAL result arena supports only pipelined write batches in this pathzcnblk-fan-wal-leaf-stream: handler=18 leaf=0 addr=172.31.40.9 port=39218 lane=18 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+
+zcnblk-fan-wal-result-arena: handler=18 lane=18 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-handler-error: handler=11 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=10 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=12 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=17 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=13 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=2 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=8 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=0 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=5 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=16 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=4 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=1 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=6 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=15 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=18 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-result-receiver: affinity_index=50 target_cpu=146 status=ok
+zcnblk-fan-wal-handler: affinity_index=21 target_cpu=117 status=ok
+zcnblk-fan-wal-upstream: handler=21 peer=172.31.41.126:51143 lane=21 port=38221 conn=0 incoming_cpu=181 incoming_napi_id=unknown
+zcnblk-fan-wal-result-receiver: affinity_index=48 target_cpu=144 status=ok
+zcnblk-fan-wal-leaf-stream: handler=21 leaf=0 addr=172.31.40.9 port=39221 lane=21 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=21 lane=21 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-handler: affinity_index=19 target_cpu=115 status=ok
+zcnblk-fan-wal-handler: affinity_index=22 target_cpu=118 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=49 target_cpu=145 status=ok
+zcnblk-fan-wal-upstream: handler=19 peer=172.31.41.126:46849 lane=19 port=38219 conn=0 incoming_cpu=179 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=22 peer=172.31.41.126:44413 lane=22 port=38222 conn=0 incoming_cpu=182 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=24 target_cpu=120 status=ok
+zcnblk-fan-wal-upstream: handler=24 peer=172.31.41.126:60429 lane=24 port=38224 conn=0 incoming_cpu=184 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=19 leaf=0 addr=172.31.40.9 port=39219 lane=19 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-leaf-stream: handler=22 leaf=0 addr=172.31.40.9 port=39222 lane=22 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=22 lane=22 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-result-arena: handler=19 lane=19 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-handler: affinity_index=20 target_cpu=116 status=ok
+zcnblk-fan-wal-handler-error: handler=21 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-leaf-stream: handler=24 leaf=0 addr=172.31.40.9 port=39224 lane=24 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-handler: affinity_index=25 target_cpu=121 status=ok
+zcnblk-fan-wal-upstream: handler=20 peer=172.31.41.126:39141 lane=20 port=38220 conn=0 incoming_cpu=180 incoming_napi_id=unknown
+zcnblk-fan-wal-result-arena: handler=24 lane=24 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-upstream: handler=25 peer=172.31.41.126:40835 lane=25 port=38225 conn=0 incoming_cpu=185 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=26 target_cpu=122 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=53 target_cpu=149 status=ok
+zcnblk-fan-wal-upstream: handler=26 peer=172.31.41.126:59623 lane=26 port=38226 conn=0 incoming_cpu=186 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=19 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-leaf-stream: handler=20 leaf=0 addr=172.31.40.9 port=39220 lane=20 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=20 lane=20 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-leaf-stream: handler=25 leaf=0 addr=172.31.40.9 port=39225 lane=25 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=25 lane=25 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-handler: affinity_index=28 target_cpu=124 status=ok
+zcnblk-fan-wal-handler: affinity_index=29 target_cpu=125 status=ok
+zcnblk-fan-wal-handler: affinity_index=23 target_cpu=119 status=ok
+zcnblk-fan-wal-upstream: handler=29 peer=172.31.41.126:34281 lane=29 port=38229 conn=0 incoming_cpu=189 incoming_napi_id=unknown
+zcnblk-fan-wal-upstream: handler=28 peer=172.31.41.126:41845 lane=28 port=38228 conn=0 incoming_cpu=188 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=24 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-upstream: handler=23 peer=172.31.41.126:58943 lane=23 port=38223 conn=0 incoming_cpu=183 incoming_napi_id=unknown
+zcnblk-fan-wal-handler-error: handler=22 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-leaf-stream: handler=26 leaf=0 addr=172.31.40.9 port=39226 lane=26 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=26 lane=26 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-handler: affinity_index=27 target_cpu=123 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=51 target_cpu=147 status=ok
+zcnblk-fan-wal-upstream: handler=27 peer=172.31.41.126:46603 lane=27 port=38227 conn=0 incoming_cpu=187 incoming_napi_id=unknown
+zcnblk-fan-wal-result-receiver: affinity_index=56 target_cpu=152 status=ok
+zcnblk-fan-wal-leaf-stream: handler=28 leaf=0 addr=172.31.40.9 port=39228 lane=28 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-receiver: affinity_index=54 target_cpu=150 status=ok
+zcnblk-fan-wal-result-arena: handler=28 lane=28 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-leaf-stream: handler=29 leaf=0 addr=172.31.40.9 port=39229 lane=29 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=29 lane=29 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-leaf-stream: handler=23 leaf=0 addr=172.31.40.9 port=39223 lane=23 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=23 lane=23 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-leaf-stream: handler=27 leaf=0 addr=172.31.40.9 port=39227 lane=27 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=27 lane=27 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+zcnblk-fan-wal-handler-error: handler=25 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler-error: handler=20 error=fan WAL result arena supports only pipelined write batches in this path
+zcnblk-fan-wal-handler: affinity_index=31 target_cpu=127 status=ok
+zcnblk-fan-wal-upstream: handler=31 peer=172.31.41.126:35867 lane=31 port=38231 conn=0 incoming_cpu=191 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=31 leaf=0 addr=172.31.40.9 port=39231 lane=31 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-result-arena: handler=31 lane=31 leaves=1 slots=512 backend=memfd-mmap-shared spin_reads=true spin_budget=100000 inline_primary=false mode=range-result-batches-only
+Error: Custom { kind: InvalidInput, error: "fan WAL result arena supports only pipelined write batches in this path" }
+zcnblk-fan-wal-handler: affinity_index=30 target_cpu=126 status=ok
+zcnblk-fan-wal-upstream: handler=30 peer=172.31.41.126:39923 lane=30 port=38230 conn=0 incoming_cpu=190 incoming_napi_id=unknown
+zcnblk-fan-wal-result-receiver: affinity_index=57 target_cpu=153 status=ok
+zcnblk-fan-wal-result-receiver: affinity_index=52 target_cpu=148 status=ok
+Command exited with non-zero status 1
+	Command being timed: "/home/ubuntu/uring-play/target/release/zcutils zcnblk-fan --engine wal --leaves 172.31.40.9:39200 --bind 172.31.41.126 --base-port 38200 --ports 32 --connections-per-port 1 --bytes-per-connection 512M --chunk-bytes 4096 --stripe-bytes 4096 --leaf-base-port 39200 --pin-handlers true --mode stripe"
+	User time (seconds): 0.02
+	System time (seconds): 0.06
+	Percent of CPU this job got: 2%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:03.00
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 3104
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 1289
+	Voluntary context switches: 419
+	Involuntary context switches: 47
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 56
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1

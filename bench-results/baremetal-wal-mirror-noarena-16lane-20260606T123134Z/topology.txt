@@ -1,0 +1,12 @@
+topology=baremetal localhost zcnblk-send -> zcnblk-fan --engine wal --mode mirror -> zcnblk-wal-leaf zcdevnull0,zcdevnull1
+variant=no_result_arena_16lane
+ports=16
+connections_per_port=1
+bytes_per_connection=128M
+chunk_bytes=4K
+request_batch_depth=256
+fan_batch_window=32
+dirty_budget_hard=2G
+dirty_budget_soft=1536M
+cpu_map=leaf0_workers:0-7,leaf1_workers:16-23,fan_handlers:8-15+24-31,sender_workers:0-7+16-23
+lane_map=laneN has one sender worker, one fan handler, and one stream per leaf; sender shares leaf CPUs on this 32-thread host.

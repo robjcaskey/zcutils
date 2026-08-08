@@ -1,0 +1,185 @@
+bench with linearizable range
+2026/08/08 10:58:51 INFO: [core] original dial target is: "etcd-endpoints://0x1d76062dd680/127.0.0.1:22379"
+2026/08/08 10:58:51 INFO: [core] [Channel #3] Channel created for target "etcd-endpoints://0x1d76062dd680/127.0.0.1:22379"
+2026/08/08 10:58:51 INFO: [core] [Channel #3] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"etcd-endpoints", Opaque:"", User:(*url.Userinfo)(nil), Host:"0x1d76062dd680", Path:"/127.0.0.1:22379", Fragment:"", RawQuery:"", RawPath:"", RawFragment:"", ForceQuery:false, OmitHost:false}}
+2026/08/08 10:58:51 INFO: [core] [Channel #3] Channel authority set to "127.0.0.1:22379"
+2026/08/08 10:58:51 INFO: [core] [Channel #3] Channel Connectivity change to CONNECTING
+2026/08/08 10:58:51 INFO: [core] [Channel #1 SubChannel #2] Subchannel Connectivity change to CONNECTING
+2026/08/08 10:58:51 INFO: [core] [Channel #3] Resolver state updated: {
+  "Addresses": null,
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:22379",
+          "ServerName": "127.0.0.1:22379",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": {
+    "Config": {
+      "Config": null,
+      "Methods": {}
+    },
+    "Err": null
+  },
+  "Attributes": null
+} (service config updated)
+2026/08/08 10:58:51 INFO: [core] [Channel #1 SubChannel #2] Subchannel picks a new address "127.0.0.1:22379" to connect
+2026/08/08 10:58:51 INFO: [core] [Channel #3] Channel switches to new LB policy "round_robin"
+2026/08/08 10:58:51 INFO: [roundrobin] [0x1d76064f1590] Created
+2026/08/08 10:58:51 INFO: [core] [Channel #3 SubChannel #4] Subchannel created
+2026/08/08 10:58:51 INFO: [core] [Channel #3] Channel exiting idle mode
+2026/08/08 10:58:51 INFO: [core] original dial target is: "etcd-endpoints://0x1d760640ef00/127.0.0.1:22379"
+2026/08/08 10:58:51 INFO: [core] [Channel #5] Channel created for target "etcd-endpoints://0x1d760640ef00/127.0.0.1:22379"
+2026/08/08 10:58:51 INFO: [core] [Channel #5] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"etcd-endpoints", Opaque:"", User:(*url.Userinfo)(nil), Host:"0x1d760640ef00", Path:"/127.0.0.1:22379", Fragment:"", RawQuery:"", RawPath:"", RawFragment:"", ForceQuery:false, OmitHost:false}}
+2026/08/08 10:58:51 INFO: [core] [Channel #5] Channel authority set to "127.0.0.1:22379"
+2026/08/08 10:58:51 INFO: [core] [Channel #5] Channel Connectivity change to CONNECTING
+2026/08/08 10:58:51 INFO: [core] [Channel #5] Resolver state updated: {
+  "Addresses": null,
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:22379",
+          "ServerName": "127.0.0.1:22379",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": {
+    "Config": {
+      "Config": null,
+      "Methods": {}
+    },
+    "Err": null
+  },
+  "Attributes": null
+} (service config updated)
+2026/08/08 10:58:51 INFO: [core] [Channel #5] Channel switches to new LB policy "round_robin"
+2026/08/08 10:58:51 INFO: [roundrobin] [0x1d76064f1d40] Created
+2026/08/08 10:58:51 INFO: [core] [Channel #5 SubChannel #6] Subchannel created
+2026/08/08 10:58:51 INFO: [core] [Channel #5] Channel exiting idle mode
+2026/08/08 10:58:51 INFO: [core] original dial target is: "etcd-endpoints://0x1d760640fc20/127.0.0.1:22379"
+2026/08/08 10:58:51 INFO: [core] [Channel #7] Channel created for target "etcd-endpoints://0x1d760640fc20/127.0.0.1:22379"
+2026/08/08 10:58:51 INFO: [core] [Channel #7] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"etcd-endpoints", Opaque:"", User:(*url.Userinfo)(nil), Host:"0x1d760640fc20", Path:"/127.0.0.1:22379", Fragment:"", RawQuery:"", RawPath:"", RawFragment:"", ForceQuery:false, OmitHost:false}}
+2026/08/08 10:58:51 INFO: [core] [Channel #7] Channel authority set to "127.0.0.1:22379"
+2026/08/08 10:58:51 INFO: [core] [Channel #7] Channel Connectivity change to CONNECTING
+2026/08/08 10:58:51 INFO: [core] [Channel #3 SubChannel #4] Subchannel Connectivity change to CONNECTING
+2026/08/08 10:58:51 INFO: [core] [Channel #5 SubChannel #6] Subchannel Connectivity change to CONNECTING
+2026/08/08 10:58:51 INFO: [core] [Channel #7] Resolver state updated: {
+  "Addresses": null,
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:22379",
+          "ServerName": "127.0.0.1:22379",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": {
+    "Config": {
+      "Config": null,
+      "Methods": {}
+    },
+    "Err": null
+  },
+  "Attributes": null
+} (service config updated)
+2026/08/08 10:58:51 INFO: [core] [Channel #3 SubChannel #4] Subchannel picks a new address "127.0.0.1:22379" to connect
+2026/08/08 10:58:51 INFO: [core] [Channel #7] Channel switches to new LB policy "round_robin"
+2026/08/08 10:58:51 INFO: [roundrobin] [0x1d7606380750] Created
+2026/08/08 10:58:51 INFO: [core] [Channel #7 SubChannel #8] Subchannel created
+2026/08/08 10:58:51 INFO: [core] [Channel #5 SubChannel #6] Subchannel picks a new address "127.0.0.1:22379" to connect
+2026/08/08 10:58:51 INFO: [core] [Channel #7] Channel exiting idle mode
+2026/08/08 10:58:51 INFO: [core] [Channel #7 SubChannel #8] Subchannel Connectivity change to CONNECTING
+2026/08/08 10:58:51 INFO: [core] [Channel #7 SubChannel #8] Subchannel picks a new address "127.0.0.1:22379" to connect
+2026/08/08 10:58:51 INFO: [core] [Channel #7 SubChannel #8] Subchannel Connectivity change to READY
+2026/08/08 10:58:51 INFO: [core] [Channel #5 SubChannel #6] Subchannel Connectivity change to READY
+2026/08/08 10:58:51 INFO: [core] [Channel #1 SubChannel #2] Subchannel Connectivity change to READY
+2026/08/08 10:58:51 INFO: [core] [Channel #7] Channel Connectivity change to READY
+2026/08/08 10:58:51 INFO: [core] [Channel #3 SubChannel #4] Subchannel Connectivity change to READY
+2026/08/08 10:58:51 INFO: [core] [Channel #5] Channel Connectivity change to READY
+2026/08/08 10:58:51 INFO: [core] [Channel #1] Channel Connectivity change to READY
+2026/08/08 10:58:51 INFO: [core] [Channel #3] Channel Connectivity change to READY
+3855 / 5000 [-------------------------------------------------------->________________] 77.10% ? p/s5000 / 5000 [--------------------------------------------------------------------] 100.00% 94724 p/sTotal Read Ops: 2499
+Details:
+Summary:
+  Total:	0.252370088 secs.
+  Slowest:	0.003825695 secs.
+  Fastest:	0.000217762 secs.
+  Average:	0.0009497406262504999 secs.
+  Stddev:	0.00044322142676856725 secs.
+  Requests/sec:	9902.124375373678
+
+Response time histogram:
+  0.000217762 [1]	|
+  0.0005785553 [406]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
+  0.0009393486000000001 [1019]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
+  0.0013001419000000002 [711]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
+  0.0016609352000000002 [219]	|∎∎∎∎∎∎∎∎
+  0.0020217285 [81]	|∎∎∎
+  0.0023825218 [26]	|∎
+  0.0027433151 [11]	|
+  0.0031041084 [10]	|
+  0.0034649017 [7]	|
+  0.003825695 [8]	|
+
+Latency distribution:
+  10% in 0.000497956 secs.
+  25% in 0.000668067 secs.
+  50% in 0.00087785 secs.
+  75% in 0.001131313 secs.
+  90% in 0.001440777 secs.
+  95% in 0.00173043 secs.
+  99% in 0.002792733 secs.
+  99.9% in 0.003812065 secs.
+
+Total Write Ops: 2501
+Details:
+Summary:
+  Total:	0.25257428 secs.
+  Slowest:	0.003834805 secs.
+  Fastest:	6.352e-05 secs.
+  Average:	0.0006608054858056775 secs.
+  Stddev:	0.0004098417733708914 secs.
+  Requests/sec:	9902.037531295744
+
+Response time histogram:
+  6.352e-05 [1]	|
+  0.00044064850000000003 [769]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
+  0.000817777 [1089]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
+  0.0011949055000000002 [462]	|∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎∎
+  0.0015720340000000001 [112]	|∎∎∎∎
+  0.0019491625000000001 [28]	|∎
+  0.0023262910000000003 [17]	|
+  0.0027034195 [9]	|
+  0.0030805480000000002 [4]	|
+  0.0034576765000000004 [5]	|
+  0.003834805 [5]	|
+
+Latency distribution:
+  10% in 0.000259543 secs.
+  25% in 0.000398575 secs.
+  50% in 0.000595957 secs.
+  75% in 0.000828 secs.
+  90% in 0.001082312 secs.
+  95% in 0.001371246 secs.
+  99% in 0.002173575 secs.
+  99.9% in 0.003830655 secs.
+

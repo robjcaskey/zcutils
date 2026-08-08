@@ -1,0 +1,56 @@
+classification=dedicated-adhoc-control
+coordination_scope=dedicated-adhoc
+bootstrap_manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+lane_count=4
+topology_cpu_list=unrestricted
+coordinator_cpu=none
+lane=0 client_cpu=96 target_cpu=97 transport_cpu=inline kernel_cpu=98 leaf_cpu=99,147,3,51 hctx_cpus=96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143
+lane=1 client_cpu=144 target_cpu=145 transport_cpu=inline kernel_cpu=146 leaf_cpu=99,147,3,51 hctx_cpus=144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191
+lane=2 client_cpu=0 target_cpu=1 transport_cpu=inline kernel_cpu=2 leaf_cpu=99,147,3,51 hctx_cpus=0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47
+lane=3 client_cpu=48 target_cpu=49 transport_cpu=inline kernel_cpu=50 leaf_cpu=99,147,3,51 hctx_cpus=48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95
+hugepages_total=512
+hugepages_free=512
+hugepage_size_kib=2048
+memlock_kib=unlimited
+loadavg=0.08 0.44 0.92 1/1979 30192
+coordination_honored=true
+target_poll_us=1000
+target_busy_poll_us=1000
+target_busy_hysteresis_us=10000
+target_poll_clock_check_spins=64
+kernel_completion_poll_us=1000
+kernel_state_interval_ms=0
+block_ring_mode=normal sqpoll_cpu_list=none sqpoll_idle_ms=1000
+block_engine=uring-fixed
+block_latency_sample_rate=1
+block_ring_stats=1 block_wait_min_completions=1 block_cqe_spin=0 block_cqe_adaptive_spin=0 block_cqe_adaptive_spin_min=0 block_cqe_adaptive_spin_max=4096 block_cqe_adaptive_wait_ns=50000 block_cqe_hot_poll=0 block_cqe_hot_poll_progress_spins=4096
+shm_descriptor_entries_per_channel=512
+kernel_queue_depth=256 kernel_pipeline_depth=128
+shm_sector_order_slots=65536
+shm_payload_entries_per_channel=8192
+writeback_batch_requested=8192 writeback_batch_effective=8192
+request_batch=512 request_batch_fill_us=0 request_batch_fill_min=32
+wal_lane_batch=1 representative_eligible=true
+wal_owner_dispatch=0 wal_owner_extent_records=256 wal_owner_worker_spins=65536 wal_owner_worker_adaptive_spin=1 wal_owner_worker_spin_min=4096 wal_owner_worker_adaptive_wait_ns=50000
+wal_owner_ingress=0 wal_owner_count=4 wal_owner_cpu_list=none
+wal_owner_write_fill_us=0 wal_owner_write_fill_min=256 wal_owner_pipeline_batches=16 wal_owner_pipeline_refill_spins=256 wal_owner_mixed_hysteresis_us=10000
+wal_owner_debounce_us=2 wal_owner_backlog_low_records=16 wal_owner_backlog_high_records=256
+wal_owner_batch_records=2048 wal_owner_fragment_records=4 wal_owner_fragment_fill_us=500 wal_owner_queue_depth=128
+wal_owner_foreground_immediate_limit=1
+wal_owner_max_tx_iovecs=960
+wal_lane_window=4
+wal_split_transport=0 wal_transport_cpu_list=inline
+wal_transport_wait_policy=greedy
+transfer_payload_slots_requested=1 transfer_payload_slots_effective=1
+wal_extent_records=512 wal_extent_fill_us=20 wal_split_min_batch_records=64
+wal_compact_writes=1
+dirty_pressure_reserve=0
+remote_recv_spins=0 leaf_spin_reads=0 leaf_spin_policy=adaptive leaf_spin_budget=adaptive leaf_adaptive_spin_min=256 leaf_adaptive_spin_max=65536 leaf_adaptive_wait_ns=50000 leaf_adaptive_hysteresis_ns=10000000
+remote_recv_policy=adaptive remote_recv_adaptive_spin_min=0 remote_recv_adaptive_spin_max=65536 remote_recv_adaptive_wait_ns=50000 remote_recv_adaptive_hysteresis_ns=10000000
+remote_send_mode=blocking remote_send_ring_entries=256 remote_send_zc_required=1 allow_unsafe_send_zc=0
+order_smoke_pairs=32
+shm_payload_slot_bytes=4096
+shm_lease_release_batch=1
+backend=wal-tcp local_leaf=1 leaf_target=zcmem:512M leaf_addr=127.0.0.1 leaf_port=29000 leaf_submit_mode=blocking
+leaf_source_addr=kernel-route
+leaf_addrs=single-address leaf_source_addrs=single-source

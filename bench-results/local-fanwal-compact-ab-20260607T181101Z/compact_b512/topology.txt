@@ -1,0 +1,8 @@
+case=compact_b512
+base_port=24450 leaf_base_port=25450 compact_extents=1 batch_depth=512 merge_spin_usec=50
+sender_cpus=0,1,2,3
+fan_handler_cpus=4,5,6,7
+fan_async_cpus=8,9,10,11
+leaf0_cpus=12,13,14,15
+leaf1_cpus=28,29,30,31
+mode=mirror op=write-read-same lanes=4 connections_per_port=1 bytes_per_connection=64M chunk=4K verify_reads=1 write_acks=0 dirty_cache=on async_writeback=on leaf_cap=64 merge_max_records=960 merge_max_payload=4194304 result_ranges=on

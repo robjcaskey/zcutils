@@ -1,0 +1,13 @@
++ taskset -c 4-7 make -C kmods KDIR=/home/rob/src/linux-7.0.8-zcslots clean
+make: Entering directory '/home/rob/zcutils/kmods'
+make -C /home/rob/src/linux-7.0.8-zcslots M=/home/rob/zcutils/kmods clean
+make[1]: Entering directory '/home/rob/dev-workspace/src/linux-7.0.8-zcslots'
+make[2]: Entering directory '/home/rob/zcutils/kmods'
+  CLEAN   Module.symvers
+make[2]: Leaving directory '/home/rob/zcutils/kmods'
+make[1]: Leaving directory '/home/rob/dev-workspace/src/linux-7.0.8-zcslots'
+make: Leaving directory '/home/rob/zcutils/kmods'
++ taskset -c 4-7 make -C kmods KDIR=/home/rob/src/linux-7.0.8-zcslots zcnblk_client_mod.ko
+make: Entering directory '/home/rob/zcutils/kmods'
+make: *** No rule to make target 'zcnblk_client_mod.ko'.  Stop.
+make: Leaving directory '/home/rob/zcutils/kmods'

@@ -1,0 +1,10 @@
+zcofi-wal-send: provider=tcp endpoint=rdm addr=127.0.0.1 base_service=41000 lanes=2 bytes_per_lane=8388608 extent_bytes=65536 message_bytes=65664 workers=2 ack_enabled=yes tx_nowait_requested=no tx_nowait_effective=no prepost_ack_requested=no prepost_ack_effective=no compact_4k=no payload_inject=no ack_window=1 ofi_domain=auto records_per_extent=16 timeout_ms=10000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-send-worker: affinity_index=1 target_cpu=7 status=ok
+zcofi-wal-send-worker: affinity_index=0 target_cpu=6 status=ok
+zcofi-control-client: addr=127.0.0.1:42001 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-client: addr=127.0.0.1:42000 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=1 lane=1 provider=tcp endpoint=rdm addr=127.0.0.1 service=41001 control_port=42001 max_msg_size=18446744073709551615 inject_size=128
+zcofi-wal-send-lane: worker=0 lane=0 provider=tcp endpoint=rdm addr=127.0.0.1 service=41000 control_port=42000 max_msg_size=18446744073709551615 inject_size=128
+zcofi-wal-send-worker: worker=0 streams=1 payload_bytes=8388608 wire_bytes=8404992 extents=128 logical_records=2048 acks=128 seconds=0.012689 payload_Gbitps=5.289 logical_iops=161399 thread_cpu_seconds=0.015326 cpu_wall_pct=120.8 target_cpu=6 affinity_applied=true start_cpu=6 end_cpu=6 voluntary_ctxt_switches=4 involuntary_ctxt_switches=0 migrations=0
+zcofi-wal-send-worker-latency: worker=0 ack_count=128 ack_avg_ns=93854 ack_min_ns=26460 ack_p50_ns=30000 ack_p95_ns=33000 ack_p99_ns=37000 ack_p999_ns=9000000 ack_max_ns=8297702
+Error: Custom { kind: Other, error: "zc_ofi_send failed rc=-110: OFI fi_send post timed out after 10000 ms" }

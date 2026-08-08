@@ -1,0 +1,10 @@
+classification=local-shared-system
+coordination=agent-coord-result: acquired=true honored=false token=l18c90e225d4e48fa-9deed owner=codex:zcutils-pgbench-raw-tuned mode=soft-exclusive sensitivity=critical priority=70 expires=1785975467 resource=cpu=0-15,20-23,28-31;memory-bandwidth=*;hugepages=8192;port=55433 conflicts=l18c90e1f7f7a0510-9dcaf:codex:osbot-live-viewer:shared:priority=50:sensitivity=normal
+device=/dev/nvme0n1p4 partuuid=6dfb2c34-e1a4-4cd5-a4f6-d82bfadcd363 model=Samsung SSD 9100 PRO 4TB firmware=0B2QNXH7
+postgres_cpus=4-7,12-15,20-23,28-31 pgbench_cpus=0-3,8-11 measured_cpus=0-15,20-23,28-31
+per_client_qd=1 aggregate_outstanding=client_count completion=durable_synchronous_commit
+hugepages_requested=8192 hugepages_total=8192 hugepages_free=8192 hugepage_size_kib=2048 memlock_kib=8192
+loadavg_before=1.41 1.62 1.76 3/2841 646932 kernel=7.0.8-io-slots
+durability=fsync:on,synchronous_commit:on,full_page_writes:on
+postgres_tuning=shared_buffers:8GB,huge_pages:on,wal_buffers:64MB,max_wal_size:64GB,min_wal_size:8GB,checkpoint_timeout:1h,checkpoint_completion_target:0.9,jit:off
+loadavg_after=10.27 4.92 2.99 5/2822 651109

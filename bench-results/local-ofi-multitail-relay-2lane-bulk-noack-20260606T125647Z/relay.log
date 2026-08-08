@@ -1,0 +1,20 @@
+zcofi-wal-relay: provider=tcp endpoint=rdm bind=127.0.0.1 tails=0:127.0.0.1:32000,1:127.0.0.1:34000 in_base_service=30000 lanes=2 bytes_per_lane=268435456 extent_bytes=1048576 message_bytes=1048704 workers=2 ack_enabled=no compact_4k=no rewrite_headers=yes fast_headers=no relay_window=16 prepost_recv=no tx_nowait_requested=no tx_nowait_effective=no ack_inject=yes same_slot_forward=yes hwm_ack=all-tail-acks-before-upstream-ack timeout_ms=10000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-relay-worker: affinity_index=0 target_cpu=4 status=ok
+zcofi-wal-relay-worker: affinity_index=1 target_cpu=5 status=ok
+zcofi-control-server: listen=127.0.0.1:31000 peer=127.0.0.1:42922 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-server: listen=127.0.0.1:31001 peer=127.0.0.1:59954 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-client: addr=127.0.0.1:33000 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-tail: worker=0 lane=0 branch=0 tail_addr=127.0.0.1 out_base_service=32000 out_service=32000 out_control_port=33000 max_msg_size_out=18446744073709551615 same_slot_forward=yes
+zcofi-control-client: addr=127.0.0.1:33001 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-tail: worker=1 lane=1 branch=0 tail_addr=127.0.0.1 out_base_service=32000 out_service=32001 out_control_port=33001 max_msg_size_out=18446744073709551615 same_slot_forward=yes
+zcofi-control-client: addr=127.0.0.1:35001 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-tail: worker=1 lane=1 branch=1 tail_addr=127.0.0.1 out_base_service=34000 out_service=34001 out_control_port=35001 max_msg_size_out=18446744073709551615 same_slot_forward=yes
+zcofi-wal-relay-lane: worker=1 lane=1 provider=tcp endpoint=rdm bind=127.0.0.1 in_service=30001 in_control_port=31001 tail_count=2 message_bytes=1048704 max_msg_size_in=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=127.0.0.1:35000 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-tail: worker=0 lane=0 branch=1 tail_addr=127.0.0.1 out_base_service=34000 out_service=34000 out_control_port=35000 max_msg_size_out=18446744073709551615 same_slot_forward=yes
+zcofi-wal-relay-lane: worker=0 lane=0 provider=tcp endpoint=rdm bind=127.0.0.1 in_service=30000 in_control_port=31000 tail_count=2 message_bytes=1048704 max_msg_size_in=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-wal-relay-worker-contract: worker=0 same_slot_forward=yes registered_memory=libfabric-mr-cache tail_count=2 relay_window=16 prepost_recv=no fast_headers=no header_rewrites=256 tail_ack_gates_upstream_ack=no ack_policy=all-tails-before-upstream-hwm
+zcofi-wal-relay-worker-contract: worker=1 same_slot_forward=yes registered_memory=libfabric-mr-cache tail_count=2 relay_window=16 prepost_recv=no fast_headers=no header_rewrites=256 tail_ack_gates_upstream_ack=no ack_policy=all-tails-before-upstream-hwm
+zcofi-wal-relay-worker: worker=0 streams=3 payload_bytes=268435456 wire_bytes=536936448 extents=256 logical_records=65536 acks=0 seconds=0.085952 payload_Gbitps=24.985 logical_iops=762476 thread_cpu_seconds=0.092454 cpu_wall_pct=107.6 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=21 involuntary_ctxt_switches=5 migrations=0
+zcofi-wal-relay-worker: worker=1 streams=3 payload_bytes=268435456 wire_bytes=536936448 extents=256 logical_records=65536 acks=0 seconds=0.086495 payload_Gbitps=24.828 logical_iops=757685 thread_cpu_seconds=0.092500 cpu_wall_pct=106.9 target_cpu=5 affinity_applied=true start_cpu=5 end_cpu=5 voluntary_ctxt_switches=26 involuntary_ctxt_switches=5 migrations=0
+zcofi-wal-relay-summary: tail_count=2 payload_bytes=536870912 wire_bytes=1073872896 extents=512 logical_records=131072 tail_gated_acks=0 seconds=0.086495 payload_Gbitps=49.656 branch_wire_Gbitps=99.323 logical_iops=1515371 voluntary_ctxt_switches=47 involuntary_ctxt_switches=10 migrations=0

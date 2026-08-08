@@ -1,0 +1,12 @@
+netns=zcwal-2723181 host_if=zcwh723181 leaf_if=zcwl723181 mtu=9000 host_addr=10.203.79.1 leaf_addr=10.203.79.2 delay_each_way_us=34
+qdisc netem 8005: root refcnt 33 limit 1000 delay 34us seed 4221031508114053318
+ Sent 90 bytes 1 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+qdisc netem 8006: root refcnt 33 limit 1000 delay 34us seed 12218282406071306950
+ Sent 90 bytes 1 pkt (dropped 0, overlimits 0 requeues 0) 
+ backlog 0b 0p requeues 0
+PING 10.203.79.2 (10.203.79.2) 56(84) bytes of data.
+
+--- 10.203.79.2 ping statistics ---
+40 packets transmitted, 40 received, 0% packet loss, time 1316ms
+rtt min/avg/max/mdev = 0.078/0.093/0.186/0.016 ms

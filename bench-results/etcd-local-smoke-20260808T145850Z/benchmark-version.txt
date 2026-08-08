@@ -1,0 +1,38 @@
+benchmark is a low-level benchmark tool for etcd3.
+It uses gRPC client directly and does not depend on
+etcd client library.
+
+Usage:
+  benchmark [command]
+
+Available Commands:
+  completion      Generate the autocompletion script for the specified shell
+  help            Help about any command
+  lease-keepalive Benchmark lease keepalive
+  mvcc            Benchmark mvcc
+  put             Benchmark put
+  range           Benchmark range
+  stm             Benchmark STM
+  txn-mixed       Benchmark a mixed load of txn-put & txn-range.
+  txn-put         Benchmark txn-put
+  watch           Benchmark watch
+  watch-get       Benchmark watch with get
+  watch-latency   Benchmark watch latency
+
+Flags:
+      --auto-sync-interval duration   AutoSyncInterval is the interval to update endpoints with its latest members
+      --cacert string                 verify certificates of HTTPS-enabled servers using this CA bundle
+      --cert string                   identify HTTPS client using this SSL certificate file
+      --clients uint                  Total number of gRPC clients (default 1)
+      --conns uint                    Total number of gRPC connections (default 1)
+      --dial-timeout duration         dial timeout for client connections
+      --endpoints strings             gRPC endpoints (default [127.0.0.1:2379])
+  -h, --help                          help for benchmark
+      --insecure-skip-tls-verify      skip server certificate verification
+      --key string                    identify HTTPS client using this SSL key file
+      --precise                       use full floating point precision
+      --sample                        'true' to sample requests for every second
+      --target-leader                 connect only to the leader node
+      --user string                   provide username[:password] and prompt if password is not supplied.
+
+Use "benchmark [command] --help" for more information about a command.

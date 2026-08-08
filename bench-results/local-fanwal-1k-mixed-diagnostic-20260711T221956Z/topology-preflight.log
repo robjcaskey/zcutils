@@ -1,0 +1,38 @@
+topology_preflight=1
+run_mode=local
+strict=0
+topology_preflight_fatal=0
+topology_busy_pct=1.0
+local_mapped_cpus=0,1,2,3,4,5,6,7,8,9
+local_mapped_cpu_count=10
+stage=client cpus=0,1 unique_cpus=2
+stage=fan-handler cpus=2,3 unique_cpus=2
+stage=fan-async cpus=4,5 unique_cpus=2
+stage=leaf0 cpus=6,7 unique_cpus=2
+stage=leaf1 cpus=8,9 unique_cpus=2
+cpu=0 governor=powersave
+cpu=1 governor=powersave
+cpu=2 governor=powersave
+cpu=3 governor=powersave
+cpu=4 governor=powersave
+cpu=5 governor=powersave
+cpu=6 governor=powersave
+cpu=7 governor=powersave
+cpu=8 governor=powersave
+cpu=9 governor=powersave
+PERF WARNING: mapped CPUs are not all using performance governor: cpu0=powersave,cpu1=powersave,cpu2=powersave,cpu3=powersave,cpu4=powersave,cpu5=powersave,cpu6=powersave,cpu7=powersave,cpu8=powersave,cpu9=powersave
+== mapped cpu mhz sample ==
+CPU CORE SOCKET NODE L1d:L1i:L2:L3 ONLINE    MAXMHZ   MINMHZ       MHZ
+  0    0      0    0 0:0:0:0          yes 5756.4521 624.1940 5532.6880
+  1    1      0    0 1:1:1:0          yes 5756.4521 624.1940 5557.8091
+  2    2      0    0 2:2:2:0          yes 5756.4521 624.1940 5559.1060
+  3    3      0    0 3:3:3:0          yes 5756.4521 624.1940 5557.9600
+  4    4      0    0 4:4:4:0          yes 5756.4521 624.1940 5576.2290
+  5    5      0    0 5:5:5:0          yes 5756.4521 624.1940 5577.8662
+  6    6      0    0 6:6:6:0          yes 5756.4521 624.1940 5545.3901
+  7    7      0    0 7:7:7:0          yes 5756.4521 624.1940 2764.3560
+  8    8      0    0 8:8:8:1          yes 5756.4521 624.1940 5591.8521
+  9    9      0    0 9:9:9:1          yes 5756.4521 624.1940 3731.8181
+memlock_limit=8192
+PERF WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+nr_hugepages=4096

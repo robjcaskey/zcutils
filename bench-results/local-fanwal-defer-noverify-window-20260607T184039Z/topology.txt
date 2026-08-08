@@ -1,0 +1,8 @@
+case=deferred_noverify_window_256m_per_lane
+base_port=28100 leaf_base_port=29100 defer_unsynced_writeback=1 request_chunking=1 request_chunk_bytes=1M batch_depth=512 compact_extents=1 early_cached_response_before_leaf_prepare=code-default
+sender_cpus=0,1,2,3
+fan_handler_cpus=4,5,6,7
+fan_async_cpus=8,9,10,11
+leaf0_cpus=12,13,14,15
+leaf1_cpus=28,29,30,31
+mode=mirror op=write-read-same lanes=4 connections_per_port=1 bytes_per_connection=256M chunk=4K verify_reads=0 write_acks=0 dirty_cache=on async_writeback=on leaf_cap=64 read_window=4096 write_window=4096

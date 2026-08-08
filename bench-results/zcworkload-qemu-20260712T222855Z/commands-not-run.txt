@@ -1,0 +1,43 @@
+NOT EXECUTED: /tmp/zcworkload-code-ready did not appear during the required 900 second wait.
+
+# Build, only after code-ready
+cargo build --release --bin zcutils --bin zcworkload
+make -C kmods KDIR=/home/rob/src/linux-7.0.8-zcslots
+
+# Target VM, blocking-leaf boot payload
+ip addr add 10.72.0.2/24 dev eth0
+ip link set eth0 up
+URING_PLAY_PIN_CPU_LIST=2 /uring-play zcnblk-wal-leaf zcmem:128M 127.0.0.1 24600 2 1 64K 1 true blocking > /leaf0.log 2>&1 &
+URING_PLAY_PIN_CPU_LIST=3 /uring-play zcnblk-wal-leaf zcmem:128M 127.0.0.2 24600 2 1 64K 1 true blocking > /leaf1.log 2>&1 &
+URING_PLAY_PIN_CPU_LIST=0,1 URING_PLAY_ZCNBLK_WRITE_ACKS=1 URING_PLAY_ZCNBLK_WAL_WRITE_ACK_MODE=remote /uring-play zcnblk-fan --engine wal --leaves 127.0.0.1,127.0.0.2 --bind 10.72.0.2 --base-port 23600 --ports 2 --connections-per-port 1 --bytes-per-connection 512M --chunk-bytes 64K --stripe-bytes 64K --leaf-base-port 24600 --pin-handlers true --mode stripe > /fan.log 2>&1
+
+# Client VM setup
+ip addr add 10.72.0.1/24 dev eth0
+ip link set eth0 up
+insmod /modules/zcnblk_client_mod.ko remote_ip=10.72.0.2 remote_port_base=23600 lanes=2 connections_per_lane=1 shard_count=1 size_mib=128 logical_block_size=4096 max_frame_bytes=65536 queues=2 queue_depth=64 pipeline_depth=32 fill_timeout_ms=0 batch_depth=1 write_acks=1 hctx_affinity=1 pin_threads=1 pin_base_cpu=2 pin_cpu_count=2 pin_stride=1
+test -b /dev/zcnblk0
+cat /sys/module/zcnblk_client_mod/parameters/hctx_affinity
+ping -c 20 10.72.0.2 > /transport-rtt.log
+
+# Sample validation
+/zcworkload sample --capacity 64M --requests 100000 --seed 42 --json > /sample.json
+
+# Strict-preflight negative: no pinning or topology maps; must fail before plan/result output
+if URING_PLAY_TOPOLOGY_STRICT=1 /zcworkload run --target /dev/zcnblk0 --capacity 64M --engine sync --workers 2 --depth 1 --ops-per-worker 8 --buffers small-pages --pin false --completion remote-ack > /strict-negative-unmapped.log 2>&1; then exit 91; fi
+! grep -q '^zcworkload-result:' /strict-negative-unmapped.log
+grep -q 'TOPOLOGY ERROR:' /strict-negative-unmapped.log
+
+# Strict-preflight negative: io_uring fast-path prerequisites intentionally absent; must fail before results
+if URING_PLAY_TOPOLOGY_FATAL=1 URING_PLAY_PIN_CPU_LIST=0,1 /zcworkload run --target /dev/zcnblk0 --capacity 64M --engine uring --workers 2 --depth 2 --ring-entries 64 --ops-per-worker 8 --buffers small-pages --pin true --lane-map 'lane0=worker0@cpu0;lane1=worker1@cpu1' --kthread-map 'lane0=zcnblk-0-0@cpu2;lane1=zcnblk-1-0@cpu3' --completion remote-ack > /strict-negative-fastpath.log 2>&1; then exit 92; fi
+! grep -q '^zcworkload-result:' /strict-negative-fastpath.log
+grep -q 'TOPOLOGY ERROR:' /strict-negative-fastpath.log
+
+# Blocking mixed-workload functional smoke; explicitly non-representative
+URING_PLAY_PIN_CPU_LIST=0,1 /zcworkload run --target /dev/zcnblk0 --capacity 64M --engine sync --workers 2 --depth 1 --ops-per-worker 512 --buffers small-pages --pin true --latency-sample-rate 1 --completion remote-ack --lane-map 'lane0=worker0@cpu0;lane1=worker1@cpu1' --kthread-map 'lane0=zcnblk-0-0@cpu2;lane1=zcnblk-1-0@cpu3' > /blocking-smoke.log 2>&1
+
+# io_uring mixed-workload functional smoke; explicitly non-representative
+URING_PLAY_ENTER_NO_IOWAIT=1 URING_PLAY_PIN_CPU_LIST=0,1 /zcworkload run --target /dev/zcnblk0 --capacity 64M --engine uring --workers 2 --depth 4 --ring-entries 64 --ops-per-worker 512 --buffers small-pages --pin true --latency-sample-rate 1 --completion-batch 4 --completion remote-ack --lane-map 'lane0=worker0@cpu0;lane1=worker1@cpu1' --kthread-map 'lane0=zcnblk-0-0@cpu2;lane1=zcnblk-1-0@cpu3' > /uring-smoke.log 2>&1
+
+# Guest launch shape, one target and one client, never a block RAID backend
+qemu-system-x86_64 -machine accel=kvm -cpu host -m 2048M -smp 4 -nographic -no-reboot -nodefaults -serial mon:stdio -kernel /home/rob/src/linux-7.0.8-zcslots/arch/x86/boot/bzImage -initrd TARGET_CUSTOM_INITRAMFS -append 'console=ttyS0 panic=-1 oops=panic quiet zcworkload_role=target leaf_submit_mode=blocking' -netdev socket,id=link,listen=:ALLOCATED_PORT -device virtio-net-pci,netdev=link,mac=52:54:00:72:00:02
+qemu-system-x86_64 -machine accel=kvm -cpu host -m 2048M -smp 4 -nographic -no-reboot -nodefaults -serial mon:stdio -kernel /home/rob/src/linux-7.0.8-zcslots/arch/x86/boot/bzImage -initrd CLIENT_CUSTOM_INITRAMFS -append 'console=ttyS0 panic=-1 oops=panic quiet zcworkload_role=client' -netdev socket,id=link,connect=127.0.0.1:ALLOCATED_PORT -device virtio-net-pci,netdev=link,mac=52:54:00:72:00:01

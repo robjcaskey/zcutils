@@ -1,0 +1,125 @@
+{
+  "ami_id": "ami-0be851ac12cc5900e",
+  "az": "us-east-2c",
+  "cost_ceiling": {
+    "duration_hours": 1.416388888888889,
+    "public_ipv4_ceiling_usd": 0.014163888888888889,
+    "root_ebs_ceiling_usd": 0.014901187214611873,
+    "spot_ceiling_usd": 0.42491666666666666,
+    "total_ceiling_usd": 0.4539817427701674
+  },
+  "drop_dead_utc": "2026-07-13T00:37:52Z",
+  "ena_express": false,
+  "enable_efa": false,
+  "instance_type": "c8gn.2xlarge",
+  "network_card_count": 1,
+  "nodes": 2,
+  "public_ip_mode": "auto-associate",
+  "region": "us-east-2",
+  "request": {
+    "BlockDeviceMappings": [
+      {
+        "DeviceName": "/dev/sda1",
+        "Ebs": {
+          "DeleteOnTermination": true,
+          "VolumeSize": 32,
+          "VolumeType": "gp3"
+        }
+      }
+    ],
+    "ImageId": "ami-0be851ac12cc5900e",
+    "InstanceMarketOptions": {
+      "MarketType": "spot",
+      "SpotOptions": {
+        "InstanceInterruptionBehavior": "terminate",
+        "MaxPrice": "0.15",
+        "SpotInstanceType": "one-time"
+      }
+    },
+    "InstanceType": "c8gn.2xlarge",
+    "KeyName": "adhocMasterKeypair",
+    "MaxCount": 2,
+    "MetadataOptions": {
+      "HttpEndpoint": "enabled",
+      "HttpTokens": "required"
+    },
+    "MinCount": 2,
+    "NetworkInterfaces": [
+      {
+        "AssociatePublicIpAddress": true,
+        "DeviceIndex": 0,
+        "Groups": [
+          "sg-025a50a35d3073a8a"
+        ],
+        "NetworkCardIndex": 0,
+        "SubnetId": "subnet-c66ddd8b"
+      }
+    ],
+    "Placement": {
+      "AvailabilityZone": "us-east-2c"
+    },
+    "TagSpecifications": [
+      {
+        "ResourceType": "instance",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "zcworkload-adhoc-retry-20260712T230240Z-a2"
+          },
+          {
+            "Key": "Project",
+            "Value": "uring-play"
+          },
+          {
+            "Key": "Purpose",
+            "Value": "adhoc-performance-compute"
+          },
+          {
+            "Key": "uringPlayRunId",
+            "Value": "zcworkload-adhoc-retry-20260712T230240Z-a2"
+          },
+          {
+            "Key": "adhocKeepaliveModeAction",
+            "Value": "terminate"
+          },
+          {
+            "Key": "adhocKeepalive",
+            "Value": "2026-07-13T00:37:52Z"
+          }
+        ]
+      },
+      {
+        "ResourceType": "volume",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "zcworkload-adhoc-retry-20260712T230240Z-a2"
+          },
+          {
+            "Key": "Project",
+            "Value": "uring-play"
+          },
+          {
+            "Key": "Purpose",
+            "Value": "adhoc-performance-compute"
+          },
+          {
+            "Key": "uringPlayRunId",
+            "Value": "zcworkload-adhoc-retry-20260712T230240Z-a2"
+          },
+          {
+            "Key": "adhocKeepaliveModeAction",
+            "Value": "terminate"
+          },
+          {
+            "Key": "adhocKeepalive",
+            "Value": "2026-07-13T00:37:52Z"
+          }
+        ]
+      }
+    ]
+  },
+  "run_id": "zcworkload-adhoc-retry-20260712T230240Z-a2",
+  "subnet_id": "subnet-c66ddd8b"
+}
+dry run only; pass --yes to launch

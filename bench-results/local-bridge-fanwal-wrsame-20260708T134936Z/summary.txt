@@ -1,0 +1,344 @@
+outdir=bench-results/local-bridge-fanwal-wrsame-20260708T134936Z
+plan_id=zcp-mirror-max-gbit-tcp-mux-2l-2b-1048576e-4096r
+placement_epoch=1
+
+== topology ==
+run_mode=local
+run_id=fanwal-plan-20260708T134936Z
+lanes=2
+raid_mode=mirror
+fan_bind=127.0.0.1
+send_addr=127.0.0.1
+leaf0_bind=127.0.0.1
+leaf1_bind=127.0.0.2
+leaf_addrs=127.0.0.1,127.0.0.2
+leaf_cpu_domain=local
+client_cpus=0-1
+fan_handler_cpus=2-3
+fan_async_cpus=4-5
+leaf0_cpus=6-7
+leaf1_cpus=8-9
+fan_leaf_cpu_lists=leaf0=6-7;leaf1=8-9
+fan_leaf_source_ips=kernel-route
+plan_cpus=2-3,4-5,6-7,8-9
+bytes_per_connection=64M
+chunk_bytes=4K
+fan_max_request_bytes=1M
+fan_max_request_bytes_env=1048576
+shard_count=1
+batch_depth=512
+wal_batch_window=64
+leaf_target=zcleasemem:1G
+fan_memfd_dirty_cache=1
+fan_ingress_memfd_payload=1
+fan_memfd_send_coalesce_bytes=1M
+fan_memfd_send_coalesce_bytes_env=1048576
+send_spin_budget=4096
+range_drain_bytes=binary-default
+send_op=write-read-same
+verify_reads=1
+write_extents=1
+read_extents=1
+strict=0
+topology_preflight=1
+topology_preflight_representative=0
+topology_preflight_warnings=4
+
+== plan ==
+"zcp-mirror-max-gbit-tcp-mux-2l-2b-1048576e-4096r"
+1
+false
+[
+  "PERF WARNING: zero_copy=auto allows copied fallback; use --zero-copy required for representative max-gbit runs",
+  "PERF WARNING: HugePages_Total is zero; zcrx/registered-buffer plans may fall back or churn page mappings",
+  "PERF WARNING: memlock soft limit 8388608 bytes is below estimated hot-pool need 2147483648 bytes"
+]
+{
+  "block_device_raid_primitive": false,
+  "branch_topology": [
+    {
+      "ack_policy": "all-mirror-legs-before-write-ack",
+      "block_device_raid_primitive": false,
+      "branch": 0,
+      "fabric_domain": null,
+      "lane_count": 2,
+      "lane_cpu_map": [
+        {
+          "lane": 0,
+          "leader_cpu": 2,
+          "numa_node": 0,
+          "worker": 0
+        },
+        {
+          "lane": 1,
+          "leader_cpu": 3,
+          "numa_node": 0,
+          "worker": 1
+        }
+      ],
+      "lanes": [
+        0,
+        1
+      ],
+      "leader_cpus": [
+        2,
+        3
+      ],
+      "nic": "wlp13s0",
+      "nic_ifindex": 3,
+      "nic_numa_node": null,
+      "payload_contract": "same-payload-lease-no-branch-copy",
+      "placement_owner": "userspace-raid",
+      "policy": "mirror",
+      "result_log": {
+        "ordering": "per-branch-per-lane-monotonic",
+        "zipper": "lane-local-o1-window"
+      },
+      "role": "mirror-leg",
+      "transport": "tcp-mux",
+      "workers": [
+        0,
+        1
+      ]
+    },
+    {
+      "ack_policy": "all-mirror-legs-before-write-ack",
+      "block_device_raid_primitive": false,
+      "branch": 1,
+      "fabric_domain": null,
+      "lane_count": 2,
+      "lane_cpu_map": [
+        {
+          "lane": 0,
+          "leader_cpu": 4,
+          "numa_node": 0,
+          "worker": 0
+        },
+        {
+          "lane": 1,
+          "leader_cpu": 5,
+          "numa_node": 0,
+          "worker": 1
+        }
+      ],
+      "lanes": [
+        0,
+        1
+      ],
+      "leader_cpus": [
+        4,
+        5
+      ],
+      "nic": "wlp13s0",
+      "nic_ifindex": 3,
+      "nic_numa_node": null,
+      "payload_contract": "same-payload-lease-no-branch-copy",
+      "placement_owner": "userspace-raid",
+      "policy": "mirror",
+      "result_log": {
+        "ordering": "per-branch-per-lane-monotonic",
+        "zipper": "lane-local-o1-window"
+      },
+      "role": "mirror-leg",
+      "transport": "tcp-mux",
+      "workers": [
+        0,
+        1
+      ]
+    }
+  ],
+  "placement_owner": "userspace-raid"
+}
+{
+  "control_stream": {
+    "data_frames_carry": [
+      "plan_id",
+      "placement_epoch",
+      "lane_id",
+      "sequence"
+    ],
+    "required_frames": [
+      "ZC_CAPS_V1",
+      "ZC_INTENT_V1",
+      "ZC_PLAN_V1"
+    ],
+    "telemetry_frames": [
+      "ZC_STATS_V1",
+      "ZC_REPLAN_V1"
+    ]
+  },
+  "libfabric_endpoint": {
+    "active_when": "compiled.transport.name starts with libfabric",
+    "completion_cq": "compiled.lane_map[].completion_cq",
+    "domain": "auto",
+    "endpoint": "compiled.lane_map[].fabric_endpoint",
+    "endpoint_type": "stream",
+    "fabric": "tcp-mux",
+    "mr_region": "compiled.lane_map[].mr_region",
+    "payload": "registered descriptor lease; no placement decision in transport",
+    "poller_cpu": "compiled.lane_map[].leader_cpu",
+    "provider": null
+  },
+  "record_descriptor": {
+    "group_id": "sync_epoch or collection id",
+    "lane_id": "compiled.lane_map[].lane",
+    "placement_epoch": 1,
+    "plan_id": "zcp-mirror-max-gbit-tcp-mux-2l-2b-1048576e-4096r",
+    "preferred_worker": "compiled.lane_map[].worker",
+    "release_token": "owned by source pool authority",
+    "sequence": "per-lane monotonic"
+  },
+  "slice_descriptor": {
+    "numa_node": "compiled.lane_map[].numa_node",
+    "payload": "leased pool slice; mirror branches share the same lease",
+    "preferred_cpu": "compiled.lane_map[].cpu",
+    "queue_id": "compiled.lane_map[].rx_queue or tx_queue"
+  },
+  "tcpmux_topology_header": {
+    "active_when": "compiled.transport.name == tcp-mux",
+    "chunk_bytes": 1048576,
+    "lane_count": 2,
+    "lane_id": "compiled.lane_map[].lane",
+    "preferred_cpu": "compiled.lane_map[].cpu",
+    "preferred_worker": "compiled.lane_map[].worker",
+    "queue_id": "compiled.lane_map[].tx_queue"
+  },
+  "wal_extent": {
+    "extent_sequence": "per-lane monotonic",
+    "lane_id": "compiled.lane_map[].lane",
+    "record_count": 256,
+    "record_size": 4096,
+    "shard_id": "compiled.lane_map[].wal_shard",
+    "zero_copy_descriptor": true
+  },
+  "zcnblk_topology_header": {
+    "lane_count": 2,
+    "lane_id": "compiled.lane_map[].lane",
+    "preferred_worker": "compiled.lane_map[].worker",
+    "queue_id": "compiled.lane_map[].wal_shard",
+    "tier_id": "userspace placement output; not a block RAID primitive"
+  }
+}
+
+== topology preflight ==
+topology_preflight=1
+run_mode=local
+strict=0
+topology_preflight_fatal=0
+topology_busy_pct=1.0
+local_mapped_cpus=0,1,2,3,4,5,6,7,8,9
+local_mapped_cpu_count=10
+stage=client cpus=0-1 unique_cpus=2
+stage=fan-handler cpus=2-3 unique_cpus=2
+stage=fan-async cpus=4-5 unique_cpus=2
+stage=leaf0 cpus=6-7 unique_cpus=2
+stage=leaf1 cpus=8-9 unique_cpus=2
+cpu=0 governor=powersave
+cpu=1 governor=powersave
+cpu=2 governor=powersave
+cpu=3 governor=powersave
+cpu=4 governor=powersave
+cpu=5 governor=powersave
+cpu=6 governor=powersave
+cpu=7 governor=powersave
+cpu=8 governor=powersave
+cpu=9 governor=powersave
+PERF WARNING: mapped CPUs are not all using performance governor: cpu0=powersave,cpu1=powersave,cpu2=powersave,cpu3=powersave,cpu4=powersave,cpu5=powersave,cpu6=powersave,cpu7=powersave,cpu8=powersave,cpu9=powersave
+== mapped cpu mhz sample ==
+CPU CORE SOCKET NODE L1d:L1i:L2:L3 ONLINE    MAXMHZ   MINMHZ       MHZ
+  0    0      0    0 0:0:0:0          yes 5756.4521 624.1940 4362.6191
+  1    1      0    0 1:1:1:0          yes 5756.4521 624.1940 5540.5518
+  2    2      0    0 2:2:2:0          yes 5756.4521 624.1940 5531.5430
+  3    3      0    0 3:3:3:0          yes 5756.4521 624.1940 5529.7720
+  4    4      0    0 4:4:4:0          yes 5756.4521 624.1940 5515.3320
+  5    5      0    0 5:5:5:0          yes 5756.4521 624.1940 4857.1309
+  6    6      0    0 6:6:6:0          yes 5756.4521 624.1940 5500.4521
+  7    7      0    0 7:7:7:0          yes 5756.4521 624.1940 5548.7549
+  8    8      0    0 8:8:8:1          yes 5756.4521 624.1940 5431.1240
+  9    9      0    0 9:9:9:1          yes 5756.4521 624.1940 5598.8931
+PERF WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+busy_cpu=8 pcpu=2.7 pid=2465 tid=2465 comm=alacritty
+busy_cpu=8 pcpu=1.0 pid=14517 tid=152007 comm=sqlx-sqlite-wor
+memlock_limit=8192
+PERF WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+nr_hugepages=0
+PERF WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons
+
+== process summaries ==
+zcnblk-send: addr=127.0.0.1 shard_count=1 base_port=29100 ports=2 connections_per_port=1 total_connections=2 bytes_per_connection=67108864 chunk_bytes=4096 workers=2 op_mode=write-read-same read_window=1024 write_window=1024 access=linear verify_reads=yes wait_write_acks=no batch_depth=512 write_extents=yes read_extents=yes drain_ready_responses=yes payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral latency=no encryption=none aes_frame_bytes=65536
+zcnblk-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcnblk-send-worker: affinity_index=1 target_cpu=1 status=ok
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcnblk-send-stream: worker=0 lane=0 port=29100 conn=0 shard=0 base_offset=0
+zcnblk-send-stream: worker=1 lane=1 port=29101 conn=0 shard=0 base_offset=67108864
+zcnblk-send-worker: worker=0 streams=1 write_bytes=33554432 read_bytes=33554432 verified_read_bytes=33554432 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 payload_generated_bytes=33554432 payload_heap_copy_bytes=0 payload_buffer_grow_bytes=1048576 payload_write_bytes=33554432 response_payload_read_bytes=33554432 wire_bytes=67119104 frames=16384 read_frames=8192 write_frames=8192 sync_frames=0 frames_per_sec=996543 request_batches=32 request_batch_frames=16384 max_request_batch_frames=512 write_batches=0 write_batch_frames=0 max_write_batch_frames=0 seconds=0.016441 logical_MiBps=3892.75 thread_cpu_seconds=0.016468 cpu_wall_pct=100.2 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=1 involuntary_ctxt_switches=0 migrations=0
+zcnblk-send-worker: worker=1 streams=1 write_bytes=33554432 read_bytes=33554432 verified_read_bytes=33554432 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 payload_generated_bytes=33554432 payload_heap_copy_bytes=0 payload_buffer_grow_bytes=1048576 payload_write_bytes=33554432 response_payload_read_bytes=33554432 wire_bytes=67119104 frames=16384 read_frames=8192 write_frames=8192 sync_frames=0 frames_per_sec=1039851 request_batches=32 request_batch_frames=16384 max_request_batch_frames=512 write_batches=0 write_batch_frames=0 max_write_batch_frames=0 seconds=0.015756 logical_MiBps=4061.92 thread_cpu_seconds=0.015787 cpu_wall_pct=100.2 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=1 involuntary_ctxt_switches=0 migrations=0
+zcnblk-send-summary: write_bytes=67108864 read_bytes=67108864 verified_read_bytes=67108864 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=134238208 payload_generated_bytes=67108864 payload_heap_copy_bytes=0 payload_buffer_grow_bytes=2097152 payload_write_bytes=67108864 response_payload_read_bytes=67108864 frames=32768 read_frames=16384 write_frames=16384 sync_frames=0 request_batches=64 request_batch_frames=32768 max_request_batch_frames=512 write_batches=0 write_batch_frames=0 max_write_batch_frames=0 thread_cpu_seconds=0.032256 cpu_wall_ratio=1.962 voluntary_ctxt_switches=2 involuntary_ctxt_switches=0 migrations=0 frames_per_sec=1993086
+zcnblk-send: bytes=134217728 seconds=0.016441 GiBps=7.603 Gbitps=65.309
+zcnblk-fan-wal-stage-cpus: fan-handler=2-3 fan-async-writeback=4-5 client=0-1 leaf0=6-7 leaf1=8-9
+zcnblk-fan-wal: leaves=127.0.0.1:30100,127.0.0.2:30100 bind=127.0.0.1 base_port=29100 ports=2 connections_per_port=1 total_connections=2 bytes_per_connection=67108864 chunk_bytes=4096 stripe_bytes=4096 leaf_base_port=30100 source_ip=kernel-route leaf_source_ips=kernel-route,kernel-route source_ports=kernel-ephemeral pin_handlers=true placement=mirror order_mode=global-record order_shards=128 write_acks=false write_ack_mode=disabled batch_window=64 result_ranges=true result_arena=false result_arena_slots=128 result_arena_spin=false result_arena_spin_budget=unbounded coalesce_leaf_payloads=false split_mixed_writes=false request_chunk_bytes=1048576 uninit_read_buffers=false async_writeback=true defer_unsynced_writeback=false async_writeback_queue=1024 leaf_max_batch_records=unbounded result_arena_inline_primary=false result_wait_policy=adaptive result_spin_budget=unbounded result_spin_min_outstanding=16 dirty_cache=enabled dirty_cache_retain_committed=false dirty_cache_shards=128 dirty_extent_shards=128 dirty_extent_shard_records=16384 writeback_dirty_budget=enabled soft_dirty_bytes=3221225472 hard_dirty_bytes=4294967296 plan_hash=0xbd4b7154a2111b5e placement_epoch=1 protocol=fan-wal-v2
+zcnblk-fan-wal-leaf-note: start each edge with zcnblk-wal-leaf; leaf block devices are terminal media only after userspace placement
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcnblk-fan-wal-handler: affinity_index=0 target_cpu=2 status=ok
+zcnblk-fan-wal-handler: affinity_index=1 target_cpu=3 status=ok
+zcnblk-fan-wal-upstream: handler=0 peer=127.0.0.1:54178 lane=0 port=29100 conn=0 incoming_cpu=0 incoming_napi_id=unknown
+zcnblk-fan-wal-memfd-dirty-cache: handler=0 lane=0 mode=memfd-log sendfile_cached_reads=yes
+zcnblk-fan-wal-upstream: handler=1 peer=127.0.0.1:34768 lane=1 port=29101 conn=0 incoming_cpu=1 incoming_napi_id=unknown
+zcnblk-fan-wal-memfd-dirty-cache: handler=1 lane=1 mode=memfd-log sendfile_cached_reads=yes
+zcnblk-fan-wal-leaf-stream: handler=0 leaf=0 addr=127.0.0.1 port=30100 lane=0 conn=0 source_ip=kernel-route source_port=kernel-ephemeral plan_hash=0xbd4b7154a2111b5e placement_epoch=1
+zcnblk-fan-wal-leaf-stream: handler=1 leaf=0 addr=127.0.0.1 port=30101 lane=1 conn=0 source_ip=kernel-route source_port=kernel-ephemeral plan_hash=0xbd4b7154a2111b5e placement_epoch=1
+zcnblk-fan-wal-leaf-stream: handler=0 leaf=1 addr=127.0.0.2 port=30100 lane=0 conn=0 source_ip=kernel-route source_port=kernel-ephemeral plan_hash=0xbd4b7154a2111b5e placement_epoch=1
+zcnblk-fan-wal-async-writeback-config: handler=0 queue_depth=1024 merge_leaf_batches=true merge_max_batches=64 merge_max_records=2048 merge_max_payload_bytes=8388608 merge_spin_usec=50 write_extents=true write_extent_trace=false result_window=4096
+zcnblk-fan-wal-leaf-stream: handler=1 leaf=1 addr=127.0.0.2 port=30101 lane=1 conn=0 source_ip=kernel-route source_port=kernel-ephemeral plan_hash=0xbd4b7154a2111b5e placement_epoch=1
+zcnblk-fan-wal-async-writeback-config: handler=1 queue_depth=1024 merge_leaf_batches=true merge_max_batches=64 merge_max_records=2048 merge_max_payload_bytes=8388608 merge_spin_usec=50 write_extents=true write_extent_trace=false result_window=4096
+zcnblk-fan-wal-async-writeback: affinity_index=2 target_cpu=4 status=ok
+zcnblk-fan-wal-async-writeback: affinity_index=3 target_cpu=5 status=ok
+zcnblk-fan-wal-async-writeback: handler=0 write_bytes=33554432 write_frames=32 result_records=64 result_batches=60 result_range_batches=60 merged_request_batches=32 merged_leaf_batches=60 write_extent_batches=60 write_extents=64 saved_descriptor_bytes=6144 max_merged_request_batches=3 max_merged_leaf_records=3 max_inflight_result_batches=60 result_window_drains=1 copied_payload_bytes=0 leased_payload_bytes=67108864 dirty_release_bytes=33554432 dirty_release_events=32 voluntary_ctxt_switches=35 involuntary_ctxt_switches=0 migrations=0 target_cpu=4 affinity_applied=true
+zcnblk-fan-wal-async-writeback: handler=1 write_bytes=33554432 write_frames=32 result_records=64 result_batches=60 result_range_batches=60 merged_request_batches=32 merged_leaf_batches=60 write_extent_batches=60 write_extents=64 saved_descriptor_bytes=6144 max_merged_request_batches=3 max_merged_leaf_records=3 max_inflight_result_batches=60 result_window_drains=1 copied_payload_bytes=0 leased_payload_bytes=67108864 dirty_release_bytes=33554432 dirty_release_events=32 voluntary_ctxt_switches=39 involuntary_ctxt_switches=0 migrations=0 target_cpu=5 affinity_applied=true
+zcnblk-fan-wal-handler: handler=0 lane=0 conn=0 read_bytes=33554432 write_bytes=33554432 response_bytes=33558528 branch_payload_bytes=67108864 frames=64 batches=32 read_frames=32 write_frames=32 sync_frames=0 leaf_submit_batches=64 leaf_submit_records=64 max_leaf_submit_records=1 pipelined_write_batches=0 pipelined_request_batches=32 batch_fallbacks=0 batch_fallback_frames=0 max_upstream_batch_frames=2 max_outstanding_batches=0 result_records=64 upstream_idle_drains=0 result_batches=60 result_range_batches=60 async_merged_request_batches=32 async_merged_leaf_batches=60 async_write_extent_batches=60 async_write_extents=64 async_saved_descriptor_bytes=6144 async_max_merged_request_batches=3 async_max_merged_leaf_records=3 async_copied_payload_bytes=0 async_leased_payload_bytes=67108864 dirty_admit_bytes=33554432 dirty_release_bytes=33554432 dirty_admit_events=32 dirty_release_events=32 dirty_soft_pressure_events=0 dirty_hard_pressure_events=0 dirty_wait_events=0 dirty_wait_seconds=0.000000 read_cache_leased_frames=32 read_cache_leased_bytes=33554432 read_cache_materialized_frames=0 read_cache_materialized_bytes=0 read_cache_fallback_materialized_frames=0 read_cache_fallback_materialized_bytes=0 read_cache_response_source_parts=32 read_cache_response_payload_iovecs=32 read_cache_response_coalesced_parts=0 read_cache_response_total_iovecs=0 read_cache_response_writev_calls=0 read_cache_range_response_batches=0 read_cache_range_response_runs=0 read_cache_range_response_saved_headers=0 frames_per_sec=3393 seconds=0.018863 logical_MiBps=3392.96 thread_cpu_seconds=0.014595 cpu_wall_pct=77.4 phase_upstream_payload_read_seconds=0.010258 phase_order_wait_seconds=0.000079 phase_dirty_admit_seconds=0.000590 phase_leaf_prepare_seconds=0.000007 phase_leaf_write_seconds=0.000000 phase_result_read_seconds=0.000000 phase_result_decode_seconds=0.000000 phase_upstream_ack_seconds=0.000000 phase_completion_account_seconds=0.000000 target_cpu=2 affinity_applied=true voluntary_ctxt_switches=40 involuntary_ctxt_switches=1 migrations=1
+zcnblk-fan-wal-handler: handler=1 lane=1 conn=0 read_bytes=33554432 write_bytes=33554432 response_bytes=33558528 branch_payload_bytes=67108864 frames=64 batches=32 read_frames=32 write_frames=32 sync_frames=0 leaf_submit_batches=64 leaf_submit_records=64 max_leaf_submit_records=1 pipelined_write_batches=0 pipelined_request_batches=32 batch_fallbacks=0 batch_fallback_frames=0 max_upstream_batch_frames=2 max_outstanding_batches=0 result_records=64 upstream_idle_drains=0 result_batches=60 result_range_batches=60 async_merged_request_batches=32 async_merged_leaf_batches=60 async_write_extent_batches=60 async_write_extents=64 async_saved_descriptor_bytes=6144 async_max_merged_request_batches=3 async_max_merged_leaf_records=3 async_copied_payload_bytes=0 async_leased_payload_bytes=67108864 dirty_admit_bytes=33554432 dirty_release_bytes=33554432 dirty_admit_events=32 dirty_release_events=32 dirty_soft_pressure_events=0 dirty_hard_pressure_events=0 dirty_wait_events=0 dirty_wait_seconds=0.000000 read_cache_leased_frames=32 read_cache_leased_bytes=33554432 read_cache_materialized_frames=0 read_cache_materialized_bytes=0 read_cache_fallback_materialized_frames=0 read_cache_fallback_materialized_bytes=0 read_cache_response_source_parts=32 read_cache_response_payload_iovecs=32 read_cache_response_coalesced_parts=0 read_cache_response_total_iovecs=0 read_cache_response_writev_calls=0 read_cache_range_response_batches=0 read_cache_range_response_runs=0 read_cache_range_response_saved_headers=0 frames_per_sec=3284 seconds=0.019490 logical_MiBps=3283.81 thread_cpu_seconds=0.013716 cpu_wall_pct=70.4 phase_upstream_payload_read_seconds=0.009341 phase_order_wait_seconds=0.000117 phase_dirty_admit_seconds=0.000593 phase_leaf_prepare_seconds=0.000005 phase_leaf_write_seconds=0.000000 phase_result_read_seconds=0.000000 phase_result_decode_seconds=0.000000 phase_upstream_ack_seconds=0.000000 phase_completion_account_seconds=0.000000 target_cpu=3 affinity_applied=true voluntary_ctxt_switches=45 involuntary_ctxt_switches=1 migrations=1
+zcnblk-fan-wal-summary: read_bytes=67108864 write_bytes=67108864 response_bytes=67117056 branch_payload_bytes=134217728 frames=128 batches=64 read_frames=64 write_frames=64 sync_frames=0 leaf_submit_batches=128 leaf_submit_records=128 max_leaf_submit_records=1 pipelined_write_batches=0 pipelined_request_batches=64 batch_fallbacks=0 batch_fallback_frames=0 max_upstream_batch_frames=2 max_outstanding_batches=0 upstream_idle_drains=0 result_records=128 result_batches=120 result_range_batches=120 async_merged_request_batches=64 async_merged_leaf_batches=120 async_write_extent_batches=120 async_write_extents=128 async_saved_descriptor_bytes=12288 async_max_merged_request_batches=3 async_max_merged_leaf_records=3 async_copied_payload_bytes=0 async_leased_payload_bytes=134217728 dirty_admit_bytes=67108864 dirty_release_bytes=67108864 dirty_budget_admit_bytes=67108864 dirty_budget_release_bytes=67108864 dirty_current_bytes=0 dirty_max_observed_bytes=66060288 dirty_admit_events=64 dirty_release_events=64 dirty_budget_admit_events=64 dirty_budget_release_events=64 dirty_soft_pressure_events=0 dirty_budget_soft_pressure_events=0 dirty_hard_pressure_events=0 dirty_budget_hard_pressure_events=0 dirty_wait_events=0 dirty_budget_wait_events=0 dirty_wait_seconds=0.000000 dirty_budget_wait_seconds=0.000000 read_cache_leased_frames=64 read_cache_leased_bytes=67108864 read_cache_materialized_frames=0 read_cache_materialized_bytes=0 read_cache_fallback_materialized_frames=0 read_cache_fallback_materialized_bytes=0 read_cache_response_source_parts=64 read_cache_response_payload_iovecs=64 read_cache_response_coalesced_parts=0 read_cache_response_total_iovecs=0 read_cache_response_writev_calls=0 read_cache_range_response_batches=0 read_cache_range_response_runs=0 read_cache_range_response_saved_headers=0 thread_cpu_seconds=0.028311 cpu_wall_ratio=1.453 phase_upstream_payload_read_seconds=0.019599 phase_order_wait_seconds=0.000196 phase_dirty_admit_seconds=0.001183 phase_leaf_prepare_seconds=0.000012 phase_leaf_write_seconds=0.000000 phase_result_read_seconds=0.000000 phase_result_decode_seconds=0.000000 phase_upstream_ack_seconds=0.000000 phase_completion_account_seconds=0.000000 dirty_cache_records=0 voluntary_ctxt_switches=85 involuntary_ctxt_switches=2 migrations=2 frames_per_sec=6568
+PERF WARNING: zcnblk-fan WAL observed effective upstream batch fill 128/64 frames_per_batch with configured batch_depth=512; investigate sender windows, mixed read/write response ordering, and batch_fallbacks=0 before trusting IOPS.
+zcnblk-fan-wal: bytes=134217728 seconds=0.019490 GiBps=6.414 Gbitps=55.093
+zcnblk-wal-leaf: target=zcleasemem:1073741824:memfd bind=127.0.0.1 base_port=30100 ports=2 connections_per_port=1 total_connections=2 chunk_bytes=4096 workers=2 pin_workers=true submit_mode=blocking ring_entries=64 ring_cq_entries=128 cqe_hot_poll=false leaf_sqpoll=false leaf_spin_reads=true leaf_spin_policy=fixed leaf_spin_budget=4096 leaf_adaptive_spin_min=off leaf_adaptive_spin_max=off leaf_adaptive_wait_ns=off uninit_read_buffers=false result_ranges_configured=true device_bytes=1073741824 required_alignment=4096 memory_policy=lease-cache-memfd memory_hugetlb=false preferred_numa_node=0 protocol=fan-wal-v2
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcnblk-wal-leaf-mux-assignment: worker=0 policy=port-lane peer=127.0.0.1:41404 listener_lane=0 listener_port=30100 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=1 policy=port-lane peer=127.0.0.1:42878 listener_lane=1 listener_port=30101 conn=0 incoming_cpu=3 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment-summary: policy=port-lane workers=2 streams_by_worker=0:1,1:1
+zcnblk-wal-leaf-worker: affinity_index=0 target_cpu=6 status=ok
+zcnblk-wal-leaf-worker: affinity_index=1 target_cpu=7 status=ok
+zcnblk-wal-leaf-stream: affinity_index=0 target_cpu=6 status=ok
+zcnblk-wal-leaf-stream: worker=0 slot=0 peer=127.0.0.1:41404 lane=0 port=30100 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=1 target_cpu=7 status=ok
+zcnblk-wal-leaf-stream: worker=1 slot=0 peer=127.0.0.1:42878 lane=1 port=30101 conn=0 incoming_cpu=3 incoming_napi_id=unknown
+zcnblk-wal-leaf-plan: worker=0 slot=0 lane=0 branch=0 plan_hash=0xbd4b7154a2111b5e placement_epoch=1 result_ranges=true
+zcnblk-wal-leaf-plan: worker=1 slot=0 lane=1 branch=0 plan_hash=0xbd4b7154a2111b5e placement_epoch=1 result_ranges=true
+zcnblk-wal-leaf-write-extent-batch-topology: worker=0 slot=0 stream_lane=0 branch=0 records=3 extents=3 batch_payload_bytes=3145824 first_leaf_offset=0 first_payload_len=1048576 desc_preferred_cpu=2 desc_numa_node=0 leaf_target_cpu=6 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=6
+zcnblk-wal-leaf-write-extent-batch-topology: worker=1 slot=0 stream_lane=1 branch=0 records=3 extents=3 batch_payload_bytes=3145824 first_leaf_offset=67108864 first_payload_len=1048576 desc_preferred_cpu=3 desc_numa_node=0 leaf_target_cpu=7 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=7
+zcnblk-wal-leaf-worker: worker=0 streams=1 read_bytes=0 write_bytes=33554432 payload_read_bytes=33555456 heap_payload_bytes=1024 memfd_payload_bytes=33554432 lease_submit_bytes=0 memfd_lease_submit_bytes=33554432 copy_submit_bytes=0 result_records=32 result_batches=30 result_range_batches=30 frames=32 blocking_io_frames=32 uring_io_frames=0 write_submit_runs=30 max_write_submit_run_frames=3 phase_payload_read_seconds=0.014908 phase_payload_alloc_seconds=0.000002 phase_payload_recv_seconds=0.014904 phase_decode_seconds=0.000003 phase_submit_seconds=0.000018 phase_result_write_seconds=0.000097 frames_per_sec=1701 seconds=0.018814 logical_MiBps=1700.90 stream_thread_cpu_seconds=0.015856 stream_cpu_wall_pct=84.3 target_cpu=6 affinity_applied=true voluntary_ctxt_switches=2 involuntary_ctxt_switches=0 migrations=0
+zcnblk-wal-leaf-worker: worker=1 streams=1 read_bytes=0 write_bytes=33554432 payload_read_bytes=33555456 heap_payload_bytes=1024 memfd_payload_bytes=33554432 lease_submit_bytes=0 memfd_lease_submit_bytes=33554432 copy_submit_bytes=0 result_records=32 result_batches=30 result_range_batches=30 frames=32 blocking_io_frames=32 uring_io_frames=0 write_submit_runs=30 max_write_submit_run_frames=3 phase_payload_read_seconds=0.015100 phase_payload_alloc_seconds=0.000001 phase_payload_recv_seconds=0.015095 phase_decode_seconds=0.000002 phase_submit_seconds=0.000018 phase_result_write_seconds=0.000110 frames_per_sec=1643 seconds=0.019474 logical_MiBps=1643.20 stream_thread_cpu_seconds=0.016243 stream_cpu_wall_pct=83.4 target_cpu=7 affinity_applied=true voluntary_ctxt_switches=2 involuntary_ctxt_switches=0 migrations=0
+zcnblk-wal-leaf-summary: streams=2 read_bytes=0 write_bytes=67108864 payload_read_bytes=67110912 heap_payload_bytes=2048 memfd_payload_bytes=67108864 lease_submit_bytes=0 memfd_lease_submit_bytes=67108864 copy_submit_bytes=0 phase_payload_read_seconds=0.030008 phase_payload_alloc_seconds=0.000003 phase_payload_recv_seconds=0.030000 phase_decode_seconds=0.000005 phase_submit_seconds=0.000036 phase_result_write_seconds=0.000206 result_records=64 result_batches=60 result_range_batches=60 frames=64 blocking_io_frames=64 uring_io_frames=0 write_submit_runs=60 max_write_submit_run_frames=3 stream_thread_cpu_seconds=0.032099 stream_cpu_wall_ratio=1.648 voluntary_ctxt_switches=4 involuntary_ctxt_switches=0 migrations=0 frames_per_sec=3286
+zcnblk-wal-leaf: bytes=67108864 seconds=0.019474 GiBps=3.209 Gbitps=27.568
+zcnblk-wal-leaf: target=zcleasemem:1073741824:memfd bind=127.0.0.2 base_port=30100 ports=2 connections_per_port=1 total_connections=2 chunk_bytes=4096 workers=2 pin_workers=true submit_mode=blocking ring_entries=64 ring_cq_entries=128 cqe_hot_poll=false leaf_sqpoll=false leaf_spin_reads=true leaf_spin_policy=fixed leaf_spin_budget=4096 leaf_adaptive_spin_min=off leaf_adaptive_spin_max=off leaf_adaptive_wait_ns=off uninit_read_buffers=false result_ranges_configured=true device_bytes=1073741824 required_alignment=4096 memory_policy=lease-cache-memfd memory_hugetlb=false preferred_numa_node=0 protocol=fan-wal-v2
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcnblk-wal-leaf-mux-assignment: worker=0 policy=port-lane peer=127.0.0.1:60896 listener_lane=0 listener_port=30100 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=1 policy=port-lane peer=127.0.0.1:40978 listener_lane=1 listener_port=30101 conn=0 incoming_cpu=3 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment-summary: policy=port-lane workers=2 streams_by_worker=0:1,1:1
+zcnblk-wal-leaf-worker: affinity_index=1 target_cpu=9 status=ok
+zcnblk-wal-leaf-worker: affinity_index=0 target_cpu=8 status=ok
+zcnblk-wal-leaf-stream: affinity_index=1 target_cpu=9 status=ok
+zcnblk-wal-leaf-stream: worker=1 slot=0 peer=127.0.0.1:40978 lane=1 port=30101 conn=0 incoming_cpu=3 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=0 target_cpu=8 status=ok
+zcnblk-wal-leaf-stream: worker=0 slot=0 peer=127.0.0.1:60896 lane=0 port=30100 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-plan: worker=1 slot=0 lane=1 branch=1 plan_hash=0xbd4b7154a2111b5e placement_epoch=1 result_ranges=true
+zcnblk-wal-leaf-plan: worker=0 slot=0 lane=0 branch=1 plan_hash=0xbd4b7154a2111b5e placement_epoch=1 result_ranges=true
+zcnblk-wal-leaf-write-extent-batch-topology: worker=0 slot=0 stream_lane=0 branch=1 records=3 extents=3 batch_payload_bytes=3145824 first_leaf_offset=0 first_payload_len=1048576 desc_preferred_cpu=2 desc_numa_node=0 leaf_target_cpu=8 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=8
+zcnblk-wal-leaf-write-extent-batch-topology: worker=1 slot=0 stream_lane=1 branch=1 records=3 extents=3 batch_payload_bytes=3145824 first_leaf_offset=67108864 first_payload_len=1048576 desc_preferred_cpu=3 desc_numa_node=0 leaf_target_cpu=9 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=9
+zcnblk-wal-leaf-worker: worker=0 streams=1 read_bytes=0 write_bytes=33554432 payload_read_bytes=33555456 heap_payload_bytes=1024 memfd_payload_bytes=33554432 lease_submit_bytes=0 memfd_lease_submit_bytes=33554432 copy_submit_bytes=0 result_records=32 result_batches=30 result_range_batches=30 frames=32 blocking_io_frames=32 uring_io_frames=0 write_submit_runs=30 max_write_submit_run_frames=3 phase_payload_read_seconds=0.016582 phase_payload_alloc_seconds=0.000001 phase_payload_recv_seconds=0.016578 phase_decode_seconds=0.000003 phase_submit_seconds=0.000021 phase_result_write_seconds=0.000157 frames_per_sec=1703 seconds=0.018795 logical_MiBps=1702.56 stream_thread_cpu_seconds=0.017542 stream_cpu_wall_pct=93.3 target_cpu=8 affinity_applied=true voluntary_ctxt_switches=1 involuntary_ctxt_switches=0 migrations=0
+zcnblk-wal-leaf-worker: worker=1 streams=1 read_bytes=0 write_bytes=33554432 payload_read_bytes=33555456 heap_payload_bytes=1024 memfd_payload_bytes=33554432 lease_submit_bytes=0 memfd_lease_submit_bytes=33554432 copy_submit_bytes=0 result_records=32 result_batches=30 result_range_batches=30 frames=32 blocking_io_frames=32 uring_io_frames=0 write_submit_runs=30 max_write_submit_run_frames=3 phase_payload_read_seconds=0.017153 phase_payload_alloc_seconds=0.000001 phase_payload_recv_seconds=0.017149 phase_decode_seconds=0.000003 phase_submit_seconds=0.000016 phase_result_write_seconds=0.000165 frames_per_sec=1651 seconds=0.019384 logical_MiBps=1650.80 stream_thread_cpu_seconds=0.018089 stream_cpu_wall_pct=93.3 target_cpu=9 affinity_applied=true voluntary_ctxt_switches=2 involuntary_ctxt_switches=0 migrations=0
+zcnblk-wal-leaf-summary: streams=2 read_bytes=0 write_bytes=67108864 payload_read_bytes=67110912 heap_payload_bytes=2048 memfd_payload_bytes=67108864 lease_submit_bytes=0 memfd_lease_submit_bytes=67108864 copy_submit_bytes=0 phase_payload_read_seconds=0.033735 phase_payload_alloc_seconds=0.000002 phase_payload_recv_seconds=0.033727 phase_decode_seconds=0.000006 phase_submit_seconds=0.000036 phase_result_write_seconds=0.000321 result_records=64 result_batches=60 result_range_batches=60 frames=64 blocking_io_frames=64 uring_io_frames=0 write_submit_runs=60 max_write_submit_run_frames=3 stream_thread_cpu_seconds=0.035631 stream_cpu_wall_ratio=1.838 voluntary_ctxt_switches=3 involuntary_ctxt_switches=0 migrations=0 frames_per_sec=3302
+zcnblk-wal-leaf: bytes=67108864 seconds=0.019384 GiBps=3.224 Gbitps=27.696

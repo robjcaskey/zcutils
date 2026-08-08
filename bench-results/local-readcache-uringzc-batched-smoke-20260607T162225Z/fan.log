@@ -1,0 +1,14 @@
+zcfan-readcache-config: role=fan-cold bind=127.0.0.1 branch_binds=127.0.0.1,127.0.0.1 peer=127.0.0.1 source_ip=- base_port=33000 leaf_base_port=39000 downstream_base_port=38000 lanes=2 branches=2 bytes_per_lane=8388608 branch_bytes_per_lane=4194304 cache_bytes_per_lane=67108864 chunk_bytes=1048576 extent_bytes=1048576 workers=2 pin=false cpu_list=- verify=false client_sink=read wait_mode=spin cold_mode=uring-zc slab_slots=4 prefill_bytes=0 transport=sendfile/splice/tee/slab/lane-splice/io_uring-sendzc page_cache=memfd block_devices=no kernel_raid=no
+zcfan-readcache-topology: worker=0 target_cpu=unpinned
+zcfan-readcache-topology: worker=1 target_cpu=unpinned
+zcfan-readcache-accept: role=fan-cold branch=0 lane=0 peer=127.0.0.1:55798 local=127.0.0.1:39000
+zcfan-readcache-accept: role=fan-cold branch=0 lane=1 peer=127.0.0.1:57134 local=127.0.0.1:39001
+zcfan-readcache-accept: role=fan-cold branch=1 lane=0 peer=127.0.0.1:45272 local=127.0.0.1:39002
+zcfan-readcache-accept: role=fan-cold branch=1 lane=1 peer=127.0.0.1:38410 local=127.0.0.1:39003
+zcfan-readcache-connect: lane=0 peer=127.0.0.1:38000 local=127.0.0.1:35116
+zcfan-readcache-connect: lane=1 peer=127.0.0.1:38001 local=127.0.0.1:41608
+zcfan-readcache-uring-zc-worker-setup: worker=1 fixed_pair_slots=4 fixed_buffers=8 extent_bytes=1048576 ring_entries=256 memory_policy=first-touch
+zcfan-readcache-uring-zc-worker-setup: worker=0 fixed_pair_slots=4 fixed_buffers=8 extent_bytes=1048576 ring_entries=256 memory_policy=first-touch
+zcfan-readcache-fan-cold-worker: worker=0 lanes=1 bytes=8388608 aux_bytes=8388608 waits=0 seconds=0.004837 Gbitps=13.875 aux_Gbitps=13.875 target_cpu=-1 affinity_applied=false start_cpu=26 end_cpu=10 voluntary_ctxt_switches=1 involuntary_ctxt_switches=1 migrations=1 checksum=0x0000000000000000 recv_ops=8 send_ops=8 zc_notifications=8 zc_copied_notifications=8
+zcfan-readcache-fan-cold-worker: worker=1 lanes=1 bytes=8388608 aux_bytes=8388608 waits=0 seconds=0.004845 Gbitps=13.850 aux_Gbitps=13.850 target_cpu=-1 affinity_applied=false start_cpu=21 end_cpu=8 voluntary_ctxt_switches=2 involuntary_ctxt_switches=2 migrations=2 checksum=0x0000000000000000 recv_ops=8 send_ops=8 zc_notifications=8 zc_copied_notifications=8
+zcfan-readcache-fan-cold-summary: workers=2 bytes=16777216 aux_bytes=16777216 waits=0 seconds=0.004845 Gbitps=27.700 aux_Gbitps=27.700 voluntary_ctxt_switches=3 involuntary_ctxt_switches=3 migrations=3 checksum=0x0000000000000000 recv_ops=16 send_ops=16 zc_notifications=16 zc_copied_notifications=16 block_devices=no stripe_in_kernel=no mirror_in_kernel=no

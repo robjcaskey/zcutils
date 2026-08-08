@@ -1,0 +1,197 @@
+{
+  "ami_id": "ami-0be851ac12cc5900e",
+  "az": "us-east-2a",
+  "cost_ceiling": {
+    "duration_hours": 0.9080555555555555,
+    "public_ipv4_ceiling_usd": 0.009080555555555555,
+    "root_ebs_ceiling_usd": 0.01910648401826484,
+    "spot_ceiling_usd": 2.270138888888889,
+    "total_ceiling_usd": 2.2983259284627096
+  },
+  "drop_dead_utc": "2026-07-13T02:14:15Z",
+  "ena_express": false,
+  "enable_efa": true,
+  "instance_type": "c8gn.48xlarge",
+  "network_card_count": 2,
+  "nodes": 2,
+  "public_ip_mode": "tagged-eip-post-launch",
+  "region": "us-east-2",
+  "request": {
+    "BlockDeviceMappings": [
+      {
+        "DeviceName": "/dev/sda1",
+        "Ebs": {
+          "DeleteOnTermination": true,
+          "VolumeSize": 64,
+          "VolumeType": "gp3"
+        }
+      }
+    ],
+    "ImageId": "ami-0be851ac12cc5900e",
+    "InstanceMarketOptions": {
+      "MarketType": "spot",
+      "SpotOptions": {
+        "InstanceInterruptionBehavior": "terminate",
+        "MaxPrice": "1.25",
+        "SpotInstanceType": "one-time"
+      }
+    },
+    "InstanceType": "c8gn.48xlarge",
+    "KeyName": "adhocMasterKeypair",
+    "MaxCount": 2,
+    "MetadataOptions": {
+      "HttpEndpoint": "enabled",
+      "HttpTokens": "required"
+    },
+    "MinCount": 2,
+    "NetworkInterfaces": [
+      {
+        "DeviceIndex": 0,
+        "Groups": [
+          "sg-025a50a35d3073a8a"
+        ],
+        "InterfaceType": "efa",
+        "NetworkCardIndex": 0,
+        "SubnetId": "subnet-1593bd7c"
+      },
+      {
+        "DeviceIndex": 1,
+        "Groups": [
+          "sg-025a50a35d3073a8a"
+        ],
+        "InterfaceType": "efa",
+        "NetworkCardIndex": 1,
+        "SubnetId": "subnet-1593bd7c"
+      }
+    ],
+    "Placement": {
+      "AvailabilityZone": "us-east-2a",
+      "GroupName": "up-zc-ramtarget-us-east-2a"
+    },
+    "TagSpecifications": [
+      {
+        "ResourceType": "instance",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "zc-e2e-wal-adhoc-c8gn48-20260713T011915Z"
+          },
+          {
+            "Key": "Project",
+            "Value": "uring-play"
+          },
+          {
+            "Key": "Purpose",
+            "Value": "adhoc-performance-compute"
+          },
+          {
+            "Key": "uringPlayRunId",
+            "Value": "zc-e2e-wal-adhoc-c8gn48-20260713T011915Z"
+          },
+          {
+            "Key": "adhocKeepaliveModeAction",
+            "Value": "terminate"
+          },
+          {
+            "Key": "adhocKeepalive",
+            "Value": "2026-07-13T02:14:15Z"
+          }
+        ]
+      },
+      {
+        "ResourceType": "volume",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "zc-e2e-wal-adhoc-c8gn48-20260713T011915Z"
+          },
+          {
+            "Key": "Project",
+            "Value": "uring-play"
+          },
+          {
+            "Key": "Purpose",
+            "Value": "adhoc-performance-compute"
+          },
+          {
+            "Key": "uringPlayRunId",
+            "Value": "zc-e2e-wal-adhoc-c8gn48-20260713T011915Z"
+          },
+          {
+            "Key": "adhocKeepaliveModeAction",
+            "Value": "terminate"
+          },
+          {
+            "Key": "adhocKeepalive",
+            "Value": "2026-07-13T02:14:15Z"
+          }
+        ]
+      }
+    ]
+  },
+  "run_id": "zc-e2e-wal-adhoc-c8gn48-20260713T011915Z",
+  "subnet_id": "subnet-1593bd7c"
+}
+{
+  "drop_dead_utc": "2026-07-13T02:14:15Z",
+  "instances": [
+    {
+      "az": "us-east-2a",
+      "instance_id": "i-0b1bca4f8450a6483",
+      "instance_type": "c8gn.48xlarge",
+      "network_interfaces": [
+        {
+          "device_index": 0,
+          "interface_type": "efa",
+          "mac": "02:f6:33:34:86:33",
+          "network_card_index": 0,
+          "network_interface_id": "eni-0bc74e9bb9e9f3114",
+          "private_ip": "172.31.12.215",
+          "public_ip": "18.218.15.202"
+        },
+        {
+          "device_index": 1,
+          "interface_type": "efa",
+          "mac": "02:da:af:f3:88:01",
+          "network_card_index": 1,
+          "network_interface_id": "eni-050fa54d2e672cb5a",
+          "private_ip": "172.31.4.136",
+          "public_ip": null
+        }
+      ],
+      "private_ip": "172.31.12.215",
+      "public_ip": "18.218.15.202"
+    },
+    {
+      "az": "us-east-2a",
+      "instance_id": "i-09407567687ba0de8",
+      "instance_type": "c8gn.48xlarge",
+      "network_interfaces": [
+        {
+          "device_index": 0,
+          "interface_type": "efa",
+          "mac": "02:07:24:bb:be:ef",
+          "network_card_index": 0,
+          "network_interface_id": "eni-06f649cfcebcc6d0e",
+          "private_ip": "172.31.9.209",
+          "public_ip": "3.23.116.104"
+        },
+        {
+          "device_index": 1,
+          "interface_type": "efa",
+          "mac": "02:04:5e:f1:2e:7f",
+          "network_card_index": 1,
+          "network_interface_id": "eni-0b417c5f2b95dfc76",
+          "private_ip": "172.31.11.115",
+          "public_ip": null
+        }
+      ],
+      "private_ip": "172.31.9.209",
+      "public_ip": "3.23.116.104"
+    }
+  ],
+  "public_ip_mode": "tagged-eip-post-launch",
+  "region": "us-east-2",
+  "run_id": "zc-e2e-wal-adhoc-c8gn48-20260713T011915Z"
+}
+wrote inventory: bench-results/zc-e2e-wal-adhoc-c8gn48-20260713T011915Z/inventory.json

@@ -1,0 +1,54 @@
+CASE mode=busypoll50 proto=tcp size=14 cpu=96 rss=1 irq=96 coalesce=0 tx_push=224 tx_ring=512
+sockperf: [2;35m== version #3.7-no.git == [0m
+sockperf[CLIENT] send on:sockperf: using recvfrom() to block on socket(s)
+
+[ 0] IP = 172.31.4.211    PORT = 11111 # TCP
+sockperf: Warmup stage (sending a few dummy messages)...
+sockperf: Starting test...
+sockperf: Test end (interrupted by timer)
+sockperf: Test ended
+sockperf: [Total Run] RunTime=7.000 sec; Warm up time=400 msec; SentMessages=244756; ReceivedMessages=244755
+sockperf: ========= Printing statistics for Server No: 0
+sockperf: [Valid Duration] RunTime=7.000 sec; SentMessages=244755; ReceivedMessages=244755
+sockperf: [2;35m====> avg-rtt=28.562 (std-dev=3.074)[0m
+sockperf: # dropped messages = 0; # duplicated messages = 0; # out-of-order messages = 0
+sockperf: Summary: Round trip is 28.562 usec
+sockperf: [2;35mTotal 244755 observations[0m; each percentile contains 2447.55 observations
+sockperf: ---> <MAX> observation =  487.859
+sockperf: ---> percentile 99.999 =  339.369
+sockperf: ---> percentile 99.990 =  167.882
+sockperf: ---> percentile 99.900 =   37.181
+sockperf: ---> percentile 99.000 =   31.737
+sockperf: ---> percentile 90.000 =   29.617
+sockperf: ---> percentile 75.000 =   28.948
+sockperf: ---> percentile 50.000 =   28.367
+sockperf: ---> percentile 25.000 =   27.875
+sockperf: ---> <MIN> observation =   26.564
+TIME voluntary=65 involuntary=39 cpu=76% elapsed=9.24
+CASE mode=busypoll50 proto=tcp size=4096 cpu=96 rss=1 irq=96 coalesce=0 tx_push=224 tx_ring=512
+sockperf: [2;35m== version #3.7-no.git == [0m
+sockperf[CLIENT] send on:sockperf: using recvfrom() to block on socket(s)
+
+[ 0] IP = 172.31.4.211    PORT = 11111 # TCP
+sockperf: Warmup stage (sending a few dummy messages)...
+sockperf: Starting test...
+sockperf: Test end (interrupted by timer)
+sockperf: Test ended
+sockperf: [Total Run] RunTime=7.000 sec; Warm up time=400 msec; SentMessages=203898; ReceivedMessages=203897
+sockperf: ========= Printing statistics for Server No: 0
+sockperf: [Valid Duration] RunTime=7.000 sec; SentMessages=203897; ReceivedMessages=203897
+sockperf: [2;35m====> avg-rtt=34.292 (std-dev=6.067)[0m
+sockperf: # dropped messages = 0; # duplicated messages = 0; # out-of-order messages = 0
+sockperf: Summary: Round trip is 34.292 usec
+sockperf: [2;35mTotal 203897 observations[0m; each percentile contains 2038.97 observations
+sockperf: ---> <MAX> observation =  432.003
+sockperf: ---> percentile 99.999 =  357.609
+sockperf: ---> percentile 99.990 =  262.254
+sockperf: ---> percentile 99.900 =  109.546
+sockperf: ---> percentile 99.000 =   52.447
+sockperf: ---> percentile 90.000 =   34.956
+sockperf: ---> percentile 75.000 =   34.135
+sockperf: ---> percentile 50.000 =   33.611
+sockperf: ---> percentile 25.000 =   33.147
+sockperf: ---> <MIN> observation =   31.441
+TIME voluntary=318 involuntary=809 cpu=75% elapsed=9.24

@@ -1,0 +1,17 @@
+zcfan-readcache-config: role=leaf-send bind=0.0.0.0 branch_binds=- peer=127.0.0.1 source_ip=- base_port=29000 leaf_base_port=34000 downstream_base_port=33000 lanes=8 branches=2 bytes_per_lane=1073741824 branch_bytes_per_lane=268435456 cache_bytes_per_lane=67108864 chunk_bytes=1048576 extent_bytes=1048576 workers=8 pin=false cpu_list=- verify=false client_sink=read wait_mode=spin cold_mode=stream-tee slab_slots=4 prefill_bytes=0 transport=sendfile/splice/tee/slab/lane-splice/io_uring-sendzc page_cache=memfd block_devices=no kernel_raid=no
+zcfan-readcache-topology: worker=0 target_cpu=unpinned
+zcfan-readcache-topology: worker=1 target_cpu=unpinned
+zcfan-readcache-topology: worker=2 target_cpu=unpinned
+zcfan-readcache-topology: worker=3 target_cpu=unpinned
+zcfan-readcache-topology: worker=4 target_cpu=unpinned
+zcfan-readcache-topology: worker=5 target_cpu=unpinned
+zcfan-readcache-topology: worker=6 target_cpu=unpinned
+zcfan-readcache-topology: worker=7 target_cpu=unpinned
+zcfan-readcache-connect: lane=0 peer=127.0.0.1:29000 local=127.0.0.1:49160
+zcfan-readcache-connect: lane=1 peer=127.0.0.1:29001 local=127.0.0.1:41762
+zcfan-readcache-connect: lane=2 peer=127.0.0.1:29002 local=127.0.0.1:40094
+zcfan-readcache-connect: lane=3 peer=127.0.0.1:29003 local=127.0.0.1:53972
+zcfan-readcache-connect: lane=4 peer=127.0.0.1:29004 local=127.0.0.1:34514
+zcfan-readcache-connect: lane=5 peer=127.0.0.1:29005 local=127.0.0.1:58686
+zcfan-readcache-connect: lane=6 peer=127.0.0.1:29006 local=127.0.0.1:57028
+zcfan-readcache-connect: lane=7 peer=127.0.0.1:29007 local=127.0.0.1:43690

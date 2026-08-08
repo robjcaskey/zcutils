@@ -1,0 +1,9 @@
+Topology: local loopback zcnblk-send -> zcnblk-fan WAL mirror -> two zcnblk-wal-leaf zcdevnull leaves.
+No block device is used as a mirror or stripe primitive; leaves are terminal userspace zcdevnull stubs for isolating fan/cache/socket overhead.
+Sender lanes: 4 lanes, CPU list 0,1,2,3, spin reads enabled.
+Fan handler lanes: 4 lanes, CPU list 4,5,6,7, upstream spin reads enabled.
+Fan async writeback workers: CPU list 8,9,10,11 via same fan process pin list.
+Leaf0 zcdevnull: 127.0.0.1:50300-50303, CPU list 12,13,14,15, spin reads enabled.
+Leaf1 zcdevnull: 127.0.0.2:50300-50303, CPU list 28,29,30,31, spin reads enabled.
+Request/write logical chunk: 4096 bytes. Batch depth 512 => 2 MiB extents.
+Write semantics: no per-write remote ack; sync boundary used; fan retains committed dirty cache for hot reads.

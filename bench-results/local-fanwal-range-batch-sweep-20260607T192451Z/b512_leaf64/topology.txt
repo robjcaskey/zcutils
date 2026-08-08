@@ -1,0 +1,17 @@
+case=b512_leaf64
+base_port=33800
+leaf_base_port=34800
+lanes=4
+bytes_per_connection=256M
+chunk=4096
+sender_cpus=0,1,2,3
+fan_handler_cpus=4,5,6,7
+fan_async_cpus=8,9,10,11
+leaf0_cpus=12,13,14,15
+leaf1_cpus=28,29,30,31
+mode=mirror
+op=write-sync-read
+batch_depth=512
+leaf_max_batch_records=64
+request_chunk_bytes=1048576
+terminal_leaf_media=zcleasemem:2147483648

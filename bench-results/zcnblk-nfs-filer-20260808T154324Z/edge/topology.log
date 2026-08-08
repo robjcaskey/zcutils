@@ -1,0 +1,27 @@
+classification=local-shared-system
+coordination_honored=true
+topology_representative=0
+preflight_warnings=2
+pipeline=/dev/zcnblk0 -> userspace-wal-target -> two-lane-tcp -> userspace-zcmem-leaf
+placement=none
+mirror=none
+stripe=none
+target_cpus=1,9
+kthread_cpus=2,10
+leaf_cpus=3,11
+app_cpus=0,4-8,12-16,24
+lane0_hctx=0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23
+lane1_hctx=8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31
+sync_coordinator_cpu=17
+vector_hwm=1
+ordering_epochs=1
+completion=early-local-write-ack
+durability=remote-per-lane-admission-vector+all-lane-marker
+hugetlb_pages_total=0
+thp_enabled=[always] madvise never
+anon_hugepages_kib=43300864
+shared_arena_backing=vmalloc_user+remap_vmalloc_range
+memlock_kib=8192
+loadavg=2.23 4.53 3.86 2/2711 2920579
+zcnblk-fs-app-bench: WARNING: explicit HugeTLB pool is empty; THP policy is '[always] madvise never' with 43300864 KiB anonymous huge pages, while the zcnblk shared arena is vmalloc-backed and cannot consume HugeTLB pages.
+zcnblk-fs-app-bench: WARNING: memlock headroom is only 8192 KiB; fixed/registered buffers need more.

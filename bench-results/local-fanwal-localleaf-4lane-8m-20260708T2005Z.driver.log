@@ -1,0 +1,14 @@
+[18:25:18] WARNING: mapped CPUs are not all using performance governor: cpu0=powersave,cpu1=powersave,cpu2=powersave,cpu3=powersave,cpu4=powersave,cpu5=powersave,cpu6=powersave,cpu7=powersave,cpu8=powersave,cpu9=powersave,cpu10=powersave,cpu11=powersave,cpu12=powersave,cpu13=powersave,cpu14=powersave,cpu15=powersave,cpu16=powersave,cpu17=powersave,cpu18=powersave,cpu19=powersave
+[18:25:18] WARNING: mapped local stages include SMT siblings; report this as SMT-paired, not isolated physical-core topology
+[18:25:19] WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+[18:25:19] WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+[18:25:19] WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons
+[18:25:19] WARNING: topology preflight found 5 issue(s); see /home/rob/zcutils/bench-results/local-fanwal-localleaf-4lane-8m-20260708T2005Z/topology-preflight.log
+[18:25:19] plan_id=zcp-mirror-max-gbit-tcp-mux-4l-2b-8388608e-4096r placement_epoch=1
+[18:25:19] using in-process local zcleasemem leaves; no external zcnblk-wal-leaf daemons
+[18:25:19] starting fan
+zcnblk-fan-wal-local-leaf: leaf=0 target=zcleasemem:1073741824 transport=shared-arena block_devices=no kernel_raid=no
+zcnblk-fan-wal-local-leaf: leaf=1 target=zcleasemem:1073741824 transport=shared-arena block_devices=no kernel_raid=no
+zcnblk-fan-wal-stage-cpus: fan-handler=4-7 fan-async-writeback=8-11 client=0-3 leaf0=12-15 leaf1=16-19
+Error: Custom { kind: Other, error: "TOPOLOGY ERROR: zcnblk-fan WAL: SMT topology conflict: stage client CPU 0 and stage leaf1 CPU 16 in domain local share a physical core; separate fan/client/leaf lanes or report this as an SMT-paired run; strict topology mode refuses to print representative benchmark numbers for this run" }
+ERROR: fan exited before startup completed

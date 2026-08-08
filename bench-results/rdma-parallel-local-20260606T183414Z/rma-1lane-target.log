@@ -1,0 +1,6 @@
+zcofi-rma-target: provider=tcp endpoint=rdm bind=127.0.0.1 base_service=33100 lanes=1 bytes_per_lane=67108864 extent_bytes=1048576 workers=1 direct_rma_target=yes lane_local_registered_arenas=yes commit_doorbell=ofi-msg records_per_extent=256 timeout_ms=20000 busy_poll_iters=100000 cq_sleep_ns=0 ofi_domain=auto
+zcofi-rma-target-worker: affinity_index=0 target_cpu=0 status=ok
+zcofi-control-server: listen=127.0.0.1:34100 peer=127.0.0.1:60826 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-rma-target-lane: worker=0 lane=0 provider=tcp endpoint=rdm bind=127.0.0.1 service=33100 control_port=34100 arena_bytes=67108864 remote_addr=0x0000000000000000 remote_key=0x0000000000000000 max_msg_size=18446744073709551615 inject_size=128
+zcofi-rma-target-worker: worker=0 streams=1 payload_bytes=67108864 wire_bytes=64 extents=64 logical_records=16384 acks=1 seconds=0.010219 payload_Gbitps=52.534 logical_iops=1603213 thread_cpu_seconds=0.014084 cpu_wall_pct=137.8 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=2 involuntary_ctxt_switches=0 migrations=0
+zcofi-rma-target-summary: payload_bytes=67108864 wire_bytes=64 extents=64 logical_records=16384 doorbells=1 seconds=0.010219 payload_Gbitps=52.534 logical_iops=1603213 voluntary_ctxt_switches=2 involuntary_ctxt_switches=0 migrations=0

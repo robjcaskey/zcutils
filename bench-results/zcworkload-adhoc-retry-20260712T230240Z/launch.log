@@ -1,0 +1,169 @@
+{
+  "ami_id": "ami-0be851ac12cc5900e",
+  "az": "us-east-2c",
+  "cost_ceiling": {
+    "duration_hours": 1.416388888888889,
+    "public_ipv4_ceiling_usd": 0.014163888888888889,
+    "root_ebs_ceiling_usd": 0.014901187214611873,
+    "spot_ceiling_usd": 0.42491666666666666,
+    "total_ceiling_usd": 0.4539817427701674
+  },
+  "drop_dead_utc": "2026-07-13T00:42:56Z",
+  "ena_express": false,
+  "enable_efa": false,
+  "instance_type": "c8gn.2xlarge",
+  "network_card_count": 1,
+  "nodes": 2,
+  "public_ip_mode": "auto-associate",
+  "region": "us-east-2",
+  "request": {
+    "BlockDeviceMappings": [
+      {
+        "DeviceName": "/dev/sda1",
+        "Ebs": {
+          "DeleteOnTermination": true,
+          "VolumeSize": 32,
+          "VolumeType": "gp3"
+        }
+      }
+    ],
+    "ImageId": "ami-0be851ac12cc5900e",
+    "InstanceMarketOptions": {
+      "MarketType": "spot",
+      "SpotOptions": {
+        "InstanceInterruptionBehavior": "terminate",
+        "MaxPrice": "0.15",
+        "SpotInstanceType": "one-time"
+      }
+    },
+    "InstanceType": "c8gn.2xlarge",
+    "KeyName": "adhocMasterKeypair",
+    "MaxCount": 2,
+    "MetadataOptions": {
+      "HttpEndpoint": "enabled",
+      "HttpTokens": "required"
+    },
+    "MinCount": 2,
+    "NetworkInterfaces": [
+      {
+        "AssociatePublicIpAddress": true,
+        "DeviceIndex": 0,
+        "Groups": [
+          "sg-025a50a35d3073a8a"
+        ],
+        "NetworkCardIndex": 0,
+        "SubnetId": "subnet-c66ddd8b"
+      }
+    ],
+    "Placement": {
+      "AvailabilityZone": "us-east-2c"
+    },
+    "TagSpecifications": [
+      {
+        "ResourceType": "instance",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "zcworkload-adhoc-retry-20260712T230240Z-a3"
+          },
+          {
+            "Key": "Project",
+            "Value": "uring-play"
+          },
+          {
+            "Key": "Purpose",
+            "Value": "adhoc-performance-compute"
+          },
+          {
+            "Key": "uringPlayRunId",
+            "Value": "zcworkload-adhoc-retry-20260712T230240Z-a3"
+          },
+          {
+            "Key": "adhocKeepaliveModeAction",
+            "Value": "terminate"
+          },
+          {
+            "Key": "adhocKeepalive",
+            "Value": "2026-07-13T00:42:56Z"
+          }
+        ]
+      },
+      {
+        "ResourceType": "volume",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "zcworkload-adhoc-retry-20260712T230240Z-a3"
+          },
+          {
+            "Key": "Project",
+            "Value": "uring-play"
+          },
+          {
+            "Key": "Purpose",
+            "Value": "adhoc-performance-compute"
+          },
+          {
+            "Key": "uringPlayRunId",
+            "Value": "zcworkload-adhoc-retry-20260712T230240Z-a3"
+          },
+          {
+            "Key": "adhocKeepaliveModeAction",
+            "Value": "terminate"
+          },
+          {
+            "Key": "adhocKeepalive",
+            "Value": "2026-07-13T00:42:56Z"
+          }
+        ]
+      }
+    ]
+  },
+  "run_id": "zcworkload-adhoc-retry-20260712T230240Z-a3",
+  "subnet_id": "subnet-c66ddd8b"
+}
+{
+  "drop_dead_utc": "2026-07-13T00:42:56Z",
+  "instances": [
+    {
+      "az": "us-east-2c",
+      "instance_id": "i-030c7dff767403f74",
+      "instance_type": "c8gn.2xlarge",
+      "network_interfaces": [
+        {
+          "device_index": 0,
+          "interface_type": "interface",
+          "mac": "0a:35:89:e5:99:db",
+          "network_card_index": 0,
+          "network_interface_id": "eni-071b70b176084ba85",
+          "private_ip": "172.31.37.177",
+          "public_ip": "18.222.230.100"
+        }
+      ],
+      "private_ip": "172.31.37.177",
+      "public_ip": "18.222.230.100"
+    },
+    {
+      "az": "us-east-2c",
+      "instance_id": "i-0551e742131297377",
+      "instance_type": "c8gn.2xlarge",
+      "network_interfaces": [
+        {
+          "device_index": 0,
+          "interface_type": "interface",
+          "mac": "0a:3b:3f:a6:eb:65",
+          "network_card_index": 0,
+          "network_interface_id": "eni-0a18661113eb34bbf",
+          "private_ip": "172.31.43.91",
+          "public_ip": "3.17.28.5"
+        }
+      ],
+      "private_ip": "172.31.43.91",
+      "public_ip": "3.17.28.5"
+    }
+  ],
+  "public_ip_mode": "auto-associate",
+  "region": "us-east-2",
+  "run_id": "zcworkload-adhoc-retry-20260712T230240Z-a3"
+}
+wrote inventory: /home/rob/zcutils/bench-results/zcworkload-adhoc-retry-20260712T230240Z/inventory.json

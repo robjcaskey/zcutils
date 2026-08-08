@@ -1,0 +1,59 @@
+tcp-bench-uring-mux-send: mode=send addr=172.31.35.23 base_port=23100 ports=32 connections_per_port=1 total_connections=32 bytes_per_connection=8589934592 chunk_bytes=4096 pipeline=64 tcp_nodelay=yes payload_pattern=fill:0x00 source_ip=172.31.43.226 source_ports=kernel-ephemeral fixed_file=false
+uring-send-worker: affinity_index=3 target_cpu=99 status=ok
+uring-send-worker: affinity_index=2 target_cpu=98 status=ok
+uring-send-worker: affinity_index=1 target_cpu=97 status=ok
+uring-send-worker: affinity_index=0 target_cpu=96 status=ok
+uring-send-worker: affinity_index=4 target_cpu=100 status=ok
+uring-send-worker: affinity_index=6 target_cpu=102 status=ok
+uring-send-worker: affinity_index=5 target_cpu=101 status=ok
+uring-send-worker: affinity_index=7 target_cpu=103 status=ok
+uring-send-worker: affinity_index=8 target_cpu=104 status=ok
+uring-send-worker: affinity_index=9 target_cpu=105 status=ok
+uring-send-worker: affinity_index=10 target_cpu=106 status=ok
+uring-send-worker: affinity_index=11 target_cpu=107 status=ok
+uring-send-worker: affinity_index=12 target_cpu=108 status=ok
+uring-send-worker: affinity_index=13 target_cpu=109 status=ok
+uring-send-worker: affinity_index=14 target_cpu=110 status=ok
+uring-send-worker: affinity_index=16 target_cpu=112 status=ok
+uring-send-worker: affinity_index=15 target_cpu=111 status=ok
+uring-send-worker: affinity_index=17 target_cpu=113 status=ok
+uring-send-worker: affinity_index=18 target_cpu=114 status=ok
+uring-send-worker: affinity_index=20 target_cpu=116 status=ok
+uring-send-worker: affinity_index=19 target_cpu=115 status=ok
+uring-send-worker: affinity_index=21 target_cpu=117 status=ok
+uring-send-worker: affinity_index=22 target_cpu=118 status=ok
+uring-send-worker: affinity_index=23 target_cpu=119 status=ok
+uring-send-worker: affinity_index=25 target_cpu=121 status=ok
+uring-send-worker: affinity_index=26 target_cpu=122 status=ok
+uring-send-worker: affinity_index=24 target_cpu=120 status=ok
+uring-send-worker: affinity_index=27 target_cpu=123 status=ok
+uring-send-worker: affinity_index=28 target_cpu=124 status=ok
+uring-send-worker: affinity_index=29 target_cpu=125 status=ok
+uring-send-worker: affinity_index=30 target_cpu=126 status=ok
+uring-send-worker: affinity_index=31 target_cpu=127 status=ok
+tcp-bench-connect-route-probe: peer=172.31.35.23:23104 local_socket=172.31.43.226:44159 probe_src=172.31.43.226 route_dev=ens146 route_src=172.31.43.226 route="172.31.35.23 from 172.31.43.226 dev ens146 table 101 uid 1000 \ cache"
+Error: Os { code: 104, kind: ConnectionReset, message: "Connection reset by peer" }
+Command exited with non-zero status 1
+	Command being timed: "taskset -c 96-127 target/release/zcutils tcp-bench-uring-mux-send 172.31.35.23 23100 32 1 8589934592 4096 64 32 8192 send"
+	User time (seconds): 7.30
+	System time (seconds): 52.39
+	Percent of CPU this job got: 413%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:14.45
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 52268
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 1
+	Minor (reclaiming a frame) page faults: 1041
+	Voluntary context switches: 2673
+	Involuntary context switches: 1309
+	Swaps: 0
+	File system inputs: 136
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1

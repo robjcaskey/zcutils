@@ -1,0 +1,85 @@
+topology_preflight=1
+run_mode=local
+strict=1
+topology_preflight_fatal=0
+topology_busy_pct=1.0
+local_mapped_cpus=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19
+local_mapped_cpu_count=20
+stage=client cpus=0-3 unique_cpus=4
+stage=fan-handler cpus=4-7 unique_cpus=4
+stage=fan-async cpus=8-11 unique_cpus=4
+stage=leaf0 cpus=12-15 unique_cpus=4
+stage=leaf1 cpus=16-19 unique_cpus=4
+cpu=0 governor=performance
+cpu=1 governor=performance
+cpu=2 governor=performance
+cpu=3 governor=performance
+cpu=4 governor=performance
+cpu=5 governor=performance
+cpu=6 governor=performance
+cpu=7 governor=performance
+cpu=8 governor=performance
+cpu=9 governor=performance
+cpu=10 governor=performance
+cpu=11 governor=performance
+cpu=12 governor=performance
+cpu=13 governor=performance
+cpu=14 governor=performance
+cpu=15 governor=performance
+cpu=16 governor=performance
+cpu=17 governor=performance
+cpu=18 governor=performance
+cpu=19 governor=performance
+PERF WARNING: mapped local stages include SMT siblings; report this as SMT-paired, not isolated physical-core topology
+cpu=0 sibling=16 stages=,client
+cpu=1 sibling=17 stages=,client
+cpu=16 sibling=0 stages=,leaf1
+cpu=17 sibling=1 stages=,leaf1
+cpu=18 sibling=2 stages=,leaf1
+cpu=19 sibling=3 stages=,leaf1
+cpu=2 sibling=18 stages=,client
+cpu=3 sibling=19 stages=,client
+== mapped cpu mhz sample ==
+CPU CORE SOCKET NODE L1d:L1i:L2:L3 ONLINE    MAXMHZ   MINMHZ       MHZ
+  0    0      0    0 0:0:0:0          yes 5756.4521 624.1940 5250.3169
+  1    1      0    0 1:1:1:0          yes 5756.4521 624.1940 5250.1509
+  2    2      0    0 2:2:2:0          yes 5756.4521 624.1940 5221.1538
+  3    3      0    0 3:3:3:0          yes 5756.4521 624.1940 5042.6548
+  4    4      0    0 4:4:4:0          yes 5756.4521 624.1940 4511.1592
+  5    5      0    0 5:5:5:0          yes 5756.4521 624.1940 5242.2988
+  6    6      0    0 6:6:6:0          yes 5756.4521 624.1940 5240.8091
+  7    7      0    0 7:7:7:0          yes 5756.4521 624.1940 4854.6421
+  8    8      0    0 8:8:8:1          yes 5756.4521 624.1940  624.1940
+  9    9      0    0 9:9:9:1          yes 5756.4521 624.1940 5219.7339
+ 10   10      0    0 10:10:10:1       yes 5756.4521 624.1940 5177.0488
+ 11   11      0    0 11:11:11:1       yes 5756.4521 624.1940 5197.2681
+ 12   12      0    0 12:12:12:1       yes 5756.4521 624.1940 5192.8999
+ 13   13      0    0 13:13:13:1       yes 5756.4521 624.1940 5191.3252
+ 14   14      0    0 14:14:14:1       yes 5756.4521 624.1940 5205.3521
+ 15   15      0    0 15:15:15:1       yes 5756.4521 624.1940 4652.5820
+ 16    0      0    0 0:0:0:0          yes 5756.4521 624.1940 5242.1138
+ 17    1      0    0 1:1:1:0          yes 5756.4521 624.1940 5055.1152
+ 18    2      0    0 2:2:2:0          yes 5756.4521 624.1940 5243.2510
+ 19    3      0    0 3:3:3:0          yes 5756.4521 624.1940 5170.5591
+PERF WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+busy_cpu=10 pcpu=1.4 pid=11400 tid=3801265 comm=sqlx-sqlite-wor
+busy_cpu=11 pcpu=1.0 pid=447708 tid=448014 comm=qtp1497170291-6
+busy_cpu=13 pcpu=1.0 pid=447708 tid=448373 comm=qtp1497170291-1
+busy_cpu=13 pcpu=1.0 pid=447708 tid=448374 comm=qtp1497170291-1
+busy_cpu=14 pcpu=1.0 pid=447708 tid=448483 comm=qtp1497170291-1
+busy_cpu=11 pcpu=2.3 pid=447708 tid=3778301 comm=qtp1497170291-3
+busy_cpu=9 pcpu=2.0 pid=447708 tid=3778428 comm=qtp1497170291-3
+busy_cpu=3 pcpu=1.2 pid=3704047 tid=3704047 comm=Isolated
+busy_cpu=6 pcpu=5.9 pid=3796928 tid=3796945 comm=C2
+busy_cpu=11 pcpu=7.4 pid=3796928 tid=3804788 comm=included
+busy_cpu=13 pcpu=83.4 pid=3796928 tid=3804789 comm=Execution
+busy_cpu=10 pcpu=1.3 pid=3796928 tid=3805600 comm=C1
+busy_cpu=0 pcpu=17.8 pid=3796928 tid=3805602 comm=C2
+busy_cpu=9 pcpu=47.9 pid=3796928 tid=3805604 comm=C2
+busy_cpu=3 pcpu=17.8 pid=3796928 tid=3805605 comm=C2
+busy_cpu=2 pcpu=24.2 pid=3796928 tid=3805607 comm=C2
+busy_cpu=11 pcpu=50.7 pid=3796928 tid=3805611 comm=C2
+memlock_limit=8192
+PERF WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+nr_hugepages=0
+PERF WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons

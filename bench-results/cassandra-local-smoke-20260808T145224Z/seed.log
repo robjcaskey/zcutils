@@ -1,0 +1,112 @@
+******************** Stress Settings ********************
+Command:
+  Type: write
+  Count: 1,000
+  No Warmup: true
+  Consistency Level: ONE
+  Target Uncertainty: not applicable
+  Key Size (bytes): 10
+  Counter Increment Distibution: add=fixed(1)
+Rate:
+  Auto: false
+  Thread Count: 8
+  OpsPer Sec: 0
+Population:
+  Sequence: 1..1000
+  Order: ARBITRARY
+  Wrap: true
+Insert:
+  Revisits: Uniform:  min=1,max=1000000
+  Visits: Fixed:  key=1
+  Row Population Ratio: Ratio: divisor=1.000000;delegate=Fixed:  key=1
+  Batch Type: not batching
+Columns:
+  Max Columns Per Key: 1
+  Column Names: [C0]
+  Comparator: AsciiType
+  Timestamp: null
+  Variable Column Count: false
+  Slice: false
+  Size Distribution: Fixed:  key=256
+  Count Distribution: Fixed:  key=1
+Errors:
+  Ignore: false
+  Tries: 10
+Log:
+  No Summary: false
+  No Settings: false
+  File: null
+  Interval Millis: 1000
+  Level: NORMAL
+Mode:
+  API: JAVA_DRIVER_NATIVE
+  Connection Style: CQL_PREPARED
+  Protocol Version: V5
+  Username: null
+  Password: null
+  Auth Provide Class: null
+  Max Pending Per Connection: 128
+  Connections Per Host: 2
+  Compression: NONE
+Node:
+  Nodes: [127.0.0.1]
+  Is White List: false
+  Datacenter: null
+Schema:
+  Keyspace: keyspace1
+  Replication Strategy: org.apache.cassandra.locator.SimpleStrategy
+  Replication Strategy Options: {replication_factor=1}
+  Table Compression: none
+  Table Compaction Strategy: null
+  Table Compaction Strategy Options: {}
+Transport:
+  Truststore: null
+  Truststore Password: null
+  Keystore: null
+  Keystore Password: null
+  SSL Protocol: TLS
+  SSL Algorithm: null
+  SSL Ciphers: null
+Port:
+  Native Port: 9142
+  JMX Port: 7299
+JMX:
+  Username: null
+  Password: *not set*
+Graph:
+  File: null
+  Revision: unknown
+  Title: null
+  Operation: WRITE
+TokenRange:
+  Wrap: false
+  Split Factor: 1
+Credentials file:
+  File: *not set*
+  CQL username: *not set*
+  CQL password: *not set*
+  JMX username: *not set*
+  JMX password: *not set*
+  Transport truststore password: *not set*
+  Transport keystore password: *not set*
+Reporting:
+  Output frequency: 1s
+  Header frequency: *not set*
+
+Connected to cluster: zcutils-cassandra-bench, max pending requests per connection 128, max connections per host 2
+Datacenter: datacenter1; Host: /127.0.0.1:9142; Rack: rack1
+java.lang.RuntimeException: Encountered exception creating schema
+	at org.apache.cassandra.stress.settings.SettingsSchema.createKeySpaces(SettingsSchema.java:88)
+	at org.apache.cassandra.stress.settings.StressSettings.maybeCreateKeyspaces(StressSettings.java:159)
+	at org.apache.cassandra.stress.StressAction.run(StressAction.java:58)
+	at org.apache.cassandra.stress.Stress.run(Stress.java:101)
+	at org.apache.cassandra.stress.Stress.main(Stress.java:54)
+Caused by: com.datastax.driver.core.exceptions.InvalidConfigurationInQueryException: Could not create Compression for type org.apache.cassandra.io.compress.none
+	at com.datastax.driver.core.exceptions.InvalidConfigurationInQueryException.copy(InvalidConfigurationInQueryException.java:40)
+	at com.datastax.driver.core.exceptions.InvalidConfigurationInQueryException.copy(InvalidConfigurationInQueryException.java:29)
+	at com.datastax.driver.core.DriverThrowables.propagateCause(DriverThrowables.java:37)
+	at com.datastax.driver.core.DefaultResultSetFuture.getUninterruptibly(DefaultResultSetFuture.java:295)
+	at com.datastax.driver.core.AbstractSession.execute(AbstractSession.java:60)
+	at org.apache.cassandra.stress.util.JavaDriverClient.execute(JavaDriverClient.java:228)
+	at org.apache.cassandra.stress.settings.SettingsSchema.createKeySpaces(SettingsSchema.java:76)
+	... 4 more

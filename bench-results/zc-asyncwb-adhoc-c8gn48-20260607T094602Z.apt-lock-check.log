@@ -1,0 +1,27 @@
+ip-172-31-32-153
+   2829       1 Ssl        04:41 /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
+   7134    7131 S          00:00 grep -E apt|dpkg|unattended|welcome-to
+gcc=/usr/bin/gcc
+ rmem=134217728
+ip-172-31-36-120
+   2865       1 Ssl        04:40 /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
+   3575    3574 Ss         00:32 bash scripts/welcome-to-the-team.sh --no-build
+   3900    3575 S          00:23 sudo apt-get install -y bc build-essential ca-certificates clang cmake curl ethtool fio git hwloc iproute2 jq libssl-dev liburing-dev make numactl perf-tools-unstable pkg-config python3 python3-pip rdma-core rsync sysstat tmux
+   3901    3900 S          00:23 apt-get install -y bc build-essential ca-certificates clang cmake curl ethtool fio git hwloc iproute2 jq libssl-dev liburing-dev make numactl perf-tools-unstable pkg-config python3 python3-pip rdma-core rsync sysstat tmux
+   6220    3901 S          00:00 apt-get install -y bc build-essential ca-certificates clang cmake curl ethtool fio git hwloc iproute2 jq libssl-dev liburing-dev make numactl perf-tools-unstable pkg-config python3 python3-pip rdma-core rsync sysstat tmux
+   6229    6220 S          00:00 sh -c -- test -x /usr/lib/needrestart/apt-pinvoke && /usr/lib/needrestart/apt-pinvoke -m u || true
+   6315    6312 S    441077234-00:18:40 grep -E apt|dpkg|unattended|welcome-to
+gcc=/usr/bin/gcc
+ rmem=212992
+ip-172-31-45-130
+   2805       1 Ssl        04:43 /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
+   3567    3564 S          00:00 grep -E apt|dpkg|unattended|welcome-to
+gcc= rmem=212992
+ip-172-31-38-46
+   2831       1 Ssl        03:28 /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
+   3569    3566 S          00:00 grep -E apt|dpkg|unattended|welcome-to
+gcc= rmem=212992
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.150.178.0 'URING_NODE_INDEX=1 URING_RUN_ID=zc-asyncwb-adhoc-c8gn48-20260607T094602Z URING_PRIVATE_IPS=172.31.32.153,172.31.36.120,172.31.45.130,172.31.38.46 hostname; ps -eo pid,ppid,stat,etime,cmd | egrep "apt|dpkg|unattended|welcome-to" | grep -v egrep || true; printf "gcc="; command -v gcc || true; printf " rmem="; sysctl -n net.core.rmem_max'
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.19.202.142 'URING_NODE_INDEX=2 URING_RUN_ID=zc-asyncwb-adhoc-c8gn48-20260607T094602Z URING_PRIVATE_IPS=172.31.32.153,172.31.36.120,172.31.45.130,172.31.38.46 hostname; ps -eo pid,ppid,stat,etime,cmd | egrep "apt|dpkg|unattended|welcome-to" | grep -v egrep || true; printf "gcc="; command -v gcc || true; printf " rmem="; sysctl -n net.core.rmem_max'
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.136.237.149 'URING_NODE_INDEX=3 URING_RUN_ID=zc-asyncwb-adhoc-c8gn48-20260607T094602Z URING_PRIVATE_IPS=172.31.32.153,172.31.36.120,172.31.45.130,172.31.38.46 hostname; ps -eo pid,ppid,stat,etime,cmd | egrep "apt|dpkg|unattended|welcome-to" | grep -v egrep || true; printf "gcc="; command -v gcc || true; printf " rmem="; sysctl -n net.core.rmem_max'
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.13.236.119 'URING_NODE_INDEX=4 URING_RUN_ID=zc-asyncwb-adhoc-c8gn48-20260607T094602Z URING_PRIVATE_IPS=172.31.32.153,172.31.36.120,172.31.45.130,172.31.38.46 hostname; ps -eo pid,ppid,stat,etime,cmd | egrep "apt|dpkg|unattended|welcome-to" | grep -v egrep || true; printf "gcc="; command -v gcc || true; printf " rmem="; sysctl -n net.core.rmem_max'

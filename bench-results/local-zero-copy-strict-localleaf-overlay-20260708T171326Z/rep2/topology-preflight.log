@@ -1,0 +1,43 @@
+topology_preflight=1
+run_mode=local
+strict=0
+topology_preflight_fatal=0
+topology_busy_pct=1.0
+local_mapped_cpus=0,1,2,3,4,5,6,7,8,9
+local_mapped_cpu_count=10
+stage=client cpus=0-1 unique_cpus=2
+stage=fan-handler cpus=2-3 unique_cpus=2
+stage=fan-async cpus=4-5 unique_cpus=2
+stage=leaf0 cpus=6-7 unique_cpus=2
+stage=leaf1 cpus=8-9 unique_cpus=2
+cpu=0 governor=powersave
+cpu=1 governor=powersave
+cpu=2 governor=powersave
+cpu=3 governor=powersave
+cpu=4 governor=powersave
+cpu=5 governor=powersave
+cpu=6 governor=powersave
+cpu=7 governor=powersave
+cpu=8 governor=powersave
+cpu=9 governor=powersave
+PERF WARNING: mapped CPUs are not all using performance governor: cpu0=powersave,cpu1=powersave,cpu2=powersave,cpu3=powersave,cpu4=powersave,cpu5=powersave,cpu6=powersave,cpu7=powersave,cpu8=powersave,cpu9=powersave
+== mapped cpu mhz sample ==
+CPU CORE SOCKET NODE L1d:L1i:L2:L3 ONLINE    MAXMHZ   MINMHZ       MHZ
+  0    0      0    0 0:0:0:0          yes 5756.4521 624.1940 5446.3501
+  1    1      0    0 1:1:1:0          yes 5756.4521 624.1940 5445.6182
+  2    2      0    0 2:2:2:0          yes 5756.4521 624.1940 4982.0571
+  3    3      0    0 3:3:3:0          yes 5756.4521 624.1940 5419.3169
+  4    4      0    0 4:4:4:0          yes 5756.4521 624.1940 2833.3770
+  5    5      0    0 5:5:5:0          yes 5756.4521 624.1940 5449.5161
+  6    6      0    0 6:6:6:0          yes 5756.4521 624.1940 5501.0269
+  7    7      0    0 7:7:7:0          yes 5756.4521 624.1940 5497.6509
+  8    8      0    0 8:8:8:1          yes 5756.4521 624.1940 5517.4712
+  9    9      0    0 9:9:9:1          yes 5756.4521 624.1940 5504.4082
+PERF WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+busy_cpu=9 pcpu=3.7 pid=1915 tid=1915 comm=sway
+busy_cpu=1 pcpu=3.6 pid=1085088 tid=1085088 comm=postgres
+busy_cpu=2 pcpu=2.0 pid=1085154 tid=1085154 comm=postgres
+memlock_limit=8192
+PERF WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+nr_hugepages=0
+PERF WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons

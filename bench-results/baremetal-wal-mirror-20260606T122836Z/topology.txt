@@ -1,0 +1,14 @@
+topology=baremetal localhost zcnblk-send -> zcnblk-fan --engine wal --mode mirror -> zcnblk-wal-leaf zcdevnull0,zcdevnull1
+terminal_leaves=zcdevnull0@127.0.0.1:24600-24600+7,zcdevnull1@127.0.0.2:24600-24600+7
+fan_bind=127.0.0.1:23600-23600+7
+ports=8
+connections_per_port=1
+bytes_per_connection=256M
+chunk_bytes=4K
+request_batch_depth=256
+fan_batch_window=32
+dirty_budget_hard=2G
+dirty_budget_soft=1536M
+cpu_map=leaf0_workers:0-3,leaf1_workers:4-7,fan_handlers:8-15,sender_workers:16-23
+lane_map=laneN uses sender_worker_cpu 16+N, fan_handler_cpu 8+N, leaf worker cpu sets split across 0-7 by process-local worker index
+note=/dev/zcnblk0 is not used in this run; zcnblk-send is the client generator. No block device is used for mirror placement.

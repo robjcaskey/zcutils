@@ -1,0 +1,5 @@
+scenario=local WAL mirror no-ack control
+client=zcnblk-send via zcutils subcommand, ports=8, bytes_per_connection=64M, chunk=4K, workers=8, cpus=24-31, wait_write_acks=no
+fan=zcnblk-fan --engine wal --mode mirror, ports=8, handlers pinned, cpus=8-31, batch_depth=2048, batch_window=32, write_acks=off
+leaf0=zcnblk-wal-leaf zcdevnull0 bind=127.0.0.1 ports=8 workers=8 cpus=0-7
+leaf1=zcnblk-wal-leaf zcdevnull1 bind=127.0.0.2 ports=8 workers=8 cpus=16-23

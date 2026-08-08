@@ -1,0 +1,10 @@
+zcofi-rma-target: provider=tcp endpoint=rdm bind=127.0.0.1 base_service=33200 lanes=2 bytes_per_lane=67108864 extent_bytes=1048576 workers=2 direct_rma_target=yes lane_local_registered_arenas=yes commit_doorbell=ofi-msg records_per_extent=256 timeout_ms=20000 busy_poll_iters=100000 cq_sleep_ns=0 ofi_domain=auto
+zcofi-rma-target-worker: affinity_index=0 target_cpu=0 status=ok
+zcofi-rma-target-worker: affinity_index=1 target_cpu=1 status=ok
+zcofi-control-server: listen=127.0.0.1:34201 peer=127.0.0.1:54906 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-server: listen=127.0.0.1:34200 peer=127.0.0.1:46744 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-rma-target-lane: worker=1 lane=1 provider=tcp endpoint=rdm bind=127.0.0.1 service=33201 control_port=34201 arena_bytes=67108864 remote_addr=0x0000000000000000 remote_key=0x0000000000000000 max_msg_size=18446744073709551615 inject_size=128
+zcofi-rma-target-lane: worker=0 lane=0 provider=tcp endpoint=rdm bind=127.0.0.1 service=33200 control_port=34200 arena_bytes=67108864 remote_addr=0x0000000000000000 remote_key=0x0000000000000000 max_msg_size=18446744073709551615 inject_size=128
+zcofi-rma-target-worker: worker=0 streams=1 payload_bytes=67108864 wire_bytes=64 extents=64 logical_records=16384 acks=1 seconds=0.018568 payload_Gbitps=28.914 logical_iops=882396 thread_cpu_seconds=0.024007 cpu_wall_pct=129.3 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=6 involuntary_ctxt_switches=1 migrations=0
+zcofi-rma-target-worker: worker=1 streams=1 payload_bytes=67108864 wire_bytes=64 extents=64 logical_records=16384 acks=1 seconds=0.018537 payload_Gbitps=28.963 logical_iops=883867 thread_cpu_seconds=0.023515 cpu_wall_pct=126.9 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=6 involuntary_ctxt_switches=2 migrations=0
+zcofi-rma-target-summary: payload_bytes=134217728 wire_bytes=128 extents=128 logical_records=32768 doorbells=2 seconds=0.018568 payload_Gbitps=57.829 logical_iops=1764791 voluntary_ctxt_switches=12 involuntary_ctxt_switches=3 migrations=0

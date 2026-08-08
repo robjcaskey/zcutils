@@ -1,0 +1,56 @@
+agent-coord-result: acquired=true honored=true token=l18c142b78a57718c-16dcf2 owner=codex:zcutils-zcnblk-shm mode=exclusive sensitivity=high priority=50 expires=1783782083 resource=block=zcnblk0 conflicts=none
+[14:31:23] loading placement-free shared-memory client edge
+agent-coord-result: acquired=true honored=false token=l18c142b792d143f4-16dd39 owner=codex:zcutils-zcnblk-shm mode=soft-exclusive sensitivity=critical priority=50 expires=1783782083 resource=cpu=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15;memory-bandwidth=*;port=30300 conflicts=l18c13a106497d7c8-c5bb3:codex:osbot-raw-replay:shared:priority=40:sensitivity=low,l18c14243e7fcdd2a-160f1a:codex:osbot-iris-autofocus-view:shared:priority=20:sensitivity=normal,l18c142603b2abccb-163e07:codex:vein-volume-build:shared:priority=55:sensitivity=normal
+classification=noisy-local-control
+coordination_scope=shared-host
+bootstrap_manifest=/home/rob/.local/state/zcutils/adhoc-bootstrap.env
+lane_count=4
+topology_cpu_list=unrestricted
+coordinator_cpu=none
+lane=0 client_cpu=0 target_cpu=1 kernel_cpu=2 leaf_cpu=3,7,11,15 hctx_cpus=0, 1, 2, 3, 16, 17, 18, 19
+lane=1 client_cpu=4 target_cpu=5 kernel_cpu=6 leaf_cpu=3,7,11,15 hctx_cpus=4, 5, 6, 7, 20, 21, 22, 23
+lane=2 client_cpu=8 target_cpu=9 kernel_cpu=10 leaf_cpu=3,7,11,15 hctx_cpus=8, 9, 10, 11, 24, 25, 26, 27
+lane=3 client_cpu=12 target_cpu=13 kernel_cpu=14 leaf_cpu=3,7,11,15 hctx_cpus=12, 13, 14, 15, 28, 29, 30, 31
+hugepages_total=0
+hugepages_free=0
+hugepage_size_kib=2048
+memlock_kib=8192
+loadavg=1.27 2.48 2.50 2/5469 1498447
+coordination_honored=false
+target_poll_us=50
+target_busy_poll_us=1000
+target_busy_hysteresis_us=10000
+kernel_completion_poll_us=50
+block_ring_mode=normal sqpoll_cpu_list=none sqpoll_idle_ms=1000
+shm_descriptor_entries_per_channel=128
+shm_payload_entries_per_channel=131072
+writeback_batch_requested=8192 writeback_batch_effective=8192
+request_batch=128 request_batch_fill_us=0 request_batch_fill_min=32
+wal_lane_batch=1 representative_eligible=true
+wal_extent_records=2048 wal_extent_fill_us=0
+remote_recv_spins=4096 leaf_spin_reads=1 leaf_spin_budget=4096
+order_smoke_pairs=0
+shm_payload_slot_bytes=4096
+shm_lease_release_batch=1
+backend=wal-tcp local_leaf=1 leaf_target=zcmem:512M leaf_addr=127.0.0.1 leaf_port=30300 leaf_submit_mode=blocking
+leaf_source_addr=kernel-route
+leaf_addrs=single-address leaf_source_addrs=single-source
+PERF WARNING: BUFFER_MODE=small-pages; this is not a hugetlb representative run
+PERF WARNING: CPU governor is unchanged; record it before interpreting spread
+[14:31:23] starting terminal userspace WAL leaf on cpu 3,7,11,15
+[14:31:23] starting userspace shared target/fan; no placement decision exists in the kernel edge
+[14:31:24] running 3 repeated write controls on the shared host
+repeat=1 target_context_switches=99 target_per_1k_logical_io=0.247 leaf_context_switches=478 leaf_per_1k_logical_io=1.195 kernel_context_switches=2311 kernel_per_1k_logical_io=5.777
+repeat=1 client_context_switches=7171 client_per_1k_logical_io=17.927 client_migrations=5
+repeat=1 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=write workers=4 ops_per_worker=100000 total_ops=400000 reads=0 writes=400000 read_percent=50 chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=128 total_pipeline=512 ring_entries=256 ring_mode=normal cqe=16 registered_ring=false buffers=small-pages pin_workers=true wall_seconds=0.282301 io_seconds=0.281556 slowest_worker_seconds=0.281556 total_cpu_seconds=0.161989 aggregate_cpu_percent=57.53 cpu_ns_per_op=405.0 MiBps=5549.51 ops_per_sec=1420674
+repeat=2 target_context_switches=109 target_per_1k_logical_io=0.273 leaf_context_switches=427 leaf_per_1k_logical_io=1.067 kernel_context_switches=2367 kernel_per_1k_logical_io=5.918
+repeat=2 client_context_switches=7453 client_per_1k_logical_io=18.633 client_migrations=7
+repeat=2 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=write workers=4 ops_per_worker=100000 total_ops=400000 reads=0 writes=400000 read_percent=50 chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=128 total_pipeline=512 ring_entries=256 ring_mode=normal cqe=16 registered_ring=false buffers=small-pages pin_workers=true wall_seconds=0.322949 io_seconds=0.322045 slowest_worker_seconds=0.322045 total_cpu_seconds=0.170110 aggregate_cpu_percent=52.82 cpu_ns_per_op=425.3 MiBps=4851.80 ops_per_sec=1242062
+repeat=3 target_context_switches=83 target_per_1k_logical_io=0.207 leaf_context_switches=409 leaf_per_1k_logical_io=1.022 kernel_context_switches=2241 kernel_per_1k_logical_io=5.603
+repeat=3 client_context_switches=7348 client_per_1k_logical_io=18.370 client_migrations=6
+repeat=3 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=write workers=4 ops_per_worker=100000 total_ops=400000 reads=0 writes=400000 read_percent=50 chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=128 total_pipeline=512 ring_entries=256 ring_mode=normal cqe=16 registered_ring=false buffers=small-pages pin_workers=true wall_seconds=0.278323 io_seconds=0.277550 slowest_worker_seconds=0.277550 total_cpu_seconds=0.164609 aggregate_cpu_percent=59.31 cpu_ns_per_op=411.5 MiBps=5629.61 ops_per_sec=1441180
+runs=3 min_iops=1242062 mean_iops=1367972 max_iops=1441180 spread_pct=14.56
+zcnblk-shm-target-summary: backend=WalTcpLaneExtent channels=4 requests=1200000 writes=1200000 reads=0 syncs=0 write_bytes=4915200000 read_bytes=0 wall_seconds=2.574432 active_seconds=0.929526 active_descriptor_iops=1290981 active_4k_equivalent_iops=1290981 active_payload_Gibitps=39.40 kicks=17416 idle_polls=72 lease_releases=1200000 early_write_acks=1200000 dirty_read_hits=0 remote_read_misses=0 remote_batches=9906 avg_remote_batch_records=121.14 completion_order=early-local-write+remote-read+global-contiguous-hwm data_order=hashed-sector-predecessor+lock-free-dirty-directory sync_boundary=remote-global-completion-hwm+all-lane-sync placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination=dirty-shared-slot-or-remote-direct kernel_payload_copies=one-per-direction writeback_materialization_copies=none-userspace;tcp-kernel-copy representative=false
+zcnblk-shm-target-remote-leaf-summary: address=127.0.0.1:50760->127.0.0.1:30300 lanes=4 transport=tcp fan_stage=userspace placement=single-leaf write_batches=9906 write_records=1200000 write_bytes=4915200000 read_batches=0 read_records=0 read_bytes=0 syncs=0 payload_source=shared-slot-iovec read_payload_destination=shared-slot-direct result_contract=fifo-mixed-request-batch+global-sync-epoch
+zcnblk-wal-leaf-summary: streams=4 read_bytes=0 write_bytes=4915200000 payload_read_bytes=5068800000 heap_payload_bytes=5068800000 heap_payload_descriptor_bytes=153600000 heap_payload_data_bytes=4915200000 memfd_payload_bytes=0 lease_submit_bytes=0 memfd_lease_submit_bytes=0 copy_submit_bytes=4915200000 phase_payload_read_seconds=0.000000 phase_payload_alloc_seconds=0.000000 phase_payload_recv_seconds=0.000000 phase_decode_seconds=0.000000 phase_submit_seconds=0.000000 phase_result_write_seconds=0.000000 result_records=1200000 result_batches=9906 result_range_batches=9906 frames=1200000 blocking_io_frames=1200000 uring_io_frames=0 write_submit_runs=1199907 max_write_submit_run_frames=2 stream_thread_cpu_seconds=3.081211 stream_cpu_wall_ratio=1.197 voluntary_ctxt_switches=1296 involuntary_ctxt_switches=23 migrations=0 frames_per_sec=466194
+artifact=bench-results/local-zcnblk-wal-spin-sweep-20260711T142940Z/spin_both

@@ -1,0 +1,37 @@
+workload	lanes	touch	repeat	logical_4k_iops	first_hop_Gibitps	branch_or_ref_Gibitps	payload_copy_bytes	observed_payload_touch_bytes	voluntary_ctxt_switches	involuntary_ctxt_switches	migrations	sync_wait_p50_ns	dirty_window_wait_p50_ns	fan_leaf_sync_wait_p50_ns	lane_cpu_map
+zcnblk-shm-onramp	1	none	1	168025903	2752.936	2752.936	0	0	0	0	0	68000	0		lane0:client-onrampcpu0->fan-ingresscpu1
+zcnblk-shm-onramp	1	none	2	163823018	2684.076	2684.076	0	0	0	0	0	68000	0		lane0:client-onrampcpu0->fan-ingresscpu1
+zcnblk-shm-onramp	1	cacheline	1	53983885	884.472	884.472	0	76800000	0	0	0	65000	0		lane0:client-onrampcpu0->fan-ingresscpu1
+zcnblk-shm-onramp	1	cacheline	2	54677695	895.839	895.839	0	76800000	0	0	0	65000	0		lane0:client-onrampcpu0->fan-ingresscpu1
+zcnblk-shm-onramp	2	none	1	364282579	5968.406	5968.406	0	0	0	0	0	67000	0		lane0:client-onrampcpu0->fan-ingresscpu1,lane1:client-onrampcpu2->fan-ingresscpu3
+zcnblk-shm-onramp	2	none	2	347540197	5694.099	5694.099	0	0	0	0	0	67000	0		lane0:client-onrampcpu0->fan-ingresscpu1,lane1:client-onrampcpu2->fan-ingresscpu3
+zcnblk-shm-onramp	2	cacheline	1	95967164	1572.326	1572.326	0	153600000	0	10	0	65000	0		lane0:client-onrampcpu0->fan-ingresscpu1,lane1:client-onrampcpu2->fan-ingresscpu3
+zcnblk-shm-onramp	2	cacheline	2	102381810	1677.424	1677.424	0	153600000	0	0	0	65000	0		lane0:client-onrampcpu0->fan-ingresscpu1,lane1:client-onrampcpu2->fan-ingresscpu3
+zcnblk-shm-onramp	4	none	1	642195624	10521.733	10521.733	0	0	0	1	0	68000	0		lane0:client-onrampcpu0->fan-ingresscpu1,lane1:client-onrampcpu2->fan-ingresscpu3,lane2:client-onrampcpu4->fan-ingresscpu5,lane3:client-onrampcpu6->fan-ingresscpu7
+zcnblk-shm-onramp	4	none	2	662644964	10856.775	10856.775	0	0	0	0	0	67000	0		lane0:client-onrampcpu0->fan-ingresscpu1,lane1:client-onrampcpu2->fan-ingresscpu3,lane2:client-onrampcpu4->fan-ingresscpu5,lane3:client-onrampcpu6->fan-ingresscpu7
+zcnblk-shm-onramp	4	cacheline	1	157616533	2582.389	2582.389	0	307200000	0	0	0	66000	0		lane0:client-onrampcpu0->fan-ingresscpu1,lane1:client-onrampcpu2->fan-ingresscpu3,lane2:client-onrampcpu4->fan-ingresscpu5,lane3:client-onrampcpu6->fan-ingresscpu7
+zcnblk-shm-onramp	4	cacheline	2	161483647	2645.748	2645.748	0	307200000	0	0	0	66000	0		lane0:client-onrampcpu0->fan-ingresscpu1,lane1:client-onrampcpu2->fan-ingresscpu3,lane2:client-onrampcpu4->fan-ingresscpu5,lane3:client-onrampcpu6->fan-ingresscpu7
+zcnblk-shm-pipeline	1	none	1	129311014	2118.632	2118.632	0	0	0	0	0	28000	0	13000	lane0:client_cpu0->fan_cpu1->leaf_cpu2
+zcnblk-shm-pipeline	1	none	2	138537286	2269.795	2269.795	0	0	0	0	0	19000	0	13000	lane0:client_cpu0->fan_cpu1->leaf_cpu2
+zcnblk-shm-pipeline	1	cacheline	1	49679135	813.943	813.943	0	115200000	0	0	0	62000	0	16000	lane0:client_cpu0->fan_cpu1->leaf_cpu2
+zcnblk-shm-pipeline	1	cacheline	2	50164104	821.889	821.889	0	115200000	0	0	0	64000	0	16000	lane0:client_cpu0->fan_cpu1->leaf_cpu2
+zcnblk-shm-pipeline	2	none	1	257435212	4217.819	4217.819	0	0	0	0	0	28000	0	13000	lane0:client_cpu0->fan_cpu1->leaf_cpu2,lane1:client_cpu3->fan_cpu4->leaf_cpu5
+zcnblk-shm-pipeline	2	none	2	238543501	3908.297	3908.297	0	0	0	0	0	28000	0	13000	lane0:client_cpu0->fan_cpu1->leaf_cpu2,lane1:client_cpu3->fan_cpu4->leaf_cpu5
+zcnblk-shm-pipeline	2	cacheline	1	82106890	1345.239	1345.239	0	230400000	0	0	0	64000	0	16000	lane0:client_cpu0->fan_cpu1->leaf_cpu2,lane1:client_cpu3->fan_cpu4->leaf_cpu5
+zcnblk-shm-pipeline	2	cacheline	2	93365364	1529.698	1529.698	0	230400000	0	0	0	70000	0	16000	lane0:client_cpu0->fan_cpu1->leaf_cpu2,lane1:client_cpu3->fan_cpu4->leaf_cpu5
+zcnblk-shm-pipeline	4	none	1	476342641	7804.398	7804.398	0	0	0	1	0	28000	0	13000	lane0:client_cpu0->fan_cpu1->leaf_cpu2,lane1:client_cpu3->fan_cpu4->leaf_cpu5,lane2:client_cpu6->fan_cpu7->leaf_cpu8,lane3:client_cpu9->fan_cpu10->leaf_cpu11
+zcnblk-shm-pipeline	4	none	2	494842402	8107.498	8107.498	0	0	0	0	0	34000	0	13000	lane0:client_cpu0->fan_cpu1->leaf_cpu2,lane1:client_cpu3->fan_cpu4->leaf_cpu5,lane2:client_cpu6->fan_cpu7->leaf_cpu8,lane3:client_cpu9->fan_cpu10->leaf_cpu11
+zcnblk-shm-pipeline	4	cacheline	1	127265269	2085.114	2085.114	0	460800000	0	0	0	71000	0	17000	lane0:client_cpu0->fan_cpu1->leaf_cpu2,lane1:client_cpu3->fan_cpu4->leaf_cpu5,lane2:client_cpu6->fan_cpu7->leaf_cpu8,lane3:client_cpu9->fan_cpu10->leaf_cpu11
+zcnblk-shm-pipeline	4	cacheline	2	122651022	2009.514	2009.514	0	460800000	0	2	0	71000	0	17000	lane0:client_cpu0->fan_cpu1->leaf_cpu2,lane1:client_cpu3->fan_cpu4->leaf_cpu5,lane2:client_cpu6->fan_cpu7->leaf_cpu8,lane3:client_cpu9->fan_cpu10->leaf_cpu11
+zcnblk-shm-mirror	1	none	1	116549868	1909.553	3819.106	0	0	0	0	0	25000	0	23000	lane0:client_cpu0->fan_cpu1->leaf0_cpu2+leaf1_cpu3
+zcnblk-shm-mirror	1	none	2	112426017	1841.988	3683.976	0	0	0	0	0	43000	0	23000	lane0:client_cpu0->fan_cpu1->leaf0_cpu2+leaf1_cpu3
+zcnblk-shm-mirror	1	cacheline	1	42933199	703.418	1406.835	0	153600000	0	0	0	70000	0	25000	lane0:client_cpu0->fan_cpu1->leaf0_cpu2+leaf1_cpu3
+zcnblk-shm-mirror	1	cacheline	2	43180416	707.468	1414.936	0	153600000	0	2	0	71000	0	25000	lane0:client_cpu0->fan_cpu1->leaf0_cpu2+leaf1_cpu3
+zcnblk-shm-mirror	2	none	1	222571618	3646.613	7293.227	0	0	0	0	0	26000	0	23000	lane0:client_cpu0->fan_cpu1->leaf0_cpu2+leaf1_cpu3,lane1:client_cpu4->fan_cpu5->leaf0_cpu6+leaf1_cpu7
+zcnblk-shm-mirror	2	none	2	221998045	3637.216	7274.432	0	0	0	0	0	35000	0	23000	lane0:client_cpu0->fan_cpu1->leaf0_cpu2+leaf1_cpu3,lane1:client_cpu4->fan_cpu5->leaf0_cpu6+leaf1_cpu7
+zcnblk-shm-mirror	2	cacheline	1	78449472	1285.316	2570.632	0	307200000	0	0	0	70000	0	26000	lane0:client_cpu0->fan_cpu1->leaf0_cpu2+leaf1_cpu3,lane1:client_cpu4->fan_cpu5->leaf0_cpu6+leaf1_cpu7
+zcnblk-shm-mirror	2	cacheline	2	77669094	1272.530	2545.061	0	307200000	0	0	0	80000	0	26000	lane0:client_cpu0->fan_cpu1->leaf0_cpu2+leaf1_cpu3,lane1:client_cpu4->fan_cpu5->leaf0_cpu6+leaf1_cpu7
+zcnblk-shm-mirror	4	none	1	436028845	7143.897	14287.793	0	0	0	0	0	34000	0	23000	lane0:client_cpu0->fan_cpu1->leaf0_cpu2+leaf1_cpu3,lane1:client_cpu4->fan_cpu5->leaf0_cpu6+leaf1_cpu7,lane2:client_cpu8->fan_cpu9->leaf0_cpu10+leaf1_cpu11,lane3:client_cpu12->fan_cpu13->leaf0_cpu14+leaf1_cpu15
+zcnblk-shm-mirror	4	none	2	435248293	7131.108	14262.216	0	0	0	0	0	47000	0	23000	lane0:client_cpu0->fan_cpu1->leaf0_cpu2+leaf1_cpu3,lane1:client_cpu4->fan_cpu5->leaf0_cpu6+leaf1_cpu7,lane2:client_cpu8->fan_cpu9->leaf0_cpu10+leaf1_cpu11,lane3:client_cpu12->fan_cpu13->leaf0_cpu14+leaf1_cpu15
+zcnblk-shm-mirror	4	cacheline	1	111676588	1829.709	3659.418	0	614400000	0	0	0	71000	0	26000	lane0:client_cpu0->fan_cpu1->leaf0_cpu2+leaf1_cpu3,lane1:client_cpu4->fan_cpu5->leaf0_cpu6+leaf1_cpu7,lane2:client_cpu8->fan_cpu9->leaf0_cpu10+leaf1_cpu11,lane3:client_cpu12->fan_cpu13->leaf0_cpu14+leaf1_cpu15
+zcnblk-shm-mirror	4	cacheline	2	114957432	1883.463	3766.925	0	614400000	0	4	0	76000	0	26000	lane0:client_cpu0->fan_cpu1->leaf0_cpu2+leaf1_cpu3,lane1:client_cpu4->fan_cpu5->leaf0_cpu6+leaf1_cpu7,lane2:client_cpu8->fan_cpu9->leaf0_cpu10+leaf1_cpu11,lane3:client_cpu12->fan_cpu13->leaf0_cpu14+leaf1_cpu15

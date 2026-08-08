@@ -1,0 +1,10 @@
+[16:21:15] WARNING: mapped CPUs are not all using performance governor: cpu0=powersave,cpu1=powersave,cpu2=powersave,cpu3=powersave,cpu4=powersave,cpu5=powersave,cpu6=powersave,cpu7=powersave,cpu8=powersave,cpu9=powersave
+[16:21:15] WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+[16:21:15] WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+[16:21:15] WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons
+[16:21:15] WARNING: topology preflight found 4 issue(s); see bench-results/local-zero-copy-strict-repeat-20260708T162115Z/rep1/topology-preflight.log
+[16:21:15] plan_id=zcp-mirror-max-gbit-tcp-mux-2l-2b-1048576e-4096r placement_epoch=1
+[16:21:15] starting leaf0
+zcnblk-wal-leaf: target=zcleasemem:536870912:memfd bind=127.0.0.1 base_port=30520 ports=2 connections_per_port=1 total_connections=2 chunk_bytes=4096 workers=2 pin_workers=true submit_mode=blocking ring_entries=64 ring_cq_entries=128 cqe_hot_poll=false leaf_sqpoll=false leaf_spin_reads=true leaf_spin_policy=fixed leaf_spin_budget=4096 leaf_adaptive_spin_min=off leaf_adaptive_spin_max=off leaf_adaptive_wait_ns=off uninit_read_buffers=false zero_copy_strict=true result_ranges_configured=true device_bytes=536870912 required_alignment=4096 memory_policy=lease-cache-memfd memory_hugetlb=false preferred_numa_node=0 protocol=fan-wal-v2
+Error: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+ERROR: leaf0 exited before startup completed

@@ -1,0 +1,300 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 6K of event 'cycles:P'
+# Event count (approx.): 29042184437
+#
+# Overhead  Source:Line                                                                                                               Symbol                                                                                                                   IPC   [IPC Coverage]
+# ........  ........................................................................................................................  .......................................................................................................................  ....................
+#
+    28.82%  zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel+9878                                                       [.] zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel                                                       -      -            
+            |          
+             --28.81%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+                       |          
+                        --27.92%--std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+                                  _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                                  0x7f010070cb7a
+                                  0x7f010078a7b7
+
+     5.65%  [kernel.kallsyms][ffffffffa295ddc6]                                                                                       [k] 0xffffffffa295ddc6                                                                                                   -      -            
+            |          
+            |--4.26%--0xffffffffa295ddc6
+            |          0xffffffffa2e2f3a8
+            |          0xffffffffa2e2fa2b
+            |          0xffffffffa2d1c977
+            |          0xffffffffa26daa0a
+            |          0xffffffffa26dc188
+            |          0xffffffffa26dc4eb
+            |          0xffffffffa2fdbb1f
+            |          0xffffffffa200012f
+            |          0x7f01007149ee
+            |          0x7f0100709667
+            |          0x7f01007096ac
+            |          writev
+            |          _RNvXs0_NtNtCs75vJTIYSa2J_3std3net3tcpNtB5_9TcpStreamNtNtB9_2io5Write14write_vectored
+            |          zcutils::tcp_write_all_vectored
+            |          zcutils::zcnblk_fan_wal_write_frame_vectored
+            |          zcutils::zcnblk_fan_wal_write_leaf_batch_payload
+            |          zcutils::zcnblk_shm_target::RemoteWalLeaf::send_batch_payload
+            |          _ZN7zcutils17zcnblk_shm_target13RemoteWalLeaf18send_request_batch17h352f651a5188f806E.llvm.6013747061061894049
+            |          zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+            |          std::sys::backtrace::__rust_begin_short_backtrace
+            |          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+            |          _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+            |          0x7f010070cb7a
+            |          0x7f010078a7b7
+            |          
+            |--0.67%--0xffffffffa22a5977
+            |          0xffffffffa23ffccb
+            |          0xffffffffa2e488fb
+            |          |          
+            |           --0.65%--0xffffffffa2e4a038
+            |                     0xffffffffa2e2ed8f
+            |                     0xffffffffa2e2fa2b
+            |                     0xffffffffa2d1c977
+            |                     0xffffffffa26daa0a
+            |                     0xffffffffa26dc188
+            |                     0xffffffffa26dc4eb
+            |                     0xffffffffa2fdbb1f
+            |                     0xffffffffa200012f
+            |                     0x7f01007149ee
+            |                     0x7f0100709667
+            |                     0x7f01007096ac
+            |                     writev
+            |                     _RNvXs0_NtNtCs75vJTIYSa2J_3std3net3tcpNtB5_9TcpStreamNtNtB9_2io5Write14write_vectored
+            |                     zcutils::tcp_write_all_vectored
+            |                     zcutils::zcnblk_fan_wal_write_frame_vectored
+            |                     zcutils::zcnblk_fan_wal_write_leaf_batch_payload
+            |                     zcutils::zcnblk_shm_target::RemoteWalLeaf::send_batch_payload
+            |                     _ZN7zcutils17zcnblk_shm_target13RemoteWalLeaf18send_request_batch17h352f651a5188f806E.llvm.6013747061061894049
+            |                     zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+            |                     std::sys::backtrace::__rust_begin_short_backtrace
+            |                     core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+            |                     _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+            |                     0x7f010070cb7a
+            |                     0x7f010078a7b7
+            |          
+             --0.48%--0xffffffffa2d212df
+                       0xffffffffa2d22051
+                       0xffffffffa2e2e93b
+                       0xffffffffa2e2fa2b
+                       0xffffffffa2d1c977
+                       0xffffffffa26daa0a
+                       0xffffffffa26dc188
+                       0xffffffffa26dc4eb
+                       0xffffffffa2fdbb1f
+                       0xffffffffa200012f
+                       0x7f01007149ee
+                       0x7f0100709667
+                       0x7f01007096ac
+                       writev
+                       _RNvXs0_NtNtCs75vJTIYSa2J_3std3net3tcpNtB5_9TcpStreamNtNtB9_2io5Write14write_vectored
+                       zcutils::tcp_write_all_vectored
+                       zcutils::zcnblk_fan_wal_write_frame_vectored
+                       zcutils::zcnblk_fan_wal_write_leaf_batch_payload
+                       zcutils::zcnblk_shm_target::RemoteWalLeaf::send_batch_payload
+                       _ZN7zcutils17zcnblk_shm_target13RemoteWalLeaf18send_request_batch17h352f651a5188f806E.llvm.6013747061061894049
+                       zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+                       _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                       0x7f010070cb7a
+                       0x7f010078a7b7
+
+     5.18%  [kernel.kallsyms][ffffffffa263048a]                                                                                       [k] 0xffffffffa263048a                                                                                                   -      -            
+            |          
+             --4.36%--0xffffffffa263048a
+                       0xffffffffa26309ff
+                       0xffffffffa2638600
+                       0xffffffffa263affc
+                       0xffffffffa267349d
+                       0xffffffffa2673810
+                       0xffffffffa2d2130a
+                       0xffffffffa2d22051
+                       0xffffffffa2e2e93b
+                       0xffffffffa2e2fa2b
+                       |          
+                        --4.34%--0xffffffffa2d1c977
+                                  0xffffffffa26daa0a
+                                  0xffffffffa26dc188
+                                  0xffffffffa26dc4eb
+                                  0xffffffffa2fdbb1f
+                                  0xffffffffa200012f
+                                  0x7f01007149ee
+                                  0x7f0100709667
+                                  0x7f01007096ac
+                                  writev
+                                  _RNvXs0_NtNtCs75vJTIYSa2J_3std3net3tcpNtB5_9TcpStreamNtNtB9_2io5Write14write_vectored
+                                  zcutils::tcp_write_all_vectored
+                                  zcutils::zcnblk_fan_wal_write_frame_vectored
+                                  zcutils::zcnblk_fan_wal_write_leaf_batch_payload
+                                  zcutils::zcnblk_shm_target::RemoteWalLeaf::send_batch_payload
+                                  _ZN7zcutils17zcnblk_shm_target13RemoteWalLeaf18send_request_batch17h352f651a5188f806E.llvm.6013747061061894049
+                                  zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+                                  _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                                  0x7f010070cb7a
+                                  0x7f010078a7b7
+
+     1.59%  zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred+51                                               [.] zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred                                             -      -            
+            |          
+             --1.57%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+                       |          
+                        --0.47%--zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions
+                                  zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+                                  _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                                  0x7f010070cb7a
+                                  0x7f010078a7b7
+
+     1.13%  zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions+948                                                  [.] zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions                                                 -      -            
+            |          
+             --1.10%--zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions
+                       |          
+                        --1.06%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+                                  _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                                  0x7f010070cb7a
+                                  0x7f010078a7b7
+
+     0.97%  zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::acquire_ref_if_present+40                                            [.] zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::acquire_ref_if_present                                          -      -            
+            |
+            ---zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::acquire_ref_if_present
+
+     0.90%  zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions+959                                                  [.] zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions                                                 -      -            
+            |
+            ---zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions
+               |          
+                --0.88%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+                          _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                          0x7f010070cb7a
+                          0x7f010078a7b7
+
+     0.63%  zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::acquire_ref_if_present+37                                            [.] zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::acquire_ref_if_present                                          -      -            
+            |
+            ---zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::acquire_ref_if_present
+
+     0.56%  zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::admit+103                                                            [.] zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::admit                                                           -      -            
+            |
+            ---zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::admit
+               |          
+                --0.53%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+                          _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                          0x7f010070cb7a
+                          0x7f010078a7b7
+
+     0.49%  zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions+950                                                  [.] zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions                                                 -      -            
+            |
+            ---zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions
+               zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+               _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+               0x7f010070cb7a
+               0x7f010078a7b7
+
+     0.48%  nft_do_chain+114                                                                                                          [k] nft_do_chain                                                                                                         -      -            
+     0.44%  [kernel.kallsyms][ffffffffa2000080]                                                                                       [k] 0xffffffffa2000080                                                                                                   -      -            
+     0.44%  zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_batch+128                                                 [.] zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_batch                                                -      -            
+            |
+            ---zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_batch
+               zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+               _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+               0x7f010070cb7a
+               0x7f010078a7b7
+
+     0.42%  [kernel.kallsyms][ffffffffa2c9a8e9]                                                                                       [k] 0xffffffffa2c9a8e9                                                                                                   -      -            
+            |          
+             --0.40%--0xffffffffa2d245fd
+                       0xffffffffa2c9a93a
+                       0xffffffffa2d52417
+                       0xffffffffa2d52f79
+                       0xffffffffa2e1c1cb
+                       0xffffffffa2e1e793
+                       0xffffffffa2e1ec39
+                       0xffffffffa2e470f2
+                       0xffffffffa2e48e94
+                       |          
+                        --0.38%--0xffffffffa2e4a038
+                                  0xffffffffa2e2ed8f
+                                  0xffffffffa2e2fa2b
+
+     0.42%  [kernel.kallsyms][ffffffffa22a5970]                                                                                       [k] 0xffffffffa22a5970                                                                                                   -      -            
+     0.40%  [kernel.kallsyms][ffffffffa2c9a8e4]                                                                                       [k] 0xffffffffa2c9a8e4                                                                                                   -      -            
+            |          
+             --0.36%--0xffffffffa2d245fd
+                       0xffffffffa2c9a93a
+                       0xffffffffa2d52417
+                       0xffffffffa2d52f79
+                       0xffffffffa2e1c1cb
+                       0xffffffffa2e1e793
+                       0xffffffffa2e1ec39
+                       0xffffffffa2e470f2
+                       0xffffffffa2e48e94
+                       |          
+                        --0.32%--0xffffffffa2e4a038
+                                  0xffffffffa2e2ed8f
+                                  0xffffffffa2e2fa2b
+
+     0.40%  [kernel.kallsyms][ffffffffa295f088]                                                                                       [k] 0xffffffffa295f088                                                                                                   -      -            
+     0.39%  zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions+940                                                  [.] zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions                                                 -      -            
+            |          
+             --0.37%--zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions
+                       |          
+                        --0.34%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+                                  _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                                  0x7f010070cb7a
+                                  0x7f010078a7b7
+
+     0.37%  nft_meta_get_eval+11                                                                                                      [k] nft_meta_get_eval                                                                                                    -      -            
+     0.36%  nft_meta_get_eval+10                                                                                                      [k] nft_meta_get_eval                                                                                                    -      -            
+     0.36%  zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred+45                                               [.] zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred                                             -      -            
+            |
+            ---zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+
+     0.35%  nft_match_large_eval+10                                                                                                   [k] nft_match_large_eval                                                                                                 -      -            
+     0.35%  zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel+9880                                                       [.] zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel                                                       -      -            
+            |
+            ---zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+               |          
+                --0.33%--std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+                          _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                          0x7f010070cb7a
+                          0x7f010078a7b7
+
+     0.34%  nft_meta_get_eval+4                                                                                                       [k] nft_meta_get_eval                                                                                                    -      -            
+     0.34%  nft_meta_get_eval+15                                                                                                      [k] nft_meta_get_eval                                                                                                    -      -            
+     0.33%  zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::admit+106                                                            [.] zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::admit                                                           -      -            
+            |
+            ---zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::admit
+               zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9b2269b65a045bf7
+               _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+               0x7f010070cb7a
+               0x7f010078a7b7
+
+     0.33%  __vdso_clock_gettime+81                                                                                                   [.] __vdso_clock_gettime                                                                                                 -      -            
+     0.33%  [kernel.kallsyms][ffffffffa2ff4002]                                                                                       [k] 0xffffffffa2ff4002                                                                                                   -      -            
+     0.32%  nft_meta_get_eval+18                                                                                                      [k] nft_meta_get_eval                                                                                                    -      -            
+     0.31%  nft_do_chain_ipv4+9                                                                                                       [k] nft_do_chain_ipv4                                                                                                    -      -            
+
+
+#
+# (Tip: Add -I to perf record to sample register values, which will be visible in perf report sample context.)
+#

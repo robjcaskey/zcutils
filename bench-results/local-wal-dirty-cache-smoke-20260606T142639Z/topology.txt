@@ -1,0 +1,6 @@
+scenario=deterministic dirty-cache smoke
+client=zcutils zcnblk-send op=write-read-same verify_reads=1 send_pattern=offset wait_acks=1 ports=1 bytes_per_connection=8K chunk=4K workers=1
+fan=zcnblk-fan wal mirror admission dirty_cache=enabled ports=1 batch_depth=1 batch_window=2
+leaf0=zcnblk-wal-leaf zcdevnull0 bind=127.0.0.1 write_delay_us=100000 terminal leaf only
+leaf1=zcnblk-wal-leaf zcdevnull1 bind=127.0.0.2 write_delay_us=100000 terminal leaf only
+expected=fan read served locally from cache; leaves write_bytes=4096 each and read_bytes=0

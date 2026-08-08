@@ -1,0 +1,53 @@
+[    0.021442] RDSEED32 is broken. Disabling the corresponding CPUID bit.
+ZCWORKLOAD_GUEST_BOOT role=client
+Linux (none) 7.0.8-io-slots-03 #slots3 SMP PREEMPT_DYNAMIC Sun May 31 09:43:13 EDT 2026 x86_64 GNU/Linux
+guest_cmdline=console=ttyS0 panic=-1 oops=panic quiet zcworkload_role=client
+guest_online_cpus=0-3
+guest_memlock_kib=8192
+guest_hugepages_total=0
+guest_hugepages_free=0
+client_topology=lane0:workload-worker0:guest-cpu1:kernel-kthread0:guest-cpu3:wal-onramp-worker0:guest-cpu2 frame_bytes=4096
+client_vcpu_host_map=vCPU0:hostCPU8,vCPU1:hostCPU9,vCPU2:hostCPU10,vCPU3:hostCPU11 emulator:hostCPU13
+client_block_edge=/dev/zcnblk0 transport=shm userspace_stage=zcnblk-shm-target:wal-tcp placement_owner=none block_client_placement=no
+PING 10.72.0.2 (10.72.0.2): 56 data bytes
+64 bytes from 10.72.0.2: seq=0 ttl=64 time=1.366 ms
+
+--- 10.72.0.2 ping statistics ---
+1 packets transmitted, 1 packets received, 0% packet loss
+round-trip min/avg/max = 1.366/1.366/1.366 ms
++ insmod /modules/zcnblk_client_mod.ko transport=shm lanes=1 connections_per_lane=1 shard_count=1 size_mib=128 logical_block_size=4096 max_frame_bytes=4096 queues=1 queue_depth=64 pipeline_depth=128 shm_ring_entries=128 shm_payload_entries=4096 shm_poll_us=50 batch_depth=1 write_acks=1 hctx_affinity=1 pin_threads=1 pin_base_cpu=3 pin_cpu_count=1 pin_stride=1
++ URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE=/tmp/zcworkload-onramp.pid URING_PLAY_ZCNBLK_SHM_LEAF_ADDR=10.72.0.2:29000 URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH=1 URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=2 /zcnblk-shm-target /dev/zcnblk-shmctl wal-tcp 128 2 1000 1000 10000
+wal-onramp-pid=110 comm=zcnblk-shm-targ
+zcnblk-shm-target-remote-connect: lane=0 address=10.72.0.1:33822->10.72.0.2:29000 tcp_nodelay=true quickack=false
+zcnblk-shm-target: device=/dev/zcnblk-shmctl backend=WalTcp channels=1 ring_entries=128 payload_entries=4096 slot_bytes=4096 region_bytes=16834560 capacity_bytes=134217728 kick_batch=128 lease_release_batch=1 writeback_batch=2048 read_batch=128 read_batch_fill_us=0 read_batch_fill_min=32 write_batch_fill_us=0 write_batch_fill_min=128 remote_leaf=10.72.0.1:33822->10.72.0.2:29000 cpu_list=2 owner_dispatch=false owner_count=1 owner_extent_records=256 owner_max_tx_iovecs=960 split_transport=false transport_cpu_list=inline transport_wait=adaptive poll_us=1000 busy_poll_us=1000 busy_hysteresis_us=10000 poll_clock_check_spins=64 wait_policy=fixed-active ordering=per-lane-batch+sector-predecessor+global-sync-hwm shared_payload_slots=true payload_ownership=submit-sequence-token-transfer placement_owner=downstream-userspace-stage block_client_placement=no representative=false 
+--- zcnblk module parameters ---
+transport=shm
+lanes=1
+connections_per_lane=1
+size_mib=128
+logical_block_size=4096
+max_frame_bytes=4096
+queues=1
+queue_depth=64
+pipeline_depth=128
+shm_ring_entries=128
+shm_payload_entries=4096
+shm_poll_us=50
+batch_depth=1
+write_acks=Y
+hctx_affinity=Y
+pin_threads=Y
+pin_base_cpu=3
+pin_cpu_count=1
+pin_stride=1
+--- hctx maps ---
+/sys/block/zcnblk0/mq/0/cpu_list=0, 1, 2, 3
+ 24:          0          0          0          0 PCI-MSIX-0000:00:01.0   0-edge      virtio0-config
+ 25:          0          0          0          5 PCI-MSIX-0000:00:01.0   1-edge      virtio0-input.0
+ 26:         12          0          0          0 PCI-MSIX-0000:00:01.0   2-edge      virtio0-output.0
+--- zcnblk thread contexts: before ---
+zcnblk-kthread-context: phase=before tid=109 comm=zcnblk-shm-0-0 voluntary=3 involuntary=0
+zcnblk-kthread-context: phase=before tid=110 comm=zcnblk-shm-targ voluntary=2 involuntary=0
+zcnblk-kthread-context: phase=before tid=112 comm=zcnblk-shm-targ voluntary=11 involuntary=0
++ io_uring fixed random 4K 50/50 read/write QD sweep
+qdsweep-case: engine=uring-fixed mode=rw read_percent=50 workers=1 depth=64 lane_map=lane0:worker0:guest-cpu1 onramp=lane0:guest-cpu2 kthread=lane0:guest-cpu3

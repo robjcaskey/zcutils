@@ -1,0 +1,11 @@
+zcnblk-wal-leaf: target=zcdevnull bind=127.0.0.2 base_port=47100 ports=1 connections_per_port=1 total_connections=1 chunk_bytes=4096 workers=1 pin_workers=true submit_mode=blocking ring_entries=64 ring_cq_entries=128 cqe_hot_poll=false leaf_sqpoll=false leaf_spin_reads=false leaf_spin_budget=unbounded result_ranges_configured=true device_bytes=1099511627776 required_alignment=4096 protocol=fan-wal-v2
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:34284 lane=0 port=47100 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=0 policy=port-lane peer=127.0.0.1:34284 listener_lane=0 listener_port=47100 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment-summary: policy=port-lane workers=1 streams_by_worker=0:1
+zcnblk-wal-leaf-worker: affinity_index=0 target_cpu=1 status=ok
+zcnblk-wal-leaf-stream: affinity_index=0 target_cpu=1 status=ok
+zcnblk-wal-leaf-stream: worker=0 slot=0 peer=127.0.0.1:34284 lane=0 port=47100 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-batch-topology: worker=0 slot=0 stream_lane=0 branch=1 records=1 batch_payload_bytes=4224 desc_lane=0 desc_queue=0 desc_preferred_worker=0 desc_preferred_cpu=2 desc_numa_node=0 leaf_target_cpu=1 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=1
+zcnblk-wal-leaf-worker: worker=0 streams=1 read_bytes=0 write_bytes=4096 result_records=1 result_batches=1 result_range_batches=1 frames=1 blocking_io_frames=1 uring_io_frames=0 write_submit_runs=1 max_write_submit_run_frames=1 frames_per_sec=10 seconds=0.100373 logical_MiBps=0.04 stream_thread_cpu_seconds=0.000114 stream_cpu_wall_pct=0.1 target_cpu=1 affinity_applied=true voluntary_ctxt_switches=2 involuntary_ctxt_switches=0 migrations=0
+zcnblk-wal-leaf-summary: streams=1 read_bytes=0 write_bytes=4096 result_records=1 result_batches=1 result_range_batches=1 frames=1 blocking_io_frames=1 uring_io_frames=0 write_submit_runs=1 max_write_submit_run_frames=1 stream_thread_cpu_seconds=0.000114 stream_cpu_wall_ratio=0.001 voluntary_ctxt_switches=2 involuntary_ctxt_switches=0 migrations=0 frames_per_sec=10
+zcnblk-wal-leaf: bytes=4096 seconds=0.100373 GiBps=0.000 Gbitps=0.000

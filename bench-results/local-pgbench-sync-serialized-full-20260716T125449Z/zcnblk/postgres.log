@@ -1,0 +1,57 @@
+2026-07-16 08:54:51.180 EDT [1618758] LOG:  starting PostgreSQL 17.10 (Debian 17.10-0+deb13u1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+2026-07-16 08:54:51.180 EDT [1618758] LOG:  listening on Unix socket "/tmp/zc-pgbench-sync-hwm-socket/.s.PGSQL.55432"
+2026-07-16 08:54:51.485 EDT [1618782] LOG:  database system was shut down at 2026-07-16 08:54:50 EDT
+2026-07-16 08:54:51.485 EDT [1618783] FATAL:  the database system is starting up
+2026-07-16 08:54:51.539 EDT [1618786] FATAL:  the database system is starting up
+2026-07-16 08:54:51.588 EDT [1618758] LOG:  database system is ready to accept connections
+2026-07-16 08:54:51.690 EDT [1618798] FATAL:  role "rob" does not exist
+2026-07-16 08:55:03.191 EDT [1618780] LOG:  checkpoints are occurring too frequently (12 seconds apart)
+2026-07-16 08:55:03.191 EDT [1618780] HINT:  Consider increasing the configuration parameter "max_wal_size".
+2026-07-16 08:55:03.505 EDT [1618780] LOG:  checkpoint starting: wal
+2026-07-16 08:55:20.860 EDT [1618780] LOG:  checkpoint complete: wrote 938 buffers (2.9%); 0 WAL file(s) added, 2 removed, 31 recycled; write=12.234 s, sync=1.724 s, total=17.669 s; sync files=313, longest=0.709 s, average=0.006 s; distance=543833 kB, estimate=543833 kB; lsn=0/422C74A0, redo lsn=0/22803420
+2026-07-16 08:55:20.860 EDT [1618780] LOG:  checkpoints are occurring too frequently (17 seconds apart)
+2026-07-16 08:55:20.860 EDT [1618780] HINT:  Consider increasing the configuration parameter "max_wal_size".
+2026-07-16 08:55:20.860 EDT [1618780] LOG:  checkpoint starting: wal
+2026-07-16 08:55:34.020 EDT [1618780] LOG:  checkpoint complete: wrote 1062 buffers (3.2%); 0 WAL file(s) added, 13 removed, 31 recycled; write=4.125 s, sync=2.188 s, total=13.160 s; sync files=42, longest=0.581 s, average=0.053 s; distance=717346 kB, estimate=717346 kB; lsn=0/6E2CA570, redo lsn=0/4E48BC50
+2026-07-16 08:55:34.020 EDT [1618780] LOG:  checkpoints are occurring too frequently (14 seconds apart)
+2026-07-16 08:55:34.020 EDT [1618780] HINT:  Consider increasing the configuration parameter "max_wal_size".
+2026-07-16 08:55:34.020 EDT [1618780] LOG:  checkpoint starting: wal
+2026-07-16 08:55:41.774 EDT [1618780] LOG:  checkpoint complete: wrote 9808 buffers (29.9%); 0 WAL file(s) added, 2 removed, 31 recycled; write=1.609 s, sync=1.341 s, total=7.754 s; sync files=12, longest=0.479 s, average=0.112 s; distance=536907 kB, estimate=699302 kB; lsn=0/8FE118D0, redo lsn=0/6F0DEB00
+2026-07-16 08:55:41.774 EDT [1618780] LOG:  checkpoints are occurring too frequently (7 seconds apart)
+2026-07-16 08:55:41.774 EDT [1618780] HINT:  Consider increasing the configuration parameter "max_wal_size".
+2026-07-16 08:55:41.774 EDT [1618780] LOG:  checkpoint starting: wal
+2026-07-16 08:58:00.645 EDT [1620348] PANIC:  could not fdatasync file "0000000100000000000000B1": Input/output error
+2026-07-16 08:58:00.645 EDT [1620348] STATEMENT:  END;
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not fsync file "pg_wal": Input/output error
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not remove file "pg_wal/00000001000000000000007F": No such file or directory
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not fsync file "pg_wal/00000001000000000000008C": Input/output error
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not remove file "pg_wal/00000001000000000000008C": Read-only file system
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not open file "pg_wal/00000001000000000000007D": Read-only file system
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not remove file "pg_wal/00000001000000000000007D": Read-only file system
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not open file "pg_wal/000000010000000000000080": Read-only file system
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not remove file "pg_wal/000000010000000000000080": Read-only file system
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not open file "pg_wal/000000010000000000000077": Read-only file system
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not remove file "pg_wal/000000010000000000000077": Read-only file system
+2026-07-16 08:58:00.646 EDT [1623688] WARNING:  could not create relation-cache initialization file "global/pg_internal.init.1623688": Read-only file system
+2026-07-16 08:58:00.646 EDT [1623688] DETAIL:  Continuing anyway, but there's something wrong.
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not open file "pg_wal/000000010000000000000081": Read-only file system
+2026-07-16 08:58:00.646 EDT [1621838] WARNING:  could not create relation-cache initialization file "base/1/pg_internal.init.1621838": Read-only file system
+2026-07-16 08:58:00.646 EDT [1621838] DETAIL:  Continuing anyway, but there's something wrong.
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not remove file "pg_wal/000000010000000000000081": Read-only file system
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not open file "pg_wal/000000010000000000000084": Read-only file system
+2026-07-16 08:58:00.646 EDT [1623688] WARNING:  could not create relation-cache initialization file "base/1/pg_internal.init.1623688": Read-only file system
+2026-07-16 08:58:00.646 EDT [1623688] DETAIL:  Continuing anyway, but there's something wrong.
+2026-07-16 08:58:00.646 EDT [1618781] PANIC:  could not flush dirty data: Read-only file system
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not remove file "pg_wal/000000010000000000000084": Read-only file system
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not open file "pg_wal/00000001000000000000007A": Read-only file system
+2026-07-16 08:58:00.646 EDT [1618780] LOG:  could not remove file "pg_wal/00000001000000000000007A": Read-only file system
+2026-07-16 08:58:00.646 EDT [1618780] ERROR:  could not access status of transaction 0
+2026-07-16 08:58:00.646 EDT [1618780] DETAIL:  Could not open file "pg_subtrans/0001": Read-only file system.
+2026-07-16 08:58:00.646 EDT [1621838] ERROR:  could not open file "base/1/2685": Read-only file system
+2026-07-16 08:58:00.646 EDT [1623688] ERROR:  could not open file "base/1/2685": Read-only file system
+2026-07-16 08:58:00.647 EDT [1618758] LOG:  could not open file "postmaster.pid": Read-only file system; continuing anyway
+2026-07-16 08:58:00.647 EDT [1624785] ERROR:  could not open file "base/16384/2601": Read-only file system
+2026-07-16 08:58:00.649 EDT [1618758] LOG:  background writer process (PID 1618781) was terminated by signal 6: Aborted
+2026-07-16 08:58:00.649 EDT [1618758] LOG:  terminating any other active server processes
+2026-07-16 08:58:00.669 EDT [1618758] LOG:  all server processes terminated; reinitializing
+2026-07-16 08:58:00.678 EDT [1618758] PANIC:  could not open file "global/pg_control": Read-only file system

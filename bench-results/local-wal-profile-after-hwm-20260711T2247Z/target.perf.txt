@@ -1,0 +1,690 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 23K of event 'cycles:P'
+# Event count (approx.): 116240808970
+#
+# Overhead  Command          Shared Object        Symbol                                                                                                                  
+# ........  ...............  ...................  ........................................................................................................................
+#
+    31.32%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+            |          
+            |--27.86%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+            |          
+            |--0.57%--__vdso_clock_gettime
+            |          
+             --0.53%--zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::admit
+
+     5.35%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _copy_from_iter
+            |          
+            |--3.95%--_copy_from_iter
+            |          tcp_sendmsg_locked
+            |          tcp_sendmsg
+            |          sock_write_iter
+            |          do_iter_readv_writev
+            |          vfs_writev
+            |          do_writev
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          0x7f84040409ee
+            |          zcutils::tcp_write_all_vectored
+            |          0x242eb000242c6
+            |          
+             --0.87%--read_tsc
+                       ktime_get
+                       tcp_write_xmit
+                       |          
+                        --0.87%--__tcp_push_pending_frames
+                                  tcp_sendmsg_locked
+                                  tcp_sendmsg
+                                  |          
+                                   --0.79%--sock_write_iter
+                                             do_iter_readv_writev
+                                             vfs_writev
+                                             do_writev
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             0x7f84040409ee
+                                             zcutils::tcp_write_all_vectored
+                                             0x242eb000242c6
+
+     3.67%  zcnblk-shm-targ  [kernel.kallsyms]    [k] kernel_init_pages
+            |          
+             --3.32%--kernel_init_pages
+                       prep_new_page
+                       get_page_from_freelist
+                       __alloc_frozen_pages_noprof
+                       alloc_pages_mpol
+                       |          
+                        --3.31%--alloc_pages_noprof
+                                  skb_page_frag_refill
+                                  sk_page_frag_refill
+                                  tcp_sendmsg_locked
+                                  tcp_sendmsg
+                                  |          
+                                   --3.28%--sock_write_iter
+                                             do_iter_readv_writev
+                                             vfs_writev
+                                             do_writev
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             0x7f84040409ee
+                                             zcutils::tcp_write_all_vectored
+                                             0x242eb000242c6
+
+     3.28%  zcnblk-shm-targ  [nf_tables]          [k] nft_meta_get_eval
+            |          
+             --1.37%--nft_do_chain
+                       nft_do_chain_ipv4
+                       nf_hook_slow
+                       |          
+                        --0.90%--__ip_local_out
+                                  ip_local_out
+                                  __ip_queue_xmit
+                                  __tcp_transmit_skb
+                                  |          
+                                   --0.90%--tcp_write_xmit
+                                             |          
+                                              --0.89%--__tcp_push_pending_frames
+                                                        tcp_sendmsg_locked
+                                                        tcp_sendmsg
+
+     3.11%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions
+            |          
+            |--1.88%--zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions
+            |          
+             --0.57%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+
+     2.91%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+            |          
+            |--0.97%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+            |          
+            |--0.64%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+            |          
+             --0.52%--zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions
+
+     2.77%  zcnblk-shm-targ  [nf_tables]          [k] nft_do_chain
+            |          
+             --1.13%--nft_do_chain
+                       nft_do_chain_ipv4
+                       nf_hook_slow
+
+     1.83%  zcnblk-shm-targ  [nft_compat]         [k] nft_match_large_eval
+            |          
+             --1.16%--nft_do_chain
+                       nft_do_chain_ipv4
+                       nf_hook_slow
+                       |          
+                        --0.52%--__ip_local_out
+                                  ip_local_out
+                                  __ip_queue_xmit
+                                  __tcp_transmit_skb
+                                  |          
+                                   --0.51%--tcp_write_xmit
+                                             __tcp_push_pending_frames
+                                             tcp_sendmsg_locked
+                                             tcp_sendmsg
+
+     1.74%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::SharedTarget::release_wal_lane_retained
+            |          
+             --1.16%--zcutils::zcnblk_shm_target::SharedTarget::release_wal_lane_retained
+                       |          
+                        --1.15%--0
+
+     1.44%  zcnblk-shm-targ  [kernel.kallsyms]    [k] loopback_xmit
+            |          
+             --1.26%--sk_free
+                       loopback_xmit
+                       dev_hard_start_xmit
+                       __dev_queue_xmit
+                       ip_finish_output2
+                       ip_output
+                       __ip_queue_xmit
+                       __tcp_transmit_skb
+                       tcp_write_xmit
+                       __tcp_push_pending_frames
+                       tcp_sendmsg_locked
+                       tcp_sendmsg
+                       |          
+                       |--0.70%--sock_write_iter
+                       |          do_iter_readv_writev
+                       |          vfs_writev
+                       |          do_writev
+                       |          do_syscall_64
+                       |          entry_SYSCALL_64_after_hwframe
+                       |          0x7f84040409ee
+                       |          zcutils::tcp_write_all_vectored
+                       |          0x242eb000242c6
+                       |          
+                        --0.56%--__sys_sendto
+                                  __x64_sys_sendto
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  0x7f84040409ee
+                                  zcutils::zcnblk_fan_wal_write_frame_vectored
+                                  0x242eb000242c6
+
+     1.28%  zcnblk-shm-targ  [nf_tables]          [k] nft_do_chain_ipv4
+     1.27%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::acquire_ref_if_present
+            |          
+             --0.77%--zcutils::zcnblk_shm_target::WalLaneCompletionTracker::admit
+
+     1.10%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_batch
+            |          
+             --0.89%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_batch
+
+     1.07%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::admit
+            |          
+             --0.75%--zcutils::zcnblk_shm_target::WalConcurrentDirtyCache::admit
+
+     1.02%  zcnblk-shm-targ  [nf_tables]          [k] nft_immediate_eval
+     1.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] read_tsc
+     0.86%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::WalCompletionTracker::advance_hwm
+     0.86%  zcnblk-shm-targ  [nf_tables]          [k] nft_counter_eval
+     0.75%  zcnblk-shm-targ  [kernel.kallsyms]    [k] entry_SYSCALL_64
+     0.65%  zcnblk-shm-targ  zcnblk-shm-target    [.] _ZN7zcutils17zcnblk_shm_target13RemoteWalLeaf18send_request_batch17h352f651a5188f806E.llvm.16492178532987885254
+     0.63%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_ack
+     0.58%  zcnblk-shm-targ  [kernel.kallsyms]    [k] process_backlog
+     0.55%  zcnblk-shm-targ  [kernel.kallsyms]    [k] native_queued_spin_lock_slowpath
+     0.51%  zcnblk-shm-targ  [vdso]               [.] __vdso_clock_gettime
+     0.48%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_sendmsg_locked
+     0.48%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::WalLaneCompletionTracker::admit
+     0.47%  zcnblk-shm-targ  [nf_conntrack]       [k] nf_conntrack_tcp_packet
+     0.44%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __pi_memcpy
+     0.44%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::SharedTarget::request_payload_offset
+     0.43%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::ZcnblkFanWalAdaptiveRecvSpin::recv_exact_raw
+     0.43%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __tcp_transmit_skb
+     0.42%  zcnblk-shm-targ  libc.so.6            [.] getenv
+     0.38%  zcnblk-shm-targ  [xt_comment]         [k] comment_mt
+     0.37%  zcnblk-shm-targ  [kernel.kallsyms]    [k] do_syscall_64
+     0.36%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _copy_to_iter
+     0.36%  zcnblk-shm-targ  [kernel.kallsyms]    [k] net_rx_action
+     0.35%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::WalCompletionTracker::is_complete
+     0.35%  zcnblk-shm-targ  libc.so.6            [.] 0x0000000000178933
+     0.35%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __sys_recvfrom
+     0.34%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_v4_rcv
+     0.33%  zcnblk-shm-targ  libc.so.6            [.] ioctl
+     0.27%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _find_next_bit
+     0.27%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _raw_spin_lock_bh
+     0.27%  zcnblk-shm-targ  [nf_conntrack]       [k] nf_confirm
+     0.27%  zcnblk-shm-targ  [nf_conntrack]       [k] nf_conntrack_in
+     0.26%  zcnblk-shm-targ  [nf_nat]             [k] nf_nat_ipv4_out
+     0.26%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::SharedTarget::release_wal_lane_dirty_cache
+     0.25%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __pi_memset
+     0.25%  zcnblk-shm-targ  [nf_defrag_ipv4]     [k] ipv4_conntrack_defrag
+     0.25%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __dev_queue_xmit
+     0.24%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sock_def_readable
+     0.23%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_write_xmit
+     0.22%  zcnblk-shm-targ  [kernel.kallsyms]    [k] do_vfs_ioctl
+     0.22%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __siphash_unaligned
+     0.22%  zcnblk-shm-targ  [kernel.kallsyms]    [k] nf_hook_slow
+     0.22%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __check_object_size
+     0.22%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __x64_sys_ioctl
+     0.21%  zcnblk-shm-targ  [kernel.kallsyms]    [k] fdget
+     0.20%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __rcu_read_unlock
+     0.20%  zcnblk-shm-targ  [kernel.kallsyms]    [k] entry_SYSRETQ_unsafe_stack
+     0.20%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __rcu_read_lock
+     0.20%  zcnblk-shm-targ  [kernel.kallsyms]    [k] get_page_from_freelist
+     0.20%  zcnblk-shm-targ  zcnblk-shm-target    [.] alloc::collections::vec_deque::VecDeque<T,A>::push_back_mut
+     0.20%  zcnblk-shm-targ  [kernel.kallsyms]    [k] cubictcp_acked
+     0.19%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __free_frozen_pages
+     0.19%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _raw_spin_lock_irqsave
+     0.19%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f676
+     0.19%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __inet_lookup_established
+     0.19%  zcnblk-shm-targ  [kernel.kallsyms]    [k] skb_release_data
+     0.19%  zcnblk-shm-targ  [kernel.kallsyms]    [k] try_charge_memcg
+     0.18%  zcnblk-shm-targ  [nft_compat]         [k] nft_match_eval
+     0.18%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_recvmsg_locked
+     0.17%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_rcv_established
+     0.17%  zcnblk-shm-targ  [nft_compat]         [k] nft_target_eval_xt
+     0.17%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ip_finish_output2
+     0.16%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tomoyo_path_number_perm
+     0.16%  zcnblk-shm-targ  zcnblk-shm-target    [.] _ZN7zcutils17zcnblk_shm_target13RemoteWalLeaf23recv_request_batch_into17h1cbc50aef723ce77E.llvm.16492178532987885254
+     0.16%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __netif_receive_skb_core.constprop.0
+     0.15%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_measure_rcv_mss
+     0.15%  zcnblk-shm-targ  [kernel.kallsyms]    [k] dst_release
+     0.15%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __mod_timer
+     0.15%  zcnblk-shm-targ  [kernel.kallsyms]    [k] vfs_writev
+     0.15%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009a9ec
+     0.15%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_recvmsg
+     0.15%  zcnblk-shm-targ  [xt_mark]            [k] mark_tg
+     0.14%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ip_rcv
+     0.14%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __local_bh_enable_ip
+     0.14%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __ip_local_out
+     0.14%  zcnblk-shm-targ  [nf_conntrack]       [k] __nf_conntrack_find_get
+     0.14%  zcnblk-shm-targ  [nvidia]             [k] intrReadRegLeaf_CPU_TU102
+     0.14%  zcnblk-shm-targ  [kernel.kallsyms]    [k] kmem_cache_alloc_node_noprof
+     0.14%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __sk_mem_raise_allocated
+     0.14%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::SharedTarget::payload_owner_ptr
+     0.14%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_wfree
+     0.14%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009a9ee
+     0.14%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_queue_rcv
+     0.14%  zcnblk-shm-targ  [kernel.kallsyms]    [k] handle_softirqs
+     0.13%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_fan_wal_write_leaf_batch_payload
+     0.13%  zcnblk-shm-targ  [nf_nat]             [k] nf_nat_inet_fn
+     0.13%  zcnblk-shm-targ  [nf_nat]             [k] nf_nat_ipv4_pre_routing
+     0.13%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f677
+     0.13%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::SharedTarget::release_consumed_wal_read_refs
+     0.13%  zcnblk-shm-targ  [kernel.kallsyms]    [k] free_tail_page_prepare
+     0.13%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ip_output
+     0.13%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sock_write_iter
+     0.12%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __ip_queue_xmit
+     0.12%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __sys_sendto
+     0.12%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __alloc_skb
+     0.12%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::SharedTarget::mark_payload_releasable
+     0.12%  zcnblk-shm-targ  [kernel.kallsyms]    [k] aa_sk_perm
+     0.12%  zcnblk-shm-targ  [nf_nat]             [k] nf_nat_ipv4_local_fn
+     0.12%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_data_queue
+     0.12%  zcnblk-shm-targ  [kernel.kallsyms]    [k] mod_memcg_state
+     0.12%  zcnblk-shm-targ  [kernel.kallsyms]    [k] apparmor_ip_postroute
+     0.11%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __skb_datagram_iter
+     0.11%  zcnblk-shm-targ  libc.so.6            [.] cfree
+     0.11%  zcnblk-shm-targ  [nf_nat]             [k] nf_nat_ipv4_local_in
+     0.11%  zcnblk-shm-targ  [kernel.kallsyms]    [k] kmem_cache_free
+     0.11%  zcnblk-shm-targ  [kernel.kallsyms]    [k] fput
+     0.11%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __alloc_frozen_pages_noprof
+     0.11%  zcnblk-shm-targ  [nvidia]             [k] kheadReadPendingVblank_v03_00
+     0.11%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ip_local_deliver
+     0.11%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_schedule_loss_probe
+     0.11%  zcnblk-shm-targ  [nf_tables]          [k] nft_meta_store_ifname
+     0.11%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ip_rcv_core
+     0.10%  zcnblk-shm-targ  [xt_socket]          [k] socket_mt4_v1_v2_v3
+     0.10%  zcnblk-shm-targ  libc.so.6            [.] strncmp@plt
+     0.10%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_ack_update_rtt
+     0.10%  zcnblk-shm-targ  [kernel.kallsyms]    [k] do_softirq.part.0
+     0.09%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f66f
+     0.09%  zcnblk-shm-targ  [kernel.kallsyms]    [k] bpf_skops_write_hdr_opt.isra.0
+     0.09%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f668
+     0.09%  zcnblk-shm-targ  [nf_conntrack]       [k] nf_ct_get_tuple
+     0.09%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_current_mss
+     0.09%  zcnblk-shm-targ  [kernel.kallsyms]    [k] cubictcp_cong_avoid
+     0.09%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __virt_addr_valid
+     0.09%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __list_del_entry_valid_or_report
+     0.09%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ipv4_dst_check
+     0.09%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _raw_spin_lock
+     0.09%  zcnblk-shm-targ  [kernel.kallsyms]    [k] skb_defer_free_flush
+     0.09%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _raw_spin_lock_irq
+     0.08%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __tcp_select_window
+     0.08%  zcnblk-shm-targ  [nf_conntrack]       [k] ipv4_conntrack_in
+     0.08%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::tcp_write_all_vectored
+     0.08%  zcnblk-shm-targ  [kernel.kallsyms]    [k] validate_xmit_skb
+     0.08%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_inbound_hash
+     0.08%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::RemoteWalLeaf::send_batch_payload
+     0.08%  zcnblk-shm-targ  [xt_socket]          [k] socket_match.isra.0
+     0.08%  zcnblk-shm-targ  [kernel.kallsyms]    [k] prep_new_page
+     0.08%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tomoyo_socket_sendmsg_permission
+     0.08%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sized_strscpy
+     0.08%  zcnblk-shm-targ  [kernel.kallsyms]    [k] syscall_return_via_sysret
+     0.07%  zcnblk-shm-targ  [kernel.kallsyms]    [k] release_sock
+     0.07%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __usecs_to_jiffies
+     0.07%  zcnblk-shm-targ  [kernel.kallsyms]    [k] kfree
+     0.07%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __rmqueue_pcplist
+     0.07%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_event_data_recv
+     0.07%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f670
+     0.07%  zcnblk-shm-targ  [kernel.kallsyms]    [k] refill_stock
+     0.07%  zcnblk-shm-targ  [kernel.kallsyms]    [k] skb_clone
+     0.07%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __tcp_cleanup_rbuf
+     0.07%  zcnblk-shm-targ  [kernel.kallsyms]    [k] detach_if_pending
+     0.07%  zcnblk-shm-targ  [kernel.kallsyms]    [k] security_file_ioctl
+     0.07%  zcnblk-shm-targ  [kernel.kallsyms]    [k] netif_skb_features
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_established_options
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] do_iter_readv_writev
+     0.06%  zcnblk-shm-targ  libc.so.6            [.] malloc
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_event_new_data_sent
+     0.06%  zcnblk-shm-targ  zcnblk-shm-target    [.] _RNvMNtNtNtNtCs75vJTIYSa2J_3std3sys3pal4unix4timeNtB2_8Timespec3now
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_rearm_rto
+     0.06%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_fan_wal_write_frame_vectored
+     0.06%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::ZcnblkFanWalFrame::encode
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] enqueue_timer
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ip_rcv_finish_core
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ip_skb_dst_mtu
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] copy_iovec_from_user
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] raw_local_deliver
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] entry_SYSCALL_64_after_hwframe
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] dev_hard_start_xmit
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] inet_ehashfn
+     0.06%  zcnblk-shm-targ  zcnblk-shm-target    [.] _RNCNvNtNtNtCs75vJTIYSa2J_3std3sys3env4unix6getenv0B9_
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] skb_try_coalesce
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __copy_skb_header
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_v4_fill_cb
+     0.06%  zcnblk-shm-targ  zcnblk-shm-target    [.] _RNvMs3_NtNtCs27Vx93FoQ6z_4core3ffi5c_strNtB5_4CStr19from_bytes_with_nul
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] fdget_pos
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _raw_spin_unlock_irqrestore
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __sk_mem_schedule
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_skb_entail
+     0.06%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sock_recvmsg
+     0.05%  zcnblk-shm-targ  [nf_conntrack]       [k] ipv4_conntrack_local
+     0.05%  zcnblk-shm-targ  [kernel.kallsyms]    [k] enqueue_to_backlog
+     0.05%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ip_protocol_deliver_rcu
+     0.05%  zcnblk-shm-targ  zcnblk-shm-target    [.] alloc::raw_vec::RawVecInner<A>::try_allocate_in
+     0.05%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sk_page_frag_refill
+     0.05%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::ZcnblkFanWalFrame::decode
+     0.05%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::SharedTarget::completion_capacity
+     0.05%  zcnblk-shm-targ  [kernel.kallsyms]    [k] skb_page_frag_refill
+     0.05%  zcnblk-shm-targ  [kernel.kallsyms]    [k] x64_sys_call
+     0.05%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ktime_get
+     0.05%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_push
+     0.05%  zcnblk-shm-targ  [kernel.kallsyms]    [k] kfree_skbmem
+     0.05%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_options_write.isra.0
+     0.05%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tomoyo_init_request_info
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_rcv_space_adjust
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _raw_spin_unlock_bh
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __sk_mem_reduce_allocated
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] security_sock_rcv_skb
+     0.04%  zcnblk-shm-targ  [nf_tables]          [k] nft_update_chain_stats
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sk_filter_trim_cap
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] alloc_pages_mpol
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] security_socket_recvmsg
+     0.04%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f66e
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] inet_recvmsg
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] lock_timer_base
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] validate_xmit_xfrm
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_tso_segs
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_update_skb_after_send
+     0.04%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::SharedTarget::kick_channel
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_rate_skb_delivered.part.0
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] qdisc_pkt_len_segs_init
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] lock_sock_nested
+     0.04%  zcnblk-shm-targ  [nvidia]             [k] kheadReadPendingRgLineIntr_v03_00
+     0.04%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __import_iovec
+     0.04%  zcnblk-shm-targ  [nf_socket_ipv4]     [k] nf_sk_lookup_slow_v4
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _copy_from_user
+     0.03%  zcnblk-shm-targ  zcnblk-shm-target    [.] _ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hdfe182f020670dfbE.llvm.17522748748437396768
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] page_counter_try_charge
+     0.03%  zcnblk-shm-targ  libc.so.6            [.] clock_gettime
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sk_reset_timer
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] do_writev
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] aa_file_perm
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] update_se
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_v4_do_rcv
+     0.03%  zcnblk-shm-targ  [nvidia]             [k] gpuSanityCheckRegisterAccess_IMPL
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_rate_check_app_limited
+     0.03%  zcnblk-shm-targ  zcnblk-shm-target    [.] _RNvXs0_NtNtCs75vJTIYSa2J_3std3net3tcpNtB5_9TcpStreamNtNtB9_2io5Write5write
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_try_rmem_schedule
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_cleanup_rbuf
+     0.03%  zcnblk-shm-targ  [nf_conntrack]       [k] __nf_ct_refresh_acct
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_send_mss
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_sendmsg
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] fpregs_assert_state_consistent
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __list_add_valid_or_report
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] cubictcp_cwnd_event
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_add_backlog
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __ip_finish_output
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] strnlen
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] css_rstat_updated
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] is_vmalloc_addr
+     0.03%  zcnblk-shm-targ  libc.so.6            [.] 0x0000000000178941
+     0.03%  zcnblk-shm-targ  zcnblk-shm-target    [.] alloc::raw_vec::RawVec<T,A>::grow_one
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] free_frozen_page_commit.isra.0
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] security_file_permission
+     0.03%  zcnblk-shm-targ  [nf_conntrack]       [k] hash_conntrack_raw
+     0.03%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000001784e4
+     0.03%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000001784d8
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _raw_spin_unlock
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_chrono_stop
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sock_gen_put
+     0.03%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000001784c6
+     0.03%  zcnblk-shm-targ  [kernel.kallsyms]    [k] iovec_from_user
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ip_finish_output
+     0.02%  zcnblk-shm-targ  [zcnblk_client_mod]  [k] 0x000000000000038e
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __napi_poll
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] skb_release_head_state
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] backlog_lock_irq_save
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] eth_type_trans
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_stream_alloc_skb
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] skb_network_protocol
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] rw_verify_area
+     0.02%  zcnblk-shm-targ  [nf_conntrack]       [k] ipv4_get_l4proto
+     0.02%  zcnblk-shm-targ  zcnblk-shm-target    [.] _RNvNtCs75vJTIYSa2J_3std3env4__var
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] policy_nodemask
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_data_ready
+     0.02%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000001784ea
+     0.02%  zcnblk-shm-targ  zcnblk-shm-target    [.] _RNvXs0_NtNtCs75vJTIYSa2J_3std3net3tcpNtB5_9TcpStreamNtNtB9_2io5Write14write_vectored
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] import_ubuf
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_send_delayed_ack
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] mem_cgroup_sk_charge
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __release_sock
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] inet_send_prepare
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __x64_sys_recvfrom
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] apparmor_socket_sock_rcv_skb
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] perf_adjust_freq_unthr_events
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __next_zones_zonelist
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_release_cb
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __netif_receive_skb_one_core
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] kfree_skb_partial
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ip_send_check
+     0.02%  zcnblk-shm-targ  [zcnblk_client_mod]  [k] 0x0000000000000389
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_grow_window
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sk_free
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_urg
+     0.02%  zcnblk-shm-targ  [nvidia]             [k] gpuSanityCheckRegRead_IMPL
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] rb_insert_color
+     0.02%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000001784ca
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] hook_file_ioctl_common
+     0.02%  zcnblk-shm-targ  [nvidia]             [k] gpuSanityCheckVirtRegAccess_ac1694
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] rb_next
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] mod_timer
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _raw_spin_unlock_irq
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] minmax_running_min
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] native_irq_return_iret
+     0.02%  zcnblk-shm-targ  zcnblk-shm-target    [.] _ZN4core3ptr42drop_in_place$LT$std..io..error..Error$GT$17h5985b6cfe3532157E.llvm.9052530477894116073
+     0.02%  zcnblk-shm-targ  [nvidia]             [k] kheadReadPendingRgSemIntr_v04_01
+     0.02%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000001784ee
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] raise_softirq_irqoff
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] reweight_entity
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_bpf_rtt
+     0.02%  zcnblk-shm-targ  libc.so.6            [.] 0x0000000000178882
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] napi_consume_skb
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __wake_up_common
+     0.02%  zcnblk-shm-targ  libc.so.6            [.] 0x0000000000178880
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] bpf_lsm_socket_recvmsg
+     0.02%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a067e
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __kmalloc_noprof
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] skb_free_head
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __zone_watermark_ok
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __kfree_skb
+     0.02%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_try_coalesce
+     0.01%  zcnblk-shm-targ  [cfg80211]           [k] 0x00000000000de6b5
+     0.01%  zcnblk-shm-targ  [zcnblk_client_mod]  [k] 0x0000000000000384
+     0.01%  zcnblk-shm-targ  [nvidia]             [k] kdispServiceLowLatencyIntrs_KERNEL
+     0.01%  zcnblk-shm-targ  [nvidia]             [k] gpumgrGetNextGpu
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] alloc_pages_noprof
+     0.01%  zcnblk-shm-targ  [nvidia]             [k] kdispServiceAwakenIntr_v03_00
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] check_stack_object
+     0.01%  zcnblk-shm-targ  [nf_conntrack]       [k] nf_ct_seq_offset
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __update_load_avg_se
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x0000000000178944
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_wmem_schedule
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] entry_SYSCALL_64_safe_stack
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_ack_tstamp
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ip_queue_xmit
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] security_socket_sendmsg
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] recv
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] writev
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] realloc
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] rb_erase
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __wake_up
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000001784c0
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] asm_sysvec_apic_timer_interrupt
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _raw_spin_trylock
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x0000000000178503
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_update_pacing_rate
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000001784ff
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f6df
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000001784cd
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f64d
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] skb_copy_datagram_iter
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __sk_mem_reclaim
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_validate_incoming
+     0.01%  zcnblk-shm-targ  [zcnblk_client_mod]  [k] 0x000000000000038a
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_mstamp_refresh
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tomoyo_socket_sendmsg
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __xfrm_policy_check2.constprop.0
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] task_tick_fair
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a196c
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000001784f8
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f6c0
+     0.01%  zcnblk-shm-targ  zcnblk-shm-target    [.] _RNvCsGIExRX8pES_7___rustc13___rdl_realloc
+     0.01%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::env_enabled_or
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __tcp_push_pending_frames
+     0.01%  zcnblk-shm-targ  zcnblk-shm-target    [.] _RNvCsGIExRX8pES_7___rustc11___rdl_alloc
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x0000000000178505
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_chrono_start
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __netif_rx
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f644
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ipv4_mtu
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] kmalloc_reserve
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sk_forced_mem_schedule
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __update_load_avg_cfs_rq
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] simple_copy_to_iter
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ip_local_deliver_finish
+     0.01%  zcnblk-shm-targ  zcnblk-shm-target    [.] alloc::collections::vec_deque::VecDeque<T,A>::push_back_mut
+     0.01%  zcnblk-shm-targ  [nvidia]             [k] tmrGetTimeEx_GH100
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] arch_scale_freq_tick
+     0.01%  zcnblk-shm-targ  [zcnblk_client_mod]  [k] 0x000000000000038d
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] rcu_sched_clock_irq
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_data_ecn_check
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000001784f4
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] skb_clone_tx_timestamp
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] mem_cgroup_sk_uncharge
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x0000000000178892
+     0.01%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f6db
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] skb_push
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_v4_send_check
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] drain_stock
+     0.01%  zcnblk-shm-targ  [kernel.kallsyms]    [k] ip_local_out
+     0.01%  zcnblk-shm-targ  [nvidia]             [k] intrGetInterruptTable_IMPL
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] propagate_entity_load_avg
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a0462
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sysvec_apic_timer_interrupt
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] avg_vruntime
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] bpf_lsm_file_ioctl
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] netif_rx_internal
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017dc40
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_newly_delivered
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] perf_ctx_disable
+     0.00%  zcnblk-shm-targ  zcnblk-shm-target    [.] _RNvMNtNtNtNtCs75vJTIYSa2J_3std3sys3pal4unix4timeNtB2_8Timespec12sub_timespec
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] apparmor_file_permission
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] early_xen_iret_patch
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a23f7
+     0.00%  zcnblk-shm-targ  [nvidia_modeset]     [k] CompletionNotifierEvent
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009a9d7
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f6a8
+     0.00%  zcnblk-shm-targ  [nvme]               [k] nvme_poll_cq
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a1eab
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d343
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __folio_put
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a2523
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009a9d1
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017893f
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] skb_attempt_defer_free
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a173a
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a1400
+     0.00%  zcnblk-shm-targ  zcnblk-shm-target    [.] _RNvMs5_NtNtCs75vJTIYSa2J_3std2io5errorNtB5_5Error4kind.llvm.9052530477894116073
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009f0ee
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] record_times
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a1964
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _find_first_bit
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a243e
+     0.00%  zcnblk-shm-targ  [zcnblk_client_mod]  [k] 0x000000000000045d
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __memcg_slab_free_hook
+     0.00%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::RemoteWalLeaf::finish_next_send_batch
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] get_jiffies_update
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] netdev_core_pick_tx
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f6ae
+     0.00%  zcnblk-shm-targ  [nvidia]             [k] kheadProcessVblankCallbacks_IMPL
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a24e4
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] timekeeping_update_from_shadow.constprop.0
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_delack_max
+     0.00%  zcnblk-shm-targ  [nvidia]             [k] regWrite032
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a2440
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009f0e6
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009a9e2
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] update_cfs_group
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a23d0
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d364
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f6b9
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a1cc2
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_small_queue_check.isra.0
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_do_parse_auth_options
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] propagate_protected_usage
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] blk_mq_run_hw_queue
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a254e
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] hook_file_ioctl
+     0.00%  zcnblk-shm-targ  [zcnblk_client_mod]  [k] 0x0000000000000380
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __folio_end_writeback
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a23f4
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] update_entity_lag
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009ede7
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009f0e2
+     0.00%  zcnblk-shm-targ  [nvidia]             [k] tmrReadTimeLoReg_TU102
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a1cb3
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sock_rfree
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] apparmor_socket_recvmsg
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __dequeue_entity
+     0.00%  zcnblk-shm-targ  [nvidia]             [k] os_get_current_thread
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] __libc_calloc
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] psi_task_change
+     0.00%  zcnblk-shm-targ  zcnblk-shm-target    [.] _RNvMNtCs75vJTIYSa2J_3std4timeNtB2_7Instant3now
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009edb0
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f6ad
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] skb_csum_hwoffload_help
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __get_pfnblock_flags_mask.isra.0
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tmigr_handle_remote
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] perf_ibs_stop
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] import_iovec
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] flush_tlb_func
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a179c
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __hrtimer_run_queues
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009edbf
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __sk_dst_check
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __x64_sys_sendto
+     0.00%  zcnblk-shm-targ  zcnblk-shm-target    [.] <u8 as alloc::vec::spec_from_elem::SpecFromElem>::from_elem
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sb_clear_inode_writeback
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_leave_memory_pressure
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] sk_leave_memory_pressure
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a1ea1
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009a9c0
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a18b6
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __pmu_ctx_sched_out
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __tcp_ack_snd_check
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f62d
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x0000000000177382
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __mem_cgroup_uncharge
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] folio_add_lru_vma
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tomoyo_domain
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a05a0
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] __send
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x0000000000178884
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a2437
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] pick_next_task_fair
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] update_dl_rq_load_avg
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] perf_adjust_freq_unthr_context
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d3e1
+     0.00%  zcnblk-shm-targ  zcnblk-shm-target    [.] _RNvMNtNtNtNtCs75vJTIYSa2J_3std3sys4sync6rwlock5futexNtB2_6RwLock14read_contended
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017dc5c
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] notifier_call_chain
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009a9cb
+     0.00%  zcnblk-shm-targ  [nvidia]             [k] kdispReadAwakenChannelNumMask_v03_00
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a1767
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x00000000000a2506
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __rcu_free_sheaf_prepare
+     0.00%  zcnblk-shm-targ  zcnblk-shm-target    [.] _RNvCsGIExRX8pES_7___rustc12___rust_alloc
+     0.00%  zcnblk-shm-targ  [nvidia]             [k] osDevReadReg032
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] event_sched_out
+     0.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f674
+     0.00%  zcnblk-shm-targ  [zcnblk_client_mod]  [k] 0x00000000000003f7
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] irqentry_enter
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tick_nohz_handler
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] restore_fpregs_from_fpstate
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] __percpu_counter_sum
+     0.00%  zcnblk-shm-targ  [zcnblk_client_mod]  [k] 0x00000000000000f0
+     0.00%  zcnblk-shm-targ  [zcnblk_client_mod]  [k] 0x0000000000000149
+     0.00%  zcnblk-shm-targ  [kernel.kallsyms]    [k] perf_event_update_userpage
+
+
+#
+# (Tip: Customize output of perf script with: perf script -F event,ip,sym)
+#

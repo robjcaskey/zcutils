@@ -1,0 +1,7 @@
+zcofi-wal-recv: provider=tcp endpoint=rdm bind=127.0.0.1 base_service=43000 lanes=2 bytes_per_lane=8388608 extent_bytes=65536 message_bytes=65664 workers=2 ack_enabled=yes ack_inject=yes compact_4k=no ofi_domain=auto records_per_extent=16 timeout_ms=10000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-recv-worker: affinity_index=1 target_cpu=1 status=ok
+zcofi-wal-recv-worker: affinity_index=0 target_cpu=0 status=ok
+zcofi-control-server: listen=127.0.0.1:44000 peer=127.0.0.1:56628 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-recv-lane: worker=0 lane=0 provider=tcp endpoint=rdm bind=127.0.0.1 service=43000 control_port=44000 max_msg_size=18446744073709551615 inject_size=128
+zcofi-wal-recv-worker: worker=0 streams=1 payload_bytes=8388608 wire_bytes=8404992 extents=128 logical_records=2048 acks=128 seconds=0.010023 payload_Gbitps=6.696 logical_iops=204338 thread_cpu_seconds=0.013676 cpu_wall_pct=136.5 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=3 involuntary_ctxt_switches=0 migrations=0
+Error: Custom { kind: Other, error: "zc_ofi_open provider=tcp endpoint=rdm node=127.0.0.1 service=43001 server=yes domain=auto failed rc=-98: fi_endpoint rc=-98 (Address already in use)" }

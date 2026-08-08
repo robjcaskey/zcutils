@@ -1,0 +1,13 @@
+label=fan-spin
+base_port=49220
+lanes=4
+bytes_per_connection=128M
+chunk_bytes=4K
+client_cpus=0-3
+fan_handler_cpus=4-7
+fan_async_cpus=8-11
+leaf_cpu_domain=shared-arena
+local_leaves=local:zcleasemem:1G,local:zcleasemem:1G
+send_spin=0
+fan_upstream_spin=1
+request_chunk_bytes=1M

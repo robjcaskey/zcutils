@@ -1,0 +1,17 @@
+zcnblk-fan-wal: leaves=127.0.0.1:24700,127.0.0.2:24700 bind=127.0.0.1 base_port=23700 ports=2 connections_per_port=1 total_connections=2 bytes_per_connection=1073741824 chunk_bytes=4096 stripe_bytes=4096 leaf_base_port=24700 source_ip=kernel-route source_ports=kernel-ephemeral pin_handlers=true placement=mirror order=per-4k-record order_shards=128 write_acks=true write_ack_mode=admit batch_window=16 result_ranges=true result_arena=false result_arena_slots=64 result_arena_spin=false result_arena_spin_budget=unbounded coalesce_leaf_payloads=false split_mixed_writes=true result_arena_inline_primary=false result_wait_policy=blocking result_spin_budget=unbounded result_spin_min_outstanding=4 dirty_cache=enabled dirty_cache_shards=128 writeback_dirty_budget=enabled soft_dirty_bytes=1503238553 hard_dirty_bytes=2147483648 plan=none placement_epoch=0 protocol=fan-wal-v2
+zcnblk-fan-wal-leaf-note: start each edge with zcnblk-wal-leaf; leaf block devices are terminal media only after userspace placement
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:40398 lane=0 port=23700 conn=0 incoming_cpu=7 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:58486 lane=1 port=23701 conn=0 incoming_cpu=7 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=0 target_cpu=8 status=ok
+zcnblk-fan-wal-upstream: handler=0 peer=127.0.0.1:40398 lane=0 port=23700 conn=0 incoming_cpu=7 incoming_napi_id=unknown
+zcnblk-fan-wal-handler: affinity_index=1 target_cpu=9 status=ok
+zcnblk-fan-wal-upstream: handler=1 peer=127.0.0.1:58486 lane=1 port=23701 conn=0 incoming_cpu=7 incoming_napi_id=unknown
+zcnblk-fan-wal-leaf-stream: handler=0 leaf=0 addr=127.0.0.1 port=24700 lane=0 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-leaf-stream: handler=0 leaf=1 addr=127.0.0.2 port=24700 lane=0 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-leaf-stream: handler=1 leaf=0 addr=127.0.0.1 port=24701 lane=1 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-leaf-stream: handler=1 leaf=1 addr=127.0.0.2 port=24701 lane=1 conn=0 source_port=kernel-ephemeral plan=none placement_epoch=0
+zcnblk-fan-wal-handler-error: handler=1 error=failed to fill whole buffer
+zcnblk-fan-wal-handler-error: handler=0 error=failed to fill whole buffer
+Error: Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }

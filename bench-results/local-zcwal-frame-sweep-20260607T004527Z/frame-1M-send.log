@@ -1,0 +1,16 @@
+zcwal-extent-send: addr=127.0.0.1 base_port=37000 lanes=4 connections_per_lane=1 total_connections=4 bytes_per_connection=67108864 extent_bytes=1048576 record_size=4096 records_per_extent=256 workers=4 framing=stream data_path=uring ack_enabled=no sync_acks=no tcp_nodelay=yes socket_buffer_bytes=16777216 uring_send_bytes=1048576 uring_pipeline=32 uring_entries=64 source_ports=kernel-ephemeral
+zcwal-extent-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcwal-extent-send-worker: affinity_index=1 target_cpu=1 status=ok
+zcwal-extent-send-worker: affinity_index=3 target_cpu=3 status=ok
+zcwal-extent-send-worker: affinity_index=2 target_cpu=2 status=ok
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcwal-extent-send-stream: worker=0 lane=0 port=37000 conn=0
+zcwal-extent-send-stream: worker=1 lane=1 port=37001 conn=0
+zcwal-extent-send-stream: worker=2 lane=2 port=37002 conn=0
+zcwal-extent-send-stream: worker=3 lane=3 port=37003 conn=0
+zcwal-extent-send-worker: worker=0 streams=1 payload_bytes=67108864 wire_bytes=67108992 extents=64 logical_records=16384 acks=0 seconds=0.009436 payload_Gbitps=56.893 logical_iops=1736241 thread_cpu_seconds=0.006338 cpu_wall_pct=67.2 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=9 involuntary_ctxt_switches=40 migrations=0
+zcwal-extent-send-worker: worker=1 streams=1 payload_bytes=67108864 wire_bytes=67108992 extents=64 logical_records=16384 acks=0 seconds=0.009279 payload_Gbitps=57.861 logical_iops=1765792 thread_cpu_seconds=0.006156 cpu_wall_pct=66.3 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=7 involuntary_ctxt_switches=41 migrations=0
+zcwal-extent-send-worker: worker=2 streams=1 payload_bytes=67108864 wire_bytes=67108992 extents=64 logical_records=16384 acks=0 seconds=0.009286 payload_Gbitps=57.812 logical_iops=1764288 thread_cpu_seconds=0.006274 cpu_wall_pct=67.6 target_cpu=2 affinity_applied=true start_cpu=2 end_cpu=2 voluntary_ctxt_switches=13 involuntary_ctxt_switches=47 migrations=0
+zcwal-extent-send-worker: worker=3 streams=1 payload_bytes=67108864 wire_bytes=67108992 extents=64 logical_records=16384 acks=0 seconds=0.009209 payload_Gbitps=58.296 logical_iops=1779045 thread_cpu_seconds=0.006110 cpu_wall_pct=66.3 target_cpu=3 affinity_applied=true start_cpu=3 end_cpu=3 voluntary_ctxt_switches=5 involuntary_ctxt_switches=43 migrations=0
+zcwal-extent-send-summary: payload_bytes=268435456 wire_bytes=268435968 extents=256 logical_records=65536 acks=0 seconds=0.009519 payload_Gbitps=225.599 logical_iops=6884742

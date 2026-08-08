@@ -1,0 +1,7 @@
+zcofi-wal-recv: provider=tcp endpoint=rdm bind=127.0.0.1 base_service=42000 lanes=2 bytes_per_lane=67108864 extent_bytes=65536 message_bytes=65664 workers=2 ack_enabled=no ack_inject=no ack_window=1 range_ack_send=no compact_4k=no ofi_domain=auto records_per_extent=16 timeout_ms=10000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-recv-worker: affinity_index=1 target_cpu=1 status=ok
+zcofi-wal-recv-worker: affinity_index=0 target_cpu=0 status=ok
+zcofi-control-server: listen=127.0.0.1:43000 peer=127.0.0.1:46286 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-recv-lane: worker=0 lane=0 provider=tcp endpoint=rdm bind=127.0.0.1 service=42000 control_port=43000 max_msg_size=18446744073709551615 inject_size=128
+zcofi-wal-recv-worker: worker=0 streams=1 payload_bytes=67108864 wire_bytes=67239936 extents=1024 logical_records=16384 acks=0 seconds=0.028702 payload_Gbitps=18.705 logical_iops=570829 thread_cpu_seconds=0.033074 cpu_wall_pct=115.2 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=1 involuntary_ctxt_switches=0 migrations=0
+Error: Os { code: 98, kind: AddrInUse, message: "Address already in use" }

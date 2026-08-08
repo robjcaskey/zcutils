@@ -1,0 +1,35 @@
+zcnblk-send: addr=172.31.43.162 shard_count=1 base_port=52100 ports=32 connections_per_port=1 total_connections=32 bytes_per_connection=536870912 chunk_bytes=4096 workers=32 op_mode=write-read-same read_window=8 write_window=8 access=linear verify_reads=yes wait_write_acks=no batch_depth=2048 drain_ready_responses=yes payload_pattern=fill:0x00 source_ip=172.31.43.163 source_ports=kernel-ephemeral latency=no encryption=none aes_frame_bytes=65536
+zcnblk-send-stream: worker=4 lane=4 port=52104 conn=0 shard=0 base_offset=2147483648
+zcnblk-send-stream: worker=2 lane=2 port=52102 conn=0 shard=0 base_offset=1073741824
+zcnblk-send-stream: worker=3 lane=3 port=52103 conn=0 shard=0 base_offset=1610612736
+zcnblk-send-stream: worker=0 lane=0 port=52100 conn=0 shard=0 base_offset=0
+zcnblk-send-stream: worker=5 lane=5 port=52105 conn=0 shard=0 base_offset=2684354560
+zcnblk-send-stream: worker=7 lane=7 port=52107 conn=0 shard=0 base_offset=3758096384
+zcnblk-send-stream: worker=6 lane=6 port=52106 conn=0 shard=0 base_offset=3221225472
+zcnblk-send-stream: worker=9 lane=9 port=52109 conn=0 shard=0 base_offset=4831838208
+zcnblk-send-stream: worker=8 lane=8 port=52108 conn=0 shard=0 base_offset=4294967296
+zcnblk-send-stream: worker=10 lane=10 port=52110 conn=0 shard=0 base_offset=5368709120
+zcnblk-send-stream: worker=15 lane=15 port=52115 conn=0 shard=0 base_offset=8053063680
+zcnblk-send-stream: worker=16 lane=16 port=52116 conn=0 shard=0 base_offset=8589934592
+zcnblk-send-stream: worker=11 lane=11 port=52111 conn=0 shard=0 base_offset=5905580032
+zcnblk-send-stream: worker=12 lane=12 port=52112 conn=0 shard=0 base_offset=6442450944
+zcnblk-send-stream: worker=14 lane=14 port=52114 conn=0 shard=0 base_offset=7516192768
+zcnblk-send-stream: worker=17 lane=17 port=52117 conn=0 shard=0 base_offset=9126805504
+zcnblk-send-stream: worker=18 lane=18 port=52118 conn=0 shard=0 base_offset=9663676416
+zcnblk-send-stream: worker=13 lane=13 port=52113 conn=0 shard=0 base_offset=6979321856
+zcnblk-send-stream: worker=19 lane=19 port=52119 conn=0 shard=0 base_offset=10200547328
+zcnblk-send-stream: worker=21 lane=21 port=52121 conn=0 shard=0 base_offset=11274289152
+zcnblk-send-stream: worker=23 lane=23 port=52123 conn=0 shard=0 base_offset=12348030976
+zcnblk-send-stream: worker=20 lane=20 port=52120 conn=0 shard=0 base_offset=10737418240
+zcnblk-send-stream: worker=22 lane=22 port=52122 conn=0 shard=0 base_offset=11811160064
+zcnblk-send-stream: worker=24 lane=24 port=52124 conn=0 shard=0 base_offset=12884901888
+zcnblk-send-stream: worker=26 lane=26 port=52126 conn=0 shard=0 base_offset=13958643712
+zcnblk-send-stream: worker=27 lane=27 port=52127 conn=0 shard=0 base_offset=14495514624
+zcnblk-send-stream: worker=29 lane=29 port=52129 conn=0 shard=0 base_offset=15569256448
+zcnblk-send-stream: worker=31 lane=31 port=52131 conn=0 shard=0 base_offset=16642998272
+zcnblk-send-stream: worker=1 lane=1 port=52101 conn=0 shard=0 base_offset=536870912
+zcnblk-send-stream: worker=28 lane=28 port=52128 conn=0 shard=0 base_offset=15032385536
+zcnblk-send-stream: worker=25 lane=25 port=52125 conn=0 shard=0 base_offset=13421772800
+zcnblk-send-stream: worker=30 lane=30 port=52130 conn=0 shard=0 base_offset=16106127360
+tcp-bench-connect-route-probe: peer=172.31.43.162:52101 local_socket=172.31.43.163:57617 probe_src=172.31.43.163 route_dev=ens146 route_src=172.31.43.163 route="172.31.43.162 from 172.31.43.163 dev ens146 table 101 uid 1000 \ cache"
+Error: Os { code: 104, kind: ConnectionReset, message: "Connection reset by peer" }

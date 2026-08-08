@@ -1,0 +1,21 @@
+hostname=ip-172-31-33-101
+kernel=6.17.0-1019-aws
+arch=aarch64
+addresses_and_routes:
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens34            UP             172.31.33.101/20 metric 100 fe80::8c2:cfff:fea7:31e3/64 
+default via 172.31.32.1 dev ens34 proto dhcp src 172.31.33.101 metric 100 
+172.31.0.2 via 172.31.32.1 dev ens34 proto dhcp src 172.31.33.101 metric 100 
+172.31.32.0/20 dev ens34 proto kernel scope link src 172.31.33.101 metric 100 
+172.31.32.1 dev ens34 proto dhcp scope link src 172.31.33.101 metric 100 
+cpu_numa:
+CPU NODE SOCKET CORE ONLINE
+  0    0      0    0    yes
+  1    0      0    1    yes
+  2    0      0    2    yes
+  3    0      0    3    yes
+  4    0      0    4    yes
+  5    0      0    5    yes
+  6    0      0    6    yes
+  7    0      0    7    yes
+rustc=cargo=

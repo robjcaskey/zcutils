@@ -1,0 +1,37 @@
+classification=dedicated-adhoc-control
+coordination_scope=dedicated-adhoc
+bootstrap_manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+lane_count=2
+topology_cpu_list=0,1,2,4,5,6
+coordinator_cpu=none
+lane=0 client_cpu=0 target_cpu=1 kernel_cpu=2 leaf_cpu=none hctx_cpus=0, 1, 2, 3
+lane=1 client_cpu=4 target_cpu=5 kernel_cpu=6 leaf_cpu=none hctx_cpus=4, 5, 6, 7
+hugepages_total=256
+hugepages_free=256
+hugepage_size_kib=2048
+memlock_kib=unlimited
+loadavg=0.49 0.59 0.40 1/239 12336
+coordination_honored=true
+target_poll_us=1000
+target_busy_poll_us=1000
+target_busy_hysteresis_us=10000
+kernel_completion_poll_us=1000
+block_ring_mode=normal sqpoll_cpu_list=none sqpoll_idle_ms=1000
+block_latency_sample_rate=64
+block_ring_stats=1 block_wait_min_completions=1 block_cqe_spin=0 block_cqe_adaptive_spin=0 block_cqe_adaptive_spin_min=0 block_cqe_adaptive_spin_max=4096 block_cqe_adaptive_wait_ns=50000 block_cqe_hot_poll=0
+shm_descriptor_entries_per_channel=128
+shm_payload_entries_per_channel=4096
+writeback_batch_requested=4096 writeback_batch_effective=4096
+request_batch=128 request_batch_fill_us=0 request_batch_fill_min=32
+wal_lane_batch=1 representative_eligible=true
+wal_extent_records=128 wal_extent_fill_us=0
+dirty_pressure_reserve=0
+remote_recv_spins=0 leaf_spin_reads=0 leaf_spin_budget=blocking
+remote_recv_policy=adaptive remote_recv_adaptive_spin_min=0 remote_recv_adaptive_spin_max=4096 remote_recv_adaptive_wait_ns=50000
+remote_send_mode=blocking remote_send_ring_entries=256 remote_send_zc_required=1 allow_unsafe_send_zc=0
+order_smoke_pairs=0
+shm_payload_slot_bytes=4096
+shm_lease_release_batch=1
+backend=wal-tcp local_leaf=0 leaf_target=zcmem:1024M leaf_addr=172.31.29.103 leaf_port=29000 leaf_submit_mode=blocking
+leaf_source_addr=172.31.20.100
+leaf_addrs=single-address leaf_source_addrs=single-source

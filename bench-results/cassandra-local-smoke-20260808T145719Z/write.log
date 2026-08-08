@@ -1,0 +1,124 @@
+******************** Stress Settings ********************
+Command:
+  Type: write
+  Count: 2,000
+  No Warmup: true
+  Consistency Level: ONE
+  Target Uncertainty: not applicable
+  Key Size (bytes): 10
+  Counter Increment Distibution: add=fixed(1)
+Rate:
+  Auto: false
+  Thread Count: 8
+  OpsPer Sec: 0
+Population:
+  Distribution: Uniform:  min=1,max=1000
+  Order: ARBITRARY
+  Wrap: false
+Insert:
+  Revisits: Uniform:  min=1,max=1000000
+  Visits: Fixed:  key=1
+  Row Population Ratio: Ratio: divisor=1.000000;delegate=Fixed:  key=1
+  Batch Type: not batching
+Columns:
+  Max Columns Per Key: 1
+  Column Names: [C0]
+  Comparator: AsciiType
+  Timestamp: null
+  Variable Column Count: false
+  Slice: false
+  Size Distribution: Fixed:  key=256
+  Count Distribution: Fixed:  key=1
+Errors:
+  Ignore: false
+  Tries: 10
+Log:
+  No Summary: false
+  No Settings: false
+  File: null
+  Interval Millis: 1000
+  Level: NORMAL
+Mode:
+  API: JAVA_DRIVER_NATIVE
+  Connection Style: CQL_PREPARED
+  Protocol Version: V5
+  Username: null
+  Password: null
+  Auth Provide Class: null
+  Max Pending Per Connection: 128
+  Connections Per Host: 2
+  Compression: NONE
+Node:
+  Nodes: [127.0.0.1]
+  Is White List: false
+  Datacenter: null
+Schema:
+  Keyspace: keyspace1
+  Replication Strategy: org.apache.cassandra.locator.SimpleStrategy
+  Replication Strategy Options: {replication_factor=1}
+  Table Compression: null
+  Table Compaction Strategy: null
+  Table Compaction Strategy Options: {}
+Transport:
+  Truststore: null
+  Truststore Password: null
+  Keystore: null
+  Keystore Password: null
+  SSL Protocol: TLS
+  SSL Algorithm: null
+  SSL Ciphers: null
+Port:
+  Native Port: 9142
+  JMX Port: 7299
+JMX:
+  Username: null
+  Password: *not set*
+Graph:
+  File: null
+  Revision: unknown
+  Title: null
+  Operation: WRITE
+TokenRange:
+  Wrap: false
+  Split Factor: 1
+Credentials file:
+  File: *not set*
+  CQL username: *not set*
+  CQL password: *not set*
+  JMX username: *not set*
+  JMX password: *not set*
+  Transport truststore password: *not set*
+  Transport keystore password: *not set*
+Reporting:
+  Output frequency: 1s
+  Header frequency: *not set*
+
+Connected to cluster: zcutils-cassandra-bench, max pending requests per connection 128, max connections per host 2
+Datacenter: datacenter1; Host: /127.0.0.1:9142; Rack: rack1
+Created keyspaces. Sleeping 1s for propagation.
+Sleeping 2s...
+Running WRITE with 8 threads for 2000 iteration
+type                                               total ops,    op/s,    pk/s,   row/s,    mean,     med,     .95,     .99,    .999,     max,   time,   stderr, errors,  gc: #,  max ms,  sum ms,  sdv ms,      mb
+total,                                                  2000,    3440,    3440,    3440,     0.4,     0.3,     0.8,     2.6,     6.1,     6.4,    0.6,  0.00000,      0,      0,       0,       0,       0,       0
+
+
+Results:
+Op rate                   :    3,440 op/s  [WRITE: 3,440 op/s]
+Partition rate            :    3,440 pk/s  [WRITE: 3,440 pk/s]
+Row rate                  :    3,440 row/s [WRITE: 3,440 row/s]
+Latency mean              :    0.4 ms [WRITE: 0.4 ms]
+Latency median            :    0.3 ms [WRITE: 0.3 ms]
+Latency 95th percentile   :    0.8 ms [WRITE: 0.8 ms]
+Latency 99th percentile   :    2.6 ms [WRITE: 2.6 ms]
+Latency 99.9th percentile :    6.1 ms [WRITE: 6.1 ms]
+Latency max               :    6.4 ms [WRITE: 6.4 ms]
+Total partitions          :      2,000 [WRITE: 2,000]
+Total errors              :          0 [WRITE: 0]
+Total GC count            : 0
+Total GC memory           : 0 B
+Total GC time             :    0.0 seconds
+Avg GC time               :    NaN ms
+StdDev GC time            :    0.0 ms
+Total operation time      : 00:00:00
+
+END

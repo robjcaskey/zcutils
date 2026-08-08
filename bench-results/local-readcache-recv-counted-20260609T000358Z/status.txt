@@ -1,0 +1,12 @@
+run=l8-read-c1m-low1m sink=read lanes=8 chunk=1048576 lowat=1048576 client_cpus=0,1,2,3,4,5,6,7 fan_cpus=8,9,10,11,12,13,14,15 port=43100
+run=l8-read-c1m-low1m fan_ret=0 client_ret=0
+run=l8-waitall-c1m-low1m sink=waitall lanes=8 chunk=1048576 lowat=1048576 client_cpus=0,1,2,3,4,5,6,7 fan_cpus=8,9,10,11,12,13,14,15 port=43200
+run=l8-waitall-c1m-low1m fan_ret=0 client_ret=0
+run=l8-splice-c1m-low1m sink=splice-null lanes=8 chunk=1048576 lowat=1048576 client_cpus=0,1,2,3,4,5,6,7 fan_cpus=8,9,10,11,12,13,14,15 port=43300
+run=l8-splice-c1m-low1m fan_ret=0 client_ret=0
+run=l8-read-c4m-low1m sink=read lanes=8 chunk=4194304 lowat=1048576 client_cpus=0,1,2,3,4,5,6,7 fan_cpus=8,9,10,11,12,13,14,15 port=43400
+run=l8-read-c4m-low1m fan_ret=0 client_ret=0
+run=l16-read-c1m-low1m sink=read lanes=16 chunk=1048576 lowat=1048576 client_cpus=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 fan_cpus=16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 port=43500
+run=l16-read-c1m-low1m fan_ret=0 client_ret=0
+run=l16-splice-c1m-low1m sink=splice-null lanes=16 chunk=1048576 lowat=1048576 client_cpus=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 fan_cpus=16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 port=43700
+run=l16-splice-c1m-low1m fan_ret=0 client_ret=0

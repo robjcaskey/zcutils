@@ -1,0 +1,12 @@
+zcofi-wal-relay: provider=tcp endpoint=rdm bind=127.0.0.1 tails=0:127.0.0.1:42000,1:127.0.0.1:44000 in_base_service=46000 lanes=2 bytes_per_lane=67108864 extent_bytes=65536 message_bytes=65664 workers=2 ack_enabled=no compact_4k=no rewrite_headers=yes fast_headers=no relay_window=1 range_acks=no prepost_recv=no tx_nowait_requested=no tx_nowait_effective=no ack_inject=no same_slot_forward=yes hwm_ack=disabled-transport-ceiling timeout_ms=10000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-relay-worker: affinity_index=1 target_cpu=5 status=ok
+zcofi-wal-relay-worker: affinity_index=0 target_cpu=4 status=ok
+zcofi-control-server: listen=127.0.0.1:47001 peer=127.0.0.1:58218 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-server: listen=127.0.0.1:47000 peer=127.0.0.1:41874 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-client: addr=127.0.0.1:43000 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-tail: worker=0 lane=0 branch=0 tail_addr=127.0.0.1 out_base_service=42000 out_service=42000 out_control_port=43000 max_msg_size_out=18446744073709551615 same_slot_forward=yes
+zcofi-control-client: addr=127.0.0.1:45000 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-tail: worker=0 lane=0 branch=1 tail_addr=127.0.0.1 out_base_service=44000 out_service=44000 out_control_port=45000 max_msg_size_out=18446744073709551615 same_slot_forward=yes
+zcofi-wal-relay-lane: worker=0 lane=0 provider=tcp endpoint=rdm bind=127.0.0.1 in_service=46000 in_control_port=47000 tail_count=2 message_bytes=65664 max_msg_size_in=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-wal-relay-worker-contract: worker=0 same_slot_forward=yes registered_memory=libfabric-mr-cache tail_count=2 relay_window=1 range_acks=no prepost_recv=no fast_headers=no header_rewrites=1024 tail_ack_gates_upstream_ack=no ack_policy=disabled-transport-ceiling
+zcofi-wal-relay-worker: worker=0 streams=3 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.027490 payload_Gbitps=19.530 logical_iops=595999 thread_cpu_seconds=0.033155 cpu_wall_pct=120.6 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=10 involuntary_ctxt_switches=1 migrations=0

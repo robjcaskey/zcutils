@@ -1,0 +1,92 @@
+topology_preflight=1
+run_mode=local
+strict=1
+topology_preflight_fatal=0
+topology_busy_pct=1.0
+local_mapped_cpus=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19
+local_mapped_cpu_count=20
+stage=client cpus=0-3 unique_cpus=4
+stage=fan-handler cpus=4-7 unique_cpus=4
+stage=fan-async cpus=8-11 unique_cpus=4
+stage=leaf0 cpus=12-15 unique_cpus=4
+stage=leaf1 cpus=16-19 unique_cpus=4
+cpu=0 governor=performance
+cpu=1 governor=performance
+cpu=2 governor=performance
+cpu=3 governor=performance
+cpu=4 governor=performance
+cpu=5 governor=performance
+cpu=6 governor=performance
+cpu=7 governor=performance
+cpu=8 governor=performance
+cpu=9 governor=performance
+cpu=10 governor=performance
+cpu=11 governor=performance
+cpu=12 governor=performance
+cpu=13 governor=performance
+cpu=14 governor=performance
+cpu=15 governor=performance
+cpu=16 governor=performance
+cpu=17 governor=performance
+cpu=18 governor=performance
+cpu=19 governor=performance
+PERF WARNING: mapped local stages include SMT siblings; report this as SMT-paired, not isolated physical-core topology
+cpu=0 sibling=16 stages=,client
+cpu=1 sibling=17 stages=,client
+cpu=16 sibling=0 stages=,leaf1
+cpu=17 sibling=1 stages=,leaf1
+cpu=18 sibling=2 stages=,leaf1
+cpu=19 sibling=3 stages=,leaf1
+cpu=2 sibling=18 stages=,client
+cpu=3 sibling=19 stages=,client
+== mapped cpu mhz sample ==
+CPU CORE SOCKET NODE L1d:L1i:L2:L3 ONLINE    MAXMHZ   MINMHZ       MHZ
+  0    0      0    0 0:0:0:0          yes 5756.4521 624.1940 5163.8350
+  1    1      0    0 1:1:1:0          yes 5756.4521 624.1940 5153.5889
+  2    2      0    0 2:2:2:0          yes 5756.4521 624.1940 5155.5532
+  3    3      0    0 3:3:3:0          yes 5756.4521 624.1940 5167.1021
+  4    4      0    0 4:4:4:0          yes 5756.4521 624.1940 5156.4561
+  5    5      0    0 5:5:5:0          yes 5756.4521 624.1940 5161.9399
+  6    6      0    0 6:6:6:0          yes 5756.4521 624.1940 5156.7129
+  7    7      0    0 7:7:7:0          yes 5756.4521 624.1940 5164.5322
+  8    8      0    0 8:8:8:1          yes 5756.4521 624.1940 5097.2808
+  9    9      0    0 9:9:9:1          yes 5756.4521 624.1940 5109.4648
+ 10   10      0    0 10:10:10:1       yes 5756.4521 624.1940 5103.9868
+ 11   11      0    0 11:11:11:1       yes 5756.4521 624.1940 5100.8218
+ 12   12      0    0 12:12:12:1       yes 5756.4521 624.1940 5136.1709
+ 13   13      0    0 13:13:13:1       yes 5756.4521 624.1940 5081.5269
+ 14   14      0    0 14:14:14:1       yes 5756.4521 624.1940 5094.4761
+ 15   15      0    0 15:15:15:1       yes 5756.4521 624.1940 5094.6069
+ 16    0      0    0 0:0:0:0          yes 5756.4521 624.1940 5169.1069
+ 17    1      0    0 1:1:1:0          yes 5756.4521 624.1940 5159.0532
+ 18    2      0    0 2:2:2:0          yes 5756.4521 624.1940 5147.4868
+ 19    3      0    0 3:3:3:0          yes 5756.4521 624.1940 5163.0542
+PERF WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+busy_cpu=7 pcpu=1.3 pid=11400 tid=3801265 comm=sqlx-sqlite-wor
+busy_cpu=11 pcpu=1.0 pid=447708 tid=448014 comm=qtp1497170291-6
+busy_cpu=13 pcpu=1.0 pid=447708 tid=448373 comm=qtp1497170291-1
+busy_cpu=13 pcpu=1.0 pid=447708 tid=448374 comm=qtp1497170291-1
+busy_cpu=14 pcpu=1.0 pid=447708 tid=448483 comm=qtp1497170291-1
+busy_cpu=11 pcpu=2.3 pid=447708 tid=3778301 comm=qtp1497170291-3
+busy_cpu=9 pcpu=2.0 pid=447708 tid=3778428 comm=qtp1497170291-3
+busy_cpu=8 pcpu=8.1 pid=3796928 tid=3796945 comm=C2
+busy_cpu=10 pcpu=1.2 pid=3796928 tid=3796946 comm=C1
+busy_cpu=5 pcpu=5.0 pid=3796928 tid=3797006 comm=Daemon
+busy_cpu=9 pcpu=1.7 pid=3796928 tid=3797025 comm=G1
+busy_cpu=15 pcpu=1.7 pid=3796928 tid=3797026 comm=G1
+busy_cpu=16 pcpu=1.7 pid=3796928 tid=3797027 comm=G1
+busy_cpu=11 pcpu=5.8 pid=3796928 tid=3804788 comm=included
+busy_cpu=2 pcpu=19.6 pid=3796928 tid=3806595 comm=C1
+busy_cpu=3 pcpu=19.6 pid=3796928 tid=3806596 comm=C1
+busy_cpu=7 pcpu=75.0 pid=3796928 tid=3806601 comm=C2
+busy_cpu=0 pcpu=16.0 pid=3796928 tid=3806617 comm=included
+busy_cpu=19 pcpu=6.0 pid=3796928 tid=3806618 comm=Execution
+busy_cpu=15 pcpu=17.0 pid=3796928 tid=3806629 comm=C1
+busy_cpu=16 pcpu=135 pid=3796928 tid=3806711 comm=C2
+busy_cpu=3 pcpu=26.1 pid=3806543 tid=3806554 comm=java
+busy_cpu=2 pcpu=6.8 pid=3806543 tid=3806568 comm=C1
+busy_cpu=11 pcpu=6.9 pid=3806543 tid=3806571 comm=C1
+memlock_limit=8192
+PERF WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+nr_hugepages=0
+PERF WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons

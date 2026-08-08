@@ -1,0 +1,2 @@
+taskset -c 0-7 /tmp/zcutils-cassandra-dist/apache-cassandra-5.0.9/bin/cassandra -f 
+taskset -c 8-15 /tmp/zcutils-cassandra-dist/apache-cassandra-5.0.9/tools/bin/cassandra-stress write n=1000 no-warmup truncate=always cl=ONE -schema replication\(factor=1\) compression=none -col n=FIXED\(1\) size=FIXED\(256\) -rate threads=8 -mode prepared connectionsPerHost=2 -node 127.0.0.1 -port native=9142 jmx=7299 -log interval=1s 

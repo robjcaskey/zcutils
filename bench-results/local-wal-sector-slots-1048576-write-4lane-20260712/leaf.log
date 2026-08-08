@@ -1,0 +1,29 @@
+zcnblk-wal-leaf: target=zcmem:1073741824 bind=127.0.0.1 base_port=29000 ports=4 connections_per_port=1 total_connections=4 chunk_bytes=4096 workers=4 pin_workers=true submit_mode=blocking ring_entries=64 ring_cq_entries=128 cqe_hot_poll=false leaf_sqpoll=false leaf_spin_reads=true leaf_spin_policy=adaptive leaf_spin_budget=256 leaf_adaptive_spin_min=256 leaf_adaptive_spin_max=4096 leaf_adaptive_wait_ns=50000 uninit_read_buffers=true zero_copy_strict=false result_ranges_configured=true device_bytes=1073741824 required_alignment=4096 memory_policy=first-touch memory_hugetlb=false preferred_numa_node=0 protocol=fan-wal-v2
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:37158 lane=1 port=29001 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:33978 lane=0 port=29000 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:48616 lane=3 port=29003 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:49396 lane=2 port=29002 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=0 policy=port-lane peer=127.0.0.1:33978 listener_lane=0 listener_port=29000 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=1 policy=port-lane peer=127.0.0.1:37158 listener_lane=1 listener_port=29001 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=2 policy=port-lane peer=127.0.0.1:49396 listener_lane=2 listener_port=29002 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=3 policy=port-lane peer=127.0.0.1:48616 listener_lane=3 listener_port=29003 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment-summary: policy=port-lane workers=4 streams_by_worker=0:1,1:1,2:1,3:1
+zcnblk-wal-leaf-worker: affinity_index=0 target_cpu=3 status=ok
+zcnblk-wal-leaf-worker: affinity_index=1 target_cpu=7 status=ok
+zcnblk-wal-leaf-worker: affinity_index=2 target_cpu=11 status=ok
+zcnblk-wal-leaf-worker: affinity_index=3 target_cpu=15 status=ok
+zcnblk-wal-leaf-stream: affinity_index=1 target_cpu=7 status=ok
+zcnblk-wal-leaf-stream: worker=1 slot=0 peer=127.0.0.1:37158 lane=1 port=29001 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=3 target_cpu=15 status=ok
+zcnblk-wal-leaf-stream: affinity_index=2 target_cpu=11 status=ok
+zcnblk-wal-leaf-stream: worker=3 slot=0 peer=127.0.0.1:48616 lane=3 port=29003 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: worker=2 slot=0 peer=127.0.0.1:49396 lane=2 port=29002 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-wal-leaf-stream: affinity_index=0 target_cpu=3 status=ok
+zcnblk-wal-leaf-stream: worker=0 slot=0 peer=127.0.0.1:33978 lane=0 port=29000 conn=0 incoming_cpu=17 incoming_napi_id=unknown
+zcnblk-wal-leaf-write-extent-batch-topology: worker=0 slot=0 stream_lane=0 branch=0 records=56 extents=56 batch_payload_bytes=231168 first_leaf_offset=21430272 first_payload_len=4096 desc_preferred_cpu=-1 desc_numa_node=-1 leaf_target_cpu=3 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=3 payload_destination=direct-memory-scatter
+zcnblk-wal-leaf-write-extent-batch-topology: worker=1 slot=0 stream_lane=1 branch=0 records=32 extents=32 batch_payload_bytes=132096 first_leaf_offset=116580352 first_payload_len=4096 desc_preferred_cpu=-1 desc_numa_node=-1 leaf_target_cpu=7 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=7 payload_destination=direct-memory-scatter
+zcnblk-wal-leaf-write-extent-batch-topology: worker=2 slot=0 stream_lane=2 branch=0 records=32 extents=32 batch_payload_bytes=132096 first_leaf_offset=136658944 first_payload_len=4096 desc_preferred_cpu=-1 desc_numa_node=-1 leaf_target_cpu=11 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=11 payload_destination=direct-memory-scatter
+zcnblk-wal-leaf-write-extent-batch-topology: worker=3 slot=0 stream_lane=3 branch=0 records=56 extents=56 batch_payload_bytes=231168 first_leaf_offset=255029248 first_payload_len=4096 desc_preferred_cpu=-1 desc_numa_node=-1 leaf_target_cpu=15 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=15 payload_destination=direct-memory-scatter
+Error: Os { code: 104, kind: ConnectionReset, message: "Connection reset by peer" }

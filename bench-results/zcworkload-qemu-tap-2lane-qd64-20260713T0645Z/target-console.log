@@ -1,0 +1,35 @@
+[    0.019133] RDSEED32 is broken. Disabling the corresponding CPUID bit.
+ZCWORKLOAD_GUEST_BOOT role=target
+Linux (none) 7.0.8-io-slots-03 #slots3 SMP PREEMPT_DYNAMIC Sun May 31 09:43:13 EDT 2026 x86_64 GNU/Linux
+guest_cmdline=console=ttyS0 panic=-1 oops=panic quiet zcworkload_role=target
+guest_online_cpus=0-3
+guest_memlock_kib=8192
+guest_hugepages_total=0
+guest_hugepages_free=0
+target_topology=wal-tcp-lane0:leaf-worker0:guest-cpu1,wal-tcp-lane1:leaf-worker1:guest-cpu2 backend=zcmem:128M frame_bytes=4096 submit_mode=blocking
+target_vcpu_host_map=vCPU0:hostCPU4,vCPU1:hostCPU5,vCPU2:hostCPU6,vCPU3:hostCPU7 emulator:hostCPU2
+target_no_raid=true target_no_terminal_block_media=true
+ 24:          0          0          0          0 PCI-MSIX-0000:00:01.0   0-edge      virtio0-config
+ 25:          0          0          0          1 PCI-MSIX-0000:00:01.0   1-edge      virtio0-input.0
+ 26:          0          0          0          0 PCI-MSIX-0000:00:01.0   2-edge      virtio0-output.0
++ URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=1,2 URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1 /uring-play zcnblk-wal-leaf zcmem:128M 10.72.0.2 29000 2 1 4096 2 true blocking
+zcnblk-wal-leaf: target=zcmem:134217728 bind=10.72.0.2 base_port=29000 ports=2 connections_per_port=1 total_connections=2 chunk_bytes=4096 workers=2 pin_workers=true submit_mode=blocking ring_entries=64 ring_cq_entries=128 cqe_hot_poll=false leaf_sqpoll=false leaf_spin_reads=false leaf_spin_policy=off leaf_spin_budget=unbounded leaf_adaptive_spin_min=off leaf_adaptive_spin_max=off leaf_adaptive_wait_ns=off leaf_adaptive_hysteresis_ns=off uninit_read_buffers=true zero_copy_strict=false result_ranges_configured=true device_bytes=134217728 required_alignment=4096 memory_policy=first-touch memory_hugetlb=false preferred_numa_node=0 protocol=fan-wal-v2
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+tcp-bench-uring-mux-server: accepted peer=10.72.0.1:47092 lane=0 port=29000 conn=0 incoming_cpu=3 incoming_napi_id=8193
+tcp-bench-uring-mux-server: accepted peer=10.72.0.1:42670 lane=1 port=29001 conn=0 incoming_cpu=3 incoming_napi_id=8193
+zcnblk-wal-leaf-mux-assignment: worker=0 policy=port-lane peer=10.72.0.1:47092 listener_lane=0 listener_port=29000 conn=0 incoming_cpu=3 incoming_napi_id=8193
+zcnblk-wal-leaf-mux-assignment: worker=1 policy=port-lane peer=10.72.0.1:42670 listener_lane=1 listener_port=29001 conn=0 incoming_cpu=3 incoming_napi_id=8193
+zcnblk-wal-leaf-mux-assignment-summary: policy=port-lane workers=2 streams_by_worker=0:1,1:1
+zcnblk-wal-leaf-worker: affinity_index=1 target_cpu=2 status=ok
+zcnblk-wal-leaf-stream: affinity_index=1 target_cpu=2 status=ok
+zcnblk-wal-leaf-stream: worker=1 slot=0 peer=10.72.0.1:42670 lane=1 port=29001 conn=0 incoming_cpu=3 incoming_napi_id=8193
+zcnblk-wal-leaf-worker: affinity_index=0 target_cpu=1 status=ok
+zcnblk-wal-leaf-stream: affinity_index=0 target_cpu=1 status=ok
+zcnblk-wal-leaf-stream: worker=0 slot=0 peer=10.72.0.1:47092 lane=0 port=29000 conn=0 incoming_cpu=3 incoming_napi_id=8193
+zcnblk-wal-leaf-worker: worker=0 streams=1 read_bytes=0 write_bytes=0 payload_read_bytes=0 heap_payload_bytes=0 heap_payload_descriptor_bytes=0 heap_payload_data_bytes=0 direct_memory_recv_bytes=0 memfd_payload_bytes=0 lease_submit_bytes=0 memfd_lease_submit_bytes=0 copy_submit_bytes=0 result_records=0 result_batches=0 result_range_batches=0 frames=0 blocking_io_frames=0 uring_io_frames=0 write_submit_runs=0 max_write_submit_run_frames=0 phase_payload_read_seconds=0.000000 phase_payload_alloc_seconds=0.000000 phase_payload_recv_seconds=0.000000 phase_decode_seconds=0.000000 phase_submit_seconds=0.000000 phase_result_write_seconds=0.000000 frames_per_sec=0 seconds=0.002219 logical_MiBps=0.00 stream_thread_cpu_seconds=0.000031 stream_cpu_wall_pct=1.4 target_cpu=1 affinity_applied=true voluntary_ctxt_switches=0 involuntary_ctxt_switches=0 migrations=0
+zcnblk-wal-leaf-worker: worker=1 streams=1 read_bytes=0 write_bytes=0 payload_read_bytes=0 heap_payload_bytes=0 heap_payload_descriptor_bytes=0 heap_payload_data_bytes=0 direct_memory_recv_bytes=0 memfd_payload_bytes=0 lease_submit_bytes=0 memfd_lease_submit_bytes=0 copy_submit_bytes=0 result_records=0 result_batches=0 result_range_batches=0 frames=0 blocking_io_frames=0 uring_io_frames=0 write_submit_runs=0 max_write_submit_run_frames=0 phase_payload_read_seconds=0.000000 phase_payload_alloc_seconds=0.000000 phase_payload_recv_seconds=0.000000 phase_decode_seconds=0.000000 phase_submit_seconds=0.000000 phase_result_write_seconds=0.000000 frames_per_sec=0 seconds=0.000645 logical_MiBps=0.00 stream_thread_cpu_seconds=0.000135 stream_cpu_wall_pct=21.0 target_cpu=2 affinity_applied=true voluntary_ctxt_switches=0 involuntary_ctxt_switches=0 migrations=0
+zcnblk-wal-leaf-summary: streams=2 read_bytes=0 write_bytes=0 payload_read_bytes=0 heap_payload_bytes=0 heap_payload_descriptor_bytes=0 heap_payload_data_bytes=0 direct_memory_recv_bytes=0 memfd_payload_bytes=0 lease_submit_bytes=0 memfd_lease_submit_bytes=0 copy_submit_bytes=0 phase_payload_read_seconds=0.000000 phase_payload_alloc_seconds=0.000000 phase_payload_recv_seconds=0.000000 phase_decode_seconds=0.000000 phase_submit_seconds=0.000000 phase_result_write_seconds=0.000000 result_records=0 result_batches=0 result_range_batches=0 frames=0 blocking_io_frames=0 uring_io_frames=0 write_submit_runs=0 max_write_submit_run_frames=0 stream_thread_cpu_seconds=0.000167 stream_cpu_wall_ratio=0.075 voluntary_ctxt_switches=0 involuntary_ctxt_switches=0 migrations=0 frames_per_sec=0
+zcnblk-wal-leaf: bytes=0 seconds=0.002219 GiBps=0.000 Gbitps=0.000
+ZCWORKLOAD_GUEST_FINAL role=target status=0
+[   15.394799] reboot: Power down

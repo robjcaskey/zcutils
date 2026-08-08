@@ -1,0 +1,137 @@
+topology_preflight=1
+run_mode=local
+strict=0
+topology_preflight_fatal=0
+topology_busy_pct=1.0
+local_mapped_cpus=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39
+local_mapped_cpu_count=40
+stage=client cpus=0-7 unique_cpus=8
+stage=fan-handler cpus=8-15 unique_cpus=8
+stage=fan-async cpus=16-23 unique_cpus=8
+stage=leaf0 cpus=24-31 unique_cpus=8
+stage=leaf1 cpus=32-39 unique_cpus=8
+cpu=0 governor=powersave
+cpu=1 governor=powersave
+cpu=2 governor=powersave
+cpu=3 governor=powersave
+cpu=4 governor=powersave
+cpu=5 governor=powersave
+cpu=6 governor=powersave
+cpu=7 governor=powersave
+cpu=8 governor=powersave
+cpu=9 governor=powersave
+cpu=10 governor=powersave
+cpu=11 governor=powersave
+cpu=12 governor=powersave
+cpu=13 governor=powersave
+cpu=14 governor=powersave
+cpu=15 governor=powersave
+cpu=16 governor=powersave
+cpu=17 governor=powersave
+cpu=18 governor=powersave
+cpu=19 governor=powersave
+cpu=20 governor=powersave
+cpu=21 governor=powersave
+cpu=22 governor=powersave
+cpu=23 governor=powersave
+cpu=24 governor=powersave
+cpu=25 governor=powersave
+cpu=26 governor=powersave
+cpu=27 governor=powersave
+cpu=28 governor=powersave
+cpu=29 governor=powersave
+cpu=30 governor=powersave
+cpu=31 governor=powersave
+PERF WARNING: mapped CPU list contains unavailable CPUs: 32,33,34,35,36,37,38,39
+PERF WARNING: mapped CPUs are not all using performance governor: cpu0=powersave,cpu1=powersave,cpu2=powersave,cpu3=powersave,cpu4=powersave,cpu5=powersave,cpu6=powersave,cpu7=powersave,cpu8=powersave,cpu9=powersave,cpu10=powersave,cpu11=powersave,cpu12=powersave,cpu13=powersave,cpu14=powersave,cpu15=powersave,cpu16=powersave,cpu17=powersave,cpu18=powersave,cpu19=powersave,cpu20=powersave,cpu21=powersave,cpu22=powersave,cpu23=powersave,cpu24=powersave,cpu25=powersave,cpu26=powersave,cpu27=powersave,cpu28=powersave,cpu29=powersave,cpu30=powersave,cpu31=powersave
+PERF WARNING: mapped local stages include SMT siblings; report this as SMT-paired, not isolated physical-core topology
+cpu=0 sibling=16 stages=,client
+cpu=1 sibling=17 stages=,client
+cpu=10 sibling=26 stages=,fan-handler
+cpu=11 sibling=27 stages=,fan-handler
+cpu=12 sibling=28 stages=,fan-handler
+cpu=13 sibling=29 stages=,fan-handler
+cpu=14 sibling=30 stages=,fan-handler
+cpu=15 sibling=31 stages=,fan-handler
+cpu=16 sibling=0 stages=,fan-async
+cpu=17 sibling=1 stages=,fan-async
+cpu=18 sibling=2 stages=,fan-async
+cpu=19 sibling=3 stages=,fan-async
+cpu=2 sibling=18 stages=,client
+cpu=20 sibling=4 stages=,fan-async
+cpu=21 sibling=5 stages=,fan-async
+cpu=22 sibling=6 stages=,fan-async
+cpu=23 sibling=7 stages=,fan-async
+cpu=24 sibling=8 stages=,leaf0
+cpu=25 sibling=9 stages=,leaf0
+cpu=26 sibling=10 stages=,leaf0
+cpu=27 sibling=11 stages=,leaf0
+cpu=28 sibling=12 stages=,leaf0
+cpu=29 sibling=13 stages=,leaf0
+cpu=3 sibling=19 stages=,client
+cpu=30 sibling=14 stages=,leaf0
+cpu=31 sibling=15 stages=,leaf0
+cpu=4 sibling=20 stages=,client
+cpu=5 sibling=21 stages=,client
+cpu=6 sibling=22 stages=,client
+cpu=7 sibling=23 stages=,client
+cpu=8 sibling=24 stages=,fan-handler
+cpu=9 sibling=25 stages=,fan-handler
+== mapped cpu mhz sample ==
+CPU CORE SOCKET NODE L1d:L1i:L2:L3 ONLINE    MAXMHZ   MINMHZ       MHZ
+  0    0      0    0 0:0:0:0          yes 5756.4521 624.1940 5504.0439
+  1    1      0    0 1:1:1:0          yes 5756.4521 624.1940 5509.4980
+  2    2      0    0 2:2:2:0          yes 5756.4521 624.1940 5380.2271
+  3    3      0    0 3:3:3:0          yes 5756.4521 624.1940 2816.8530
+  4    4      0    0 4:4:4:0          yes 5756.4521 624.1940 5510.9019
+  5    5      0    0 5:5:5:0          yes 5756.4521 624.1940 5512.7920
+  6    6      0    0 6:6:6:0          yes 5756.4521 624.1940 5517.6880
+  7    7      0    0 7:7:7:0          yes 5756.4521 624.1940 5433.8252
+  8    8      0    0 8:8:8:1          yes 5756.4521 624.1940 5535.2520
+  9    9      0    0 9:9:9:1          yes 5756.4521 624.1940 5551.8970
+ 10   10      0    0 10:10:10:1       yes 5756.4521 624.1940 5427.2568
+ 11   11      0    0 11:11:11:1       yes 5756.4521 624.1940 5551.9780
+ 12   12      0    0 12:12:12:1       yes 5756.4521 624.1940 3610.1499
+ 13   13      0    0 13:13:13:1       yes 5756.4521 624.1940 4644.0981
+ 14   14      0    0 14:14:14:1       yes 5756.4521 624.1940 5561.1509
+ 15   15      0    0 15:15:15:1       yes 5756.4521 624.1940 5561.4761
+ 16    0      0    0 0:0:0:0          yes 5756.4521 624.1940 3952.8020
+ 17    1      0    0 1:1:1:0          yes 5756.4521 624.1940 5514.3130
+ 18    2      0    0 2:2:2:0          yes 5756.4521 624.1940 5380.3511
+ 19    3      0    0 3:3:3:0          yes 5756.4521 624.1940 2933.8301
+ 20    4      0    0 4:4:4:0          yes 5756.4521 624.1940 5500.7979
+ 21    5      0    0 5:5:5:0          yes 5756.4521 624.1940 5520.7168
+ 22    6      0    0 6:6:6:0          yes 5756.4521 624.1940 5501.4878
+ 23    7      0    0 7:7:7:0          yes 5756.4521 624.1940 5516.9341
+ 24    8      0    0 8:8:8:1          yes 5756.4521 624.1940 5558.5352
+ 25    9      0    0 9:9:9:1          yes 5756.4521 624.1940 5538.5801
+ 26   10      0    0 10:10:10:1       yes 5756.4521 624.1940 3344.6399
+ 27   11      0    0 11:11:11:1       yes 5756.4521 624.1940 5562.1948
+ 28   12      0    0 12:12:12:1       yes 5756.4521 624.1940 3762.4199
+ 29   13      0    0 13:13:13:1       yes 5756.4521 624.1940 2937.6750
+ 30   14      0    0 14:14:14:1       yes 5756.4521 624.1940 5531.5479
+ 31   15      0    0 15:15:15:1       yes 5756.4521 624.1940 5535.3101
+PERF WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+busy_cpu=27 pcpu=1.9 pid=1334 tid=1334 comm=shard-01-sandbo
+busy_cpu=14 pcpu=3.8 pid=1915 tid=1915 comm=sway
+busy_cpu=30 pcpu=3.1 pid=2358 tid=2358 comm=alacritty
+busy_cpu=20 pcpu=1.1 pid=2465 tid=2465 comm=alacritty
+busy_cpu=3 pcpu=1.1 pid=14517 tid=880058 comm=sqlx-sqlite-wor
+busy_cpu=8 pcpu=1.0 pid=118405 tid=845598 comm=sqlx-sqlite-wor
+busy_cpu=27 pcpu=1.0 pid=118405 tid=846519 comm=sqlx-sqlite-wor
+busy_cpu=13 pcpu=5.8 pid=749720 tid=749720 comm=pupil_rough_cut
+busy_cpu=6 pcpu=1.2 pid=892063 tid=892068 comm=java
+busy_cpu=11 pcpu=5.6 pid=892445 tid=892445 comm=postgres
+busy_cpu=30 pcpu=5.4 pid=892448 tid=892448 comm=postgres
+busy_cpu=9 pcpu=5.7 pid=892542 tid=892542 comm=postgres
+busy_cpu=11 pcpu=5.5 pid=892543 tid=892543 comm=postgres
+busy_cpu=30 pcpu=5.8 pid=892788 tid=892788 comm=postgres
+busy_cpu=29 pcpu=5.4 pid=892789 tid=892789 comm=postgres
+busy_cpu=14 pcpu=5.6 pid=892790 tid=892790 comm=postgres
+busy_cpu=4 pcpu=5.4 pid=892791 tid=892791 comm=postgres
+busy_cpu=10 pcpu=5.9 pid=892792 tid=892792 comm=postgres
+busy_cpu=25 pcpu=5.0 pid=892793 tid=892793 comm=postgres
+memlock_limit=8192
+PERF WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+nr_hugepages=0
+PERF WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons

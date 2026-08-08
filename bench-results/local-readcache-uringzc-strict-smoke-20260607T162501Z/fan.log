@@ -1,0 +1,7 @@
+zcfan-readcache-config: role=fan-cold bind=127.0.0.1 branch_binds=127.0.0.1,127.0.0.1 peer=127.0.0.1 source_ip=- base_port=33000 leaf_base_port=44000 downstream_base_port=43000 lanes=1 branches=2 bytes_per_lane=2097152 branch_bytes_per_lane=1048576 cache_bytes_per_lane=67108864 chunk_bytes=1048576 extent_bytes=1048576 workers=1 pin=false cpu_list=- verify=false client_sink=read wait_mode=spin cold_mode=uring-zc slab_slots=1 prefill_bytes=0 transport=sendfile/splice/tee/slab/lane-splice/io_uring-sendzc page_cache=memfd block_devices=no kernel_raid=no
+zcfan-readcache-topology: worker=0 target_cpu=unpinned
+zcfan-readcache-accept: role=fan-cold branch=0 lane=0 peer=127.0.0.1:43376 local=127.0.0.1:44000
+zcfan-readcache-accept: role=fan-cold branch=1 lane=0 peer=127.0.0.1:37344 local=127.0.0.1:44001
+zcfan-readcache-connect: lane=0 peer=127.0.0.1:43000 local=127.0.0.1:47252
+zcfan-readcache-uring-zc-worker-setup: worker=0 fixed_pair_slots=1 fixed_buffers=2 extent_bytes=1048576 ring_entries=256 memory_policy=first-touch
+Error: Custom { kind: Other, error: "zcfan-readcache uring-zc copied 2/2 SEND_ZC notifications; this is not a representative zero-copy fan result" }

@@ -1,0 +1,153 @@
+******************** Stress Settings ********************
+Command:
+  Type: write
+  Count: 1,000
+  No Warmup: true
+  Consistency Level: ONE
+  Target Uncertainty: not applicable
+  Key Size (bytes): 10
+  Counter Increment Distibution: add=fixed(1)
+Rate:
+  Auto: false
+  Thread Count: 8
+  OpsPer Sec: 0
+Population:
+  Sequence: 1..1000
+  Order: ARBITRARY
+  Wrap: true
+Insert:
+  Revisits: Uniform:  min=1,max=1000000
+  Visits: Fixed:  key=1
+  Row Population Ratio: Ratio: divisor=1.000000;delegate=Fixed:  key=1
+  Batch Type: not batching
+Columns:
+  Max Columns Per Key: 1
+  Column Names: [C0]
+  Comparator: AsciiType
+  Timestamp: null
+  Variable Column Count: false
+  Slice: false
+  Size Distribution: Fixed:  key=256
+  Count Distribution: Fixed:  key=1
+Errors:
+  Ignore: false
+  Tries: 10
+Log:
+  No Summary: false
+  No Settings: false
+  File: null
+  Interval Millis: 1000
+  Level: NORMAL
+Mode:
+  API: JAVA_DRIVER_NATIVE
+  Connection Style: CQL_PREPARED
+  Protocol Version: V5
+  Username: null
+  Password: null
+  Auth Provide Class: null
+  Max Pending Per Connection: 128
+  Connections Per Host: 2
+  Compression: NONE
+Node:
+  Nodes: [127.0.0.1]
+  Is White List: false
+  Datacenter: null
+Schema:
+  Keyspace: keyspace1
+  Replication Strategy: org.apache.cassandra.locator.SimpleStrategy
+  Replication Strategy Options: {replication_factor=1}
+  Table Compression: null
+  Table Compaction Strategy: null
+  Table Compaction Strategy Options: {}
+Transport:
+  Truststore: null
+  Truststore Password: null
+  Keystore: null
+  Keystore Password: null
+  SSL Protocol: TLS
+  SSL Algorithm: null
+  SSL Ciphers: null
+Port:
+  Native Port: 9142
+  JMX Port: 7299
+JMX:
+  Username: null
+  Password: *not set*
+Graph:
+  File: null
+  Revision: unknown
+  Title: null
+  Operation: WRITE
+TokenRange:
+  Wrap: false
+  Split Factor: 1
+Credentials file:
+  File: *not set*
+  CQL username: *not set*
+  CQL password: *not set*
+  JMX username: *not set*
+  JMX password: *not set*
+  Transport truststore password: *not set*
+  Transport keystore password: *not set*
+Reporting:
+  Output frequency: 1s
+  Header frequency: *not set*
+
+Connected to cluster: zcutils-cassandra-bench, max pending requests per connection 128, max connections per host 2
+Datacenter: datacenter1; Host: /127.0.0.1:9142; Rack: rack1
+Created keyspaces. Sleeping 1s for propagation.
+Sleeping 2s...
+com.datastax.driver.core.exceptions.InvalidQueryException: table counter3 does not exist
+	at com.datastax.driver.core.exceptions.InvalidQueryException.copy(InvalidQueryException.java:52)
+	at com.datastax.driver.core.DriverThrowables.propagateCause(DriverThrowables.java:37)
+	at com.datastax.driver.core.DefaultResultSetFuture.getUninterruptibly(DefaultResultSetFuture.java:295)
+	at com.datastax.driver.core.AbstractSession.execute(AbstractSession.java:60)
+	at org.apache.cassandra.stress.util.JavaDriverClient.execute(JavaDriverClient.java:228)
+	at org.apache.cassandra.stress.settings.SettingsCommand.truncateTables(SettingsCommand.java:170)
+	at org.apache.cassandra.stress.settings.SettingsCommandPreDefined.truncateTables(SettingsCommandPreDefined.java:120)
+	at org.apache.cassandra.stress.StressAction.run(StressAction.java:75)
+	at org.apache.cassandra.stress.Stress.run(Stress.java:101)
+	at org.apache.cassandra.stress.Stress.main(Stress.java:54)
+Caused by: com.datastax.driver.core.exceptions.InvalidQueryException: table counter3 does not exist
+	at com.datastax.driver.core.Responses$Error.asException(Responses.java:195)
+	at com.datastax.driver.core.DefaultResultSetFuture.onSet(DefaultResultSetFuture.java:217)
+	at com.datastax.driver.core.RequestHandler.setFinalResult(RequestHandler.java:237)
+	at com.datastax.driver.core.RequestHandler.access$2600(RequestHandler.java:63)
+	at com.datastax.driver.core.RequestHandler$SpeculativeExecution.setFinalResult(RequestHandler.java:1013)
+	at com.datastax.driver.core.RequestHandler$SpeculativeExecution.onSet(RequestHandler.java:816)
+	at com.datastax.driver.core.Connection$Dispatcher.channelRead0(Connection.java:1292)
+	at com.datastax.driver.core.Connection$Dispatcher.channelRead0(Connection.java:1210)
+	at com.datastax.shaded.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:99)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:444)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:420)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:412)
+	at com.datastax.shaded.netty.handler.timeout.IdleStateHandler.channelRead(IdleStateHandler.java:286)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:442)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:420)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:412)
+	at com.datastax.shaded.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:103)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:444)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:420)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:412)
+	at com.datastax.shaded.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:103)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:444)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:420)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:412)
+	at com.datastax.shaded.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:346)
+	at com.datastax.shaded.netty.handler.codec.ByteToMessageDecoder.channelRead(ByteToMessageDecoder.java:318)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:444)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:420)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:412)
+	at com.datastax.shaded.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1410)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:440)
+	at com.datastax.shaded.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:420)
+	at com.datastax.shaded.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:919)
+	at com.datastax.shaded.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:166)
+	at com.datastax.shaded.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:788)
+	at com.datastax.shaded.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:724)
+	at com.datastax.shaded.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:650)
+	at com.datastax.shaded.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:562)
+	at com.datastax.shaded.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:997)
+	at com.datastax.shaded.netty.util.internal.ThreadExecutorMap$2.run(ThreadExecutorMap.java:74)
+	at com.datastax.shaded.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	at java.base/java.lang.Thread.run(Thread.java:840)

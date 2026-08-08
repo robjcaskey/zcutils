@@ -1,0 +1,23 @@
+	Command being timed: "taskset -c 8-11,13 qemu-system-x86_64 -name guest=zcwl-client,debug-threads=on -machine q35,accel=kvm -cpu host -m 2048M -smp 4,sockets=1,cores=4,threads=1 -display none -monitor none -serial file:/home/rob/zcutils/bench-results/zcworkload-qemu-stagetiming-20260713T0040Z/client-console.log -no-reboot -nodefaults -pidfile /home/rob/zcutils/bench-results/zcworkload-qemu-stagetiming-20260713T0040Z/client-qemu.pid -kernel /home/rob/src/linux-7.0.8-zcslots/arch/x86/boot/bzImage -initrd /home/rob/zcutils/bench-results/zcworkload-qemu-stagetiming-20260713T0040Z/zcworkload-two-vm-initramfs.cpio -append console=ttyS0 panic=-1 oops=panic quiet zcworkload_role=client -netdev socket,id=link,connect=127.0.0.1:36204 -device virtio-net-pci,netdev=link,mac=52:54:00:72:00:01"
+	User time (seconds): 1.79
+	System time (seconds): 1.69
+	Percent of CPU this job got: 3%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 1:42.62
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 356628
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 7470
+	Voluntary context switches: 58532
+	Involuntary context switches: 74
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 136
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

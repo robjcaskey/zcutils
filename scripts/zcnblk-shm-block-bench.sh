@@ -50,6 +50,7 @@ LEAF_CPU_LIST="${LEAF_CPU_LIST:-}"
 SHM_RING_ENTRIES="${SHM_RING_ENTRIES:-128}"
 KERNEL_QUEUE_DEPTH="${KERNEL_QUEUE_DEPTH:-$IODEPTH}"
 KERNEL_PIPELINE_DEPTH="${KERNEL_PIPELINE_DEPTH:-$SHM_RING_ENTRIES}"
+KERNEL_QUEUES="${KERNEL_QUEUES:-$LANES}"
 SECTOR_ORDER_SLOTS="${URING_PLAY_ZCNBLK_SHM_SECTOR_ORDER_SLOTS:-65536}"
 BACKEND="${BACKEND:-memory}"
 if [ -z "${SHM_PAYLOAD_ENTRIES+x}" ]; then
@@ -497,7 +498,7 @@ fi
 
 log "loading placement-free shared-memory client edge"
 sudo -n insmod "$MODULE" transport=shm lanes="$LANES" connections_per_lane=1 \
-	size_mib="$SIZE_MIB" queues="$LANES" queue_depth="$KERNEL_QUEUE_DEPTH" \
+	size_mib="$SIZE_MIB" queues="$KERNEL_QUEUES" queue_depth="$KERNEL_QUEUE_DEPTH" \
 	shm_sector_order_slots="$SECTOR_ORDER_SLOTS" \
 	max_frame_bytes="$MAX_FRAME_BYTES" \
 	pipeline_depth="$KERNEL_PIPELINE_DEPTH" shm_ring_entries="$SHM_RING_ENTRIES" \
@@ -774,8 +775,8 @@ fi
 		"$BLOCK_CQE_ADAPTIVE_SPIN_MIN" "$BLOCK_CQE_ADAPTIVE_SPIN_MAX" \
 		"$BLOCK_CQE_ADAPTIVE_WAIT_NS" "$BLOCK_CQE_HOT_POLL" "$BLOCK_CQE_HOT_POLL_PROGRESS_SPINS"
 	printf 'shm_descriptor_entries_per_channel=%s\n' "$SHM_RING_ENTRIES"
-	printf 'kernel_queue_depth=%s kernel_pipeline_depth=%s\n' \
-		"$KERNEL_QUEUE_DEPTH" "$KERNEL_PIPELINE_DEPTH"
+	printf 'kernel_queues=%s kernel_queue_depth=%s kernel_pipeline_depth=%s\n' \
+		"$KERNEL_QUEUES" "$KERNEL_QUEUE_DEPTH" "$KERNEL_PIPELINE_DEPTH"
 	printf 'shm_sector_order_slots=%s\n' "$SECTOR_ORDER_SLOTS"
 	printf 'shm_payload_entries_per_channel=%s\n' "$SHM_PAYLOAD_ENTRIES"
 	safe_writeback_limit=$((SHM_PAYLOAD_ENTRIES - SHM_RING_ENTRIES))

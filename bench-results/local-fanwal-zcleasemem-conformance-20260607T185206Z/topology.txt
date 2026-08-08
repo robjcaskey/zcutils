@@ -1,0 +1,8 @@
+case=zcleasemem_write_sync_read_conformance
+base_port=28700 leaf_base_port=29700 async_result_window=64 async_merge_max_records=960 defer_unsynced_writeback=1 request_chunking=1 request_chunk_bytes=1M batch_depth=512 compact_extents=1
+sender_cpus=0,1
+fan_handler_cpus=4,5
+fan_async_cpus=6,7
+leaf0_cpus=8,9
+leaf1_cpus=10,11
+mode=mirror op=write-sync-read lanes=2 connections_per_port=1 bytes_per_connection=16M chunk=4K verify_reads=1 wait_write_acks=1 dirty_cache=on async_writeback=on terminal_leaf_media=zcleasemem

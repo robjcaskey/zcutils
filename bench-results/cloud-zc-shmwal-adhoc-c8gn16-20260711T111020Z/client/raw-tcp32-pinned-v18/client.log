@@ -1,0 +1,67 @@
+tcp-bench-uring-mux-send: mode=send addr=172.31.39.84 base_port=30100 ports=32 connections_per_port=1 total_connections=32 bytes_per_connection=1073741824 chunk_bytes=1048576 pipeline=8 tcp_nodelay=yes payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral fixed_file=false
+uring-send-worker: affinity_index=1 target_cpu=1 status=ok
+uring-send-worker: affinity_index=0 target_cpu=0 status=ok
+uring-send-worker: affinity_index=3 target_cpu=3 status=ok
+uring-send-worker: affinity_index=2 target_cpu=2 status=ok
+uring-send-worker: affinity_index=4 target_cpu=4 status=ok
+uring-send-worker: affinity_index=5 target_cpu=5 status=ok
+uring-send-worker: affinity_index=6 target_cpu=6 status=ok
+uring-send-worker: affinity_index=7 target_cpu=7 status=ok
+uring-send-worker: affinity_index=9 target_cpu=9 status=ok
+uring-send-worker: affinity_index=10 target_cpu=10 status=ok
+uring-send-worker: affinity_index=8 target_cpu=8 status=ok
+uring-send-worker: affinity_index=11 target_cpu=11 status=ok
+uring-send-worker: affinity_index=13 target_cpu=13 status=ok
+uring-send-worker: affinity_index=14 target_cpu=14 status=ok
+uring-send-worker: affinity_index=15 target_cpu=15 status=ok
+uring-send-worker: affinity_index=16 target_cpu=16 status=ok
+uring-send-worker: affinity_index=17 target_cpu=17 status=ok
+uring-send-worker: affinity_index=18 target_cpu=18 status=ok
+uring-send-worker: affinity_index=19 target_cpu=19 status=ok
+uring-send-worker: affinity_index=20 target_cpu=20 status=ok
+uring-send-worker: affinity_index=21 target_cpu=21 status=ok
+uring-send-worker: affinity_index=22 target_cpu=22 status=ok
+uring-send-worker: affinity_index=23 target_cpu=23 status=ok
+uring-send-worker: affinity_index=24 target_cpu=24 status=ok
+uring-send-worker: affinity_index=25 target_cpu=25 status=ok
+uring-send-worker: affinity_index=26 target_cpu=26 status=ok
+uring-send-worker: affinity_index=27 target_cpu=27 status=ok
+uring-send-worker: affinity_index=28 target_cpu=28 status=ok
+uring-send-worker: affinity_index=12 target_cpu=12 status=ok
+uring-send-worker: affinity_index=29 target_cpu=29 status=ok
+uring-send-worker: affinity_index=30 target_cpu=30 status=ok
+uring-send-worker: affinity_index=31 target_cpu=31 status=ok
+tcp-bench-uring-mux-send-worker: worker=0 streams=1 bytes=1073741824 wall_seconds=2.252857 thread_cpu_seconds=0.101173 cpu_wall_pct=4.5 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=93 involuntary_ctxt_switches=1 migrations=0
+tcp-bench-uring-mux-send-worker: worker=1 streams=1 bytes=1073741824 wall_seconds=2.463070 thread_cpu_seconds=0.099267 cpu_wall_pct=4.0 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=94 involuntary_ctxt_switches=1 migrations=0
+tcp-bench-uring-mux-send-worker: worker=2 streams=1 bytes=1073741824 wall_seconds=2.038969 thread_cpu_seconds=0.100235 cpu_wall_pct=4.9 target_cpu=2 affinity_applied=true start_cpu=2 end_cpu=2 voluntary_ctxt_switches=93 involuntary_ctxt_switches=1 migrations=0
+tcp-bench-uring-mux-send-worker: worker=3 streams=1 bytes=1073741824 wall_seconds=2.129921 thread_cpu_seconds=0.109559 cpu_wall_pct=5.1 target_cpu=3 affinity_applied=true start_cpu=3 end_cpu=3 voluntary_ctxt_switches=94 involuntary_ctxt_switches=3 migrations=0
+tcp-bench-uring-mux-send-worker: worker=4 streams=1 bytes=1073741824 wall_seconds=3.575330 thread_cpu_seconds=0.093664 cpu_wall_pct=2.6 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=95 involuntary_ctxt_switches=0 migrations=0
+tcp-bench-uring-mux-send-worker: worker=5 streams=1 bytes=1073741824 wall_seconds=1.745818 thread_cpu_seconds=0.113673 cpu_wall_pct=6.5 target_cpu=5 affinity_applied=true start_cpu=5 end_cpu=5 voluntary_ctxt_switches=90 involuntary_ctxt_switches=4 migrations=0
+tcp-bench-uring-mux-send-worker: worker=6 streams=1 bytes=1073741824 wall_seconds=1.686279 thread_cpu_seconds=0.098323 cpu_wall_pct=5.8 target_cpu=6 affinity_applied=true start_cpu=6 end_cpu=6 voluntary_ctxt_switches=93 involuntary_ctxt_switches=0 migrations=0
+tcp-bench-uring-mux-send-worker: worker=7 streams=1 bytes=1073741824 wall_seconds=2.486377 thread_cpu_seconds=0.150207 cpu_wall_pct=6.0 target_cpu=7 affinity_applied=true start_cpu=7 end_cpu=7 voluntary_ctxt_switches=94 involuntary_ctxt_switches=17 migrations=0
+tcp-bench-uring-mux-send-worker: worker=8 streams=1 bytes=1073741824 wall_seconds=3.121781 thread_cpu_seconds=0.096548 cpu_wall_pct=3.1 target_cpu=8 affinity_applied=true start_cpu=8 end_cpu=8 voluntary_ctxt_switches=96 involuntary_ctxt_switches=0 migrations=0
+tcp-bench-uring-mux-send-worker: worker=9 streams=1 bytes=1073741824 wall_seconds=2.753428 thread_cpu_seconds=0.112960 cpu_wall_pct=4.1 target_cpu=9 affinity_applied=true start_cpu=9 end_cpu=9 voluntary_ctxt_switches=94 involuntary_ctxt_switches=4 migrations=0
+tcp-bench-uring-mux-send-worker: worker=10 streams=1 bytes=1073741824 wall_seconds=1.705138 thread_cpu_seconds=0.103470 cpu_wall_pct=6.1 target_cpu=10 affinity_applied=true start_cpu=10 end_cpu=10 voluntary_ctxt_switches=92 involuntary_ctxt_switches=0 migrations=0
+tcp-bench-uring-mux-send-worker: worker=11 streams=1 bytes=1073741824 wall_seconds=2.581692 thread_cpu_seconds=0.118154 cpu_wall_pct=4.6 target_cpu=11 affinity_applied=true start_cpu=11 end_cpu=11 voluntary_ctxt_switches=93 involuntary_ctxt_switches=4 migrations=0
+tcp-bench-uring-mux-send-worker: worker=12 streams=1 bytes=1073741824 wall_seconds=3.567314 thread_cpu_seconds=0.094843 cpu_wall_pct=2.7 target_cpu=12 affinity_applied=true start_cpu=12 end_cpu=12 voluntary_ctxt_switches=95 involuntary_ctxt_switches=2 migrations=0
+tcp-bench-uring-mux-send-worker: worker=13 streams=1 bytes=1073741824 wall_seconds=1.992698 thread_cpu_seconds=0.100164 cpu_wall_pct=5.0 target_cpu=13 affinity_applied=true start_cpu=13 end_cpu=13 voluntary_ctxt_switches=95 involuntary_ctxt_switches=1 migrations=0
+tcp-bench-uring-mux-send-worker: worker=14 streams=1 bytes=1073741824 wall_seconds=1.681151 thread_cpu_seconds=0.097850 cpu_wall_pct=5.8 target_cpu=14 affinity_applied=true start_cpu=14 end_cpu=14 voluntary_ctxt_switches=92 involuntary_ctxt_switches=0 migrations=0
+tcp-bench-uring-mux-send-worker: worker=15 streams=1 bytes=1073741824 wall_seconds=2.550871 thread_cpu_seconds=0.098107 cpu_wall_pct=3.8 target_cpu=15 affinity_applied=true start_cpu=15 end_cpu=15 voluntary_ctxt_switches=95 involuntary_ctxt_switches=1 migrations=0
+tcp-bench-uring-mux-send-worker: worker=16 streams=1 bytes=1073741824 wall_seconds=1.687476 thread_cpu_seconds=0.121915 cpu_wall_pct=7.2 target_cpu=16 affinity_applied=true start_cpu=16 end_cpu=16 voluntary_ctxt_switches=92 involuntary_ctxt_switches=0 migrations=0
+tcp-bench-uring-mux-send-worker: worker=17 streams=1 bytes=1073741824 wall_seconds=2.538921 thread_cpu_seconds=0.097662 cpu_wall_pct=3.8 target_cpu=17 affinity_applied=true start_cpu=17 end_cpu=17 voluntary_ctxt_switches=95 involuntary_ctxt_switches=3 migrations=0
+tcp-bench-uring-mux-send-worker: worker=18 streams=1 bytes=1073741824 wall_seconds=1.698097 thread_cpu_seconds=0.102401 cpu_wall_pct=6.0 target_cpu=18 affinity_applied=true start_cpu=18 end_cpu=18 voluntary_ctxt_switches=93 involuntary_ctxt_switches=2 migrations=0
+tcp-bench-uring-mux-send-worker: worker=19 streams=1 bytes=1073741824 wall_seconds=1.682112 thread_cpu_seconds=0.098603 cpu_wall_pct=5.9 target_cpu=19 affinity_applied=true start_cpu=19 end_cpu=19 voluntary_ctxt_switches=93 involuntary_ctxt_switches=1 migrations=0
+tcp-bench-uring-mux-send-worker: worker=20 streams=1 bytes=1073741824 wall_seconds=2.009483 thread_cpu_seconds=0.098030 cpu_wall_pct=4.9 target_cpu=20 affinity_applied=true start_cpu=20 end_cpu=20 voluntary_ctxt_switches=94 involuntary_ctxt_switches=0 migrations=0
+tcp-bench-uring-mux-send-worker: worker=21 streams=1 bytes=1073741824 wall_seconds=3.632993 thread_cpu_seconds=0.111868 cpu_wall_pct=3.1 target_cpu=21 affinity_applied=true start_cpu=21 end_cpu=21 voluntary_ctxt_switches=94 involuntary_ctxt_switches=7 migrations=0
+tcp-bench-uring-mux-send-worker: worker=22 streams=1 bytes=1073741824 wall_seconds=2.792835 thread_cpu_seconds=0.095594 cpu_wall_pct=3.4 target_cpu=22 affinity_applied=true start_cpu=22 end_cpu=22 voluntary_ctxt_switches=94 involuntary_ctxt_switches=2 migrations=0
+tcp-bench-uring-mux-send-worker: worker=23 streams=1 bytes=1073741824 wall_seconds=2.287951 thread_cpu_seconds=0.095244 cpu_wall_pct=4.2 target_cpu=23 affinity_applied=true start_cpu=23 end_cpu=23 voluntary_ctxt_switches=92 involuntary_ctxt_switches=2 migrations=0
+tcp-bench-uring-mux-send-worker: worker=24 streams=1 bytes=1073741824 wall_seconds=1.680342 thread_cpu_seconds=0.097520 cpu_wall_pct=5.8 target_cpu=24 affinity_applied=true start_cpu=24 end_cpu=24 voluntary_ctxt_switches=93 involuntary_ctxt_switches=0 migrations=0
+tcp-bench-uring-mux-send-worker: worker=25 streams=1 bytes=1073741824 wall_seconds=1.712491 thread_cpu_seconds=0.098588 cpu_wall_pct=5.8 target_cpu=25 affinity_applied=true start_cpu=25 end_cpu=25 voluntary_ctxt_switches=92 involuntary_ctxt_switches=1 migrations=0
+tcp-bench-uring-mux-send-worker: worker=26 streams=1 bytes=1073741824 wall_seconds=2.573838 thread_cpu_seconds=0.095148 cpu_wall_pct=3.7 target_cpu=26 affinity_applied=true start_cpu=26 end_cpu=26 voluntary_ctxt_switches=92 involuntary_ctxt_switches=1 migrations=0
+tcp-bench-uring-mux-send-worker: worker=27 streams=1 bytes=1073741824 wall_seconds=1.946417 thread_cpu_seconds=0.098811 cpu_wall_pct=5.1 target_cpu=27 affinity_applied=true start_cpu=27 end_cpu=27 voluntary_ctxt_switches=93 involuntary_ctxt_switches=1 migrations=0
+tcp-bench-uring-mux-send-worker: worker=28 streams=1 bytes=1073741824 wall_seconds=3.602496 thread_cpu_seconds=0.099130 cpu_wall_pct=2.8 target_cpu=28 affinity_applied=true start_cpu=28 end_cpu=28 voluntary_ctxt_switches=92 involuntary_ctxt_switches=1 migrations=0
+tcp-bench-uring-mux-send-worker: worker=29 streams=1 bytes=1073741824 wall_seconds=3.461234 thread_cpu_seconds=0.088101 cpu_wall_pct=2.5 target_cpu=29 affinity_applied=true start_cpu=29 end_cpu=29 voluntary_ctxt_switches=94 involuntary_ctxt_switches=1 migrations=0
+tcp-bench-uring-mux-send-worker: worker=30 streams=1 bytes=1073741824 wall_seconds=3.547665 thread_cpu_seconds=0.092428 cpu_wall_pct=2.6 target_cpu=30 affinity_applied=true start_cpu=30 end_cpu=30 voluntary_ctxt_switches=93 involuntary_ctxt_switches=3 migrations=0
+tcp-bench-uring-mux-send-worker: worker=31 streams=1 bytes=1073741824 wall_seconds=1.835112 thread_cpu_seconds=0.099121 cpu_wall_pct=5.4 target_cpu=31 affinity_applied=true start_cpu=31 end_cpu=31 voluntary_ctxt_switches=93 involuntary_ctxt_switches=0 migrations=0
+tcp-bench-uring-mux-send-launcher: active_workers=32 launcher_seconds=3.633368 hot_seconds=3.632993
+tcp-bench-uring-mux-send: bytes=34359738368 seconds=3.632993 GiBps=8.808 Gbitps=75.662

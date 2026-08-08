@@ -18,6 +18,7 @@ Optional environment:
   SERVER_CPUS=0-3 CLIENT_CPUS=4-11
   PUT_TOTAL=100000 RANGE_TOTAL=100000 MIXED_TOTAL=50000
   CLIENTS=64 CONNS=8 KEY_SPACE_SIZE=100000 VALUE_SIZE=256
+  EXPECT_ZCNBLK=0
   COORDINATION_RESULT=unknown
 EOF
 }
@@ -42,6 +43,7 @@ KEY_SPACE_SIZE=${KEY_SPACE_SIZE:-100000}
 VALUE_SIZE=${VALUE_SIZE:-256}
 COORDINATION_RESULT=${COORDINATION_RESULT:-unknown}
 ETCD_BENCHMARK_SOURCE=${ETCD_BENCHMARK_SOURCE:-unknown}
+EXPECT_ZCNBLK=${EXPECT_ZCNBLK:-0}
 ENDPOINT="127.0.0.1:${CLIENT_PORT}"
 
 for tool in "$ETCD_BIN" "$ETCDCTL_BIN" "$BENCHMARK_BIN" taskset; do
@@ -57,6 +59,13 @@ done
 mkdir -p "$RESULT_DIR"
 RESULT_DIR=$(realpath "$RESULT_DIR")
 DATA_ROOT=$(realpath "$DATA_ROOT")
+if [[ "$EXPECT_ZCNBLK" == 1 ]]; then
+    mount_source=$(findmnt -T "$DATA_ROOT" -n -o SOURCE)
+    [[ "$mount_source" == /dev/zcnblk0 ]] || {
+        echo "EXPECT_ZCNBLK=1 but DATA_ROOT is mounted from $mount_source" >&2
+        exit 1
+    }
+fi
 DATA_DIR=$(mktemp -d "$DATA_ROOT/zcutils-etcd-data.XXXXXX")
 ETCD_PID=
 

@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+export PATH=/usr/bin:/bin:/sbin
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev || true
+
+echo "[io-slots-smoke] uname"
+uname -a
+
+echo "[io-slots-smoke] io_uring probe"
+if [ -x /uring-play ]; then
+	/uring-play probe || true
+else
+	echo "[io-slots-smoke] /uring-play missing"
+fi
+
+echo "[io-slots-smoke] recent kernel log"
+dmesg | tail -80 || true
+
+echo "[io-slots-smoke] poweroff"
+sync
+poweroff -f

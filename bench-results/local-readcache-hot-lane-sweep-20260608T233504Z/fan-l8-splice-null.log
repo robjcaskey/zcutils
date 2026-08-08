@@ -1,0 +1,26 @@
+zcfan-readcache-config: role=fan-hot bind=0.0.0.0 branch_binds=- peer=127.0.0.1 source_ip=- base_port=33440 leaf_base_port=34000 downstream_base_port=33000 lanes=8 branches=2 bytes_per_lane=134217728 branch_bytes_per_lane=536870912 cache_bytes_per_lane=67108864 chunk_bytes=1048576 extent_bytes=1048576 workers=8 pin=true cpu_list=8,9,10,11,12,13,14,15 verify=false client_sink=read wait_mode=spin cold_mode=stream-tee slab_slots=4 prefill_bytes=0 transport=sendfile/splice/tee/slab/lane-splice/io_uring-sendzc page_cache=memfd block_devices=no kernel_raid=no
+zcfan-readcache-topology: worker=0 target_cpu=8
+zcfan-readcache-topology: worker=1 target_cpu=9
+zcfan-readcache-topology: worker=2 target_cpu=10
+zcfan-readcache-topology: worker=3 target_cpu=11
+zcfan-readcache-topology: worker=4 target_cpu=12
+zcfan-readcache-topology: worker=5 target_cpu=13
+zcfan-readcache-topology: worker=6 target_cpu=14
+zcfan-readcache-topology: worker=7 target_cpu=15
+zcfan-readcache-connect: lane=0 peer=127.0.0.1:33440 local=127.0.0.1:41714
+zcfan-readcache-connect: lane=1 peer=127.0.0.1:33441 local=127.0.0.1:50970
+zcfan-readcache-connect: lane=2 peer=127.0.0.1:33442 local=127.0.0.1:45340
+zcfan-readcache-connect: lane=3 peer=127.0.0.1:33443 local=127.0.0.1:35526
+zcfan-readcache-connect: lane=4 peer=127.0.0.1:33444 local=127.0.0.1:49086
+zcfan-readcache-connect: lane=5 peer=127.0.0.1:33445 local=127.0.0.1:44496
+zcfan-readcache-connect: lane=6 peer=127.0.0.1:33446 local=127.0.0.1:49370
+zcfan-readcache-connect: lane=7 peer=127.0.0.1:33447 local=127.0.0.1:46404
+zcfan-readcache-fan-hot-worker: worker=0 lanes=1 bytes=134217728 aux_bytes=0 waits=0 seconds=0.017521 Gbitps=61.283 aux_Gbitps=0.000 target_cpu=8 affinity_applied=true start_cpu=8 end_cpu=8 voluntary_ctxt_switches=8 involuntary_ctxt_switches=1 migrations=0 checksum=0x0000000000000000 recv_ops=0 send_ops=0 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-fan-hot-worker: worker=1 lanes=1 bytes=134217728 aux_bytes=0 waits=0 seconds=0.018114 Gbitps=59.277 aux_Gbitps=0.000 target_cpu=9 affinity_applied=true start_cpu=9 end_cpu=9 voluntary_ctxt_switches=7 involuntary_ctxt_switches=1 migrations=0 checksum=0x0000000000000000 recv_ops=0 send_ops=0 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-fan-hot-worker: worker=2 lanes=1 bytes=134217728 aux_bytes=0 waits=0 seconds=0.018502 Gbitps=58.034 aux_Gbitps=0.000 target_cpu=10 affinity_applied=true start_cpu=10 end_cpu=10 voluntary_ctxt_switches=3 involuntary_ctxt_switches=2 migrations=0 checksum=0x0000000000000000 recv_ops=0 send_ops=0 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-fan-hot-worker: worker=3 lanes=1 bytes=134217728 aux_bytes=0 waits=0 seconds=0.017800 Gbitps=60.324 aux_Gbitps=0.000 target_cpu=11 affinity_applied=true start_cpu=11 end_cpu=11 voluntary_ctxt_switches=10 involuntary_ctxt_switches=1 migrations=0 checksum=0x0000000000000000 recv_ops=0 send_ops=0 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-fan-hot-worker: worker=4 lanes=1 bytes=134217728 aux_bytes=0 waits=0 seconds=0.018302 Gbitps=58.667 aux_Gbitps=0.000 target_cpu=12 affinity_applied=true start_cpu=12 end_cpu=12 voluntary_ctxt_switches=5 involuntary_ctxt_switches=3 migrations=0 checksum=0x0000000000000000 recv_ops=0 send_ops=0 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-fan-hot-worker: worker=5 lanes=1 bytes=134217728 aux_bytes=0 waits=0 seconds=0.018118 Gbitps=59.262 aux_Gbitps=0.000 target_cpu=13 affinity_applied=true start_cpu=13 end_cpu=13 voluntary_ctxt_switches=5 involuntary_ctxt_switches=3 migrations=0 checksum=0x0000000000000000 recv_ops=0 send_ops=0 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-fan-hot-worker: worker=6 lanes=1 bytes=134217728 aux_bytes=0 waits=0 seconds=0.018317 Gbitps=58.620 aux_Gbitps=0.000 target_cpu=14 affinity_applied=true start_cpu=14 end_cpu=14 voluntary_ctxt_switches=4 involuntary_ctxt_switches=3 migrations=0 checksum=0x0000000000000000 recv_ops=0 send_ops=0 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-fan-hot-worker: worker=7 lanes=1 bytes=134217728 aux_bytes=0 waits=0 seconds=0.018525 Gbitps=57.963 aux_Gbitps=0.000 target_cpu=15 affinity_applied=true start_cpu=15 end_cpu=15 voluntary_ctxt_switches=3 involuntary_ctxt_switches=4 migrations=0 checksum=0x0000000000000000 recv_ops=0 send_ops=0 zc_notifications=0 zc_copied_notifications=0
+zcfan-readcache-fan-hot-summary: workers=8 bytes=1073741824 aux_bytes=0 waits=0 seconds=0.018525 Gbitps=463.703 aux_Gbitps=0.000 voluntary_ctxt_switches=45 involuntary_ctxt_switches=18 migrations=0 checksum=0x0000000000000000 recv_ops=0 send_ops=0 zc_notifications=0 zc_copied_notifications=0 block_devices=no stripe_in_kernel=no mirror_in_kernel=no

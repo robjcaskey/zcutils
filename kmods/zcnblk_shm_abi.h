@@ -6,7 +6,7 @@
 #include <linux/types.h>
 
 #define ZCNBLK_SHM_MAGIC 0x31304d48534e435aULL /* "ZCNSHM01" */
-#define ZCNBLK_SHM_VERSION 3U
+#define ZCNBLK_SHM_VERSION 4U
 #define ZCNBLK_SHM_DESC_BYTES 64U
 
 #define ZCNBLK_SHM_OP_WRITE 1U
@@ -21,6 +21,11 @@
 #define ZCNBLK_SHM_CAP_READ_PAYLOAD_REF (1ULL << 2)
 #define ZCNBLK_SHM_CAP_REQUEST_WAKE_ARMED (1ULL << 3)
 #define ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED (1ULL << 4)
+#define ZCNBLK_SHM_CAP_ORDERING_EPOCH (1ULL << 5)
+#define ZCNBLK_SHM_CAP_ORDERING_VECTOR (1ULL << 6)
+
+#define ZCNBLK_SHM_REQUEST_ID_BITS 16U
+#define ZCNBLK_SHM_REQUEST_ID_MASK ((1ULL << ZCNBLK_SHM_REQUEST_ID_BITS) - 1)
 
 #define ZCNBLK_SHM_CQE_F_READ_PAYLOAD_REF (1U << 0)
 #define ZCNBLK_SHM_CQE_REF_CHANNEL_SHIFT 8U
@@ -31,6 +36,10 @@
 /* header.reserved[] assignments for capability extensions. */
 #define ZCNBLK_SHM_HEADER_CAPABILITIES 0U
 #define ZCNBLK_SHM_HEADER_PAYLOAD_OWNER_OFFSET 1U
+
+/* channel.request_producer_reserved[] assignments. */
+#define ZCNBLK_SHM_CHANNEL_FLUSH_TAIL 0U
+#define ZCNBLK_SHM_CHANNEL_FLUSH_EPOCH 1U
 
 /* Reserved while the kernel fills a slot but before it publishes a request. */
 #define ZCNBLK_SHM_PAYLOAD_OWNER_RESERVED (~0ULL)
@@ -73,6 +82,7 @@ struct zcnblk_shm_channel {
 
 struct zcnblk_shm_request {
 	__u64 sequence;
+	/* Upper 48 bits: ordering epoch. Lower 16 bits: request ID. */
 	__u64 request_id;
 	__u64 offset;
 	__u32 len;

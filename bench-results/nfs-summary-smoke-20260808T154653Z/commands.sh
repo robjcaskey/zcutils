@@ -1,0 +1,10 @@
+sudo exportfs -i -o rw\,sync\,no_subtree_check\,no_root_squash\,fsid=0 127.0.0.1:/tmp/zcutils-nfs-data.Y2kwtR/export 
+sudo mount -t nfs4 -o vers=4.2\,proto=tcp\,port=2049\,nconnect=4\,hard\,noatime 127.0.0.1:/ /mnt/zc-nfs-client-bench 
+taskset -c 8-15 fio --name=verify --filename=/mnt/zc-nfs-client-bench/verify.bin --rw=write --bs=4k --size=16m --ioengine=sync --direct=0 --verify=crc32c --do_verify=1 --verify_fatal=1 --end_fsync=1 --group_reporting=1 
+taskset -c 8-15 fio --name=metadata --directory=/mnt/zc-nfs-client-bench/metadata --rw=write --bs=4k --size=16384 --nrfiles=4 --filesize=4k --openfiles=64 --file_service_type=roundrobin --ioengine=sync --direct=0 --fsync_on_close=1 --create_on_open=1 --unlink=1 --numjobs=1 --group_reporting=1 
+taskset -c 8-15 fio --name=sync-write --filename=/mnt/zc-nfs-client-bench/sync.bin --rw=randwrite --bs=4096 --size=64m --time_based=1 --runtime=1 --ioengine=sync --direct=0 --fsync=1 --iodepth=1 --numjobs=1 --group_reporting=1 
+taskset -c 8-15 fio --name=seed --filename=/mnt/zc-nfs-client-bench/random.bin --rw=write --bs=1m --size=8m --ioengine=io_uring --direct=1 --iodepth=16 --numjobs=1 --end_fsync=1 --group_reporting=1 
+taskset -c 8-15 fio --name=random-mixed-qd1 --filename=/mnt/zc-nfs-client-bench/random.bin --rw=randrw --rwmixread=70 --bs=4096 --size=8m --time_based=1 --runtime=1 --ioengine=io_uring --direct=1 --iodepth=1 --numjobs=1 --norandommap=1 --randrepeat=1 --group_reporting=1 
+taskset -c 8-15 fio --name=random-mixed-qd16 --filename=/mnt/zc-nfs-client-bench/random.bin --rw=randrw --rwmixread=70 --bs=4096 --size=8m --time_based=1 --runtime=1 --ioengine=io_uring --direct=1 --iodepth=4 --numjobs=4 --norandommap=1 --randrepeat=1 --group_reporting=1 
+taskset -c 8-15 fio --name=stream-write --filename=/mnt/zc-nfs-client-bench/stream.bin --rw=write --bs=1m --size=8m --ioengine=io_uring --direct=1 --iodepth=16 --numjobs=1 --end_fsync=1 --group_reporting=1 
+taskset -c 8-15 fio --name=stream-read --filename=/mnt/zc-nfs-client-bench/stream.bin --rw=read --bs=1m --size=8m --ioengine=io_uring --direct=1 --iodepth=16 --numjobs=1 --group_reporting=1 

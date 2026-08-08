@@ -1,0 +1,1 @@
+label=mirror-full rep=1 lanes=4 records_per_lane=500000 payload=4K batch=2048 window=8192 touch=full wait=spin cpu_map=laneN:client_cpu(4N)->fan_cpu(4N+1)->leaf0_cpu(4N+2)+leaf1_cpu(4N+3) cpus=0-15 workload=zcnblk-shm-mirror sync_records=0 release=mirror-leaf-hwm

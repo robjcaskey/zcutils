@@ -1,0 +1,12 @@
+    PID     TID    PPID PSR STAT WCHAN                            COMMAND         COMMAND
+3350750 3350750 3350747   3 Sl   futex_do_wait                    zcnblk-wal-leaf target/release/zcnblk-wal-leaf zcmem:134217728 127.0.0.1 29800 1 1 4K 1 true blocking
+3350750 3350836 3350747   8 Sl   futex_do_wait                    zcnblk-wal-leaf target/release/zcnblk-wal-leaf zcmem:134217728 127.0.0.1 29800 1 1 4K 1 true blocking
+3350750 3350839 3350747   8 Sl   wait_woken                       zcnblk-wal-leaf target/release/zcnblk-wal-leaf zcmem:134217728 127.0.0.1 29800 1 1 4K 1 true blocking
+3350751 3350751 3350747   3 Sl   futex_do_wait                    zcnblk-wal-leaf target/release/zcnblk-wal-leaf zcmem:134217728 127.0.0.2 29800 1 1 4K 1 true blocking
+3350751 3350838 3350747  10 Sl   futex_do_wait                    zcnblk-wal-leaf target/release/zcnblk-wal-leaf zcmem:134217728 127.0.0.2 29800 1 1 4K 1 true blocking
+3350751 3350840 3350747  10 Sl   wait_woken                       zcnblk-wal-leaf target/release/zcnblk-wal-leaf zcmem:134217728 127.0.0.2 29800 1 1 4K 1 true blocking
+3350789 3350789 3350747   3 Sl   futex_do_wait                    zcnblk-fan      target/release/zcnblk-fan --engine wal --leaves 127.0.0.1,127.0.0.2 --bind 127.0.0.1 --base-port 28800 --ports 1 --connections-per-port 1 --bytes-per-connection 4M --chunk-bytes 4K --stripe-bytes 4K --leaf-base-port 29800 --pin-handlers true --mode mirror
+3350789 3350835 3350747   4 Sl   wait_woken                       zcnblk-fan      target/release/zcnblk-fan --engine wal --leaves 127.0.0.1,127.0.0.2 --bind 127.0.0.1 --base-port 28800 --ports 1 --connections-per-port 1 --bytes-per-connection 4M --chunk-bytes 4K --stripe-bytes 4K --leaf-base-port 29800 --pin-handlers true --mode mirror
+3350789 3350837 3350747   6 Sl   futex_do_wait                    zcnblk-fan      target/release/zcnblk-fan --engine wal --leaves 127.0.0.1,127.0.0.2 --bind 127.0.0.1 --base-port 28800 --ports 1 --connections-per-port 1 --bytes-per-connection 4M --chunk-bytes 4K --stripe-bytes 4K --leaf-base-port 29800 --pin-handlers true --mode mirror
+3350828 3350828 3350747   3 Sl   futex_do_wait                    zcutils         target/release/zcutils zcnblk-send 127.0.0.1 1 28800 1 1 4M 4K 1
+3350828 3350834 3350747   0 Sl   wait_woken                       zcutils         target/release/zcutils zcnblk-send 127.0.0.1 1 28800 1 1 4M 4K 1

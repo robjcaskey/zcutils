@@ -1,0 +1,54 @@
+topology_preflight=1
+run_mode=local
+strict=1
+topology_preflight_fatal=0
+topology_busy_pct=1.0
+local_mapped_cpus=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
+local_mapped_cpu_count=15
+stage=client cpus=0-2 unique_cpus=3
+stage=fan-handler cpus=3-5 unique_cpus=3
+stage=fan-async cpus=6-8 unique_cpus=3
+stage=leaf0 cpus=9-11 unique_cpus=3
+stage=leaf1 cpus=12-14 unique_cpus=3
+cpu=0 governor=performance
+cpu=1 governor=performance
+cpu=2 governor=performance
+cpu=3 governor=performance
+cpu=4 governor=performance
+cpu=5 governor=performance
+cpu=6 governor=performance
+cpu=7 governor=performance
+cpu=8 governor=performance
+cpu=9 governor=performance
+cpu=10 governor=performance
+cpu=11 governor=performance
+cpu=12 governor=performance
+cpu=13 governor=performance
+cpu=14 governor=performance
+== mapped cpu mhz sample ==
+CPU CORE SOCKET NODE L1d:L1i:L2:L3 ONLINE    MAXMHZ   MINMHZ       MHZ
+  0    0      0    0 0:0:0:0          yes 5756.4521 624.1940 5475.1011
+  1    1      0    0 1:1:1:0          yes 5756.4521 624.1940  624.1940
+  2    2      0    0 2:2:2:0          yes 5756.4521 624.1940 5443.2471
+  3    3      0    0 3:3:3:0          yes 5756.4521 624.1940 5271.2319
+  4    4      0    0 4:4:4:0          yes 5756.4521 624.1940 5437.8999
+  5    5      0    0 5:5:5:0          yes 5756.4521 624.1940 5503.6948
+  6    6      0    0 6:6:6:0          yes 5756.4521 624.1940 5445.5620
+  7    7      0    0 7:7:7:0          yes 5756.4521 624.1940 4210.2358
+  8    8      0    0 8:8:8:1          yes 5756.4521 624.1940 5092.1460
+  9    9      0    0 9:9:9:1          yes 5756.4521 624.1940 5387.9219
+ 10   10      0    0 10:10:10:1       yes 5756.4521 624.1940 5554.7939
+ 11   11      0    0 11:11:11:1       yes 5756.4521 624.1940 5492.7969
+ 12   12      0    0 12:12:12:1       yes 5756.4521 624.1940 5524.3892
+ 13   13      0    0 13:13:13:1       yes 5756.4521 624.1940 5491.5630
+ 14   14      0    0 14:14:14:1       yes 5756.4521 624.1940 5529.5508
+PERF WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+busy_cpu=9 pcpu=1.0 pid=447708 tid=448017 comm=qtp1497170291-7
+busy_cpu=13 pcpu=1.0 pid=447708 tid=448374 comm=qtp1497170291-1
+busy_cpu=9 pcpu=1.0 pid=447708 tid=448375 comm=qtp1497170291-1
+busy_cpu=12 pcpu=1.0 pid=447708 tid=448490 comm=qtp1497170291-1
+busy_cpu=5 pcpu=14.2 pid=3591663 tid=3591663 comm=bash
+memlock_limit=8192
+PERF WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+nr_hugepages=0
+PERF WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons

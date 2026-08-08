@@ -1,0 +1,33 @@
+status=NOT_RUN_CODE_READY_TIMEOUT
+classification=KVM functional smoke only; never representative performance
+topology=client-vm:/dev/zcnblk0 -> two TCP lanes -> target-vm:zcnblk-fan(userspace WAL stripe placement) -> target-vm:zcnblk-wal-leaf[0,1] -> zcmem terminal leaf media
+block_client_edge=/dev/zcnblk0 only
+block_client_placement=no
+placement_owner=zcnblk-fan userspace WAL RAID stage
+terminal_leaf_0=zcmem:128M at 127.0.0.1:24600-24601
+terminal_leaf_1=zcmem:128M at 127.0.0.2:24600-24601
+block_mirror_or_stripe_primitive=none
+dm_md_loop_nullb_ram_zcbrd_as_raid_primitive=none
+guest_link=client eth0 10.72.0.1/24 <-> target eth0 10.72.0.2/24 over QEMU socket netdev
+guest_vcpus=4 per VM
+guest_memory=2048M per VM
+network_lanes=2
+client_lane_0=TCP 10.72.0.1 -> 10.72.0.2:23600; zcworkload worker 0 on client vCPU 0; zcnblk kthread 0 on client vCPU 2
+client_lane_1=TCP 10.72.0.1 -> 10.72.0.2:23601; zcworkload worker 1 on client vCPU 1; zcnblk kthread 1 on client vCPU 3
+target_fan_handler_map=lane 0 -> target vCPU 0; lane 1 -> target vCPU 1
+target_leaf_map=leaf0 worker -> target vCPU 2; leaf1 worker -> target vCPU 3
+hctx_affinity=1
+client_batch_depth=1; batching may coalesce only and owns no placement
+fan_mode=stripe
+fan_stripe_bytes=64K
+fan_chunk_bytes=64K
+leaf_submit_modes=blocking smoke followed by io_uring smoke would require separate target boots
+raw_transport_rtt=would be measured with 20 ICMP requests and preserved before positive workload runs
+completion_contract=remote-ack; reads and acknowledged writes are not treated as one representative RTT efficiency result
+hugetlb=not provisioned; small-pages functional smoke only
+memlock=to be recorded at guest boot
+host_cpu_pinning=not established because launch was blocked before resource coordination
+
+The target topology uses no block device as a mirror or stripe primitive. Both
+terminal leaves are userspace mmap-backed zcmem images reached only after the
+userspace fan has selected leaf and offset placement.

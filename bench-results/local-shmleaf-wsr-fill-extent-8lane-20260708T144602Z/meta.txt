@@ -1,0 +1,12 @@
+outdir=bench-results/local-shmleaf-wsr-fill-extent-8lane-20260708T144602Z
+base_port=34600
+workload=write-sync-read
+payload_pattern=fill:0x5a
+bytes_per_connection=128M
+lanes=8
+mirror_read_policy=extent
+mirror_read_extent_bytes=1M
+client_cpus=0-7
+fan_handler_cpus=8-15
+fan_async_cpus=16-23
+local_leaves=local:zcleasemem:1G,local:zcleasemem:1G

@@ -135,6 +135,11 @@ static uint shm_poll_us = 50;
 module_param(shm_poll_us, uint, 0644);
 MODULE_PARM_DESC(shm_poll_us, "Shared transport completion busy-poll budget before sleeping");
 
+static bool shm_ordering_epochs;
+module_param(shm_ordering_epochs, bool, 0444);
+MODULE_PARM_DESC(shm_ordering_epochs,
+		 "Stamp flush epochs and publish per-lane admission vectors (experimental)");
+
 static uint fill_timeout_ms;
 module_param(fill_timeout_ms, uint, 0444);
 MODULE_PARM_DESC(fill_timeout_ms, "Time to wait for more queued requests before receiving a partial pipeline, 0 means reap completions immediately");
@@ -206,6 +211,8 @@ struct zcnblk_pdu {
 	u64 remote_off;
 	u64 shm_sequence;
 	u64 shm_submit_sequence;
+	u64 shm_request_id;
+	u64 shm_ordering_epoch;
 	u32 shm_payload_slot;
 	enum req_op op;
 };
@@ -246,6 +253,7 @@ struct zcnblk_conn {
 	u32 conn_id;
 	u16 next_request_id;
 	u16 port;
+	u64 shm_admitted_tail;
 	struct crypto_aead *tx_aead;
 	struct crypto_aead *rx_aead;
 	u8 tx_nonce_base[ZCNBLK_AES256_GCM_IV_LEN];
@@ -266,6 +274,8 @@ struct zcnblk_shm_state {
 	wait_queue_head_t poll_wait;
 	atomic_t daemon_open;
 	atomic64_t submit_sequence;
+	atomic64_t ordering_epoch;
+	spinlock_t ordering_flush_lock;
 	atomic64_t *sector_predecessors;
 	u32 sector_order_bits;
 	bool transfer_payload_slots;
@@ -1354,11 +1364,16 @@ static int zcnblk_debugfs_state_show(struct seq_file *m, void *unused)
 		for (slot = 0; slot < conn->shm_inflight_entries; slot++)
 			inflight_slots += !!READ_ONCE(conn->shm_inflight[slot]);
 		seq_printf(m,
-			   "conn=%u lane=%u stream=%u failed=%u pending=%u inflight_count=%u inflight_slots=%u req_prod=%llu req_cons=%llu req_used=%llu comp_prod=%llu comp_cons=%llu comp_ready=%llu next_comp_sequence=%llu next_req_slot=%u next_req_slot_busy=%u payload_free_slots=%llu payload_lease_hwm=%llu request_wake_armed=%llu completion_wake_armed=%llu request_publishes=%llu request_kicks=%llu completion_kicks=%llu has_capacity=%u\n",
+			   "conn=%u lane=%u stream=%u failed=%u pending=%u inflight_count=%u inflight_slots=%u req_prod=%llu req_cons=%llu req_used=%llu admitted_tail=%llu flush_tail=%llu flush_epoch=%llu comp_prod=%llu comp_cons=%llu comp_ready=%llu next_comp_sequence=%llu next_req_slot=%u next_req_slot_busy=%u payload_free_slots=%llu payload_lease_hwm=%llu request_wake_armed=%llu completion_wake_armed=%llu request_publishes=%llu request_kicks=%llu completion_kicks=%llu has_capacity=%u\n",
 			   conn_id, conn->lane, conn->stream,
 			   READ_ONCE(conn->failed), pending,
 			   READ_ONCE(conn->inflight_count), inflight_slots,
 			   req_prod, req_cons, req_prod - req_cons,
+			   READ_ONCE(conn->shm_admitted_tail),
+			   READ_ONCE(channel->request_producer_reserved
+				     [ZCNBLK_SHM_CHANNEL_FLUSH_TAIL]),
+			   smp_load_acquire(&channel->request_producer_reserved
+					    [ZCNBLK_SHM_CHANNEL_FLUSH_EPOCH]),
 			   comp_prod, comp_cons, comp_prod - comp_cons,
 			   next_completion_sequence,
 			   next_slot,
@@ -1866,6 +1881,11 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 		ret = -EOPNOTSUPP;
 		goto out_release_slot;
 	}
+	/*
+	 * Allocate the global sequence only when this descriptor can be
+	 * published. Admission-time allocation leaves invisible holes behind
+	 * busy connection queues and can indefinitely block a userspace HWM.
+	 */
 	submit_sequence = atomic64_inc_return(&dev->shm->submit_sequence);
 	if (dev->shm->transfer_payload_slots)
 		smp_store_release(zcnblk_shm_payload_owner(dev, conn->conn_id,
@@ -1873,7 +1893,10 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 				  submit_sequence);
 
 	memset(desc, 0, sizeof(*desc));
-	desc->request_id = pdu->request_id;
+	pdu->shm_request_id =
+		(pdu->shm_ordering_epoch << ZCNBLK_SHM_REQUEST_ID_BITS) |
+		((u64)pdu->request_id & ZCNBLK_SHM_REQUEST_ID_MASK);
+	desc->request_id = pdu->shm_request_id;
 	desc->offset = pdu->remote_off;
 	desc->len = pdu->len;
 	desc->op = wire_op;
@@ -1958,14 +1981,14 @@ static int zcnblk_shm_consume_completion(struct zcnblk_conn *conn)
 	payload_ref = desc->flags & ZCNBLK_SHM_CQE_F_READ_PAYLOAD_REF;
 	payload_channel = conn->conn_id;
 	if (desc->request_sequence != pdu->shm_sequence ||
-	    desc->request_id != pdu->request_id || desc->op != want_op ||
+	    desc->request_id != pdu->shm_request_id || desc->op != want_op ||
 	    desc->offset != pdu->remote_off || desc->len != pdu->len ||
 	    desc->lane != conn->lane || desc->stream != conn->stream) {
-		pr_err_ratelimited("zcnblk: shm completion mismatch channel=%u comp=%llu request_seq=%llu expected=%llu op=%u expected_op=%u request_id=%llu expected_id=%u\n",
+		pr_err_ratelimited("zcnblk: shm completion mismatch channel=%u comp=%llu request_seq=%llu expected=%llu op=%u expected_op=%u request_id=%llu expected_id=%llu\n",
 				   conn->conn_id, sequence,
 				   desc->request_sequence, pdu->shm_sequence,
 				   desc->op, want_op, desc->request_id,
-				   pdu->request_id);
+				   pdu->shm_request_id);
 		return -EIO;
 	}
 	if (payload_ref) {
@@ -2237,6 +2260,33 @@ static int zcnblk_conn_thread(void *data)
 	return 0;
 }
 
+static void zcnblk_shm_snapshot_flush_vector(struct zcnblk_dev *dev,
+					      u64 ordering_epoch)
+{
+	u32 channel_id;
+
+	for (channel_id = 0; channel_id < dev->total_conns; channel_id++) {
+		struct zcnblk_conn *conn = &dev->conns[channel_id];
+		struct zcnblk_shm_channel *channel =
+			zcnblk_shm_channel(dev, channel_id);
+
+		/*
+		 * queue_lock closes the race with a request that observed the old
+		 * epoch but has not joined this lane yet. Requests admitted after
+		 * the snapshot may be over-fenced, but cannot be omitted from an
+		 * earlier flush.
+		 */
+		spin_lock(&conn->queue_lock);
+		WRITE_ONCE(channel->request_producer_reserved
+			   [ZCNBLK_SHM_CHANNEL_FLUSH_TAIL],
+			   conn->shm_admitted_tail);
+		smp_store_release(&channel->request_producer_reserved
+				  [ZCNBLK_SHM_CHANNEL_FLUSH_EPOCH],
+				  ordering_epoch);
+		spin_unlock(&conn->queue_lock);
+	}
+}
+
 static blk_status_t zcnblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 				    const struct blk_mq_queue_data *bd)
 {
@@ -2292,9 +2342,26 @@ static blk_status_t zcnblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 		return BLK_STS_OK;
 	}
 
-	spin_lock(&conn->queue_lock);
-	list_add_tail(&pdu->entry, &conn->pending);
-	spin_unlock(&conn->queue_lock);
+	if (shm_ordering_epochs && req_op(rq) == REQ_OP_FLUSH) {
+		/* Flushes are rare; serialize only their vector cuts. */
+		spin_lock(&dev->shm->ordering_flush_lock);
+		pdu->shm_ordering_epoch =
+			atomic64_fetch_inc(&dev->shm->ordering_epoch);
+		zcnblk_shm_snapshot_flush_vector(dev,
+						 pdu->shm_ordering_epoch);
+		spin_lock(&conn->queue_lock);
+		conn->shm_admitted_tail++;
+		list_add_tail(&pdu->entry, &conn->pending);
+		spin_unlock(&conn->queue_lock);
+		spin_unlock(&dev->shm->ordering_flush_lock);
+	} else {
+		spin_lock(&conn->queue_lock);
+		pdu->shm_ordering_epoch = shm_ordering_epochs ?
+			atomic64_read(&dev->shm->ordering_epoch) : 1;
+		conn->shm_admitted_tail++;
+		list_add_tail(&pdu->entry, &conn->pending);
+		spin_unlock(&conn->queue_lock);
+	}
 	wake_up(&conn->wait);
 	return BLK_STS_OK;
 }
@@ -2623,12 +2690,18 @@ static int zcnblk_shm_layout_init(struct zcnblk_dev *dev)
 		ZCNBLK_SHM_CAP_READ_PAYLOAD_REF |
 		ZCNBLK_SHM_CAP_REQUEST_WAKE_ARMED |
 		ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED;
+	if (shm_ordering_epochs)
+		hdr->reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] |=
+			ZCNBLK_SHM_CAP_ORDERING_EPOCH |
+			ZCNBLK_SHM_CAP_ORDERING_VECTOR;
 	for (ret = 0; ret < dev->total_conns; ret++)
 		atomic64_set((atomic64_t *)&zcnblk_shm_channel(dev, ret)->payload_free_slots,
 			     payload_entries);
 	init_waitqueue_head(&shm->poll_wait);
 	atomic_set(&shm->daemon_open, 0);
 	atomic64_set(&shm->submit_sequence, 0);
+	atomic64_set(&shm->ordering_epoch, 1);
+	spin_lock_init(&shm->ordering_flush_lock);
 
 	shm->misc.minor = MISC_DYNAMIC_MINOR;
 	shm->misc.name = "zcnblk-shmctl";

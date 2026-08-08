@@ -1,0 +1,16 @@
+Warning: Permanently added '3.148.133.181' (ED25519) to the list of known hosts.
+rsync: [Receiver] mkdir "/home/rob/uring-play" failed: No such file or directory (2)
+rsync error: error in file IO (code 11) at main.c(800) [Receiver=3.2.7]
++ rsync -az --info=progress2 -e 'ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519' --exclude .git/ --exclude .cache/ --exclude .codex/ --exclude bench-results/ --exclude target/ --exclude qemu-zcrx/ --exclude 'qemu-zcrx/*.log' --exclude 'qemu-zcrx/host-*' --exclude 'qemu-zcrx/raft-lab-*' --exclude 'qemu-zcrx/local-bench-*' /home/rob/zcutils/ ubuntu@3.148.133.181:/home/rob/uring-play/
+Traceback (most recent call last):
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1745, in <module>
+    main()
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1741, in main
+    args.func(args)
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1488, in sync_repo
+    run_checked(cmd, args.dry_run)
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1130, in run_checked
+    subprocess.run(cmd, check=True)
+  File "/home/rob/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['rsync', '-az', '--info=progress2', '-e', 'ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519', '--exclude', '.git/', '--exclude', '.cache/', '--exclude', '.codex/', '--exclude', 'bench-results/', '--exclude', 'target/', '--exclude', 'qemu-zcrx/', '--exclude', 'qemu-zcrx/*.log', '--exclude', 'qemu-zcrx/host-*', '--exclude', 'qemu-zcrx/raft-lab-*', '--exclude', 'qemu-zcrx/local-bench-*', '/home/rob/zcutils/', 'ubuntu@3.148.133.181:/home/rob/uring-play/']' returned non-zero exit status 11.

@@ -1,0 +1,98 @@
+--- module ---
+zcnblk_client_mod 49152 0 - Live 0x0000000000000000 (OE)
+--- devices ---
+crw------- 1 root root  10, 261 Jul 12 22:54 /dev/zcnblk-shmctl
+brw-rw---- 1 root disk 251,   0 Jul 12 22:54 /dev/zcnblk0
+--- run dir ---
+total 16
+drwxrwxr-x 2 ubuntu ubuntu 4096 Jul 12 22:54 .
+drwxr-x--- 8 ubuntu ubuntu 4096 Jul 12 22:54 ..
+-rw-rw-r-- 1 ubuntu ubuntu    5 Jul 12 22:54 target-job.pid
+-rw-rw-r-- 1 ubuntu ubuntu   95 Jul 12 22:54 target.log
+--- target pid file ---
+cat: /tmp/zcworkload-target.pid: No such file or directory
+cat: /home/ubuntu/zcworkload-run/target.pid: No such file or directory
+7761
+--- target log ---
+Error: Custom { kind: InvalidInput, error: "wal-tcp currently requires max_frame_bytes=4096" }
+--- dmesg ---
+[    1.947728] systemd[1]: Reached target time-set.target - System Time Set.
+[    1.949684] systemd[1]: Reached target veritysetup.target - Local Verity Protected Volumes.
+[    1.952052] systemd[1]: Listening on dm-event.socket - Device-mapper event daemon FIFOs.
+[    1.955014] systemd[1]: Listening on lvm2-lvmpolld.socket - LVM2 poll daemon socket.
+[    1.958292] systemd[1]: Listening on multipathd.socket - multipathd control socket.
+[    1.962300] systemd[1]: Listening on syslog.socket - Syslog Socket.
+[    1.965282] systemd[1]: Listening on systemd-fsckd.socket - fsck to fsckd communication Socket.
+[    1.969259] systemd[1]: Listening on systemd-initctl.socket - initctl Compatibility Named Pipe.
+[    1.973292] systemd[1]: Listening on systemd-journald-dev-log.socket - Journal Socket (/dev/log).
+[    1.977294] systemd[1]: Listening on systemd-journald.socket - Journal Socket.
+[    1.980320] systemd[1]: Listening on systemd-networkd.socket - Network Service Netlink Socket.
+[    1.984243] systemd[1]: systemd-pcrextend.socket - TPM2 PCR Extension (Varlink) was skipped because of an unmet condition check (ConditionSecurity=measured-uki).
+[    1.986143] systemd[1]: Listening on systemd-udevd-control.socket - udev Control Socket.
+[    1.988403] systemd[1]: Listening on systemd-udevd-kernel.socket - udev Kernel Socket.
+[    1.997249] systemd[1]: Mounting dev-hugepages.mount - Huge Pages File System...
+[    1.999504] systemd[1]: Mounting dev-mqueue.mount - POSIX Message Queue File System...
+[    2.001900] systemd[1]: Mounting sys-kernel-debug.mount - Kernel Debug File System...
+[    2.004223] systemd[1]: Mounting sys-kernel-tracing.mount - Kernel Trace File System...
+[    2.007198] systemd[1]: Starting systemd-journald.service - Journal Service...
+[    2.009222] systemd[1]: Starting keyboard-setup.service - Set the console keyboard layout...
+[    2.015689] systemd[1]: Starting kmod-static-nodes.service - Create List of Static Device Nodes...
+[    2.018415] systemd[1]: Starting lvm2-monitor.service - Monitoring of LVM2 mirrors, snapshots etc. using dmeventd or progress polling...
+[    2.021606] systemd[1]: Starting modprobe@configfs.service - Load Kernel Module configfs...
+[    2.023594] systemd-journald[244]: Collecting audit messages is disabled.
+[    2.025095] systemd[1]: Starting modprobe@dm_mod.service - Load Kernel Module dm_mod...
+[    2.027571] systemd[1]: Starting modprobe@drm.service - Load Kernel Module drm...
+[    2.029946] systemd[1]: Starting modprobe@efi_pstore.service - Load Kernel Module efi_pstore...
+[    2.032655] systemd[1]: Starting modprobe@fuse.service - Load Kernel Module fuse...
+[    2.035027] systemd[1]: Starting modprobe@loop.service - Load Kernel Module loop...
+[    2.036076] pstore: Using crash dump compression: deflate
+[    2.037205] systemd[1]: netplan-ovs-cleanup.service - OpenVSwitch configuration for cleanup was skipped because of an unmet condition check (ConditionFileIsExecutable=/usr/bin/ovs-vsctl).
+[    2.038363] pstore: Registered efi_pstore as persistent store backend
+[    2.039956] systemd[1]: Starting systemd-fsck-root.service - File System Check on Root Device...
+[    2.044837] systemd[1]: Starting systemd-modules-load.service - Load Kernel Modules...
+[    2.046668] systemd[1]: systemd-pcrmachine.service - TPM2 PCR Machine ID Measurement was skipped because of an unmet condition check (ConditionSecurity=measured-uki).
+[    2.048868] systemd[1]: systemd-tpm2-setup-early.service - TPM2 SRK Setup (Early) was skipped because of an unmet condition check (ConditionSecurity=measured-uki).
+[    2.051230] systemd[1]: Starting systemd-udev-trigger.service - Coldplug All udev Devices...
+[    2.053975] systemd[1]: Mounted dev-hugepages.mount - Huge Pages File System.
+[    2.055185] systemd[1]: Mounted dev-mqueue.mount - POSIX Message Queue File System.
+[    2.056290] systemd[1]: Mounted sys-kernel-debug.mount - Kernel Debug File System.
+[    2.057295] systemd[1]: Mounted sys-kernel-tracing.mount - Kernel Trace File System.
+[    2.058413] systemd[1]: Finished keyboard-setup.service - Set the console keyboard layout.
+[    2.066597] systemd[1]: Finished kmod-static-nodes.service - Create List of Static Device Nodes.
+[    2.070290] systemd[1]: Started systemd-journald.service - Journal Service.
+[    2.168947] EXT4-fs (nvme0n1p1): re-mounted 3b4a499d-5e2c-482e-a8a6-4b177b758c7d r/w.
+[    2.190015] systemd-journald[244]: Received client request to flush runtime journal.
+[    2.252932] loop0: detected capacity change from 0 to 49568
+[    2.255525] loop1: detected capacity change from 0 to 141232
+[    2.260256] loop2: detected capacity change from 0 to 87312
+[    2.346908] ena 0000:27:00.0 ens34: renamed from eth0
+[    2.366999] nvme nvme0: using unchecked data buffer
+[    2.446988] EXT4-fs (nvme0n1p16): Supports (experimental) DIO atomic writes awu_min: 4096, awu_max: 4096
+[    2.448752] EXT4-fs (nvme0n1p16): mounted filesystem 2f42c0a7-b4c1-4266-99cb-7e610b8131a4 r/w with ordered data mode. Quota mode: none.
+[    3.134505] audit: type=1400 audit(1783896500.372:2): apparmor="STATUS" operation="profile_load" profile="unconfined" name="brave" pid=446 comm="apparmor_parser"
+[    3.134511] audit: type=1400 audit(1783896500.372:3): apparmor="STATUS" operation="profile_load" profile="unconfined" name="balena-etcher" pid=445 comm="apparmor_parser"
+[    3.134512] audit: type=1400 audit(1783896500.372:4): apparmor="STATUS" operation="profile_load" profile="unconfined" name="cam" pid=449 comm="apparmor_parser"
+[    3.134514] audit: type=1400 audit(1783896500.372:5): apparmor="STATUS" operation="profile_load" profile="unconfined" name="Discord" pid=442 comm="apparmor_parser"
+[    3.134515] audit: type=1400 audit(1783896500.372:6): apparmor="STATUS" operation="profile_load" profile="unconfined" name="1password" pid=440 comm="apparmor_parser"
+[    3.135082] audit: type=1400 audit(1783896500.372:7): apparmor="STATUS" operation="profile_load" profile="unconfined" name="QtWebEngineProcess" pid=444 comm="apparmor_parser"
+[    3.135085] audit: type=1400 audit(1783896500.372:8): apparmor="STATUS" operation="profile_load" profile="unconfined" name="buildah" pid=447 comm="apparmor_parser"
+[    3.135087] audit: type=1400 audit(1783896500.372:9): apparmor="STATUS" operation="profile_load" profile="unconfined" name=4D6F6E676F444220436F6D70617373 pid=443 comm="apparmor_parser"
+[    3.136325] audit: type=1400 audit(1783896500.374:10): apparmor="STATUS" operation="profile_load" profile="unconfined" name="chrome" pid=458 comm="apparmor_parser"
+[    3.836948] 8021q: 802.1Q VLAN Support v1.8
+[    7.523431] EXT4-fs (nvme0n1p1): resizing filesystem from 1834747 to 16514811 blocks
+[    8.085841] EXT4-fs (nvme0n1p1): resized filesystem to 16514811
+[   10.411332] kauditd_printk_skb: 113 callbacks suppressed
+[   10.411335] audit: type=1400 audit(1783896507.649:124): apparmor="STATUS" operation="profile_replace" info="same as current profile, skipping" profile="unconfined" name="rsyslogd" pid=797 comm="apparmor_parser"
+[   10.674428] loop3: detected capacity change from 0 to 8
+[   10.764413] audit: type=1400 audit(1783896508.001:125): apparmor="STATUS" operation="profile_replace" profile="unconfined" name="/usr/lib/snapd/snap-confine" pid=1078 comm="apparmor_parser"
+[   67.773033] audit: type=1400 audit(1783896564.780:126): apparmor="DENIED" operation="capable" class="cap" profile="ubuntu_pro_esm_cache_systemd_detect_virt" pid=1552 comm="systemd-detect-" capability=38  capname="perfmon"
+[  389.461988] zcnblk_client_mod: loading out-of-tree module taints kernel.
+[  389.462000] zcnblk_client_mod: module verification failed: signature and/or required key missing - tainting kernel
+[  389.463230] zcnblk: PERF WARNING: connection kthreads are not module-pinned; set pin_threads=1 pin_base_cpu=<cpu> pin_cpu_count=<n> pin_stride=<n>, or bind [zcnblk-L-S] kthreads with taskset before benchmarking
+[  389.469516] zcnblk: /dev/zcnblk0 transport=shm remote=127.0.0.1 remote_ips=- remote_count=0 port_base=19600 lanes=2 connections_per_lane=1 total_conns=2 shards=1 bytes=536870912 frame=65536 queues=2 depth=64 pipeline_depth=256 batch_depth=1 batch_fill_timeout_us=0 fill_timeout_ms=0 write_acks=0 null_backend=0 null_read_zero=1 hctx_affinity=1 pin_threads=0 pin_base_cpu=0 pin_cpu_count=0 pin_stride=1 shard_affinity=0 encryption=none aes_frame=65536 publish_delay_ms=0 shm_ring_entries=256 shm_payload_entries=1024 shm_region_bytes=134307840 shm_poll_us=50 placement_owner=userspace block_client_placement=no
+[  389.484401] I/O error, dev zcnblk0, sector 0 op 0x0:(READ) flags 0x80700 phys_seg 1 prio class 2
+[  389.485493] I/O error, dev zcnblk0, sector 0 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 2
+[  389.486612] Buffer I/O error on dev zcnblk0, logical block 0, async page read
+[  389.487567] I/O error, dev zcnblk0, sector 8 op 0x0:(READ) flags 0x80700 phys_seg 1 prio class 2
+[  389.488757] I/O error, dev zcnblk0, sector 8 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 2
+[  389.489881] Buffer I/O error on dev zcnblk0, logical block 1, async page read

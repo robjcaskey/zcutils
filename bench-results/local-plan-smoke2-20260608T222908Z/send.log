@@ -1,0 +1,7 @@
+zcnblk-send: addr=127.0.0.1 shard_count=1 base_port=29000 ports=2 connections_per_port=1 total_connections=2 bytes_per_connection=16777216 chunk_bytes=4096 workers=2 op_mode=write-sync-read read_window=1024 write_window=1024 access=linear verify_reads=yes wait_write_acks=no batch_depth=64 write_extents=yes read_extents=yes drain_ready_responses=yes payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral latency=no encryption=none aes_frame_bytes=65536
+zcnblk-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcnblk-send-worker: affinity_index=1 target_cpu=1 status=ok
+zcnblk-send-stream: worker=1 lane=1 port=29001 conn=0 shard=0 base_offset=16777216
+tcp-bench-connect-route-probe: peer=127.0.0.1:29000 local_socket=127.0.0.1:56262 probe_src=127.0.0.1 route_dev=lo route_src=127.0.0.1 route="local 127.0.0.1 from 127.0.0.1 dev lo table local uid 1000 \ cache <local>"
+zcnblk-send-stream: worker=0 lane=0 port=29000 conn=0 shard=0 base_offset=0
+Error: Os { code: 104, kind: ConnectionReset, message: "Connection reset by peer" }

@@ -1,0 +1,10 @@
+Topology: local loopback zcnblk-send -> zcnblk-fan WAL mirror -> two zcnblk-wal-leaf userspace memory leaves.
+No block device is used as a mirror or stripe primitive; leaves are terminal zcleasemem userspace media.
+Sender lanes: 4 lanes, CPU list 0,1,2,3, spin reads enabled.
+Fan handler lanes: 4 lanes, CPU list 4,5,6,7, upstream spin reads enabled.
+Fan async writeback workers: CPU list 8,9,10,11 via same fan process pin list.
+Leaf0 terminal userspace memory: 127.0.0.1:50300-50303, CPU list 12,13,14,15, spin reads enabled.
+Leaf1 terminal userspace memory: 127.0.0.2:50300-50303, CPU list 28,29,30,31, spin reads enabled.
+Request/write logical chunk: 4096 bytes. Batch depth 512 => 2 MiB extents.
+Change under test: async mirror writeback starts immediately; sync waits for high-watermark instead of starting all leaf writes at sync.
+Write semantics: no per-write remote ack; sync boundary used; fan retains committed dirty cache for hot reads.

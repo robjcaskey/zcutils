@@ -1,0 +1,11 @@
+root=bench-results/local-fanwal-2lane-async-immediate-512m-20260607T231109Z
+topology=2lane strict-clean sender zcnblk-send -> zcnblk-fan WAL mirror -> two zcnblk-wal-leaf zcleasemem heap targets
+block_raid=no
+label=async-immediate
+sender_cpus=0,1
+fan_handler_cpus=2,3
+fan_async_cpus=4,5
+fan_pin_cpu_list=2,3,4,5
+leaf0_cpus=6,7
+leaf1_cpus=8,9
+lanes=2 bytes_per_connection=512M chunk=4K stripe=256K batch_depth=64 read_window=1024 physical_core_separated=yes async_writeback=1 defer_unsynced=0 fan_max_request_bytes=256K leaf_zcleasemem_memfd=0 leaf_spin=4096 leaf_base=65400 fan_base=65500

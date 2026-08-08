@@ -1,0 +1,9 @@
+root=bench-results/local-fanwal-leafphase-split-direct-extents-physsep-128m-20260607T224057Z
+topology=sender zcnblk-send -> zcnblk-fan WAL mirror -> two zcnblk-wal-leaf zcleasemem targets
+block_raid=no
+sender_cpus=0,1,2,3
+fan_cpus=4,5,6,7
+leaf0_cpus=8,9,10,11
+leaf1_cpus=12,13,14,15
+lanes=4 bytes_per_connection=128M chunk=4K stripe=256K leaf_base=62440 fan_base=63640 batch_depth=64 physical_core_separated=yes
+sender_extents=write+read fan_ingress_memfd=0 leaf_memfd_splice=0 zcleasemem_memfd_cache=1

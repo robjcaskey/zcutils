@@ -1,0 +1,20 @@
+CASE fabric=efa-direct domain=efa_1-rdm cpu=176 size=4096 max_memcpy=0 mr_cache=1 zcpy_rx=1
+bytes   #sent   #ack     total       time     MB/sec    usec/xfer   Mxfers/sec
+4k      100k    =100k    781m        2.48s    330.24      12.40       0.08
+TIME voluntary=25 involuntary=14 cpu=99% elapsed=2.49
+CASE fabric=efa-direct domain=efa_1-rdm cpu=176 size=4096 max_memcpy=1024 mr_cache=1 zcpy_rx=1
+bytes   #sent   #ack     total       time     MB/sec    usec/xfer   Mxfers/sec
+4k      100k    =100k    781m        2.48s    330.11      12.41       0.08
+TIME voluntary=25 involuntary=15 cpu=99% elapsed=2.49
+CASE fabric=efa-direct domain=efa_1-rdm cpu=176 size=4096 max_memcpy=4095 mr_cache=1 zcpy_rx=1
+bytes   #sent   #ack     total       time     MB/sec    usec/xfer   Mxfers/sec
+4k      100k    =100k    781m        2.47s    331.63      12.35       0.08
+TIME voluntary=25 involuntary=13 cpu=99% elapsed=2.48
+CASE fabric=efa-direct domain=efa_1-rdm cpu=176 size=4096 max_memcpy=4096 mr_cache=1 zcpy_rx=1
+bytes   #sent   #ack     total       time     MB/sec    usec/xfer   Mxfers/sec
+4k      100k    =100k    781m        2.47s    331.49      12.36       0.08
+TIME voluntary=25 involuntary=17 cpu=99% elapsed=2.48
+CASE fabric=efa-direct domain=efa_1-rdm cpu=176 size=4096 max_memcpy=8192 mr_cache=1 zcpy_rx=1
+bytes   #sent   #ack     total       time     MB/sec    usec/xfer   Mxfers/sec
+4k      100k    =100k    781m        2.48s    330.54      12.39       0.08
+TIME voluntary=25 involuntary=13 cpu=99% elapsed=2.48

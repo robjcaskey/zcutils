@@ -1,0 +1,25 @@
+ip-172-31-32-153 gcc=/usr/bin/gcc rmem=134217728 wmem=134217728 tcp_no_metrics=1
+E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 3901 (apt-get)
+E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), is another process using it?
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.150.178.0 'URING_NODE_INDEX=1 URING_RUN_ID=zc-asyncwb-adhoc-c8gn48-20260607T094602Z URING_PRIVATE_IPS=172.31.32.153,172.31.36.120,172.31.45.130,172.31.38.46 set -euo pipefail
+sudo apt-get update -qq
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential pkg-config liburing-dev libssl-dev clang make jq numactl sysstat rsync curl ca-certificates gcc g++ >/tmp/zcutils-apt.log
+sudo sysctl -w net.core.rmem_max=134217728 net.core.wmem_max=134217728 net.ipv4.tcp_rmem="4096 87380 134217728" net.ipv4.tcp_wmem="4096 65536 134217728" net.core.netdev_max_backlog=250000 net.ipv4.tcp_no_metrics_save=1 >/dev/null
+printf "%s gcc=%s rmem=%s wmem=%s tcp_no_metrics=%s\n" "$(hostname)" "$(command -v gcc)" "$(sysctl -n net.core.rmem_max)" "$(sysctl -n net.core.wmem_max)" "$(sysctl -n net.ipv4.tcp_no_metrics_save)"'
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.19.202.142 'URING_NODE_INDEX=2 URING_RUN_ID=zc-asyncwb-adhoc-c8gn48-20260607T094602Z URING_PRIVATE_IPS=172.31.32.153,172.31.36.120,172.31.45.130,172.31.38.46 set -euo pipefail
+sudo apt-get update -qq
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential pkg-config liburing-dev libssl-dev clang make jq numactl sysstat rsync curl ca-certificates gcc g++ >/tmp/zcutils-apt.log
+sudo sysctl -w net.core.rmem_max=134217728 net.core.wmem_max=134217728 net.ipv4.tcp_rmem="4096 87380 134217728" net.ipv4.tcp_wmem="4096 65536 134217728" net.core.netdev_max_backlog=250000 net.ipv4.tcp_no_metrics_save=1 >/dev/null
+printf "%s gcc=%s rmem=%s wmem=%s tcp_no_metrics=%s\n" "$(hostname)" "$(command -v gcc)" "$(sysctl -n net.core.rmem_max)" "$(sysctl -n net.core.wmem_max)" "$(sysctl -n net.ipv4.tcp_no_metrics_save)"'
+Traceback (most recent call last):
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1745, in <module>
+    main()
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1741, in main
+    args.func(args)
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1506, in remote_exec
+    run_checked(cmd, args.dry_run)
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1130, in run_checked
+    subprocess.run(cmd, check=True)
+  File "/home/rob/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['ssh', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ServerAliveInterval=30', '-i', '/home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519', 'ubuntu@3.19.202.142', 'URING_NODE_INDEX=2 URING_RUN_ID=zc-asyncwb-adhoc-c8gn48-20260607T094602Z URING_PRIVATE_IPS=172.31.32.153,172.31.36.120,172.31.45.130,172.31.38.46 set -euo pipefail\nsudo apt-get update -qq\nsudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential pkg-config liburing-dev libssl-dev clang make jq numactl sysstat rsync curl ca-certificates gcc g++ >/tmp/zcutils-apt.log\nsudo sysctl -w net.core.rmem_max=134217728 net.core.wmem_max=134217728 net.ipv4.tcp_rmem="4096 87380 134217728" net.ipv4.tcp_wmem="4096 65536 134217728" net.core.netdev_max_backlog=250000 net.ipv4.tcp_no_metrics_save=1 >/dev/null\nprintf "%s gcc=%s rmem=%s wmem=%s tcp_no_metrics=%s\\n" "$(hostname)" "$(command -v gcc)" "$(sysctl -n net.core.rmem_max)" "$(sysctl -n net.core.wmem_max)" "$(sysctl -n net.ipv4.tcp_no_metrics_save)"']' returned non-zero exit status 100.

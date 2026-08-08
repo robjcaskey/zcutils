@@ -1,0 +1,1 @@
+label=hwm-sync2048 rep=1 lanes=4 records_per_lane=1000000 payload=4K batch=2048 window=8192 touch=cacheline wait=spin cpu_map=laneN:client_cpu(3N)->fan_cpu(3N+1)->leaf_cpu(3N+2) cpus=0-11 workload=zcnblk-shm-pipeline sync_records=2048 release=leaf-hwm

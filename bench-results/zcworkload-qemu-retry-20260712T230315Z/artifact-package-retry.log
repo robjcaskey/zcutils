@@ -1,0 +1,9 @@
++ cd /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs
++ find . -print0
++ cpio --null -o --format=newc
+78381 blocks
++ sha256sum /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/zcworkload-two-vm-initramfs.cpio /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/init /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/host-run.sh /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/uring-play /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/zcworkload /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/zcnblk-shm-target /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/modules/zcnblk_client_mod.ko
++ find /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs -xdev -printf '%y %p\n'
++ sort
++ wc -c /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/zcworkload-two-vm-initramfs.cpio
+40131072 /home/rob/zcutils/bench-results/zcworkload-qemu-retry-20260712T230315Z/zcworkload-two-vm-initramfs.cpio

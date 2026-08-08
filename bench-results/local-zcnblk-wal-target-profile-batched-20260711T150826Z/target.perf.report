@@ -1,0 +1,259 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 18K of event 'cycles:P'
+# Event count (approx.): 89054348766
+#
+# Overhead  Command          Shared Object        Symbol                                                                                                                  
+# ........  ...............  ...................  ........................................................................................................................
+#
+    21.52%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+            |          
+            |--16.61%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+            |          
+            |--1.80%--0x7f7da673834f
+            |          
+            |--0.50%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+            |          
+            |--0.40%--__vdso_clock_gettime
+            |          |          
+            |           --0.39%--clock_gettime
+            |                     zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+            |          
+             --0.31%--zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions
+
+     9.17%  zcnblk-shm-targ  [kernel.kallsyms]    [k] kernel_init_pages
+            |          
+             --8.30%--kernel_init_pages
+                       prep_new_page
+                       get_page_from_freelist
+                       __alloc_frozen_pages_noprof
+                       alloc_pages_mpol
+                       |          
+                        --8.28%--alloc_pages_noprof
+                                  skb_page_frag_refill
+                                  sk_page_frag_refill
+                                  tcp_sendmsg_locked
+                                  tcp_sendmsg
+                                  |          
+                                   --8.28%--sock_write_iter
+                                             do_iter_readv_writev
+                                             vfs_writev
+                                             do_writev
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             0x7f7da66559ee
+                                             zcutils::tcp_write_all_vectored
+
+     3.47%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions
+            |          
+             --2.65%--zcutils::zcnblk_shm_target::SharedTarget::flush_wal_lane_completions
+
+     3.33%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _copy_from_iter
+            |          
+            |--2.67%--_copy_from_iter
+            |          tcp_sendmsg_locked
+            |          tcp_sendmsg
+            |          sock_write_iter
+            |          do_iter_readv_writev
+            |          vfs_writev
+            |          do_writev
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          0x7f7da66559ee
+            |          zcutils::tcp_write_all_vectored
+            |          
+             --0.30%--read_tsc
+                       ktime_get
+                       tcp_write_xmit
+
+     3.00%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d5f6
+            |          
+            |--1.75%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+            |          
+             --0.89%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+
+     2.77%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+            |          
+            |--1.88%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+            |          
+             --0.58%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+
+     2.22%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d5e9
+            |          
+            |--1.34%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+            |          
+             --0.60%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+
+     2.20%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _copy_to_iter
+            |          
+             --1.53%--fput
+                       __sys_recvfrom
+                       __x64_sys_recvfrom
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f7da66559ee
+
+     2.20%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d5e2
+            |          
+            |--1.38%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+            |          
+             --0.60%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+
+     2.01%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d604
+            |          
+            |--0.55%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+            |          
+             --0.50%--0x7f7da67385db
+
+     1.76%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d5fd
+            |          
+            |--0.49%--0x7f7da67385db
+            |          
+             --0.49%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+
+     1.62%  zcnblk-shm-targ  [nf_tables]          [k] nft_meta_get_eval
+            |          
+             --0.74%--nft_do_chain
+                       nft_do_chain_ipv4
+                       nf_hook_slow
+                       |          
+                        --0.52%--__ip_local_out
+                                  ip_local_out
+                                  __ip_queue_xmit
+                                  __tcp_transmit_skb
+                                  |          
+                                   --0.51%--tcp_write_xmit
+                                             |          
+                                              --0.43%--__tcp_push_pending_frames
+                                                        tcp_sendmsg_locked
+                                                        tcp_sendmsg
+
+     1.61%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d5db
+            |          
+            |--0.96%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+            |          
+             --0.46%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+
+     1.29%  zcnblk-shm-targ  [nf_tables]          [k] nft_do_chain
+            |          
+             --0.57%--nft_do_chain
+                       nft_do_chain_ipv4
+                       nf_hook_slow
+
+     1.25%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d5d4
+            |          
+             --0.71%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+
+     1.21%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d5ef
+            |          
+            |--0.62%--zcutils::zcnblk_shm_target::WalCompletionTracker::mark_complete_deferred
+            |          
+             --0.40%--zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+
+     1.20%  zcnblk-shm-targ  libc.so.6            [.] getenv
+            |          
+             --0.30%--0x7f7da67383cb
+
+     1.19%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d60b
+            |          
+             --0.30%--0x7f7da67385db
+
+     1.15%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d34f
+            |          
+             --0.42%--0x7f7da67385db
+
+     1.15%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d356
+            |          
+             --0.46%--0x7f7da67385db
+
+     1.10%  zcnblk-shm-targ  [vdso]               [.] __vdso_clock_gettime
+            |          
+            |--0.43%--__vdso_clock_gettime
+            |          clock_gettime
+            |          zcutils::zcnblk_shm_target::SharedTarget::run_wal_lane_channel
+            |          
+             --0.30%--zcutils::zcnblk_shm_target::SharedTarget::release_wal_lane_retained
+
+     0.89%  zcnblk-shm-targ  [kernel.kallsyms]    [k] loopback_xmit
+            |          
+             --0.78%--sk_free
+                       loopback_xmit
+                       dev_hard_start_xmit
+                       __dev_queue_xmit
+                       ip_finish_output2
+                       ip_output
+                       __ip_queue_xmit
+                       __tcp_transmit_skb
+                       tcp_write_xmit
+                       |          
+                        --0.64%--__tcp_push_pending_frames
+                                  tcp_sendmsg_locked
+                                  tcp_sendmsg
+                                  |          
+                                   --0.34%--sock_write_iter
+                                             do_iter_readv_writev
+                                             vfs_writev
+                                             do_writev
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             0x7f7da66559ee
+                                             zcutils::tcp_write_all_vectored
+
+     0.87%  zcnblk-shm-targ  [nft_compat]         [k] nft_match_large_eval
+            |          
+             --0.55%--nft_do_chain
+                       nft_do_chain_ipv4
+                       nf_hook_slow
+
+     0.77%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::WalLaneReleaseTracker::mark_releasable
+            |          
+             --0.35%--zcutils::zcnblk_shm_target::SharedTarget::release_wal_lane_retained
+
+     0.74%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d618
+     0.70%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f676
+            |          
+             --0.37%--0x7f7da6732388
+                       0x7fff6e164034
+                       0x6f63657572743d4d
+
+     0.66%  zcnblk-shm-targ  [kernel.kallsyms]    [k] read_tsc
+     0.65%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d611
+     0.63%  zcnblk-shm-targ  zcnblk-shm-target    [.] zcutils::zcnblk_shm_target::SharedTarget::release_wal_lane_retained
+     0.63%  zcnblk-shm-targ  zcnblk-shm-target    [.] _ZN7zcutils17zcnblk_shm_target13RemoteWalLeaf18send_request_batch17h533af00095a2f750E.llvm.15214235272747132880
+            |          
+             --0.44%--zcutils::ZcnblkFanWalFrame::encode
+
+     0.61%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_recvmsg_locked
+            |          
+             --0.42%--fput
+                       __sys_recvfrom
+                       __x64_sys_recvfrom
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x7f7da66559ee
+
+     0.60%  zcnblk-shm-targ  [nf_tables]          [k] nft_do_chain_ipv4
+     0.58%  zcnblk-shm-targ  [kernel.kallsyms]    [k] entry_SYSCALL_64
+     0.45%  zcnblk-shm-targ  [nf_tables]          [k] nft_immediate_eval
+     0.42%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f668
+     0.37%  zcnblk-shm-targ  [nf_tables]          [k] nft_counter_eval
+     0.37%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f66e
+     0.36%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f66f
+     0.36%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d638
+     0.35%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_ack
+     0.34%  zcnblk-shm-targ  [kernel.kallsyms]    [k] do_syscall_64
+     0.34%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000017d631
+     0.31%  zcnblk-shm-targ  [kernel.kallsyms]    [k] _raw_spin_lock_bh
+     0.31%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f677
+     0.31%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000008f670
+     0.31%  zcnblk-shm-targ  libc.so.6            [.] 0x000000000009a9ee
+     0.30%  zcnblk-shm-targ  [kernel.kallsyms]    [k] tcp_sendmsg_locked
+     0.30%  zcnblk-shm-targ  zcnblk-shm-target    [.] alloc::collections::vec_deque::VecDeque<T,A>::push_back_mut
+
+
+#
+# (Tip: Boolean options have negative forms, e.g.: perf report --no-children)
+#

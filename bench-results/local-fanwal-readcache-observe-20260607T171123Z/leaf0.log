@@ -1,0 +1,11 @@
+zcnblk-wal-leaf: target=zcmem:536870912 bind=127.0.0.1 base_port=44600 ports=1 connections_per_port=1 total_connections=1 chunk_bytes=4096 workers=1 pin_workers=true submit_mode=blocking ring_entries=64 ring_cq_entries=128 cqe_hot_poll=false leaf_sqpoll=false leaf_spin_reads=false leaf_spin_budget=unbounded result_ranges_configured=true device_bytes=536870912 required_alignment=4096 memory_policy=first-touch memory_hugetlb=false preferred_numa_node=0 protocol=fan-wal-v2
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:53678 lane=0 port=44600 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=0 policy=port-lane peer=127.0.0.1:53678 listener_lane=0 listener_port=44600 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment-summary: policy=port-lane workers=1 streams_by_worker=0:1
+zcnblk-wal-leaf-worker: affinity_index=0 target_cpu=0 status=ok
+zcnblk-wal-leaf-stream: affinity_index=0 target_cpu=0 status=ok
+zcnblk-wal-leaf-stream: worker=0 slot=0 peer=127.0.0.1:53678 lane=0 port=44600 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-request-batch-topology: worker=0 slot=0 stream_lane=0 branch=0 records=256 batch_payload_bytes=1081344 desc_lane=0 desc_queue=0 desc_preferred_worker=0 desc_preferred_cpu=2 desc_numa_node=0 leaf_target_cpu=0 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=0
+zcnblk-wal-leaf-worker: worker=0 streams=1 read_bytes=0 write_bytes=33554432 result_records=8192 result_batches=41 result_range_batches=41 frames=8192 blocking_io_frames=8192 uring_io_frames=0 write_submit_runs=41 max_write_submit_run_frames=512 frames_per_sec=47586 seconds=0.172150 logical_MiBps=185.88 stream_thread_cpu_seconds=0.005335 stream_cpu_wall_pct=3.1 target_cpu=0 affinity_applied=true voluntary_ctxt_switches=210 involuntary_ctxt_switches=0 migrations=0
+zcnblk-wal-leaf-summary: streams=1 read_bytes=0 write_bytes=33554432 result_records=8192 result_batches=41 result_range_batches=41 frames=8192 blocking_io_frames=8192 uring_io_frames=0 write_submit_runs=41 max_write_submit_run_frames=512 stream_thread_cpu_seconds=0.005335 stream_cpu_wall_ratio=0.031 voluntary_ctxt_switches=210 involuntary_ctxt_switches=0 migrations=0 frames_per_sec=47586
+zcnblk-wal-leaf: bytes=33554432 seconds=0.172150 GiBps=0.182 Gbitps=1.559

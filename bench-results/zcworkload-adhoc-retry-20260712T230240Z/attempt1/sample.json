@@ -1,0 +1,124 @@
+{
+  "profile": "enterprise-mixed-v1",
+  "seed": 7640891576956012809,
+  "capacity": 134217728,
+  "requests": 200000,
+  "counters": {
+    "ops": 200000,
+    "reads": 78876,
+    "writes": 121124,
+    "bytes": 2139013120,
+    "stream_ops": [
+      6984,
+      56363,
+      14101,
+      42326,
+      3567,
+      13895,
+      6914,
+      55850
+    ],
+    "size_ops": [
+      30538,
+      141861,
+      15442,
+      6044,
+      6115
+    ]
+  },
+  "invalid_alignment": 0,
+  "out_of_bounds": 0,
+  "streams": [
+    {
+      "index": 0,
+      "name": "data-uniform",
+      "area": "data",
+      "target_percent": 3.5,
+      "observed_percent": 3.492,
+      "operations": 6984
+    },
+    {
+      "index": 1,
+      "name": "data-reuse-a",
+      "area": "data",
+      "target_percent": 28.1,
+      "observed_percent": 28.1815,
+      "operations": 56363
+    },
+    {
+      "index": 2,
+      "name": "data-scan",
+      "area": "data",
+      "target_percent": 7.0,
+      "observed_percent": 7.0505,
+      "operations": 14101
+    },
+    {
+      "index": 3,
+      "name": "data-reuse-b",
+      "area": "data",
+      "target_percent": 21.0,
+      "observed_percent": 21.163,
+      "operations": 42326
+    },
+    {
+      "index": 4,
+      "name": "user-uniform",
+      "area": "user",
+      "target_percent": 1.8,
+      "observed_percent": 1.7835,
+      "operations": 3567
+    },
+    {
+      "index": 5,
+      "name": "user-reuse",
+      "area": "user",
+      "target_percent": 7.0,
+      "observed_percent": 6.9475,
+      "operations": 13895
+    },
+    {
+      "index": 6,
+      "name": "user-scan",
+      "area": "user",
+      "target_percent": 3.5,
+      "observed_percent": 3.457,
+      "operations": 6914
+    },
+    {
+      "index": 7,
+      "name": "journal-append",
+      "area": "journal",
+      "target_percent": 28.1,
+      "observed_percent": 27.925,
+      "operations": 55850
+    }
+  ],
+  "sizes": [
+    {
+      "bytes": 4096,
+      "operations": 30538,
+      "observed_percent": 15.269
+    },
+    {
+      "bytes": 8192,
+      "operations": 141861,
+      "observed_percent": 70.9305
+    },
+    {
+      "bytes": 16384,
+      "operations": 15442,
+      "observed_percent": 7.721
+    },
+    {
+      "bytes": 32768,
+      "operations": 6044,
+      "observed_percent": 3.022
+    },
+    {
+      "bytes": 65536,
+      "operations": 6115,
+      "observed_percent": 3.0575
+    }
+  ]
+}

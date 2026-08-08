@@ -1,0 +1,14 @@
+# c8gn updated range-hwm zipper
+2026-06-06T19:01:03Z
+RANGE=2048 BRANCHES=8
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=8 records_per_lane=100000000000 payload_bytes=4096 window=2048 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=8 result_records=390625000 emitted=100000000000 duplicate_results=0 logical_bytes=409600000000000 branch_bytes=409600000000000 checksum=0xd0705a6706707000 seconds=0.769900 result_records_per_sec=507370783 emitted_per_sec=129886920369 logical_4k_iops=129886920369 logical_GiBps=495479.280 branch_Gibitps=4256134.607 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+RANGE=2048 BRANCHES=64
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=64 records_per_lane=100000000000 payload_bytes=4096 window=2048 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=64 result_records=3125000000 emitted=100000000000 duplicate_results=0 logical_bytes=409600000000000 branch_bytes=409600000000000 checksum=0x11372de4b4e73000 seconds=5.783071 result_records_per_sec=540370329 emitted_per_sec=17291850528 logical_4k_iops=17291850528 logical_GiBps=65963.175 branch_Gibitps=566619.358 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+RANGE=32768 BRANCHES=8
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=8 records_per_lane=100000000000 payload_bytes=4096 window=32768 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=8 result_records=24414064 emitted=100000000000 duplicate_results=0 logical_bytes=409600000000000 branch_bytes=409600000000000 checksum=0x2d070b7f3bf31000 seconds=0.048480 result_records_per_sec=503590086 emitted_per_sec=2062704866558 logical_4k_iops=2062704866558 logical_GiBps=7868594.614 branch_Gibitps=67590713.067 sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+RANGE=32768 BRANCHES=64
+zcfanout-logzip-bench: mode=stripe-read-hwm lanes=1 branches=64 records_per_lane=100000000000 payload_bytes=4096 window=32768 workers=1 skew=0 pin_workers=true sort=no global_queue=no payload_copy=no deep_payload_inspection=no
+zcfanout-logzip-summary: mode=stripe-read-hwm lanes=1 branches=64 result_records=195312512 emitted=100000000000 duplicate_results=0 logical_bytes=409600000000000 branch_bytes=409600000000000 checksum=0x4114f0cebdead000 seconds=0.361676 result_records_per_sec=540021161 emitted_per_sec=276490817475 logical_4k_iops=276490817475 logical_GiBps=1054728.765 branch_Gibitps=9060051.107 sort=no global_queue=no payload_copy=no deep_payload_inspection=no

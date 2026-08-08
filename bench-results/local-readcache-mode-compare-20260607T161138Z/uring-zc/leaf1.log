@@ -1,0 +1,18 @@
+zcfan-readcache-config: role=leaf-send bind=0.0.0.0 branch_binds=- peer=127.0.0.1 source_ip=- base_port=28008 leaf_base_port=34000 downstream_base_port=33000 lanes=8 branches=2 bytes_per_lane=1073741824 branch_bytes_per_lane=268435456 cache_bytes_per_lane=67108864 chunk_bytes=1048576 extent_bytes=1048576 workers=8 pin=false cpu_list=- verify=false client_sink=read wait_mode=spin cold_mode=stream-tee slab_slots=4 prefill_bytes=0 transport=sendfile/splice/tee/slab/lane-splice/io_uring-sendzc page_cache=memfd block_devices=no kernel_raid=no
+zcfan-readcache-topology: worker=0 target_cpu=unpinned
+zcfan-readcache-topology: worker=1 target_cpu=unpinned
+zcfan-readcache-topology: worker=2 target_cpu=unpinned
+zcfan-readcache-topology: worker=3 target_cpu=unpinned
+zcfan-readcache-topology: worker=4 target_cpu=unpinned
+zcfan-readcache-topology: worker=5 target_cpu=unpinned
+zcfan-readcache-topology: worker=6 target_cpu=unpinned
+zcfan-readcache-topology: worker=7 target_cpu=unpinned
+zcfan-readcache-connect: lane=0 peer=127.0.0.1:28008 local=127.0.0.1:56856
+zcfan-readcache-connect: lane=1 peer=127.0.0.1:28009 local=127.0.0.1:50796
+zcfan-readcache-connect: lane=2 peer=127.0.0.1:28010 local=127.0.0.1:38252
+zcfan-readcache-connect: lane=3 peer=127.0.0.1:28011 local=127.0.0.1:40640
+zcfan-readcache-connect: lane=4 peer=127.0.0.1:28012 local=127.0.0.1:47274
+zcfan-readcache-connect: lane=5 peer=127.0.0.1:28013 local=127.0.0.1:46150
+zcfan-readcache-connect: lane=6 peer=127.0.0.1:28014 local=127.0.0.1:48500
+zcfan-readcache-connect: lane=7 peer=127.0.0.1:28015 local=127.0.0.1:49680
+Error: Os { code: 32, kind: BrokenPipe, message: "Broken pipe" }

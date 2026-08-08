@@ -1,0 +1,126 @@
+******************** Stress Settings ********************
+Command:
+  Type: write
+  Count: 5,000
+  No Warmup: true
+  Consistency Level: ONE
+  Target Uncertainty: not applicable
+  Key Size (bytes): 10
+  Counter Increment Distibution: add=fixed(1)
+Rate:
+  Auto: false
+  Thread Count: 16
+  OpsPer Sec: 0
+Population:
+  Sequence: 1..5000
+  Order: ARBITRARY
+  Wrap: true
+Insert:
+  Revisits: Uniform:  min=1,max=1000000
+  Visits: Fixed:  key=1
+  Row Population Ratio: Ratio: divisor=1.000000;delegate=Fixed:  key=1
+  Batch Type: not batching
+Columns:
+  Max Columns Per Key: 1
+  Column Names: [C0]
+  Comparator: AsciiType
+  Timestamp: null
+  Variable Column Count: false
+  Slice: false
+  Size Distribution: Fixed:  key=256
+  Count Distribution: Fixed:  key=1
+Errors:
+  Ignore: false
+  Tries: 10
+Log:
+  No Summary: false
+  No Settings: false
+  File: null
+  Interval Millis: 1000
+  Level: NORMAL
+Mode:
+  API: JAVA_DRIVER_NATIVE
+  Connection Style: CQL_PREPARED
+  Protocol Version: V5
+  Username: null
+  Password: null
+  Auth Provide Class: null
+  Max Pending Per Connection: 128
+  Connections Per Host: 4
+  Compression: NONE
+Node:
+  Nodes: [127.0.0.1]
+  Is White List: false
+  Datacenter: null
+Schema:
+  Keyspace: keyspace1
+  Replication Strategy: org.apache.cassandra.locator.SimpleStrategy
+  Replication Strategy Options: {replication_factor=1}
+  Table Compression: null
+  Table Compaction Strategy: null
+  Table Compaction Strategy Options: {}
+Transport:
+  Truststore: null
+  Truststore Password: null
+  Keystore: null
+  Keystore Password: null
+  SSL Protocol: TLS
+  SSL Algorithm: null
+  SSL Ciphers: null
+Port:
+  Native Port: 9142
+  JMX Port: 7299
+JMX:
+  Username: null
+  Password: *not set*
+Graph:
+  File: null
+  Revision: unknown
+  Title: null
+  Operation: WRITE
+TokenRange:
+  Wrap: false
+  Split Factor: 1
+Credentials file:
+  File: *not set*
+  CQL username: *not set*
+  CQL password: *not set*
+  JMX username: *not set*
+  JMX password: *not set*
+  Transport truststore password: *not set*
+  Transport keystore password: *not set*
+Reporting:
+  Output frequency: 1s
+  Header frequency: *not set*
+
+Connected to cluster: zcutils-cassandra-bench, max pending requests per connection 128, max connections per host 4
+Datacenter: datacenter1; Host: /127.0.0.1:9142; Rack: rack1
+Created keyspaces. Sleeping 1s for propagation.
+Sleeping 2s...
+Running WRITE with 16 threads for 5000 iteration
+type                                               total ops,    op/s,    pk/s,   row/s,    mean,     med,     .95,     .99,    .999,     max,   time,   stderr, errors,  gc: #,  max ms,  sum ms,  sdv ms,      mb
+WARN  11:31:24,487 Query 'com.datastax.driver.core.Statement$1@68f73a41;' generated server side warning(s): `USE <keyspace>` with prepared statements is considered to be an anti-pattern due to ambiguity in non-qualified table names. Please consider removing instances of `Session#setKeyspace(<keyspace>)`, `Session#execute("USE <keyspace>")` and `cluster.newSession(<keyspace>)` from your code, and always use fully qualified table names (e.g. <keyspace>.<table>). Keyspace used: keyspace1, statement keyspace: keyspace1, statement id: b58a0d45c964315342e7c9b15dfab0f6
+total,                                                  2275,    2275,    2275,    2275,     3.6,     3.5,     7.2,    10.0,    28.7,    30.9,    1.0,  0.00000,      0,      0,       0,       0,       0,       0
+total,                                                  5000,    5817,    5817,    5817,     2.7,     2.6,     4.7,     7.0,     9.3,     9.5,    1.5,  0.30641,      0,      0,       0,       0,       0,       0
+
+
+Results:
+Op rate                   :    3,405 op/s  [WRITE: 3,405 op/s]
+Partition rate            :    3,405 pk/s  [WRITE: 3,405 pk/s]
+Row rate                  :    3,405 row/s [WRITE: 3,405 row/s]
+Latency mean              :    3.1 ms [WRITE: 3.1 ms]
+Latency median            :    2.9 ms [WRITE: 2.9 ms]
+Latency 95th percentile   :    6.0 ms [WRITE: 6.0 ms]
+Latency 99th percentile   :    8.5 ms [WRITE: 8.5 ms]
+Latency 99.9th percentile :   27.2 ms [WRITE: 27.2 ms]
+Latency max               :   30.9 ms [WRITE: 30.9 ms]
+Total partitions          :      5,000 [WRITE: 5,000]
+Total errors              :          0 [WRITE: 0]
+Total GC count            : 0
+Total GC memory           : 0 B
+Total GC time             :    0.0 seconds
+Avg GC time               :    NaN ms
+StdDev GC time            :    0.0 ms
+Total operation time      : 00:00:01
+
+END

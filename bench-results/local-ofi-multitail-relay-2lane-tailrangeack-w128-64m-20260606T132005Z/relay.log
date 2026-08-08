@@ -1,0 +1,23 @@
+zcofi-wal-relay: provider=tcp endpoint=rdm bind=127.0.0.1 tails=0:127.0.0.1:32000,1:127.0.0.1:34000 in_base_service=30000 lanes=2 bytes_per_lane=67108864 extent_bytes=65536 message_bytes=65664 workers=2 ack_enabled=yes compact_4k=no rewrite_headers=yes fast_headers=no relay_window=128 range_acks=yes prepost_recv=no tx_nowait_requested=no tx_nowait_effective=no ack_inject=yes same_slot_forward=yes hwm_ack=all-tail-acks-before-upstream-ack timeout_ms=10000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-relay-worker: affinity_index=0 target_cpu=4 status=ok
+zcofi-wal-relay-worker: affinity_index=1 target_cpu=5 status=ok
+zcofi-control-server: listen=127.0.0.1:31001 peer=127.0.0.1:45966 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-server: listen=127.0.0.1:31000 peer=127.0.0.1:36702 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-client: addr=127.0.0.1:33001 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-tail: worker=1 lane=1 branch=0 tail_addr=127.0.0.1 out_base_service=32000 out_service=32001 out_control_port=33001 max_msg_size_out=18446744073709551615 same_slot_forward=yes
+zcofi-control-client: addr=127.0.0.1:33000 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-tail: worker=0 lane=0 branch=0 tail_addr=127.0.0.1 out_base_service=32000 out_service=32000 out_control_port=33000 max_msg_size_out=18446744073709551615 same_slot_forward=yes
+zcofi-control-client: addr=127.0.0.1:35001 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-tail: worker=1 lane=1 branch=1 tail_addr=127.0.0.1 out_base_service=34000 out_service=34001 out_control_port=35001 max_msg_size_out=18446744073709551615 same_slot_forward=yes
+zcofi-wal-relay-lane: worker=1 lane=1 provider=tcp endpoint=rdm bind=127.0.0.1 in_service=30001 in_control_port=31001 tail_count=2 message_bytes=65664 max_msg_size_in=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-control-client: addr=127.0.0.1:35000 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-relay-tail: worker=0 lane=0 branch=1 tail_addr=127.0.0.1 out_base_service=34000 out_service=34000 out_control_port=35000 max_msg_size_out=18446744073709551615 same_slot_forward=yes
+zcofi-wal-relay-lane: worker=0 lane=0 provider=tcp endpoint=rdm bind=127.0.0.1 in_service=30000 in_control_port=31000 tail_count=2 message_bytes=65664 max_msg_size_in=18446744073709551615 same_slot_forward=yes rewrite_headers=yes
+zcofi-wal-relay-worker-contract: worker=0 same_slot_forward=yes registered_memory=libfabric-mr-cache tail_count=2 relay_window=128 range_acks=yes prepost_recv=no fast_headers=no header_rewrites=1024 tail_ack_gates_upstream_ack=yes ack_policy=range-all-tails-before-upstream-hwm
+zcofi-wal-relay-worker: worker=0 streams=3 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=8 seconds=0.037411 payload_Gbitps=14.351 logical_iops=437950 thread_cpu_seconds=0.043618 cpu_wall_pct=116.6 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=10 involuntary_ctxt_switches=1 migrations=0
+zcofi-wal-relay-worker-latency: worker=0 ack_count=8 ack_avg_ns=3965218 ack_min_ns=3374189 ack_p50_ns=4000000 ack_p95_ns=8000000 ack_p99_ns=8000000 ack_p999_ns=8000000 ack_max_ns=7581029
+zcofi-wal-relay-worker-contract: worker=1 same_slot_forward=yes registered_memory=libfabric-mr-cache tail_count=2 relay_window=128 range_acks=yes prepost_recv=no fast_headers=no header_rewrites=1024 tail_ack_gates_upstream_ack=yes ack_policy=range-all-tails-before-upstream-hwm
+zcofi-wal-relay-worker: worker=1 streams=3 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=8 seconds=0.038050 payload_Gbitps=14.110 logical_iops=430592 thread_cpu_seconds=0.044849 cpu_wall_pct=117.9 target_cpu=5 affinity_applied=true start_cpu=5 end_cpu=5 voluntary_ctxt_switches=11 involuntary_ctxt_switches=2 migrations=0
+zcofi-wal-relay-worker-latency: worker=1 ack_count=8 ack_avg_ns=3961627 ack_min_ns=3250356 ack_p50_ns=4000000 ack_p95_ns=9000000 ack_p99_ns=9000000 ack_p999_ns=9000000 ack_max_ns=8074195
+zcofi-wal-relay-summary: tail_count=2 payload_bytes=134217728 wire_bytes=268959744 extents=2048 logical_records=32768 tail_gated_acks=16 seconds=0.038050 payload_Gbitps=28.219 branch_wire_Gbitps=56.549 logical_iops=861183 voluntary_ctxt_switches=21 involuntary_ctxt_switches=3 migrations=0
+zcofi-wal-relay-latency-summary: tail_hwm_ack_count=16 tail_hwm_ack_avg_ns=3963423 tail_hwm_ack_min_ns=3250356 tail_hwm_ack_p50_ns=4000000 tail_hwm_ack_p95_ns=9000000 tail_hwm_ack_p99_ns=9000000 tail_hwm_ack_p999_ns=9000000 tail_hwm_ack_max_ns=8074195

@@ -1,0 +1,31 @@
+topology_preflight=1
+run_mode=local
+strict=0
+topology_preflight_fatal=0
+topology_busy_pct=1.0
+local_mapped_cpus=0,1,2,3,4
+local_mapped_cpu_count=5
+stage=client cpus=0 unique_cpus=1
+stage=fan-handler cpus=1 unique_cpus=1
+stage=fan-async cpus=2 unique_cpus=1
+stage=leaf0 cpus=3 unique_cpus=1
+stage=leaf1 cpus=4 unique_cpus=1
+cpu=0 governor=powersave
+cpu=1 governor=powersave
+cpu=2 governor=powersave
+cpu=3 governor=powersave
+cpu=4 governor=powersave
+PERF WARNING: mapped CPUs are not all using performance governor: cpu0=powersave,cpu1=powersave,cpu2=powersave,cpu3=powersave,cpu4=powersave
+== mapped cpu mhz sample ==
+CPU CORE SOCKET NODE L1d:L1i:L2:L3 ONLINE    MAXMHZ   MINMHZ       MHZ
+  0    0      0    0 0:0:0:0          yes 5756.4521 624.1940 5562.4360
+  1    1      0    0 1:1:1:0          yes 5756.4521 624.1940 4395.1191
+  2    2      0    0 2:2:2:0          yes 5756.4521 624.1940 5442.9282
+  3    3      0    0 3:3:3:0          yes 5756.4521 624.1940 5564.3838
+  4    4      0    0 4:4:4:0          yes 5756.4521 624.1940 5513.4199
+PERF WARNING: mapped CPUs already have threads above 1.0% CPU; benchmark is noisy unless those cores are isolated
+busy_cpu=1 pcpu=3.7 pid=1915 tid=1915 comm=sway
+memlock_limit=8192
+PERF WARNING: memlock is 8192; zero-copy/RDMA/hugetlb results are not representative without enough locked-memory headroom
+nr_hugepages=0
+PERF WARNING: vm.nr_hugepages is 0; this is a smoke run for hugetlb-backed zero-copy/RDMA comparisons

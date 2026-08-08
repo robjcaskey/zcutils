@@ -1,0 +1,37 @@
+zcfan-readcache-config: role=fan-cold bind=127.0.0.1 branch_binds=127.0.0.1,127.0.0.1 peer=127.0.0.1 source_ip=- base_port=33000 leaf_base_port=34000 downstream_base_port=33000 lanes=8 branches=2 bytes_per_lane=536870912 branch_bytes_per_lane=268435456 cache_bytes_per_lane=67108864 chunk_bytes=1048576 extent_bytes=1048576 workers=8 pin=false cpu_list=- verify=false client_sink=read wait_mode=spin cold_mode=uring-zc slab_slots=4 prefill_bytes=0 transport=sendfile/splice/tee/slab/lane-splice/io_uring-sendzc page_cache=memfd block_devices=no kernel_raid=no
+zcfan-readcache-topology: worker=0 target_cpu=unpinned
+zcfan-readcache-topology: worker=1 target_cpu=unpinned
+zcfan-readcache-topology: worker=2 target_cpu=unpinned
+zcfan-readcache-topology: worker=3 target_cpu=unpinned
+zcfan-readcache-topology: worker=4 target_cpu=unpinned
+zcfan-readcache-topology: worker=5 target_cpu=unpinned
+zcfan-readcache-topology: worker=6 target_cpu=unpinned
+zcfan-readcache-topology: worker=7 target_cpu=unpinned
+zcfan-readcache-accept: role=fan-cold branch=0 lane=0 peer=127.0.0.1:55100 local=127.0.0.1:34000
+zcfan-readcache-accept: role=fan-cold branch=0 lane=1 peer=127.0.0.1:54730 local=127.0.0.1:34001
+zcfan-readcache-accept: role=fan-cold branch=0 lane=2 peer=127.0.0.1:44138 local=127.0.0.1:34002
+zcfan-readcache-accept: role=fan-cold branch=0 lane=3 peer=127.0.0.1:49004 local=127.0.0.1:34003
+zcfan-readcache-accept: role=fan-cold branch=0 lane=4 peer=127.0.0.1:56752 local=127.0.0.1:34004
+zcfan-readcache-accept: role=fan-cold branch=0 lane=5 peer=127.0.0.1:52742 local=127.0.0.1:34005
+zcfan-readcache-accept: role=fan-cold branch=0 lane=6 peer=127.0.0.1:46752 local=127.0.0.1:34006
+zcfan-readcache-accept: role=fan-cold branch=0 lane=7 peer=127.0.0.1:55212 local=127.0.0.1:34007
+zcfan-readcache-accept: role=fan-cold branch=1 lane=0 peer=127.0.0.1:50752 local=127.0.0.1:34008
+zcfan-readcache-accept: role=fan-cold branch=1 lane=1 peer=127.0.0.1:42630 local=127.0.0.1:34009
+zcfan-readcache-accept: role=fan-cold branch=1 lane=2 peer=127.0.0.1:52808 local=127.0.0.1:34010
+zcfan-readcache-accept: role=fan-cold branch=1 lane=3 peer=127.0.0.1:55834 local=127.0.0.1:34011
+zcfan-readcache-accept: role=fan-cold branch=1 lane=4 peer=127.0.0.1:57864 local=127.0.0.1:34012
+zcfan-readcache-accept: role=fan-cold branch=1 lane=5 peer=127.0.0.1:58968 local=127.0.0.1:34013
+zcfan-readcache-accept: role=fan-cold branch=1 lane=6 peer=127.0.0.1:53966 local=127.0.0.1:34014
+zcfan-readcache-accept: role=fan-cold branch=1 lane=7 peer=127.0.0.1:54164 local=127.0.0.1:34015
+zcfan-readcache-connect: lane=0 peer=127.0.0.1:33000 local=127.0.0.1:59556
+zcfan-readcache-connect: lane=1 peer=127.0.0.1:33001 local=127.0.0.1:53604
+zcfan-readcache-connect: lane=2 peer=127.0.0.1:33002 local=127.0.0.1:47506
+zcfan-readcache-connect: lane=3 peer=127.0.0.1:33003 local=127.0.0.1:54090
+zcfan-readcache-connect: lane=4 peer=127.0.0.1:33004 local=127.0.0.1:43330
+zcfan-readcache-connect: lane=5 peer=127.0.0.1:33005 local=127.0.0.1:40956
+zcfan-readcache-connect: lane=6 peer=127.0.0.1:33006 local=127.0.0.1:48592
+zcfan-readcache-connect: lane=7 peer=127.0.0.1:33007 local=127.0.0.1:38360
+zcfan-readcache-uring-zc-worker-setup: worker=2 fixed_buffers=2 extent_bytes=1048576 memory_policy=first-touch
+zcfan-readcache-uring-zc-worker-setup: worker=4 fixed_buffers=2 extent_bytes=1048576 memory_policy=first-touch
+zcfan-readcache-uring-zc-worker-setup: worker=0 fixed_buffers=2 extent_bytes=1048576 memory_policy=first-touch
+Error: Custom { kind: OutOfMemory, error: "uring-zc failed to register fixed buffers; raise memlock/headroom before treating this path as representative: Cannot allocate memory (os error 12)" }

@@ -1,0 +1,42 @@
++ chmod 0755 bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/init bench-results/zcworkload-qemu-retry-20260712T230315Z/host-run.sh
++ sh -n bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/init
++ bash -n bench-results/zcworkload-qemu-retry-20260712T230315Z/host-run.sh
++ test '!' -e bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/modules/null_blk.ko
++ test '!' -e bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/modules/zcbrd_mod.ko
++ test '!' -e bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/modules/zcstripe.ko
++ for binary in "$outdir/rootfs/uring-play" "$outdir/rootfs/zcworkload" "$outdir/rootfs/zcnblk-shm-target"
++ ldd bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/uring-play
+	linux-vdso.so.1 (0x00007ff2e9b62000)
+	libfabric.so.1 => /lib/x86_64-linux-gnu/libfabric.so.1 (0x00007ff2e9239000)
+	libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007ff2e9b07000)
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007ff2e9043000)
+	/lib64/ld-linux-x86-64.so.2 (0x00007ff2e9b64000)
+	librdmacm.so.1 => /lib/x86_64-linux-gnu/librdmacm.so.1 (0x00007ff2e9ae8000)
+	libefa.so.1 => /lib/x86_64-linux-gnu/libefa.so.1 (0x00007ff2e9ada000)
+	libibverbs.so.1 => /lib/x86_64-linux-gnu/libibverbs.so.1 (0x00007ff2e9ab7000)
+	libpsm2.so.2 => /lib/x86_64-linux-gnu/libpsm2.so.2 (0x00007ff2e8fda000)
+	libnl-3.so.200 => /lib/x86_64-linux-gnu/libnl-3.so.200 (0x00007ff2e9a94000)
+	libnl-route-3.so.200 => /lib/x86_64-linux-gnu/libnl-route-3.so.200 (0x00007ff2e8f47000)
+	libnuma.so.1 => /lib/x86_64-linux-gnu/libnuma.so.1 (0x00007ff2e9a85000)
++ for binary in "$outdir/rootfs/uring-play" "$outdir/rootfs/zcworkload" "$outdir/rootfs/zcnblk-shm-target"
++ ldd bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/zcworkload
+	linux-vdso.so.1 (0x00007f95abe58000)
+	libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007f95abd0b000)
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f95abb15000)
+	/lib64/ld-linux-x86-64.so.2 (0x00007f95abe5a000)
++ for binary in "$outdir/rootfs/uring-play" "$outdir/rootfs/zcworkload" "$outdir/rootfs/zcnblk-shm-target"
++ ldd bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/zcnblk-shm-target
+	linux-vdso.so.1 (0x00007f62977ac000)
+	libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007f629763a000)
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f6297444000)
+	/lib64/ld-linux-x86-64.so.2 (0x00007f62977ae000)
++ cd bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs
++ find . -print0
++ cpio --null -o --format=newc
+/bin/bash: line 13: bench-results/zcworkload-qemu-retry-20260712T230315Z/zcworkload-two-vm-initramfs.cpio: No such file or directory
++ sha256sum bench-results/zcworkload-qemu-retry-20260712T230315Z/zcworkload-two-vm-initramfs.cpio bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/init bench-results/zcworkload-qemu-retry-20260712T230315Z/host-run.sh bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/uring-play bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/zcworkload bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/zcnblk-shm-target bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/modules/zcnblk_client_mod.ko
+sha256sum: bench-results/zcworkload-qemu-retry-20260712T230315Z/zcworkload-two-vm-initramfs.cpio: No such file or directory
++ find bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs -xdev -printf '%y %p\n'
++ sort
++ wc -c bench-results/zcworkload-qemu-retry-20260712T230315Z/zcworkload-two-vm-initramfs.cpio
+wc: bench-results/zcworkload-qemu-retry-20260712T230315Z/zcworkload-two-vm-initramfs.cpio: No such file or directory

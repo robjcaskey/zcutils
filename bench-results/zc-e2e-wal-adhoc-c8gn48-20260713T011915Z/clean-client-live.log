@@ -1,0 +1,11 @@
+ESTAB 0      0       172.31.4.136:40985  172.31.11.115:29001       
+ESTAB 0      0      172.31.12.215:42687   172.31.9.209:29000       
+  11835   11835   6 S    zcnblk-shm-0-0
+  11836   11836 102 S    zcnblk-shm-1-0
+  11843   11843  17 Sl   zcnblk-shm-targ
+  11843   11849   4 Sl   zcnblk-shm-targ
+  11843   11850 100 Sl   zcnblk-shm-targ
+zcnblk-shm-target-remote-connect: lane=0 address=172.31.12.215:42687->172.31.9.209:29000 tcp_nodelay=true quickack=false
+zcnblk-shm-target-remote-connect: lane=1 address=172.31.4.136:40985->172.31.11.115:29001 tcp_nodelay=true quickack=false
+zcnblk-shm-target: device=/dev/zcnblk-shmctl backend=WalTcp channels=2 ring_entries=512 payload_entries=8192 slot_bytes=4096 region_bytes=67379200 capacity_bytes=268435456 kick_batch=128 lease_release_batch=1 writeback_batch=2048 read_batch=512 read_batch_fill_us=0 read_batch_fill_min=32 write_batch_fill_us=0 write_batch_fill_min=256 remote_leaf=172.31.12.215:42687->172.31.9.209:29000 cpu_list=4,100 owner_dispatch=false owner_count=2 owner_extent_records=256 owner_max_tx_iovecs=960 split_transport=false transport_cpu_list=inline transport_wait=adaptive poll_us=1000 busy_poll_us=1000 busy_hysteresis_us=10000 poll_clock_check_spins=64 wait_policy=fixed-active ordering=per-lane-batch+sector-predecessor+global-sync-hwm shared_payload_slots=true payload_ownership=submit-sequence-token-transfer placement_owner=downstream-userspace-stage block_client_placement=no representative=false 
+zcnblk-shm-target-topology: coordinator_cpu=none-lane-owned foreground_lane_cpu_map=lane0:cpu4,lane1:cpu100 transport_lane_cpu_map=lane0:cpu4,lane1:cpu100 remote_ports=172.31.12.215:42687->172.31.9.209:29000,172.31.4.136:40985->172.31.11.115:29001 ordering=per-lane-batch+sector-predecessor+global-sync-hwm

@@ -1,0 +1,31 @@
+PERF WARNING: zcnblk-send workers are not pinned; set URING_PLAY_PIN_CPUS=1 and URING_PLAY_PIN_CPU_LIST before trusting client/fan IOPS
+zcnblk-send: addr=127.0.0.1 shard_count=1 base_port=49300 ports=4 connections_per_port=1 total_connections=4 bytes_per_connection=2147483648 chunk_bytes=4096 workers=4 op_mode=write-sync-read read_window=4096 write_window=8192 access=linear verify_reads=no wait_write_acks=no batch_depth=512 drain_ready_responses=yes payload_pattern=fill:0x00 source_ip=kernel-route source_ports=kernel-ephemeral latency=no encryption=none aes_frame_bytes=65536
+zcnblk-send-stream: worker=1 lane=1 port=49301 conn=0 shard=0 base_offset=2147483648
+zcnblk-send-stream: worker=3 lane=3 port=49303 conn=0 shard=0 base_offset=6442450944
+zcnblk-send-stream: worker=2 lane=2 port=49302 conn=0 shard=0 base_offset=4294967296
+zcnblk-send-stream: worker=0 lane=0 port=49300 conn=0 shard=0 base_offset=0
+Error: Os { code: 104, kind: ConnectionReset, message: "Connection reset by peer" }
+Command exited with non-zero status 1
+	Command being timed: "taskset -c 0,1,2,3 target/release/zcutils zcnblk-send 127.0.0.1 1 49300 4 1 2G 4096 4"
+	User time (seconds): 0.00
+	System time (seconds): 0.00
+	Percent of CPU this job got: 5%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.10
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 13020
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 2448
+	Voluntary context switches: 602
+	Involuntary context switches: 4
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 8
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1

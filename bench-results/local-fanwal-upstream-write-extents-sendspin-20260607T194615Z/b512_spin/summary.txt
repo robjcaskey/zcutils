@@ -1,0 +1,24 @@
+RESULT_DIR=bench-results/local-fanwal-upstream-write-extents-sendspin-20260607T194615Z/b512_spin
+run=b512_ext2m_sender_spin
+lanes=4
+bytes_per_connection=256M
+chunk_bytes=4096
+fan_mode=mirror
+terminal_leaf_media=zcleasemem:2147483648
+sender_cpus=0,1,2,3
+fan_handler_cpus=4,5,6,7
+fan_async_cpus=8,9,10,11
+leaf0_cpus=12,13,14,15
+leaf1_cpus=28,29,30,31
+batch_depth=512
+upstream_write_extents=1
+fan_max_request_bytes=2097152
+send_spin_reads=1
+send_spin_budget=200000
+verify_reads=0
+write_acks=0
+retain_committed_cache=1
+bench-results/local-fanwal-upstream-write-extents-sendspin-20260607T194615Z/b512_spin/fan.log:39:zcnblk-fan-wal-summary: read_bytes=536870912 write_bytes=536870912 response_bytes=536903936 branch_payload_bytes=1073741824 frames=131332 batches=256 read_frames=131072 write_frames=256 sync_frames=4 leaf_submit_batches=512 leaf_submit_records=512 max_leaf_submit_records=1 pipelined_write_batches=0 pipelined_request_batches=256 batch_fallbacks=0 batch_fallback_frames=0 max_upstream_batch_frames=512 max_outstanding_batches=0 upstream_idle_drains=0 result_records=520 result_batches=512 result_range_batches=512 async_merged_request_batches=256 async_merged_leaf_batches=512 async_write_extent_batches=512 async_write_extents=512 async_saved_descriptor_bytes=49152 async_max_merged_request_batches=1 async_max_merged_leaf_records=1 async_copied_payload_bytes=0 async_leased_payload_bytes=1073741824 dirty_admit_bytes=536870912 dirty_release_bytes=536870912 dirty_budget_admit_bytes=536870912 dirty_budget_release_bytes=536870912 dirty_current_bytes=0 dirty_max_observed_bytes=536870912 dirty_admit_events=256 dirty_release_events=256 dirty_budget_admit_events=256 dirty_budget_release_events=256 dirty_soft_pressure_events=0 dirty_budget_soft_pressure_events=0 dirty_hard_pressure_events=0 dirty_budget_hard_pressure_events=0 dirty_wait_events=3 dirty_budget_wait_events=3 dirty_wait_seconds=0.006728 dirty_budget_wait_seconds=0.006728 read_cache_leased_frames=131072 read_cache_leased_bytes=536870912 read_cache_materialized_frames=0 read_cache_materialized_bytes=0 read_cache_fallback_materialized_frames=0 read_cache_fallback_materialized_bytes=0 read_cache_response_source_parts=131072 read_cache_response_payload_iovecs=256 read_cache_response_coalesced_parts=130816 read_cache_response_total_iovecs=768 read_cache_response_writev_calls=256 read_cache_range_response_batches=256 read_cache_range_response_runs=256 read_cache_range_response_saved_headers=130816 thread_cpu_seconds=0.443240 cpu_wall_ratio=1.880 phase_upstream_payload_read_seconds=0.229191 phase_order_wait_seconds=0.010904 phase_dirty_admit_seconds=0.042106 phase_leaf_prepare_seconds=0.000075 phase_leaf_write_seconds=0.000000 phase_result_read_seconds=0.000000 phase_result_decode_seconds=0.000000 phase_upstream_ack_seconds=0.000000 phase_completion_account_seconds=0.000253 dirty_cache_records=131072 voluntary_ctxt_switches=2665 involuntary_ctxt_switches=12 migrations=4 frames_per_sec=556949
+bench-results/local-fanwal-upstream-write-extents-sendspin-20260607T194615Z/b512_spin/fan.log:40:zcnblk-fan-wal: bytes=1073741824 seconds=0.235806 GiBps=4.241 Gbitps=36.428
+bench-results/local-fanwal-upstream-write-extents-sendspin-20260607T194615Z/b512_spin/send.log:14:zcnblk-send-summary: write_bytes=536870912 read_bytes=536870912 verified_read_bytes=0 read_checksum=0x0000000000000000 expected_checksum=0x0000000000000000 wire_bytes=1082196480 frames=262148 read_frames=131072 write_frames=131072 sync_frames=4 request_batches=256 request_batch_frames=131072 max_request_batch_frames=512 write_batches=256 write_batch_frames=131072 max_write_batch_frames=512 thread_cpu_seconds=0.420753 cpu_wall_ratio=1.784 voluntary_ctxt_switches=17 involuntary_ctxt_switches=5 migrations=0 frames_per_sec=1111629
+bench-results/local-fanwal-upstream-write-extents-sendspin-20260607T194615Z/b512_spin/send.log:15:zcnblk-send: bytes=1073741824 seconds=0.235823 GiBps=4.240 Gbitps=36.425

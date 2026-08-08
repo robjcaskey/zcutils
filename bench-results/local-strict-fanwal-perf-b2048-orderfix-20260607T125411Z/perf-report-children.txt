@@ -1,0 +1,1091 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 4K of event 'cycles:Pu'
+# Event count (approx.): 21177008391
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                     IPC   [IPC Coverage]
+# ........  ........  .........................................................................................................................................................................................................................................................................................................  ....................
+#
+    99.99%     0.00%  [.] core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925                                                                                                                                                                                                               -      -            
+            |
+            ---std::sys::backtrace::__rust_begin_short_backtrace
+               zcutils::zcnblk_fan_wal_handler
+               |          
+               |--95.76%--zcutils::zcnblk_fan_wal_submit_write_batch
+               |          |          
+               |          |--87.89%--zcutils::zcnblk_fan_wal_batch_records
+               |          |          |          
+               |          |          |--74.93%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |          |          
+               |          |          |           --52.58%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |                     |          
+               |          |          |                      --39.45%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |                                |          
+               |          |          |                                 --28.28%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |                                           |          
+               |          |          |                                            --18.59%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |                                                      |          
+               |          |          |                                                       --9.71%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |                                                                 |          
+               |          |          |                                                                  --3.90%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |                                                                            |          
+               |          |          |                                                                             --1.25%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |          
+               |          |          |--2.17%--0x7fdbc8ddf55f
+               |          |          |          
+               |          |           --1.95%--alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle
+               |          |                     _ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hdfe182f020670dfbE.llvm.12151036038640485005
+               |          |                     |          
+               |          |                      --1.81%--realloc
+               |          |                                |          
+               |          |                                 --1.75%--0x7fdbc8d044a7
+               |          |                                           |          
+               |          |                                            --0.85%--0x7fdbc8ddf55f
+               |          |          
+               |          |--4.54%--zcutils::ZcnblkFanWalDirtyCache::admit_write
+               |          |          |          
+               |          |          |--1.20%--hashbrown::map::HashMap<K,V,S,A>::insert
+               |          |          |          
+               |          |           --0.55%--malloc
+               |          |          
+               |          |--0.84%--zcutils::ZcnblkFanOrderHandle::release
+               |          |          |          
+               |          |           --0.67%--_ZN7zcutils19ZcnblkFanOrderGuard7release17h1cfa4f5a1ab777d7E.llvm.7531608072156362779
+               |          |          
+               |          |--0.61%--0x7fdbc8ddfc4e
+               |          |          
+               |           --0.57%--0x7fdbc8ddfc5c
+               |          
+               |--2.17%--zcutils::zcnblk_fan_wal_complete_oldest_write_batch
+               |          |          
+               |           --1.88%--zcutils::ZcnblkFanWalDirtyCache::mark_committed
+               |                     |          
+               |                      --0.60%--alloc::sync::Arc<T,A>::drop_slow
+               |          
+               |--0.57%--zcutils::zcnblk_fan_reserve_order
+               |          
+                --0.52%--zcutils::zcnblk_read_fan_plan_frame
+                          alloc::raw_vec::RawVecInner<A>::try_allocate_in
+                          malloc
+
+    99.99%     0.00%  [.] std::sys::backtrace::__rust_begin_short_backtrace                                                                                                                                                                                                                                                      -      -            
+            |
+            ---zcutils::zcnblk_fan_wal_handler
+               |          
+               |--95.76%--zcutils::zcnblk_fan_wal_submit_write_batch
+               |          |          
+               |          |--87.89%--zcutils::zcnblk_fan_wal_batch_records
+               |          |          |          
+               |          |          |--74.93%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |          |          
+               |          |          |           --52.58%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |                     |          
+               |          |          |                      --39.45%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |                                |          
+               |          |          |                                 --28.28%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |                                           |          
+               |          |          |                                            --18.59%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |                                                      |          
+               |          |          |                                                       --9.71%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |                                                                 |          
+               |          |          |                                                                  --3.90%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |                                                                            |          
+               |          |          |                                                                             --1.25%--core::slice::sort::unstable::quicksort::quicksort
+               |          |          |          
+               |          |          |--2.17%--0x7fdbc8ddf55f
+               |          |          |          
+               |          |           --1.95%--alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle
+               |          |                     _ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hdfe182f020670dfbE.llvm.12151036038640485005
+               |          |                     |          
+               |          |                      --1.81%--realloc
+               |          |                                |          
+               |          |                                 --1.75%--0x7fdbc8d044a7
+               |          |                                           |          
+               |          |                                            --0.85%--0x7fdbc8ddf55f
+               |          |          
+               |          |--4.54%--zcutils::ZcnblkFanWalDirtyCache::admit_write
+               |          |          |          
+               |          |          |--1.20%--hashbrown::map::HashMap<K,V,S,A>::insert
+               |          |          |          
+               |          |           --0.55%--malloc
+               |          |          
+               |          |--0.84%--zcutils::ZcnblkFanOrderHandle::release
+               |          |          |          
+               |          |           --0.67%--_ZN7zcutils19ZcnblkFanOrderGuard7release17h1cfa4f5a1ab777d7E.llvm.7531608072156362779
+               |          |          
+               |          |--0.61%--0x7fdbc8ddfc4e
+               |          |          
+               |           --0.57%--0x7fdbc8ddfc5c
+               |          
+               |--2.17%--zcutils::zcnblk_fan_wal_complete_oldest_write_batch
+               |          |          
+               |           --1.88%--zcutils::ZcnblkFanWalDirtyCache::mark_committed
+               |                     |          
+               |                      --0.60%--alloc::sync::Arc<T,A>::drop_slow
+               |          
+               |--0.57%--zcutils::zcnblk_fan_reserve_order
+               |          
+                --0.52%--zcutils::zcnblk_read_fan_plan_frame
+                          alloc::raw_vec::RawVecInner<A>::try_allocate_in
+                          malloc
+
+    99.99%     0.13%  [.] zcutils::zcnblk_fan_wal_handler                                                                                                                                                                                                                                                                        -      -            
+            |          
+             --99.86%--zcutils::zcnblk_fan_wal_handler
+                       |          
+                       |--95.76%--zcutils::zcnblk_fan_wal_submit_write_batch
+                       |          |          
+                       |          |--87.89%--zcutils::zcnblk_fan_wal_batch_records
+                       |          |          |          
+                       |          |          |--74.93%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |          |          
+                       |          |          |           --52.58%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |                     |          
+                       |          |          |                      --39.45%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |                                |          
+                       |          |          |                                 --28.28%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |                                           |          
+                       |          |          |                                            --18.59%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |                                                      |          
+                       |          |          |                                                       --9.71%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |                                                                 |          
+                       |          |          |                                                                  --3.90%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |                                                                            |          
+                       |          |          |                                                                             --1.25%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |          
+                       |          |          |--2.17%--0x7fdbc8ddf55f
+                       |          |          |          
+                       |          |           --1.95%--alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle
+                       |          |                     _ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hdfe182f020670dfbE.llvm.12151036038640485005
+                       |          |                     |          
+                       |          |                      --1.81%--realloc
+                       |          |                                |          
+                       |          |                                 --1.75%--0x7fdbc8d044a7
+                       |          |                                           |          
+                       |          |                                            --0.85%--0x7fdbc8ddf55f
+                       |          |          
+                       |          |--4.54%--zcutils::ZcnblkFanWalDirtyCache::admit_write
+                       |          |          |          
+                       |          |          |--1.20%--hashbrown::map::HashMap<K,V,S,A>::insert
+                       |          |          |          
+                       |          |           --0.55%--malloc
+                       |          |          
+                       |          |--0.84%--zcutils::ZcnblkFanOrderHandle::release
+                       |          |          |          
+                       |          |           --0.67%--_ZN7zcutils19ZcnblkFanOrderGuard7release17h1cfa4f5a1ab777d7E.llvm.7531608072156362779
+                       |          |          
+                       |          |--0.61%--0x7fdbc8ddfc4e
+                       |          |          
+                       |           --0.57%--0x7fdbc8ddfc5c
+                       |          
+                       |--2.17%--zcutils::zcnblk_fan_wal_complete_oldest_write_batch
+                       |          |          
+                       |           --1.88%--zcutils::ZcnblkFanWalDirtyCache::mark_committed
+                       |                     |          
+                       |                      --0.60%--alloc::sync::Arc<T,A>::drop_slow
+                       |          
+                       |--0.57%--zcutils::zcnblk_fan_reserve_order
+                       |          
+                        --0.52%--zcutils::zcnblk_read_fan_plan_frame
+                                  alloc::raw_vec::RawVecInner<A>::try_allocate_in
+                                  malloc
+
+    99.64%     0.00%  [.] _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start                                                                                                                                                                                                                       -      -            
+            |          
+             --99.64%--core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       zcutils::zcnblk_fan_wal_handler
+                       |          
+                       |--95.41%--zcutils::zcnblk_fan_wal_submit_write_batch
+                       |          |          
+                       |          |--87.78%--zcutils::zcnblk_fan_wal_batch_records
+                       |          |          |          
+                       |          |          |--74.82%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |          |          
+                       |          |          |           --52.48%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |                     |          
+                       |          |          |                      --39.34%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |                                |          
+                       |          |          |                                 --28.17%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |                                           |          
+                       |          |          |                                            --18.49%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |                                                      |          
+                       |          |          |                                                       --9.63%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |                                                                 |          
+                       |          |          |                                                                  --3.87%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |                                                                            |          
+                       |          |          |                                                                             --1.25%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |          
+                       |          |          |--2.17%--0x7fdbc8ddf55f
+                       |          |          |          
+                       |          |           --1.95%--alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle
+                       |          |                     _ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hdfe182f020670dfbE.llvm.12151036038640485005
+                       |          |                     |          
+                       |          |                      --1.81%--realloc
+                       |          |                                |          
+                       |          |                                 --1.75%--0x7fdbc8d044a7
+                       |          |                                           |          
+                       |          |                                            --0.85%--0x7fdbc8ddf55f
+                       |          |          
+                       |          |--4.54%--zcutils::ZcnblkFanWalDirtyCache::admit_write
+                       |          |          |          
+                       |          |          |--1.20%--hashbrown::map::HashMap<K,V,S,A>::insert
+                       |          |          |          
+                       |          |           --0.55%--malloc
+                       |          |          
+                       |          |--0.61%--0x7fdbc8ddfc4e
+                       |          |          
+                       |          |--0.60%--zcutils::ZcnblkFanOrderHandle::release
+                       |          |          
+                       |           --0.57%--0x7fdbc8ddfc5c
+                       |          
+                       |--2.17%--zcutils::zcnblk_fan_wal_complete_oldest_write_batch
+                       |          |          
+                       |           --1.88%--zcutils::ZcnblkFanWalDirtyCache::mark_committed
+                       |                     |          
+                       |                      --0.60%--alloc::sync::Arc<T,A>::drop_slow
+                       |          
+                       |--0.57%--zcutils::zcnblk_fan_reserve_order
+                       |          
+                        --0.52%--zcutils::zcnblk_read_fan_plan_frame
+                                  alloc::raw_vec::RawVecInner<A>::try_allocate_in
+                                  malloc
+
+    99.44%     0.00%  [.] 0x00007fdbc8cf4b7a                                                                                                                                                                                                                                                                                     -      -            
+            |
+            ---_RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+               |          
+                --99.44%--core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          zcutils::zcnblk_fan_wal_handler
+                          |          
+                          |--95.21%--zcutils::zcnblk_fan_wal_submit_write_batch
+                          |          |          
+                          |          |--87.60%--zcutils::zcnblk_fan_wal_batch_records
+                          |          |          |          
+                          |          |          |--74.64%--core::slice::sort::unstable::quicksort::quicksort
+                          |          |          |          |          
+                          |          |          |           --52.29%--core::slice::sort::unstable::quicksort::quicksort
+                          |          |          |                     |          
+                          |          |          |                      --39.16%--core::slice::sort::unstable::quicksort::quicksort
+                          |          |          |                                |          
+                          |          |          |                                 --27.99%--core::slice::sort::unstable::quicksort::quicksort
+                          |          |          |                                           |          
+                          |          |          |                                            --18.32%--core::slice::sort::unstable::quicksort::quicksort
+                          |          |          |                                                      |          
+                          |          |          |                                                       --9.48%--core::slice::sort::unstable::quicksort::quicksort
+                          |          |          |                                                                 |          
+                          |          |          |                                                                  --3.72%--core::slice::sort::unstable::quicksort::quicksort
+                          |          |          |                                                                            |          
+                          |          |          |                                                                             --1.13%--core::slice::sort::unstable::quicksort::quicksort
+                          |          |          |          
+                          |          |          |--2.17%--0x7fdbc8ddf55f
+                          |          |          |          
+                          |          |           --1.95%--alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle
+                          |          |                     _ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hdfe182f020670dfbE.llvm.12151036038640485005
+                          |          |                     |          
+                          |          |                      --1.81%--realloc
+                          |          |                                |          
+                          |          |                                 --1.75%--0x7fdbc8d044a7
+                          |          |                                           |          
+                          |          |                                            --0.85%--0x7fdbc8ddf55f
+                          |          |          
+                          |          |--4.52%--zcutils::ZcnblkFanWalDirtyCache::admit_write
+                          |          |          |          
+                          |          |          |--1.18%--hashbrown::map::HashMap<K,V,S,A>::insert
+                          |          |          |          
+                          |          |           --0.55%--malloc
+                          |          |          
+                          |          |--0.61%--0x7fdbc8ddfc4e
+                          |          |          
+                          |          |--0.60%--zcutils::ZcnblkFanOrderHandle::release
+                          |          |          
+                          |           --0.57%--0x7fdbc8ddfc5c
+                          |          
+                          |--2.17%--zcutils::zcnblk_fan_wal_complete_oldest_write_batch
+                          |          |          
+                          |           --1.88%--zcutils::ZcnblkFanWalDirtyCache::mark_committed
+                          |                     |          
+                          |                      --0.60%--alloc::sync::Arc<T,A>::drop_slow
+                          |          
+                          |--0.57%--zcutils::zcnblk_fan_reserve_order
+                          |          
+                           --0.52%--zcutils::zcnblk_read_fan_plan_frame
+                                     alloc::raw_vec::RawVecInner<A>::try_allocate_in
+                                     malloc
+
+    95.76%     0.43%  [.] zcutils::zcnblk_fan_wal_submit_write_batch                                                                                                                                                                                                                                                             -      -            
+            |          
+             --95.33%--zcutils::zcnblk_fan_wal_submit_write_batch
+                       |          
+                       |--87.89%--zcutils::zcnblk_fan_wal_batch_records
+                       |          |          
+                       |          |--74.93%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          |          
+                       |          |           --52.58%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |                     |          
+                       |          |                      --39.45%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |                                |          
+                       |          |                                 --28.28%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |                                           |          
+                       |          |                                            --18.59%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |                                                      |          
+                       |          |                                                       --9.71%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |                                                                 |          
+                       |          |                                                                  --3.90%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |                                                                            |          
+                       |          |                                                                             --1.25%--core::slice::sort::unstable::quicksort::quicksort
+                       |          |          
+                       |          |--2.17%--0x7fdbc8ddf55f
+                       |          |          
+                       |           --1.95%--alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle
+                       |                     _ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hdfe182f020670dfbE.llvm.12151036038640485005
+                       |                     |          
+                       |                      --1.81%--realloc
+                       |                                |          
+                       |                                 --1.75%--0x7fdbc8d044a7
+                       |                                           |          
+                       |                                            --0.85%--0x7fdbc8ddf55f
+                       |          
+                       |--4.54%--zcutils::ZcnblkFanWalDirtyCache::admit_write
+                       |          |          
+                       |          |--1.20%--hashbrown::map::HashMap<K,V,S,A>::insert
+                       |          |          
+                       |           --0.55%--malloc
+                       |          
+                       |--0.84%--zcutils::ZcnblkFanOrderHandle::release
+                       |          |          
+                       |           --0.67%--_ZN7zcutils19ZcnblkFanOrderGuard7release17h1cfa4f5a1ab777d7E.llvm.7531608072156362779
+                       |          
+                       |--0.61%--0x7fdbc8ddfc4e
+                       |          
+                        --0.57%--0x7fdbc8ddfc5c
+
+    89.29%     0.00%  [.] 0x00007fdbc8d727b7                                                                                                                                                                                                                                                                                     -      -            
+            |          
+             --89.29%--0x7fdbc8cf4b7a
+                       _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                       |          
+                        --89.29%--core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  zcutils::zcnblk_fan_wal_handler
+                                  |          
+                                  |--85.08%--zcutils::zcnblk_fan_wal_submit_write_batch
+                                  |          |          
+                                  |          |--77.57%--zcutils::zcnblk_fan_wal_batch_records
+                                  |          |          |          
+                                  |          |          |--64.65%--core::slice::sort::unstable::quicksort::quicksort
+                                  |          |          |          |          
+                                  |          |          |           --42.55%--core::slice::sort::unstable::quicksort::quicksort
+                                  |          |          |                     |          
+                                  |          |          |                      --29.51%--core::slice::sort::unstable::quicksort::quicksort
+                                  |          |          |                                |          
+                                  |          |          |                                 --18.40%--core::slice::sort::unstable::quicksort::quicksort
+                                  |          |          |                                           |          
+                                  |          |          |                                            --8.80%--core::slice::sort::unstable::quicksort::quicksort
+                                  |          |          |          
+                                  |          |          |--2.17%--0x7fdbc8ddf55f
+                                  |          |          |          
+                                  |          |           --1.91%--alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle
+                                  |          |                     _ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hdfe182f020670dfbE.llvm.12151036038640485005
+                                  |          |                     |          
+                                  |          |                      --1.77%--realloc
+                                  |          |                                |          
+                                  |          |                                 --1.75%--0x7fdbc8d044a7
+                                  |          |                                           |          
+                                  |          |                                            --0.85%--0x7fdbc8ddf55f
+                                  |          |          
+                                  |          |--4.48%--zcutils::ZcnblkFanWalDirtyCache::admit_write
+                                  |          |          |          
+                                  |          |          |--1.18%--hashbrown::map::HashMap<K,V,S,A>::insert
+                                  |          |          |          
+                                  |          |           --0.51%--malloc
+                                  |          |          
+                                  |          |--0.61%--0x7fdbc8ddfc4e
+                                  |          |          
+                                  |          |--0.60%--zcutils::ZcnblkFanOrderHandle::release
+                                  |          |          
+                                  |           --0.57%--0x7fdbc8ddfc5c
+                                  |          
+                                  |--2.15%--zcutils::zcnblk_fan_wal_complete_oldest_write_batch
+                                  |          |          
+                                  |           --1.88%--zcutils::ZcnblkFanWalDirtyCache::mark_committed
+                                  |                     |          
+                                  |                      --0.60%--alloc::sync::Arc<T,A>::drop_slow
+                                  |          
+                                  |--0.57%--zcutils::zcnblk_fan_reserve_order
+                                  |          
+                                   --0.52%--zcutils::zcnblk_read_fan_plan_frame
+                                             alloc::raw_vec::RawVecInner<A>::try_allocate_in
+                                             malloc
+
+    87.89%     7.58%  [.] zcutils::zcnblk_fan_wal_batch_records                                                                                                                                                                                                                                                                  -      -            
+            |          
+            |--80.31%--zcutils::zcnblk_fan_wal_batch_records
+            |          |          
+            |          |--74.93%--core::slice::sort::unstable::quicksort::quicksort
+            |          |          |          
+            |          |           --52.58%--core::slice::sort::unstable::quicksort::quicksort
+            |          |                     |          
+            |          |                      --39.45%--core::slice::sort::unstable::quicksort::quicksort
+            |          |                                |          
+            |          |                                 --28.28%--core::slice::sort::unstable::quicksort::quicksort
+            |          |                                           |          
+            |          |                                            --18.59%--core::slice::sort::unstable::quicksort::quicksort
+            |          |                                                      |          
+            |          |                                                       --9.71%--core::slice::sort::unstable::quicksort::quicksort
+            |          |                                                                 |          
+            |          |                                                                  --3.90%--core::slice::sort::unstable::quicksort::quicksort
+            |          |                                                                            |          
+            |          |                                                                             --1.25%--core::slice::sort::unstable::quicksort::quicksort
+            |          |          
+            |          |--2.17%--0x7fdbc8ddf55f
+            |          |          
+            |           --1.95%--alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle
+            |                     _ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hdfe182f020670dfbE.llvm.12151036038640485005
+            |                     |          
+            |                      --1.81%--realloc
+            |                                |          
+            |                                 --1.75%--0x7fdbc8d044a7
+            |                                           |          
+            |                                            --0.85%--0x7fdbc8ddf55f
+            |          
+             --7.58%--0x7fdbc8d727b7
+                       0x7fdbc8cf4b7a
+                       _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                       core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       zcutils::zcnblk_fan_wal_handler
+                       zcutils::zcnblk_fan_wal_submit_write_batch
+                       zcutils::zcnblk_fan_wal_batch_records
+
+    74.93%    74.10%  [.] core::slice::sort::unstable::quicksort::quicksort                                                                                                                                                                                                                                                      -      -            
+            |          
+            |--64.54%--0x7fdbc8d727b7
+            |          0x7fdbc8cf4b7a
+            |          _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+            |          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+            |          std::sys::backtrace::__rust_begin_short_backtrace
+            |          zcutils::zcnblk_fan_wal_handler
+            |          zcutils::zcnblk_fan_wal_submit_write_batch
+            |          zcutils::zcnblk_fan_wal_batch_records
+            |          core::slice::sort::unstable::quicksort::quicksort
+            |          |          
+            |           --42.48%--core::slice::sort::unstable::quicksort::quicksort
+            |                     |          
+            |                      --29.49%--core::slice::sort::unstable::quicksort::quicksort
+            |                                |          
+            |                                 --18.38%--core::slice::sort::unstable::quicksort::quicksort
+            |                                           |          
+            |                                            --8.78%--core::slice::sort::unstable::quicksort::quicksort
+            |          
+            |--9.45%--0x7fdbc8cf4b7a
+            |          _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+            |          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+            |          std::sys::backtrace::__rust_begin_short_backtrace
+            |          zcutils::zcnblk_fan_wal_handler
+            |          zcutils::zcnblk_fan_wal_submit_write_batch
+            |          zcutils::zcnblk_fan_wal_batch_records
+            |          core::slice::sort::unstable::quicksort::quicksort
+            |          core::slice::sort::unstable::quicksort::quicksort
+            |          core::slice::sort::unstable::quicksort::quicksort
+            |          core::slice::sort::unstable::quicksort::quicksort
+            |          core::slice::sort::unstable::quicksort::quicksort
+            |          core::slice::sort::unstable::quicksort::quicksort
+            |          |          
+            |           --3.72%--core::slice::sort::unstable::quicksort::quicksort
+            |                     |          
+            |                      --1.13%--core::slice::sort::unstable::quicksort::quicksort
+            |          
+             --0.83%--core::slice::sort::unstable::quicksort::quicksort
+                       |          
+                        --0.54%--core::slice::sort::unstable::quicksort::quicksort
+
+     4.54%     1.81%  [.] zcutils::ZcnblkFanWalDirtyCache::admit_write                                                                                                                                                                                                                                                           -      -            
+            |          
+            |--2.73%--zcutils::ZcnblkFanWalDirtyCache::admit_write
+            |          |          
+            |          |--1.20%--hashbrown::map::HashMap<K,V,S,A>::insert
+            |          |          
+            |           --0.55%--malloc
+            |          
+             --1.81%--0x7fdbc8d727b7
+                       0x7fdbc8cf4b7a
+                       _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                       core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       zcutils::zcnblk_fan_wal_handler
+                       zcutils::zcnblk_fan_wal_submit_write_batch
+                       zcutils::ZcnblkFanWalDirtyCache::admit_write
+
+     3.02%     0.00%  [.] 0x00007fdbc8ddf55f                                                                                                                                                                                                                                                                                     -      -            
+     3.00%     3.00%  [.] 0x000000000017d55f                                                                                                                                                                                                                                                                                     -      -            
+            |
+            ---0x7fdbc8cf4b7a
+               _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+               std::sys::backtrace::__rust_begin_short_backtrace
+               zcutils::zcnblk_fan_wal_handler
+               zcutils::zcnblk_fan_wal_submit_write_batch
+               zcutils::zcnblk_fan_wal_batch_records
+               |          
+               |--2.15%--0x7fdbc8ddf55f
+               |          
+                --0.85%--alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle
+                          _ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hdfe182f020670dfbE.llvm.12151036038640485005
+                          realloc
+                          0x7fdbc8d044a7
+                          0x7fdbc8ddf55f
+
+     2.52%     0.00%  [.] _ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hdfe182f020670dfbE.llvm.12151036038640485005                                                                                                                                                                                                     -      -            
+            |          
+            |--1.96%--realloc
+            |          |          
+            |           --1.75%--0x7fdbc8d044a7
+            |                     |          
+            |                      --0.85%--0x7fdbc8ddf55f
+            |          
+             --0.54%--malloc
+
+     2.17%     0.07%  [.] zcutils::zcnblk_fan_wal_complete_oldest_write_batch                                                                                                                                                                                                                                                    -      -            
+            |          
+             --2.10%--zcutils::zcnblk_fan_wal_complete_oldest_write_batch
+                       |          
+                        --1.88%--zcutils::ZcnblkFanWalDirtyCache::mark_committed
+                                  |          
+                                   --0.60%--alloc::sync::Arc<T,A>::drop_slow
+
+     1.97%     0.00%  [.] alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle                                                                                                                                                                                                                                         -      -            
+            |
+            ---_ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hdfe182f020670dfbE.llvm.12151036038640485005
+               |          
+                --1.84%--realloc
+                          |          
+                           --1.75%--0x7fdbc8d044a7
+                                     |          
+                                      --0.85%--0x7fdbc8ddf55f
+
+     1.96%     0.05%  [.] realloc                                                                                                                                                                                                                                                                                                -      -            
+            |          
+             --1.91%--realloc
+                       |          
+                        --1.75%--0x7fdbc8d044a7
+                                  |          
+                                   --0.85%--0x7fdbc8ddf55f
+
+     1.90%     0.74%  [.] malloc                                                                                                                                                                                                                                                                                                 -      -            
+            |          
+            |--1.17%--malloc
+            |          
+             --0.74%--0x7fdbc8d727b7
+                       0x7fdbc8cf4b7a
+                       _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                       core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       zcutils::zcnblk_fan_wal_handler
+
+     1.88%     1.03%  [.] zcutils::ZcnblkFanWalDirtyCache::mark_committed                                                                                                                                                                                                                                                        -      -            
+            |          
+            |--1.03%--0x7fdbc8d727b7
+            |          0x7fdbc8cf4b7a
+            |          _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+            |          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+            |          std::sys::backtrace::__rust_begin_short_backtrace
+            |          zcutils::zcnblk_fan_wal_handler
+            |          zcutils::zcnblk_fan_wal_complete_oldest_write_batch
+            |          zcutils::ZcnblkFanWalDirtyCache::mark_committed
+            |          
+             --0.85%--zcutils::ZcnblkFanWalDirtyCache::mark_committed
+                       |          
+                        --0.60%--alloc::sync::Arc<T,A>::drop_slow
+
+     1.75%     0.00%  [.] 0x00007fdbc8d044a7                                                                                                                                                                                                                                                                                     -      -            
+            |          
+             --0.85%--0x7fdbc8ddf55f
+
+     1.20%     1.08%  [.] hashbrown::map::HashMap<K,V,S,A>::insert                                                                                                                                                                                                                                                               -      -            
+            |          
+             --1.08%--0x7fdbc8d727b7
+                       0x7fdbc8cf4b7a
+                       _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                       core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       zcutils::zcnblk_fan_wal_handler
+                       zcutils::zcnblk_fan_wal_submit_write_batch
+                       zcutils::ZcnblkFanWalDirtyCache::admit_write
+                       hashbrown::map::HashMap<K,V,S,A>::insert
+
+     0.89%     0.22%  [.] zcutils::ZcnblkFanOrderHandle::release                                                                                                                                                                                                                                                                 -      -            
+            |          
+             --0.67%--zcutils::ZcnblkFanOrderHandle::release
+                       _ZN7zcutils19ZcnblkFanOrderGuard7release17h1cfa4f5a1ab777d7E.llvm.7531608072156362779
+
+     0.74%     0.74%  [.] core::slice::sort::shared::pivot::median3_rec                                                                                                                                                                                                                                                          -      -            
+            |          
+             --0.55%--0x7fdbc8cf4b7a
+                       _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+                       core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       zcutils::zcnblk_fan_wal_handler
+                       zcutils::zcnblk_fan_wal_submit_write_batch
+                       zcutils::zcnblk_fan_wal_batch_records
+                       core::slice::sort::unstable::quicksort::quicksort
+
+     0.69%     0.69%  [.] 0x000000000017d536                                                                                                                                                                                                                                                                                     -      -            
+            |
+            ---0x7fdbc8cf4b7a
+               _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+               std::sys::backtrace::__rust_begin_short_backtrace
+               zcutils::zcnblk_fan_wal_handler
+               zcutils::zcnblk_fan_wal_submit_write_batch
+
+     0.69%     0.00%  [.] 0x00007fdbc8ddf536                                                                                                                                                                                                                                                                                     -      -            
+     0.67%     0.05%  [.] _ZN7zcutils19ZcnblkFanOrderGuard7release17h1cfa4f5a1ab777d7E.llvm.7531608072156362779                                                                                                                                                                                                                  -      -            
+            |          
+             --0.62%--_ZN7zcutils19ZcnblkFanOrderGuard7release17h1cfa4f5a1ab777d7E.llvm.7531608072156362779
+
+     0.61%     0.61%  [.] 0x000000000017dc4e                                                                                                                                                                                                                                                                                     -      -            
+            |
+            ---0x7fdbc8cf4b7a
+               _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+               std::sys::backtrace::__rust_begin_short_backtrace
+               zcutils::zcnblk_fan_wal_handler
+               zcutils::zcnblk_fan_wal_submit_write_batch
+               0x7fdbc8ddfc4e
+
+     0.61%     0.00%  [.] 0x00007fdbc8ddfc4e                                                                                                                                                                                                                                                                                     -      -            
+     0.60%     0.60%  [.] alloc::sync::Arc<T,A>::drop_slow                                                                                                                                                                                                                                                                       -      -            
+            |
+            ---0x7fdbc8cf4b7a
+               _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+               std::sys::backtrace::__rust_begin_short_backtrace
+               zcutils::zcnblk_fan_wal_handler
+               zcutils::zcnblk_fan_wal_complete_oldest_write_batch
+               zcutils::ZcnblkFanWalDirtyCache::mark_committed
+               alloc::sync::Arc<T,A>::drop_slow
+
+     0.60%     0.60%  [.] 0x000000000017dc5c                                                                                                                                                                                                                                                                                     -      -            
+            |
+            ---0x7fdbc8cf4b7a
+               _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+               std::sys::backtrace::__rust_begin_short_backtrace
+               zcutils::zcnblk_fan_wal_handler
+               |          
+                --0.57%--zcutils::zcnblk_fan_wal_submit_write_batch
+                          0x7fdbc8ddfc5c
+
+     0.60%     0.00%  [.] 0x00007fdbc8ddfc5c                                                                                                                                                                                                                                                                                     -      -            
+     0.57%     0.00%  [.] zcutils::zcnblk_fan_reserve_order                                                                                                                                                                                                                                                                      -      -            
+     0.52%     0.00%  [.] alloc::raw_vec::RawVecInner<A>::try_allocate_in                                                                                                                                                                                                                                                        -      -            
+            |
+            ---malloc
+
+     0.52%     0.00%  [.] zcutils::zcnblk_read_fan_plan_frame                                                                                                                                                                                                                                                                    -      -            
+            |
+            ---alloc::raw_vec::RawVecInner<A>::try_allocate_in
+               malloc
+
+     0.51%     0.51%  [.] 0x000000000017d544                                                                                                                                                                                                                                                                                     -      -            
+            |
+            ---0x7fdbc8cf4b7a
+               _RNvNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hfe4755869317f925
+               std::sys::backtrace::__rust_begin_short_backtrace
+               zcutils::zcnblk_fan_wal_handler
+               zcutils::zcnblk_fan_wal_submit_write_batch
+
+     0.51%     0.00%  [.] 0x00007fdbc8ddf544                                                                                                                                                                                                                                                                                     -      -            
+     0.46%     0.03%  [.] cfree                                                                                                                                                                                                                                                                                                  -      -            
+     0.42%     0.00%  [.] 0x00007fdbc8ddf604                                                                                                                                                                                                                                                                                     -      -            
+     0.41%     0.00%  [.] alloc::collections::vec_deque::VecDeque<T,A>::grow                                                                                                                                                                                                                                                     -      -            
+     0.41%     0.00%  [.] alloc::raw_vec::RawVec<T,A>::grow_one                                                                                                                                                                                                                                                                  -      -            
+     0.39%     0.39%  [.] 0x000000000017d604                                                                                                                                                                                                                                                                                     -      -            
+     0.39%     0.39%  [.] 0x000000000017d54b                                                                                                                                                                                                                                                                                     -      -            
+     0.39%     0.00%  [.] 0x00007fdbc8ddf54b                                                                                                                                                                                                                                                                                     -      -            
+     0.37%     0.37%  [.] 0x00000000000a2135                                                                                                                                                                                                                                                                                     -      -            
+     0.37%     0.00%  [.] 0x00007fdbc8d04135                                                                                                                                                                                                                                                                                     -      -            
+     0.33%     0.33%  [.] 0x000000000017d53d                                                                                                                                                                                                                                                                                     -      -            
+     0.33%     0.00%  [.] 0x00007fdbc8ddf53d                                                                                                                                                                                                                                                                                     -      -            
+     0.27%     0.03%  [.] alloc::collections::btree::map::BTreeMap<K,V,A>::remove                                                                                                                                                                                                                                                -      -            
+     0.26%     0.26%  [.] 0x00000000000a1b55                                                                                                                                                                                                                                                                                     -      -            
+     0.26%     0.00%  [.] 0x00007fdbc8d03b55                                                                                                                                                                                                                                                                                     -      -            
+     0.26%     0.26%  [.] _RNvMNtNtNtCs75vJTIYSa2J_3std4sync9nonpoison7condvarNtB2_7Condvar10notify_all                                                                                                                                                                                                                          -      -            
+     0.26%     0.26%  [.] zcutils::ZcnblkFanOrderHandle::wait_turn                                                                                                                                                                                                                                                               -      -            
+     0.25%     0.00%  [.] zcutils::zcnblk_fan_wal_segments                                                                                                                                                                                                                                                                       -      -            
+     0.24%     0.05%  [.] alloc::collections::btree::remove::<impl alloc::collections::btree::node::Handle<alloc::collections::btree::node::NodeRef<alloc::collections::btree::node::marker::Mut,K,V,alloc::collections::btree::node::marker::Leaf>,alloc::collections::btree::node::marker::KV>>::remove_leaf_kv                -      -            
+     0.24%     0.00%  [.] alloc::collections::btree::remove::<impl alloc::collections::btree::node::Handle<alloc::collections::btree::node::NodeRef<alloc::collections::btree::node::marker::Mut,K,V,alloc::collections::btree::node::marker::LeafOrInternal>,alloc::collections::btree::node::marker::KV>>::remove_kv_tracking  -      -            
+     0.23%     0.23%  [.] 0x000000000017d580                                                                                                                                                                                                                                                                                     -      -            
+     0.23%     0.00%  [.] 0x00007fdbc8ddf580                                                                                                                                                                                                                                                                                     -      -            
+     0.22%     0.22%  [.] 0x00000000000a1b8c                                                                                                                                                                                                                                                                                     -      -            
+     0.22%     0.00%  [.] 0x00007fdbc8d03b8c                                                                                                                                                                                                                                                                                     -      -            
+     0.21%     0.21%  [.] <alloc::collections::vec_deque::iter::Iter<T> as core::iter::traits::iterator::Iterator>::try_fold                                                                                                                                                                                                     -      -            
+     0.18%     0.18%  [.] 0x00000000000a0696                                                                                                                                                                                                                                                                                     -      -            
+     0.18%     0.00%  [.] 0x00007fdbc8d02696                                                                                                                                                                                                                                                                                     -      -            
+     0.18%     0.18%  [.] _RNvMNtNtNtNtCs75vJTIYSa2J_3std3sys4sync5mutex5futexNtB2_5Mutex14lock_contended                                                                                                                                                                                                                        -      -            
+     0.17%     0.17%  [.] alloc::vec::in_place_collect::from_iter_in_place                                                                                                                                                                                                                                                       -      -            
+     0.17%     0.00%  [.] zcutils::zcnblk_read_fan_prepared_batch_from_plans                                                                                                                                                                                                                                                     -      -            
+     0.17%     0.00%  [.] 0x00007fdbc8d03857                                                                                                                                                                                                                                                                                     -      -            
+     0.17%     0.00%  [.] 0xffffffff92a012a6                                                                                                                                                                                                                                                                                     -      -            
+     0.17%     0.00%  [.] 0xffffffff939e3db0                                                                                                                                                                                                                                                                                     -      -            
+     0.16%     0.00%  [.] 0x00007fdbc8d0268f                                                                                                                                                                                                                                                                                     -      -            
+     0.15%     0.12%  [.] zcutils::ZcnblkFanOrderHandle::is_turn                                                                                                                                                                                                                                                                 -      -            
+     0.15%     0.15%  [.] 0x000000000009edce                                                                                                                                                                                                                                                                                     -      -            
+     0.15%     0.00%  [.] 0x00007fdbc8d00dce                                                                                                                                                                                                                                                                                     -      -            
+     0.14%     0.00%  [.] alloc::raw_vec::RawVec<T,A>::grow_one                                                                                                                                                                                                                                                                  -      -            
+     0.14%     0.00%  [.] core::ptr::drop_in_place<zcutils::ZcnblkFanWalSubmittedWriteBatch>                                                                                                                                                                                                                                     -      -            
+     0.13%     0.02%  [.] syscall                                                                                                                                                                                                                                                                                                -      -            
+     0.13%     0.00%  [.] 0x00007fdbc8ddf566                                                                                                                                                                                                                                                                                     -      -            
+     0.13%     0.13%  [.] 0x000000000017d594                                                                                                                                                                                                                                                                                     -      -            
+     0.13%     0.00%  [.] 0x00007fdbc8ddf594                                                                                                                                                                                                                                                                                     -      -            
+     0.12%     0.10%  [.] hashbrown::raw::RawTable<T,A>::reserve_rehash                                                                                                                                                                                                                                                          -      -            
+     0.12%     0.07%  [.] zcutils::zcnblk_fan_wal_upstream_next_request_ready                                                                                                                                                                                                                                                    -      -            
+     0.12%     0.12%  [.] 0x000000000017dc47                                                                                                                                                                                                                                                                                     -      -            
+     0.12%     0.00%  [.] 0x00007fdbc8ddfc47                                                                                                                                                                                                                                                                                     -      -            
+     0.12%     0.00%  [.] 0x00007fdbc8d04469                                                                                                                                                                                                                                                                                     -      -            
+     0.11%     0.00%  [.] 0xffffffff92cf4091                                                                                                                                                                                                                                                                                     -      -            
+     0.11%     0.00%  [.] 0x00007fdbc8d03e39                                                                                                                                                                                                                                                                                     -      -            
+     0.11%     0.11%  [k] 0xffffffff92a00080                                                                                                                                                                                                                                                                                     -      -            
+     0.10%     0.10%  [k] 0xffffffff92a01280                                                                                                                                                                                                                                                                                     -      -            
+     0.10%     0.10%  [k] 0xffffffff93006328                                                                                                                                                                                                                                                                                     -      -            
+     0.10%     0.00%  [.] 0xffffffff9300735c                                                                                                                                                                                                                                                                                     -      -            
+     0.09%     0.09%  [.] 0x000000000009eee6                                                                                                                                                                                                                                                                                     -      -            
+     0.09%     0.00%  [.] 0x00007fdbc8d00ee6                                                                                                                                                                                                                                                                                     -      -            
+     0.08%     0.04%  [.] <alloc::vec::Vec<T,A> as core::ops::drop::Drop>::drop                                                                                                                                                                                                                                                  -      -            
+     0.08%     0.00%  [.] 0x00007fdbc8d0223f                                                                                                                                                                                                                                                                                     -      -            
+     0.07%     0.07%  [k] 0xffffffff92e216b8                                                                                                                                                                                                                                                                                     -      -            
+     0.07%     0.00%  [.] 0xffffffff92a016aa                                                                                                                                                                                                                                                                                     -      -            
+     0.07%     0.00%  [.] 0xffffffff939e32d8                                                                                                                                                                                                                                                                                     -      -            
+     0.07%     0.00%  [.] 0xffffffff92cd2dfd                                                                                                                                                                                                                                                                                     -      -            
+     0.07%     0.07%  [.] 0x000000000017d5db                                                                                                                                                                                                                                                                                     -      -            
+     0.07%     0.00%  [.] 0x00007fdbc8ddf5db                                                                                                                                                                                                                                                                                     -      -            
+     0.07%     0.07%  [.] 0x00000000000a06fd                                                                                                                                                                                                                                                                                     -      -            
+     0.07%     0.00%  [.] 0x00007fdbc8d026fd                                                                                                                                                                                                                                                                                     -      -            
+     0.06%     0.03%  [.] alloc::collections::btree::node::Handle<alloc::collections::btree::node::NodeRef<alloc::collections::btree::node::marker::Mut,K,V,alloc::collections::btree::node::marker::Leaf>,alloc::collections::btree::node::marker::Edge>::insert_recursing                                                      -      -            
+     0.06%     0.00%  [.] alloc::collections::btree::map::entry::Entry<K,V,A>::or_default                                                                                                                                                                                                                                        -      -            
+     0.05%     0.05%  [.] 0x000000000017d56d                                                                                                                                                                                                                                                                                     -      -            
+     0.05%     0.00%  [.] 0x00007fdbc8ddf56d                                                                                                                                                                                                                                                                                     -      -            
+     0.05%     0.00%  [.] zcutils::zcnblk_fan_wal_peek_exact                                                                                                                                                                                                                                                                     -      -            
+     0.05%     0.05%  [.] alloc::vec::in_place_collect::from_iter_in_place                                                                                                                                                                                                                                                       -      -            
+     0.05%     0.00%  [.] 0x00007fdbc8d024f7                                                                                                                                                                                                                                                                                     -      -            
+     0.04%     0.04%  [.] 0x000000000017d587                                                                                                                                                                                                                                                                                     -      -            
+     0.04%     0.00%  [.] 0x00007fdbc8ddf587                                                                                                                                                                                                                                                                                     -      -            
+     0.04%     0.00%  [.] 0x00007fdbc8d041aa                                                                                                                                                                                                                                                                                     -      -            
+     0.04%     0.00%  [.] 0x00007fdbc8d00fff                                                                                                                                                                                                                                                                                     -      -            
+     0.04%     0.04%  [.] 0x000000000017d566                                                                                                                                                                                                                                                                                     -      -            
+     0.04%     0.00%  [.] 0xffffffff92cf404d                                                                                                                                                                                                                                                                                     -      -            
+     0.04%     0.00%  [.] 0x00007fdbc8d024e3                                                                                                                                                                                                                                                                                     -      -            
+     0.03%     0.00%  [.] 0x00007fdbc8ddf638                                                                                                                                                                                                                                                                                     -      -            
+     0.03%     0.03%  [.] 0x000000000017d4fe                                                                                                                                                                                                                                                                                     -      -            
+     0.03%     0.00%  [.] 0x00007fdbc8ddf4fe                                                                                                                                                                                                                                                                                     -      -            
+     0.03%     0.03%  [.] zcutils::zcnblk_fan_wal_write_leaf_batch_payload                                                                                                                                                                                                                                                       -      -            
+     0.03%     0.03%  [.] 0x000000000017d3cb                                                                                                                                                                                                                                                                                     -      -            
+     0.03%     0.00%  [.] 0x00007fdbc8ddf3cb                                                                                                                                                                                                                                                                                     -      -            
+     0.03%     0.03%  [.] 0x00000000000a151a                                                                                                                                                                                                                                                                                     -      -            
+     0.03%     0.00%  [.] 0x00007fdbc8d0351a                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000009ef5c                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d00f5c                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000009edc3                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d00dc3                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] alloc::collections::btree::map::BTreeMap<K,V,A>::insert                                                                                                                                                                                                                                                -      -            
+     0.02%     0.02%  [.] 0x00000000000a0682                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d02682                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000017d59a                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8ddf59a                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000009f065                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d01065                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000009edf0                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d00fbb                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d00df0                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] zcutils::zcnblk_fan_wal_can_pipeline_write_batch                                                                                                                                                                                                                                                       -      -            
+     0.02%     0.02%  [.] 0x00000000000a1b9c                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d03b9c                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x00000000000a2663                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d04663                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x00000000000a1500                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] __libc_calloc                                                                                                                                                                                                                                                                                          -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d03500                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] _RNvCsGIExRX8pES_7___rustc14___rust_realloc                                                                                                                                                                                                                                                            -      -            
+     0.02%     0.02%  [.] 0x000000000009ef1e                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d00f1e                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x00000000000a1460                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d03460                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000017d60b                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8ddf60b                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000009efd4                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d00fd4                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0xffffffff92a0012f                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0xffffffff939dbb1f                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000017d58e                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8ddf58e                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x00000000000a1b92                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d03b92                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8cf16ac                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8cf1667                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8cfc9ee                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [k] 0xffffffff9371f00b                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] zcutils::zcnblk_fan_wal_recv_exact_spin_then_block                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] recv                                                                                                                                                                                                                                                                                                   -      -            
+     0.02%     0.00%  [.] 0xffffffff9371f124                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000009f055                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d01055                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000017d5e2                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8ddf5e2                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d02cb1                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] __mprotect                                                                                                                                                                                                                                                                                             -      -            
+     0.02%     0.02%  [k] 0xffffffff92ff5dcf                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d02966                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] zcutils::ZcnblkFanWalDirtyBudget::reserve                                                                                                                                                                                                                                                              -      -            
+     0.02%     0.02%  [.] zcutils::zcnblk_fan_wal_plan_write_payload_bytes                                                                                                                                                                                                                                                       -      -            
+     0.02%     0.02%  [.] zcutils::zcnblk_read_batch_headers_with_spin                                                                                                                                                                                                                                                           -      -            
+     0.02%     0.02%  [.] 0x000000000009ede7                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] alloc::sync::Arc<T,A>::drop_slow                                                                                                                                                                                                                                                                       -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d00de7                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x00000000000a243b                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d0443b                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x00000000000a1b16                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d03b16                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8ddf579                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [k] 0xffffffff939b4829                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0xffffffff92ff5dcc                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000017d640                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8ddf640                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000009eebb                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8d00ebb                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [k] 0xffffffff930073c7                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000017d558                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.00%  [.] 0x00007fdbc8ddf558                                                                                                                                                                                                                                                                                     -      -            
+     0.02%     0.02%  [.] 0x000000000017d638                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.01%  [k] 0xffffffff92a01690                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.01%  [k] 0xffffffff92cf4061                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.00%  [.] 0x00007fdbc8ddf552                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.01%  [.] core::slice::sort::unstable::ipnsort                                                                                                                                                                                                                                                                   -      -            
+     0.01%     0.00%  [.] 0x00007fdbc9098447                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.00%  [.] 0x00007fdbc90995b9                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.00%  [.] 0x00007fdbc9097e0e                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.01%  [.] 0x000000000002465a                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.00%  [.] 0x00007fdbc909b4db                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.00%  [.] 0x00007fdbc908c238                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.00%  [.] 0x00007fdbc908a254                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.00%  [.] 0x00007fdbc908615b                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.00%  [.] 0x00007fdbc90857ad                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.00%  [.] 0x00007fdbc90852c6                                                                                                                                                                                                                                                                                     -      -            
+     0.01%     0.00%  [.] 0x00007fdbc90a065a                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] _RNvNtCs27Vx93FoQ6z_4core3fmt5write                                                                                                                                                                                                                                                                    -      -            
+     0.00%     0.00%  [.] zcutils::main_entry                                                                                                                                                                                                                                                                                    -      -            
+     0.00%     0.00%  [.] zcutils::zcnblk_fan_cli                                                                                                                                                                                                                                                                                -      -            
+     0.00%     0.00%  [.] zcutils::zcnblk_fan_wal                                                                                                                                                                                                                                                                                -      -            
+     0.00%     0.00%  [.] pthread_getattr_np                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] _IO_file_close                                                                                                                                                                                                                                                                                         -      -            
+     0.00%     0.00%  [.] _start                                                                                                                                                                                                                                                                                                 -      -            
+     0.00%     0.00%  [.] __libc_start_main                                                                                                                                                                                                                                                                                      -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8c8bca7                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] main                                                                                                                                                                                                                                                                                                   -      -            
+     0.00%     0.00%  [.] _RNvNtCs75vJTIYSa2J_3std2rt19lang_start_internal                                                                                                                                                                                                                                                       -      -            
+     0.00%     0.00%  [.] fclose                                                                                                                                                                                                                                                                                                 -      -            
+     0.00%     0.00%  [.] _IO_file_close_it                                                                                                                                                                                                                                                                                      -      -            
+     0.00%     0.00%  [.] _RNvNtNtCs75vJTIYSa2J_3std2io5stdio6__print                                                                                                                                                                                                                                                            -      -            
+     0.00%     0.00%  [.] _RNvXsf_NtNtCs75vJTIYSa2J_3std2io5stdioRNtB5_6StdoutNtB7_5Write9write_fmt                                                                                                                                                                                                                              -      -            
+     0.00%     0.00%  [.] _RNvXsi_NtNtCs75vJTIYSa2J_3std2io5stdioNtB5_10StdoutLockNtB7_5Write9write_all                                                                                                                                                                                                                          -      -            
+     0.00%     0.00%  [.] _RNvXNvNtCs75vJTIYSa2J_3std2io17default_write_fmtINtB2_7AdapterNtNtB4_5stdio10StdoutLockENtNtCs27Vx93FoQ6z_4core3fmt5Write9write_strB6_                                                                                                                                                                -      -            
+     0.00%     0.00%  [.] _RNvNtNtCs27Vx93FoQ6z_4core5slice6memchr7memrchr                                                                                                                                                                                                                                                       -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8d029ca                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8d01dff                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] __mmap                                                                                                                                                                                                                                                                                                 -      -            
+     0.00%     0.00%  [.] zcutils::zc_maybe_warn_route_alignment                                                                                                                                                                                                                                                                 -      -            
+     0.00%     0.00%  [.] core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h536edab2ed233d55                                                                                                                                                                                                               -      -            
+     0.00%     0.00%  [.] std::sys::backtrace::__rust_begin_short_backtrace                                                                                                                                                                                                                                                      -      -            
+     0.00%     0.00%  [.] _ZN7zcutils32tcp_bench_connect_with_source_ip17h864d945c056999caE.llvm.7531608072156362779                                                                                                                                                                                                             -      -            
+     0.00%     0.00%  [.] _RNvXNtNtNtCs27Vx93FoQ6z_4core3fmt3num3imphNtB6_7Display3fmt                                                                                                                                                                                                                                           -      -            
+     0.00%     0.00%  [.] _RNvXs6_NtNtCs27Vx93FoQ6z_4core3net7ip_addrNtB5_8Ipv4AddrNtNtB9_3fmt7Display3fmt                                                                                                                                                                                                                       -      -            
+     0.00%     0.00%  [.] 0x000000000000b563                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fb972e10447                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fb972e115b9                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fb972e0fe0e                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fb972e124cc                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fb972dff563                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] _dl_allocate_tls_init                                                                                                                                                                                                                                                                                  -      -            
+     0.00%     0.00%  [.] std::thread::builder::Builder::spawn_unchecked                                                                                                                                                                                                                                                         -      -            
+     0.00%     0.00%  [.] std::thread::lifecycle::spawn_unchecked                                                                                                                                                                                                                                                                -      -            
+     0.00%     0.00%  [.] _RNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB5_6Thread3new                                                                                                                                                                                                                                       -      -            
+     0.00%     0.00%  [.] pthread_create                                                                                                                                                                                                                                                                                         -      -            
+     0.00%     0.00%  [.] zcutils::socket_locality_label                                                                                                                                                                                                                                                                         -      -            
+     0.00%     0.00%  [.] _RNvNvNtCsgW8esjfipvk_5alloc3fmt6format12format_inner                                                                                                                                                                                                                                                  -      -            
+     0.00%     0.00%  [.] zcutils::read_thread_context_switches                                                                                                                                                                                                                                                                  -      -            
+     0.00%     0.00%  [.] <alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter                                                                                                                                                                                                          -      -            
+     0.00%     0.00%  [.] 0x000000000017d3aa                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] _RNvXsZ_NtCsgW8esjfipvk_5alloc6stringNtB5_6StringNtNtCs27Vx93FoQ6z_4core3fmt5Write9write_str                                                                                                                                                                                                           -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8ddf3aa                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8d042e3                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] _RNvXsz_NtNtCs27Vx93FoQ6z_4core3str4iterNtB5_15SplitWhitespaceNtNtNtNtB9_4iter6traits8iterator8Iterator4next.llvm.6328314207737013835                                                                                                                                                                  -      -            
+     0.00%     0.00%  [.] _RNvMs3_NtNtCs27Vx93FoQ6z_4core3ffi5c_strNtB5_4CStr19from_bytes_with_nul                                                                                                                                                                                                                               -      -            
+     0.00%     0.00%  [.] _RNvNvNtCs75vJTIYSa2J_3std2fs14read_to_string5inner                                                                                                                                                                                                                                                    -      -            
+     0.00%     0.00%  [.] 0x00007fdbc909b1bd                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc907f9d3                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] _dl_catch_exception                                                                                                                                                                                                                                                                                    -      -            
+     0.00%     0.00%  [.] 0x00007fdbc907f670                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000000b6aa                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc908479a                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc9082f19                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc90876aa                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [k] 0xffffffff9371f2fd                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] _ZN7zcutils24set_socket_bench_buffers17h7e68fb8ef8b227d1E.llvm.7531608072156362779                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] setsockopt                                                                                                                                                                                                                                                                                             -      -            
+     0.00%     0.00%  [.] 0x00000000000170bd                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc9097dc3                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc90930bd                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] zcutils::cpu_numa_node                                                                                                                                                                                                                                                                                 -      -            
+     0.00%     0.00%  [.] _RNvNtNtCs75vJTIYSa2J_3std3sys2fs8read_dir                                                                                                                                                                                                                                                             -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8d3e9fe                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] __fstat64                                                                                                                                                                                                                                                                                              -      -            
+     0.00%     0.00%  [.] pthread_attr_setaffinity_np                                                                                                                                                                                                                                                                            -      -            
+     0.00%     0.00%  [.] _RNvNtNtNtNtNtCs75vJTIYSa2J_3std3sys3pal4unix14stack_overflow3imp12make_handler                                                                                                                                                                                                                        -      -            
+     0.00%     0.00%  [.] 0x00007fdbc909846f                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc908107b                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc9080fad                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] __vdso_gettimeofday                                                                                                                                                                                                                                                                                    -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8baf036                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000009f9cc                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8d019cc                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000009f693                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8d01693                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf4967                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf487d                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] snprintf                                                                                                                                                                                                                                                                                               -      -            
+     0.00%     0.00%  [.] 0x000000000009fa13                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8d01a13                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8ce9dae                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000009f887                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8d01887                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000017699a                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cc4669                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8dd899a                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] _ZN7zcutils21pin_current_thread_to17h7da8449ed898f7a5E.llvm.7531608072156362779                                                                                                                                                                                                                        -      -            
+     0.00%     0.00%  [.] 0x00000000000f9a01                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8d5ba01                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] _RNvMs7_NtNtCs75vJTIYSa2J_3std3net3tcpNtB5_11TcpListener10local_addr                                                                                                                                                                                                                                   -      -            
+     0.00%     0.00%  [.] _RNvMsk_NtCs75vJTIYSa2J_3std7processNtB5_7Command6output                                                                                                                                                                                                                                               -      -            
+     0.00%     0.00%  [.] _RNvNtNtNtNtCs75vJTIYSa2J_3std3sys7process4unix6common11read_output                                                                                                                                                                                                                                    -      -            
+     0.00%     0.00%  [.] zcutils::tcp_bench_mux_accept_tagged_listeners                                                                                                                                                                                                                                                         -      -            
+     0.00%     0.00%  [.] std::thread::lifecycle::JoinInner<T>::join                                                                                                                                                                                                                                                             -      -            
+     0.00%     0.00%  [.] getenv                                                                                                                                                                                                                                                                                                 -      -            
+     0.00%     0.00%  [.] _ZN7zcutils14env_enabled_or17he77b1d6248945ad0E.llvm.7531608072156362779                                                                                                                                                                                                                               -      -            
+     0.00%     0.00%  [.] _RNvNtCs75vJTIYSa2J_3std3env4__var                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] _RNCNvNtNtNtCs75vJTIYSa2J_3std3sys3env4unix6getenv0B9_                                                                                                                                                                                                                                                 -      -            
+     0.00%     0.00%  [.] _RNvMNtNtNtCs75vJTIYSa2J_3std3sys2fd4unixNtB2_8FileDesc11read_to_end                                                                                                                                                                                                                                   -      -            
+     0.00%     0.00%  [.] _RINvNvNtCs75vJTIYSa2J_3std2io19default_read_to_end16small_probe_readRNtNtNtNtB6_3sys2fd4unix8FileDescEB6_                                                                                                                                                                                             -      -            
+     0.00%     0.00%  [.] read                                                                                                                                                                                                                                                                                                   -      -            
+     0.00%     0.00%  [.] _RNvMs3_NtNtNtNtCs75vJTIYSa2J_3std3sys3net10connection6socketNtB5_9TcpStream11socket_addr                                                                                                                                                                                                              -      -            
+     0.00%     0.00%  [.] 0x000000000008f6a8                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf16a8                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] _RNvXsi_NtCs27Vx93FoQ6z_4core3fmteNtB5_7Display3fmt                                                                                                                                                                                                                                                    -      -            
+     0.00%     0.00%  [.] 0x0000000000058902                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cc4d59                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cba902                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x0000000000062607                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000006266a                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cc4607                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cc466a                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000001d064                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc9099064                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x0000000000062602                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cc4602                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8baf016                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] __ctype_init                                                                                                                                                                                                                                                                                           -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf495a                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0xffffffff930dda6e                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [k] 0xffffffff930dce56                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x0000000000008782                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc9084782                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] ioctl                                                                                                                                                                                                                                                                                                  -      -            
+     0.00%     0.00%  [.] pthread_sigmask                                                                                                                                                                                                                                                                                        -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8d5b9af                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] sigprocmask                                                                                                                                                                                                                                                                                            -      -            
+     0.00%     0.00%  [k] 0xffffffff939dba14                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] _RNvMs7_NtNtCs75vJTIYSa2J_3std3net3tcpNtB5_11TcpListener6accept                                                                                                                                                                                                                                        -      -            
+     0.00%     0.00%  [.] 0x00000000000928e0                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf48e0                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] <&T as core::fmt::Display>::fmt                                                                                                                                                                                                                                                                        -      -            
+     0.00%     0.00%  [.] _RNvMsa_NtCs27Vx93FoQ6z_4core3fmtNtB5_9Formatter3pad                                                                                                                                                                                                                                                   -      -            
+     0.00%     0.00%  [.] _RNvMs0_NtNtNtCs75vJTIYSa2J_3std3sys6thread4unixNtB5_6Thread4join                                                                                                                                                                                                                                      -      -            
+     0.00%     0.00%  [.] 0x00007fdbc9084a09                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000009006f                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf66ce                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf206f                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [k] 0xffffffff92a000fa                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc9081529                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc909ee14                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000017d340                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cc4682                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cbc2f7                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8ddf340                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [k] 0xffffffff92a015f0                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000009294b                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf494b                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8baf363                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] __sched_yield                                                                                                                                                                                                                                                                                          -      -            
+     0.00%     0.00%  [.] 0x00000000000f9950                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8d5b950                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [k] 0xffffffff9326a654                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0xffffffff930fc378                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0xffffffff93221887                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc9098fed                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] accept4                                                                                                                                                                                                                                                                                                -      -            
+     0.00%     0.00%  [.] 0x00000000001107ac                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000008f66e                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf166e                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] _RNvNtNtCs75vJTIYSa2J_3std2io5stdio31print_to_buffer_if_capture_used                                                                                                                                                                                                                                   -      -            
+     0.00%     0.00%  [.] 0x000000000008f6ad                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00000000001107b3                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf16ad                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x0000000000092944                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf163a                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf4944                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8d727ac                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc90814eb                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc9098fb1                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [k] 0xffffffff92a0012a                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] sched_yield@plt                                                                                                                                                                                                                                                                                        -      -            
+     0.00%     0.00%  [k] 0xffffffff9310e20d                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [k] 0xffffffff9328983e                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x0000000000022d7c                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00000000000054ef                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000008f66f                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x0000000000094777                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x0000000000094781                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x0000000000005fbe                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000001cfb1                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x000000000008f63a                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x0000000000062647                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00000000000928e2                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] __poll                                                                                                                                                                                                                                                                                                 -      -            
+     0.00%     0.00%  [.] 0xffffffff930dcd32                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0xffffffff930da774                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0xffffffff930dd9db                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0xffffffff9322c480                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0xffffffff9328a97e                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00005595012da68f                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00005595012da8cf                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf6773                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf1c9b                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc9098440                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc909ed9a                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8baefbe                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cc4647                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf166f                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf48e2                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf6777                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc8cf6781                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc90814ef                                                                                                                                                                                                                                                                                     -      -            
+     0.00%     0.00%  [.] 0x00007fdbc909ed7c                                                                                                                                                                                                                                                                                     -      -            
+
+
+#
+# (Tip: To trace only single function with Processor Trace use perf record --filter 'filter func @ program' -e intel_pt//u ./program ; perf script --insn-trace)
+#

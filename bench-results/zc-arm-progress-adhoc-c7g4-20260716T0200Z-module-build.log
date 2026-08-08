@@ -1,0 +1,12 @@
+make: Entering directory '/usr/src/linux-headers-6.17.0-1019-aws'
+make[1]: Entering directory '/home/ubuntu/zcutils/kmods'
+  CC [M]  zcnblk_client_mod.o
+  MODPOST Module.symvers
+  CC [M]  zcnblk_client_mod.mod.o
+  CC [M]  .module-common.o
+  LD [M]  zcnblk_client_mod.ko
+  BTF [M] zcnblk_client_mod.ko
+make[1]: Leaving directory '/home/ubuntu/zcutils/kmods'
+make: Leaving directory '/usr/src/linux-headers-6.17.0-1019-aws'
+6.17.0-1019-aws SMP mod_unload modversions aarch64
++ ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.137.141.134 'URING_NODE_INDEX=1 URING_RUN_ID=zc-arm-progress-adhoc-c7g4-20260716T0200Z URING_PRIVATE_IPS=172.31.45.106 cd /home/ubuntu/zcutils && make -C /lib/modules/$(uname -r)/build M=$PWD/kmods zcnblk_client_mod.ko && modinfo -F vermagic kmods/zcnblk_client_mod.ko && sudo modprobe configs 2>/dev/null || true; sudo mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true'

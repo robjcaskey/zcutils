@@ -1,0 +1,4 @@
+zcnblk-fan-wal-local-leaf: leaf=0 target=zcleasemem:1073741824 transport=shared-arena block_devices=no kernel_raid=no
+zcnblk-fan-wal-local-leaf: leaf=1 target=zcleasemem:1073741824 transport=shared-arena block_devices=no kernel_raid=no
+zcnblk-fan-wal-stage-cpus: fan-handler=6-11 fan-async-writeback=12-17 client=0-5
+Error: Custom { kind: Other, error: "TOPOLOGY ERROR: zcnblk-fan WAL: SMT topology conflict: stage fan-async-writeback CPU 16 and stage client CPU 0 in domain local share a physical core; separate fan/client/leaf lanes or report this as an SMT-paired run; strict topology mode refuses to print representative benchmark numbers for this run" }

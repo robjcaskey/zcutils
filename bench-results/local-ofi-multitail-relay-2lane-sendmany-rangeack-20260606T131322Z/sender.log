@@ -1,0 +1,8 @@
+zcofi-wal-send: provider=tcp endpoint=rdm addr=127.0.0.1 base_service=45000 lanes=2 bytes_per_lane=8388608 extent_bytes=65536 message_bytes=65664 workers=2 ack_enabled=yes tx_nowait_requested=no tx_nowait_effective=no prepost_ack_requested=no prepost_ack_effective=no compact_4k=no payload_inject=no ack_window=16 range_ack_receive=yes ofi_domain=auto records_per_extent=16 timeout_ms=10000 busy_poll_iters=100000 cq_sleep_ns=0
+zcofi-wal-send-worker: affinity_index=1 target_cpu=7 status=ok
+zcofi-wal-send-worker: affinity_index=0 target_cpu=6 status=ok
+zcofi-control-client: addr=127.0.0.1:46001 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=1 lane=1 provider=tcp endpoint=rdm addr=127.0.0.1 service=45001 control_port=46001 max_msg_size=18446744073709551615 inject_size=128
+zcofi-control-client: addr=127.0.0.1:46000 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-wal-send-lane: worker=0 lane=0 provider=tcp endpoint=rdm addr=127.0.0.1 service=45000 control_port=46000 max_msg_size=18446744073709551615 inject_size=128
+Error: Custom { kind: Other, error: "zc_ofi_send_many failed rc=-110: OFI fi_send_many post timed out after 10000 ms posted=0/16" }

@@ -1,0 +1,10 @@
+zcofi-rma-write: provider=tcp endpoint=rdm addr=127.0.0.1 base_service=33200 lanes=2 bytes_per_lane=67108864 extent_bytes=1048576 workers=2 direct_rma_write=yes source_payload_pattern=fill:0x00 commit_doorbell=ofi-msg records_per_extent=256 timeout_ms=20000 busy_poll_iters=100000 cq_sleep_ns=0 ofi_domain=auto
+zcofi-rma-write-worker: affinity_index=1 target_cpu=9 status=ok
+zcofi-rma-write-worker: affinity_index=0 target_cpu=8 status=ok
+zcofi-control-client: addr=127.0.0.1:34200 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-control-client: addr=127.0.0.1:34201 local_addr_bytes=16 remote_addr_bytes=16
+zcofi-rma-write-lane: worker=1 lane=1 provider=tcp endpoint=rdm addr=127.0.0.1 service=33201 control_port=34201 remote_addr=0x0000000000000000 remote_key=0x0000000000000000 extent_bytes=1048576 max_msg_size=18446744073709551615 inject_size=128
+zcofi-rma-write-lane: worker=0 lane=0 provider=tcp endpoint=rdm addr=127.0.0.1 service=33200 control_port=34200 remote_addr=0x0000000000000000 remote_key=0x0000000000000000 extent_bytes=1048576 max_msg_size=18446744073709551615 inject_size=128
+zcofi-rma-write-worker: worker=0 streams=1 payload_bytes=67108864 wire_bytes=67108928 extents=64 logical_records=16384 acks=1 seconds=0.015248 payload_Gbitps=35.210 logical_iops=1074512 thread_cpu_seconds=0.020673 cpu_wall_pct=135.6 target_cpu=8 affinity_applied=true start_cpu=8 end_cpu=8 voluntary_ctxt_switches=5 involuntary_ctxt_switches=0 migrations=0
+zcofi-rma-write-worker: worker=1 streams=1 payload_bytes=67108864 wire_bytes=67108928 extents=64 logical_records=16384 acks=1 seconds=0.015868 payload_Gbitps=33.833 logical_iops=1032511 thread_cpu_seconds=0.020844 cpu_wall_pct=131.4 target_cpu=9 affinity_applied=true start_cpu=9 end_cpu=9 voluntary_ctxt_switches=7 involuntary_ctxt_switches=0 migrations=0
+zcofi-rma-write-summary: payload_bytes=134217728 wire_bytes=134217856 extents=128 logical_records=32768 doorbells=2 seconds=0.015868 payload_Gbitps=67.667 logical_iops=2065022 voluntary_ctxt_switches=12 involuntary_ctxt_switches=0 migrations=0

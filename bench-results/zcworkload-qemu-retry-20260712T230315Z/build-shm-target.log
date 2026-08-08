@@ -1,0 +1,122 @@
++ taskset -c 4-7 env CARGO_BUILD_JOBS=4 cargo build --release --bin zcnblk-shm-target
+warning: value assigned to `rq_region` is never read
+    --> src/lib.rs:2454:13
+     |
+2454 |             rq_region.id = 0;
+     |             ^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `rq_region` is never read
+    --> src/lib.rs:2455:13
+     |
+2455 |             rq_region.mmap_offset = 0;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+
+warning: unnecessary `unsafe` block
+     --> src/lib.rs:55299:5
+      |
+55299 |     unsafe { _mm_sfence() };
+      |     ^^^^^^ unnecessary `unsafe` block
+      |
+      = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `open_rma_on_domain` is never used
+     --> src/lib.rs:10295:8
+      |
+10252 | impl ZcOfiEndpoint {
+      | ------------------ associated function in this implementation
+...
+10295 |     fn open_rma_on_domain(
+      |        ^^^^^^^^^^^^^^^^^^
+      |
+      = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `zcnblk_fan_wal_recv_exact_dontwait_spin` is never used
+     --> src/lib.rs:28938:4
+      |
+28938 | fn zcnblk_fan_wal_recv_exact_dontwait_spin(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `zcnblk_fan_wal_read_frame_dontwait_spin` is never used
+     --> src/lib.rs:29273:4
+      |
+29273 | fn zcnblk_fan_wal_read_frame_dontwait_spin(stream: &TcpStream) -> io::Result<ZcnblkFanWalFrame> {
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `zcnblk_fan_wal_read_payload_dontwait_spin` is never used
+     --> src/lib.rs:29394:4
+      |
+29394 | fn zcnblk_fan_wal_read_payload_dontwait_spin(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `append` is never used
+     --> src/lib.rs:30556:8
+      |
+30536 | impl ZcnblkFanWalMemfdLog {
+      | ------------------------- method in this implementation
+...
+30556 |     fn append(&self, payload: &[u8]) -> io::Result<u64> {
+      |        ^^^^^^
+
+warning: method `admit_write_shared_lease` is never used
+     --> src/lib.rs:31933:19
+      |
+31462 | impl ZcnblkFanWalDirtyCache {
+      | --------------------------- method in this implementation
+...
+31933 |     pub(crate) fn admit_write_shared_lease(
+      |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `write_batch` and `read_into` are never used
+    --> src/zcnblk_shm_target.rs:1172:8
+     |
+ 906 | impl RemoteWalLeaf {
+     | ------------------ methods in this implementation
+...
+1172 |     fn write_batch(
+     |        ^^^^^^^^^^^
+...
+1256 |     fn read_into(&mut self, request: ZcnblkShmRequest, out: &mut [u8]) -> io::Result<()> {
+     |        ^^^^^^^^^
+
+warning: fields `lane_count` and `address` are never read
+    --> src/zcnblk_shm_target.rs:1713:5
+     |
+1711 | struct RemoteWalWorker {
+     |        --------------- fields in this struct
+1712 |     lane_id: u32,
+1713 |     lane_count: u32,
+     |     ^^^^^^^^^^
+1714 |     address: String,
+     |     ^^^^^^^
+
+warning: field `lane_id` is never read
+    --> src/zcnblk_shm_target.rs:2038:5
+     |
+2037 | struct WalLaneTransportWorker {
+     |        ---------------------- field in this struct
+2038 |     lane_id: u32,
+     |     ^^^^^^^
+
+warning: method `requeue_request_head` is never used
+    --> src/zcnblk_shm_target.rs:5038:8
+     |
+4462 | impl SharedTarget {
+     | ----------------- method in this implementation
+...
+5038 |     fn requeue_request_head(&mut self, channel: u32, sequence: u64, submit_sequence: u64) {
+     |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: `zcutils` (lib) generated 13 warnings
+   Compiling zcutils v1.0.0 (/home/rob/zcutils)
+    Finished `release` profile [optimized] target(s) in 0.23s
++ test -x target/release/zcnblk-shm-target
++ cp target/release/zcnblk-shm-target bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/zcnblk-shm-target
++ chmod 0755 bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/zcnblk-shm-target
++ sha256sum target/release/zcnblk-shm-target bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/zcnblk-shm-target
+b8e3d3551c81cb0806e2fe06547feab9edeb7b6cc3c2ddef54e035902e28b0d3  target/release/zcnblk-shm-target
+b8e3d3551c81cb0806e2fe06547feab9edeb7b6cc3c2ddef54e035902e28b0d3  bench-results/zcworkload-qemu-retry-20260712T230315Z/rootfs/zcnblk-shm-target
