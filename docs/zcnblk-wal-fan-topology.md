@@ -125,9 +125,17 @@ Representative numbers require:
 - `URING_PLAY_EXPECT_ROUTE_DEV=IFACE` and `URING_PLAY_EXPECT_ROUTE_SRC=IP` on
   each process so the tools source-probe established sockets and warn when Linux
   routes a peer through the wrong NIC
+- `URING_PLAY_ZCNBLK_FAN_LEAF_SOURCE_IPS=card0_ip,card1_ip` on the fan when
+  different mirror/stripe branches must leave through different local NICs
 - lane-to-worker and lane-to-CPU mapping at every hop
 - hugetlb and memlock headroom
 - pinned zcnblk kthreads, fan workers, and edge workers
+
+For strict CPU checks, use per-host topology domains in the leaf CPU map:
+`URING_PLAY_ZCNBLK_FAN_LEAF_CPU_LISTS='leaf0@host-a=0-31;leaf1@host-b=0-31'`.
+Stages with different domains are different machines, so CPU numbers are not
+compared across them. Leaves on the same host should use the same domain so
+exact CPU and SMT sibling conflicts remain fatal under strict mode.
 - stated placement policy, stripe size, and read fallback mode
 
 ## Local KVM Walk

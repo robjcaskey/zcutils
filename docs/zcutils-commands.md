@@ -54,8 +54,16 @@ userspace `zcnblk-target` service.
 Target hosts should not be assembled from custom zc block targets. A target is
 a userspace service. It may finally land bytes on `zcdevnullN`, ordinary files,
 real allowlisted block devices, or optional `/dev/zcbrdN` RAM media, but those
-are last-hop backing media, not the topology. Custom stripe block targets are
-not SAN target backends.
+are last-hop backing media, not the topology. Custom stripe kernel block
+devices are not SAN target backends.
+
+A userspace RAID stage may be co-located on the client host or embedded in the
+userspace target process. `zcraid0-userspace:...` is that explicit target-stage
+form; the userspace stage chooses the member and offset before issuing I/O to
+terminal leaf media. The older `zcraid0:...` spelling is intentionally rejected.
+It does not make `/dev/zcnblk0` or the zcnblk kernel client a stripe primitive.
+Startup must report `placement_owner=zcnblk-target-userspace-raid-stage` and
+`block_client_placement=no` for this form.
 
 Keep the fan tree in userspace: `fanplan`, mux/demux routing, forwarding,
 RAID0/RAID1 policy, tiering, tier spill decisions, backpressure, descriptor
@@ -77,9 +85,12 @@ remains a compatibility alias for the older synchronous stripe path.
 
 Same-sector ordering is part of the contract. The fan reserves per-4K order
 slots when request headers arrive; batch headers are all reserved before any
-payload is forwarded. Writes wait for leaf `ZCNBLK_OP_WRITE_ACK` before that
-sector order is released, so leaf targets must run with
-`URING_PLAY_ZCNBLK_WRITE_ACKS=1`.
+payload is forwarded. With the WAL dirty budget enabled, writes become locally
+visible after bounded dirty-cache admission; same-sector reads that arrive before
+leaf commit are answered from that dirty cache. Explicit `ZCNBLK_OP_SYNC`
+requests are the durability/high-water-mark boundary and wait for leaf commit
+and sync results before returning. Set `URING_PLAY_ZCNBLK_WAL_WRITE_ACK_MODE=remote`
+only when ordinary write ACKs must wait for leaf result batches too.
 
 The WAL engine is selected with `--engine wal`. It speaks fixed 128-byte fan WAL
 descriptor/result frames to `zcnblk-wal-leaf`, supports `--mode stripe|mirror`,
@@ -92,13 +103,20 @@ zcnblk-wal-leaf zcmem:1G 127.0.0.1 24600 1 1 4K 1 false blocking
 zcnblk-wal-leaf zcmem:1G 127.0.0.2 24600 1 1 4K 1 false blocking
 
 URING_PLAY_ZCNBLK_WRITE_ACKS=1 \
-URING_PLAY_ZCNBLK_BATCH_DEPTH=64 \
+URING_PLAY_ZCNBLK_BATCH_DEPTH=512 \
 URING_PLAY_ZCNBLK_WAL_BATCH_WINDOW=16 \
 zcnblk-fan --engine wal --leaves 127.0.0.1,127.0.0.2 --bind 127.0.0.1 \
   --base-port 23600 --ports 1 --connections-per-port 1 \
   --bytes-per-connection 4M --chunk-bytes 4K --stripe-bytes 4K \
   --leaf-base-port 24600 --pin-handlers false --mode stripe
 ```
+
+For dual-NIC fan edges, bind each leaf branch to the intended local source
+address with `URING_PLAY_ZCNBLK_FAN_LEAF_SOURCE_IPS=card0_ip,card1_ip`. A
+single `URING_PLAY_SOURCE_IP` still applies to every leaf for one-NIC runs.
+The fan startup line and `zcnblk-fan-wal-leaf-stream` logs print
+`leaf_source_ips=` and per-stream `source_ip=`; do not treat a multi-NIC
+benchmark as representative unless those match the declared lane-to-NIC plan.
 
 `zcmem:SIZE` is the preferred local correctness/performance leaf for early
 fan work. It is a userspace mmap-backed block image, so it preserves
@@ -108,6 +126,90 @@ It logs NUMA placement and supports `URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_NUMA_NODE`
 `URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_THP`, and
 `URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_FIRST_TOUCH`. Use `/dev/zcbrdN` only as
 a terminal block-media control after userspace placement has already happened.
+For local conformance, run `zcnblk-send` with
+`URING_PLAY_ZCNBLK_OP=write-sync-read`,
+`URING_PLAY_ZCNBLK_VERIFY_READS=1`, and
+`URING_PLAY_ZCNBLK_WAIT_WRITE_ACKS=1`; this writes a range, waits for ACKs,
+sends `ZCNBLK_OP_SYNC`, then reads the same range back from the still-live
+userspace RAM leaves. `URING_PLAY_ZCNBLK_OP=write-read-same` is the faster
+read-after-write smoke and can be combined with `URING_PLAY_ZCNBLK_BATCH_DEPTH`.
+For random 4K read-after-write smokes, set `URING_PLAY_ZCNBLK_ACCESS=random`
+and `URING_PLAY_ZCNBLK_RANDOM_RANGE_BYTES=SIZE`. Random placement must keep
+`URING_PLAY_ZCNBLK_SEND_WRITE_EXTENTS=0` and
+`URING_PLAY_ZCNBLK_SEND_READ_EXTENTS=0`; otherwise the sender would hide the
+per-sector ordering and dirty-cache lookup problem inside synthetic linear
+extents.
+For high-throughput linear WAL runs, also set
+`URING_PLAY_ZCNBLK_SEND_WRITE_EXTENTS=1` and
+`URING_PLAY_ZCNBLK_SEND_READ_EXTENTS=1`; otherwise the first hop is still being
+fed batched 4K descriptors instead of large logical WAL extents. `zcnblk-send`
+prints `write_extents=` and `read_extents=` in its startup line and emits a perf
+warning when a linear batched run omits those extent onramp knobs. For
+`write-read-same` extent tests, batch depth is split between the write and read
+extent in each request. A 1 MiB extent with 4 KiB records therefore needs
+`URING_PLAY_ZCNBLK_BATCH_DEPTH>=512` and
+`URING_PLAY_ZCNBLK_READ_WINDOW>=256`; the sender warns, and strict topology mode
+fails, if smaller knobs silently cap the real WAL extent size.
+`URING_PLAY_ZCNBLK_SEND_READ_EXTENT_BATCH_EXTENTS=N` can then group adjacent
+read extent headers into one upstream batch. This lets the fan emit
+`READ_RANGE_RESP` records and reduces response `writev` calls, but it is not a
+free default: on local loopback, larger range responses can block longer on the
+client socket. Always report `read_extent_batch_extents=`,
+`read_cache_range_response_*`, `read_cache_response_writev_calls`, and context
+switches with those runs.
+The fan startup line prints `client_fan_transport=` and
+`fan_leaf_transport=`. A `local:zcleasemem` leaf should currently report
+`client_fan_transport=tcp fan_leaf_transport=shared-arena`: that removes the
+fan-to-leaf socket payload leg, but the client-to-fan edge is still TCP unless a
+shared-memory onramp control is explicitly being tested.
+For copy accounting, sender summaries now also print
+`socket_payload_copy_bytes_lower_bound` and
+`user_payload_touch_bytes_lower_bound`. The socket value is the first-hop TCP
+payload copied into/out of the client process; the touch value also includes
+payload generation and optional read verification scans. Fan summaries print a
+split ledger: `client_fan_ingress_socket_payload_copy_bytes_lower_bound`,
+`fan_client_response_socket_payload_copy_bytes_lower_bound`,
+`fan_leaf_socket_payload_copy_bytes_lower_bound`,
+`local_leaf_socket_payload_copy_avoided_bytes`,
+`all_socket_payload_copy_bytes_lower_bound`, `leased_payload_reference_bytes`,
+`materialized_payload_copy_bytes`, and
+`observed_total_payload_copy_bytes_lower_bound`. The observed total lower bound
+is known socket payload movement plus materialized WAL-stage payload copies; it
+does not count lease references as copies. A same-host shared-arena run can
+still be limited by TCP loopback copies even when `async_copied_payload_bytes=0`
+and `read_cache_materialized_bytes=0`.
+Set `URING_PLAY_ZCNBLK_WAL_ZERO_COPY_STRICT=1` (or
+`URING_PLAY_ZCNBLK_ZERO_COPY_STRICT=1`) for zero-copy validation runs. In that
+mode the fan prints its counters and then fails before the final throughput line
+if `materialized_payload_copy_bytes` is non-zero. The WAL leaf similarly fails
+if it used heap payload-data receive or copy submits. Heap descriptor/control
+bytes are printed separately as `heap_payload_descriptor_bytes` and are not a
+user-payload copy fallback. This strict guard does not fail on
+`socket_payload_copy_bytes_lower_bound`; that counter is the TCP transport cost
+and must be interpreted separately from WAL-stage ownership fallbacks.
+
+Current same-host copy ledger:
+
+- `zcnblk-send -> zcnblk-fan` over TCP still copies write payloads across the
+  socket boundary and later copies/drains read responses at the client.
+- `zcnblk-fan --engine wal --leaves local:zcleasemem:...` can keep
+  fan-to-leaf mirror payloads as memfd/shared-arena leases. Strict runs should
+  show `async_copied_payload_bytes=0`, `read_cache_materialized_bytes=0`, and
+  `materialized_payload_copy_bytes=0`, with
+  `fan_leaf_socket_payload_copy_bytes_lower_bound=0`.
+- Same-host production WAL numbers are therefore a TCP-onramp measurement, not
+  the shared-memory architectural ceiling. Use `zcfanout-shmlease-bench
+  ... zcnblk-shm-onramp`, `zcnblk-shm-pipeline`, and `zcnblk-shm-mirror` as the
+  no-loopback controls; those paths must report `payload_copy_bytes=0`,
+  `observed_payload_touch_bytes`, `voluntary_ctxt_switches=0`, and an explicit
+  `lane_cpu_map=`.
+- Set `URING_PLAY_ZCNBLK_REQUIRE_LOCAL_SHM_ONRAMP=1` when a same-host ceiling
+  run must fail instead of silently using the TCP client/fan edge with local
+  `zcleasemem` leaves.
+- Inter-host runs should keep the same descriptor/HWM contract but replace
+  memfd leases with NIC-readable registered memory, TCP send-zc, or RDMA/libfabric
+  extents. Do not compare them to local loopback without accounting for each
+  socket or NIC DMA boundary.
 
 The final optional `zcnblk-wal-leaf` argument is leaf submit mode:
 `blocking` uses `pread`/`pwrite`, `uring` queues terminal block-device
@@ -121,17 +223,67 @@ actual io_uring block submission.
 
 For write IOPS tests, `URING_PLAY_ZCNBLK_BATCH_DEPTH` is required. The fan
 preserves per-4K ordering, but explicit upstream write batches are forwarded to
-each leaf as coalesced `WRITE_BATCH` WAL chunks with a descriptor array followed
-by one payload area. Leaves return coalesced `RESULT_BATCH` descriptor arrays,
-and the fan interleaves those leaf result logs in the lane-local handler before
+each leaf as `WRITE_BATCH` WAL chunks with a descriptor array followed by one
+payload area. Leaves return coalesced `RESULT_BATCH` descriptor arrays, and the
+fan interleaves those leaf result logs in the lane-local handler before
 answering the client with a `BATCH_RESP` containing the write ACK headers. Treat
-unbatched 4K WAL fan numbers as a topology smoke only.
+unbatched 4K WAL fan numbers as a topology smoke only. Bigger is not always
+better on the TCP path: record both `max_upstream_batch_frames` and
+`max_leaf_submit_records`, and do not cross the local socket/leaf framing knee
+without a benchmark proving that throughput still rises.
 `URING_PLAY_ZCNBLK_WAL_BATCH_WINDOW` controls how many disjoint leaf write
 batches the fan can keep outstanding before draining result batches; `1`
 intentionally exposes the serialized wakeup-per-batch path. For terminal
 io_uring leaves, `URING_PLAY_ZCNBLK_WAL_LEAF_RING_ENTRIES` and
 `URING_PLAY_ZCNBLK_WAL_LEAF_CQ_ENTRIES` override the leaf ring size and are
 printed by `zcnblk-wal-leaf`.
+`URING_PLAY_ZCNBLK_FAN_LEAF_MAX_BATCH_RECORDS=N` caps direct fan-to-leaf
+`WRITE_BATCH` frames while preserving the larger upstream batch as a single
+ordered WAL admission unit. It is an egress-shaping diagnostic for TCP socket
+locality and should be reported with the run; it is not a userspace RAID
+placement primitive.
+`URING_PLAY_ZCNBLK_FAN_REQUEST_CHUNKING=1` is enabled by default and splits
+large mixed upstream request batches inside the fan by write payload before
+dirty admission and leaf preparation. `URING_PLAY_ZCNBLK_FAN_REQUEST_CHUNK_BYTES`
+defaults to `1M` and must be a multiple of 128-byte WAL records. This is
+lane-local WAL admission shaping, not RAID placement. Alternating write/read
+batches keep same-sector cached reads adjacent to their writes, but avoid
+forcing a single multi-MiB upstream receive/descriptor bubble through one fan
+handler turn.
+
+On the local June 7, 2026 4-lane strict mirror control with terminal `zcmem`
+userspace RAM leaves, batch depth `512` is the current useful TCP foreground
+zone after leasing upstream dirty payload buffers, compacting async writeback
+descriptors, and chunking large request batches. With sender lanes pinned to
+CPUs `0-3`, fan handlers to `4-7`, fan async writeback to `8-11`, leaf 0 to
+`12-15`, and leaf 1 to `28-31`, a verified `write-read-same` run with
+`512M/lane`, `URING_PLAY_ZCNBLK_BATCH_DEPTH=512`, `URING_PLAY_ZCNBLK_FAN_REQUEST_CHUNK_BYTES=1M`,
+and deferred unsynced writeback measured about 2.24M foreground 4K frames/s at
+the sender. The fan summary includes the deferred EOF flush to the leaves, so
+use the sender foreground rate for client-visible unsynced IOPS and the fan/leaf
+rates for writeback drain capacity. The same 64M/lane profile measured about
+1.67M frames/s with immediate async leaf writeback and about 1.88M frames/s with
+deferred unsynced writeback. An 8-lane SMT-sharing local map was slower because
+the fan receive phase ballooned, so do not assume more lanes without isolated
+cores and a benchmark proving that the lane-to-CPU map still fits the host.
+Report `max_upstream_batch_frames`, `max_leaf_submit_records`,
+`request_chunk_bytes`, context switches, and the fan phase timing fields before
+treating a larger batch or lane count as better.
+For full fan-stage topology checks, pass the client and leaf maps to the fan:
+`URING_PLAY_ZCNBLK_FAN_CLIENT_CPU_LIST=0-3` and
+`URING_PLAY_ZCNBLK_FAN_LEAF_CPU_LISTS='leaf0=8-11;leaf1=12-15'`. The fan already
+uses `URING_PLAY_PIN_CPU_LIST` for its own handler map. With those variables set
+it prints `zcnblk-fan-wal-stage-cpus` and warns, or fails under
+`URING_PLAY_TOPOLOGY_STRICT=1`, when the client, fan, or leaf stages reuse exact
+CPUs or SMT siblings. A run that places two mirror leaves on sibling threads is
+an SMT-paired experiment, not a physically separated topology result.
+When a CPU list describes a remote host, add a topology domain to the stage
+label, for example
+`URING_PLAY_ZCNBLK_FAN_LEAF_CPU_LISTS='leaf0@leaf-a=0-31;leaf1@leaf-b=0-31'`.
+CPU and SMT conflicts are checked only within the same domain, so local fan CPU
+IDs are not compared with remote leaf CPU IDs. If two leaves share one remote
+host, give them the same domain so strict mode can still catch sibling or exact
+CPU overlap on that host.
 
 Experimental fan result zipping knobs are available for locality tests.
 `URING_PLAY_ZCNBLK_FAN_RESULT_ARENA=1` starts per-leaf result receiver threads
@@ -144,6 +296,13 @@ on the handler lane and uses the arena only for secondary leaves.
 `URING_PLAY_ZCNBLK_FAN_RESULT_ARENA_SPIN=1` makes arena receivers poll result
 headers with `recv(MSG_DONTWAIT)` for experiments on dedicated cores. These are
 userspace fan/interleave mechanisms; they are not block-device RAID primitives.
+`URING_PLAY_ZCNBLK_FAN_HWM_ONLY_RESULTS=1` makes the fan treat write-only
+zero-payload range result batches as branch high-water marks and complete the
+submitted write batch after a batch-level segment-count check, rather than
+expanding every 4K result back into per-request counters. It requires
+`URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1`; if a leaf returns descriptor results
+instead, the run fails instead of quietly falling back to a different completion
+path.
 
 Fan handler result waits default to ordinary blocking reads for everyday
 traffic. `URING_PLAY_ZCNBLK_FAN_RESULT_WAIT_POLICY=adaptive` makes the handler
@@ -157,9 +316,24 @@ dedicated-core, ultra-low-latency deployments. Bound it with
 CPUs. Non-blocking wait policies print warnings when handler pinning or an
 explicit lane-to-CPU map is missing.
 
-For high-IOPS runs, size `URING_PLAY_ZCNBLK_BATCH_DEPTH` so each leaf gets
-multi-MiB WAL chunks rather than 4K descriptor chatter, and record the
-lane-to-worker and lane-to-CPU mapping with the result.
+Mixed read/write upstream batches stay on the request-batch path by default so
+the fan and leaves use one result framing contract for writes and dirty-cache
+reads. `URING_PLAY_ZCNBLK_FAN_SPLIT_MIXED_WRITES=1` is an experimental scheduler
+knob for locality work and should be treated as opt-in until its ordering and
+completion behavior has separate conformance coverage. For `mixed` and
+`write-read-same`, the sender bounds in-flight reads with
+`URING_PLAY_ZCNBLK_MIXED_READ_DRAIN_WATERMARK`; the default is a conservative
+derived value from the read window and batch depth. This prevents a high-window
+sender from filling the TCP path with writes while the paired read responses are
+waiting behind socket backpressure.
+
+For high-IOPS runs, size `URING_PLAY_ZCNBLK_BATCH_DEPTH` so descriptor chatter is
+amortized without forcing per-leaf socket bursts that stall the lane. Record the
+lane-to-worker and lane-to-CPU mapping with the result, plus the requested and
+observed socket buffer sizing. On a busy shared local host, repeat the run before
+treating the number as anything stronger than a smoke result; CPU contention,
+powersave governors, socket buffer caps, memlock, and memory-bandwidth pressure
+can move the score even when the copy and ordering counters are stable.
 
 The WAL fan also has a bounded volatile write-back dirty budget. It is enabled
 by default and accounts logical payload bytes admitted into the outstanding
@@ -175,6 +349,26 @@ valid correctness/backpressure profiles, but they should be expected to
 throttle. The fan summary prints dirty admit/release, current, max-observed,
 pressure, and wait counters so benchmark logs show whether the run was
 cache-sized correctly.
+Dirty-cache entries lease the upstream batch payload buffer instead of copying
+each 4K record into a separate cache allocation. Read-after-write conformance
+should include a `zcmem` terminal-leaf `write-read-same` smoke with
+`URING_PLAY_ZCNBLK_VERIFY_READS=1`; representative logs should show verified
+read bytes at the client and `read_bytes=0` on the leaves for fully cached
+same-sector reads.
+Mixed request batches keep same-batch write leases in a lane-local run list and
+only publish those runs to the shared dirty cache at a batch boundary or on a
+local read miss. This avoids flushing every alternating 4K write/read pair
+through the global dirty map while preserving strict read-after-write order.
+The shared dirty extent map is range-sharded with
+`URING_PLAY_ZCNBLK_FAN_DIRTY_EXTENT_SHARDS` and
+`URING_PLAY_ZCNBLK_FAN_DIRTY_EXTENT_SHARD_RECORDS`; the default span is 16K
+4K records, so 64 MiB-spaced lanes land on separate extent locks. Benchmark
+logs must report `dirty_extent_shards`, `dirty_extent_shard_records`,
+`phase_dirty_admit_seconds`, and context switches when comparing lane counts.
+Fully cached fan reads should stay in leased extent form until the upstream
+response write. Adjacent leased read parts are coalesced into large response
+iovecs; a result that falls back to materialized 4K buffers or one iovec per
+record is a control path, not the target 600 Gbit/s fan-cache architecture.
 
 When `URING_PLAY_ZCNBLK_WRITE_ACKS=1`, `zcnblk-fan --engine wal` defaults to
 `URING_PLAY_ZCNBLK_WAL_WRITE_ACK_MODE=admit`: pure write batches ACK after local
@@ -183,6 +377,129 @@ travel as `ZCNBLK_OP_SYNC` and return `ZCNBLK_OP_SYNC_ACK` only after the global
 fan-WAL dirty HWM drains and leaf sync results return. Set
 `URING_PLAY_ZCNBLK_WAL_WRITE_ACK_MODE=remote` to make ordinary write ACKs wait
 for leaf result batches too.
+
+For sync-bound writeback runs, `URING_PLAY_ZCNBLK_FAN_ASYNC_WRITEBACK=1` lets
+the fan complete writes after bounded dirty-cache admission and moves leaf
+submission to a userspace writeback thread. The writeback thread can coalesce
+adjacent queued leaf work with
+`URING_PLAY_ZCNBLK_FAN_ASYNC_MERGE_LEAF_BATCHES=1`,
+`URING_PLAY_ZCNBLK_FAN_ASYNC_MERGE_MAX_BATCHES`,
+`URING_PLAY_ZCNBLK_FAN_ASYNC_MERGE_MAX_RECORDS`,
+`URING_PLAY_ZCNBLK_FAN_ASYNC_MERGE_MAX_PAYLOAD_BYTES`, and the bounded busy
+wait `URING_PLAY_ZCNBLK_FAN_ASYNC_MERGE_SPIN_USEC`. This path requires range
+result batches; disabling `URING_PLAY_ZCNBLK_WAL_RESULT_RANGES` is a startup
+error when async leaf merging is enabled. Async writeback logs
+`async_copied_payload_bytes` and `async_leased_payload_bytes`; representative
+mirror runs should show branch payload leaving through leased ranges, not
+pre-egress fan-side payload copies.
+`URING_PLAY_ZCNBLK_FAN_ASYNC_RESULT_WINDOW` defaults to `4096` result batches so
+immediate async writeback can keep a lane's leaf streams moving until a sync,
+EOF, dirty-budget pressure, or the explicit window is reached. Smaller values
+are useful diagnostics for result-ack churn, but representative high-throughput
+runs should report the window and the `result_window_drains` counters.
+`URING_PLAY_ZCNBLK_FAN_ASYNC_WRITE_EXTENTS=1` is enabled by default and emits
+compact `WRITE_EXTENT_BATCH` records for contiguous write runs instead of one
+128-byte descriptor per 4K record on the async leaf path. The fan summary prints
+`async_write_extent_batches`, `async_write_extents`, and
+`async_saved_descriptor_bytes`. Per-batch extent tracing is intentionally
+separate and opt-in with `URING_PLAY_ZCNBLK_FAN_ASYNC_WRITE_EXTENT_TRACE=1`
+because trace logging is not part of a representative IOPS run.
+When fan handlers are pinned, the fan now reports CPU topology by runtime slot:
+`fan-handler` uses affinity slots `0..total_connections`, async writeback uses
+`fan-async-writeback` slots starting at `total_connections`, and result-arena
+receiver threads use `fan-result-leafN` slots after the handler range. With four
+fan lanes, for example, `URING_PLAY_PIN_CPU_LIST=4,5,6,7,16,17,18,19` maps
+handlers to `4-7` and async writeback to `16-19`; under
+`URING_PLAY_TOPOLOGY_STRICT=1`, the fan refuses representative numbers when any
+active fan/client/leaf stage wraps, overlaps, or SMT-pairs without being stated.
+For `zcleasemem` leaves, `URING_PLAY_ZCNBLK_WAL_LEAF_ZCLEASEMEM_MEMFD=1`
+receives the compact extent table in userspace but splices the bulk extent
+payload from the leaf TCP socket into a memfd lease log. Later cached reads can
+then be served by reference/sendfile from the leaf lease cache instead of
+materializing the payload into a fresh heap buffer. This is an opt-in WAL leaf
+mode and does not make placement, mirror, stripe, tier, or spill decisions.
+For same-host fan-to-leaf RAM tests, `zcnblk-fan --engine wal` can use
+`--leaves local:zcleasemem:SIZE,local:zcleasemem:SIZE` instead of starting
+separate `zcnblk-wal-leaf` TCP processes. This path requires
+`URING_PLAY_ZCNBLK_FAN_ASYNC_WRITEBACK=1` and range results, cannot currently
+mix local and TCP leaves, and is intentionally limited to async writes plus
+dirty-cache or `zcleasemem` read hits. Full uncached local reads now return
+leased local leaf parts, with unwritten holes backed by a reusable zero lease
+controlled by `URING_PLAY_ZCNBLK_ZERO_LEASE_BYTES`; representative zero-copy
+runs should show `read_cache_materialized_bytes=0`. The local leaf adopts
+fan-owned payload leases; it is not a block mirror/stripe primitive, and
+`/dev/zcbrdN` or other block devices remain terminal media only after userspace
+placement has already happened.
+`URING_PLAY_ZCNBLK_FAN_LOCAL_INLINE_WRITEBACK=1` keeps that same
+`local:zcleasemem` lease-publish path on the fan handler thread instead of
+waking a per-lane local writeback worker. Use it only for in-process local
+leaves; the fan prints `zcnblk-fan-wal-local-inline-writeback` lines and the
+summary still reports the work in the `async_*` counters for A/B comparison.
+Recent local tests showed this removes the worker handoff context switches but
+does not remove the client/fan TCP socket payload copies.
+For mirror mode, `URING_PLAY_ZCNBLK_FAN_MIRROR_READ_POLICY=extent` selects one
+mirror leg for an entire read extent instead of splitting a large read into 4K
+mirror stripes. `URING_PLAY_ZCNBLK_FAN_MIRROR_READ_EXTENT_BYTES=N` controls the
+load-balance unit and accepts the same `K/M/G` suffixes as CLI size arguments;
+the fan startup line prints `mirror_read_policy=...` so benchmark artifacts
+state the read placement policy.
+`URING_PLAY_ZCNBLK_FAN_MEMFD_SEND_COALESCE_BYTES=N` coalesces adjacent memfd
+payload ranges before the fan sends them onward. For cached read responses this
+is required to avoid one sendfile per 4 KiB dirty-cache hit: range response
+headers can collapse descriptor chatter while the payload path is still
+fragmented. The default `0` preserves one sendfile per existing range; benchmark
+runs that rely on the memfd dirty cache should report this value and the
+`read_cache_response_*` counters.
+`URING_PLAY_ZCNBLK_FAN_INGRESS_MEMFD_PAYLOAD=1` is an opt-in fan ingress
+experiment that splices upstream write payload bytes into the fan memfd dirty
+log and forwards leaf write payloads as memfd ranges. Use it with
+`URING_PLAY_ZCNBLK_FAN_MEMFD_DIRTY_CACHE=1` when measuring whether the fan can
+avoid heap materialization on the write/mirror path.
+`scripts/zcnblk-fanwal-plan-bench.sh` exposes the corresponding high-IOPS
+topology knobs as stable environment variables: `MIRROR_READ_POLICY`,
+`MIRROR_READ_EXTENT_BYTES`, `FAN_RESULT_WAIT_POLICY`,
+`FAN_RESULT_SPIN_BUDGET`, `FAN_RESULT_SPIN_MIN_OUTSTANDING`,
+`FAN_UPSTREAM_SPIN_READS`, `SEND_WRITE_WINDOW`, `SEND_READ_WINDOW`, and
+`LEAF_SPIN_BUDGET`. `FAN_LOCAL_INLINE_WRITEBACK=1` forwards the inline local
+writeback knob to the fan and records it in `topology.env`. For in-process
+`local:zcleasemem` leaves the runner no longer passes external leaf CPU groups
+to the fan; representative local-leaf artifacts must show
+`fan_leaf_cpu_lists=in-process-local-leaves` and the fan startup line must show
+`fan_leaf_transport=shared-arena`.
+For strict zero-copy validation, set `URING_PLAY_ZCNBLK_WAL_ZERO_COPY_STRICT=1`.
+The fan rejects non-zero `materialized_payload_copy_bytes`; the WAL leaf rejects
+non-zero heap payload-data receive or copy-submit counters. Heap descriptor
+bytes are still reported because compact extent tables are control metadata, not
+the data payload. Use this for representative lease/memfd runs so copy fallbacks
+cannot masquerade as zero-copy results.
+The WAL leaf summary prints `payload_read_bytes`, heap-vs-memfd receive bytes,
+lease-vs-copy submit bytes, and `phase_payload_read_seconds`,
+`phase_decode_seconds`, `phase_submit_seconds`, and
+`phase_result_write_seconds`. Treat those phase counters as required evidence:
+recent local loopback runs showed leaf lease adoption was effectively free while
+TCP payload receive dominated, and the leaf memfd splice path was slower than
+heap receive plus lease adoption. Do not assume a "zero-copy" knob is a win
+unless those counters and end-to-end throughput prove it on the target topology.
+For dedicated-core WAL leaf receive tests,
+`URING_PLAY_ZCNBLK_WAL_LEAF_SPIN_READS=1` with
+`URING_PLAY_ZCNBLK_WAL_LEAF_SPIN_BUDGET=N` enables bounded
+`recv(MSG_DONTWAIT)` spinning before blocking. `URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN=1`
+or `URING_PLAY_ZCNBLK_WAL_LEAF_SPIN_POLICY=adaptive` makes that budget adaptive;
+use `URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN_MIN`,
+`URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN_MAX`, and
+`URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_WAIT_NS` to bound it. The WAL leaf startup
+line prints `leaf_spin_policy`, `leaf_spin_budget`, and the adaptive min/max/wait
+values. On June 7, 2026, a topology-explicit local 4-lane mirror run moved from
+about 36.5 Gbit/s with blocking leaf receives to about 40.4 Gbit/s with bounded
+leaf receive spin; spinning sender/fan result reads did not improve that run.
+`URING_PLAY_ZCNBLK_FAN_DEFER_UNSYNCED_WRITEBACK=1` is the default when async
+writeback is enabled. It queues unsynced leaf writeback until explicit sync,
+EOF, or dirty-budget pressure. Ordinary writes are ACKed after bounded local
+admission and are visible to later reads through the dirty cache; sync remains
+the replicated high-water-mark fence. Set it to `0` when deliberately measuring
+immediate background leaf submission. `URING_PLAY_ZCNBLK_UNINIT_READ_BUFFERS=1`
+is an experimental receive-buffer knob; the default is false because local TCP
+tests were faster and more stable with prefaulted zeroed receive buffers.
 
 `zcfanout-logzip-bench` isolates that zipper. It consumes materialized monotonic
 branch result logs in memory and reports descriptor-equivalent IOPS without
@@ -215,11 +532,83 @@ and `--mode mixed` for dirty-map read/write freshness. `--reduce-every-extents`
 adds a sync-like reducer high-water-mark profile. The output always prints
 lane-to-worker and worker-to-CPU mapping plus context switches.
 
-Use `--read-access copy` to force 4 KiB payload materialization on reads, or
+Use `--read-access copy` to force 4 KiB payload materialization on reads,
 `--read-access ref` to model descriptor/native dirty-cache reads where the read
-returns a WAL/blockstore slot reference instead of copying the payload. In ref
-mode, copied read traffic stays at `read_Gbitps=0` and logical referenced read
-traffic is reported as `read_ref_Gbitps`.
+returns a WAL/blockstore slot reference instead of copying the payload, or
+`--read-access forward-ref` to hand those references to a bounded downstream
+NIC/RDMA-style descriptor queue. In ref and forward-ref modes, copied read
+traffic stays at `read_Gbitps=0`, logical referenced read traffic is reported as
+`read_ref_Gbitps`, and downstream reference forwarding is reported as
+`forward_ref_Gbitps` with event/completion counts.
+
+Use `--read-access forward-extent` for the ordered read-cache case where the fan
+returns one descriptor for a contiguous WAL/result-log extent instead of one
+descriptor per 4 KiB logical record. This mode requires `--mode read` or
+`--mode hot-read` with `--pattern seq`; random read coalescing must use an
+explicit range builder rather than pretending unrelated sectors are contiguous.
+The output reports both logical 4 KiB IOPS and `forward_events_per_sec`; use the
+event rate to judge zipper/descriptor cost and the logical rate to size the
+covered block workload.
+
+Example leased fan-cache ceiling runs:
+
+```bash
+target/release/zcwal-reduce-bench \
+  --mode hot-read --lanes 8 --workers 8 \
+  --records-per-lane 1048576 --block-records-per-lane 1048576 \
+  --record-bytes 4096 --extent-records 256 --read-repeats 1000 \
+  --read-access forward-extent --write-access lease \
+  --forward-window 4096 --pin --cpu-list 0-7 --thp
+```
+
+On the local June 7, 2026 bare-metal shared-extent run
+`bench-results/local-zcwal-shared-extent-iovmerge-20260607T165507Z/`, 8 workers
+were pinned one-to-one to CPUs `0-7`. The forced-copy read control reached about
+138.7M logical 4K reads/s and touched about 4.54 Tbit/s of memory. The per-4K
+`forward-ref` path reached about 1.25B descriptor events/s. The
+`forward-extent` path resolved real dirty extent-index entries and reached about
+433.9M extent descriptor events/s for 2048-record extents, or about 888.6B
+logical 4K reads/s, with zero payload copies and near-zero context switching.
+Those are local descriptor/cache ceilings, not TCP or RDMA wire claims.
+
+The same result directory also includes a local TCP hot-cache control using
+`zcfan-readcache-bench`: memfd/sendfile fan egress reached about 440-446 Gbit/s
+over 8 loopback lanes, while a userspace `read_exact` client sink consumed about
+97 Gbit/s and a splice-to-`/dev/null` sink consumed about 114 Gbit/s but caused
+about 78K voluntary context switches. Treat that as evidence that pipe/splice
+or materialized client sinks can dominate the local test; it is not a block or
+RAID primitive and it is not a substitute for remote multi-NIC validation.
+Current `zcfan-readcache-bench` output includes `recv_ops`, `send_ops`,
+`short_recv_ops`, `max_recv_op_bytes`, `pipe_capacity_bytes`,
+`thread_cpu_seconds`, and `cpu_wall_ratio` for splice, `read`, and `waitall`
+client drains, so short receive churn and CPU-copy limits are visible. For bulk
+hot-cache or cold-cache drain tests, set and report `--rcvlowat-bytes`/
+`URING_PLAY_ZCFAN_READCACHE_RCVLOWAT_BYTES` near 256 KiB to the splice chunk
+size; leave it unset for low-QD latency tests where waiting for a large receive
+low-water mark would be misleading.
+
+On the local June 8/9, 2026 counted receive runs, a hot-cache `read`/`waitall`
+client with `SO_RCVLOWAT=1M` received full 1 MiB chunks (`short_recv_ops=0`) but
+stalled around 167-171 Gbit/s while burning 5-10 CPU-wall cores. The splice
+client avoided that user copy and reached about 290 Gbit/s on 8 lanes and
+381 Gbit/s on 16 lanes, but still reported short socket-splice wakeups. A clean
+8-lane cold fan run with corrected `leaf-send --bytes-per-lane` semantics showed
+`stream-direct` at about 150 Gbit/s downstream plus 150 Gbit/s leaf ingress
+(`total_io_Gbitps` about 299), while the leaf sources alone could produce
+roughly 577-780 Gbit/s. Interpret cold fan results by both downstream Gbit/s and
+`total_io_Gbitps`: on a one-host loopback test, each cold byte is counted once
+from leaf to fan and once from fan to client, so the downstream leg is expected
+to be roughly half of the local aggregate socket/pipe movement budget.
+
+Writes are lease-backed by default: inbound ZCRX/RDMA/provided-buffer payload
+memory is modeled as adopted by the dirty pool by descriptor, with no
+`--write-access` flag required. `--write-access copy` is currently fatal because
+copy has not been accepted for this dirty-pool path; if we need copy later, it
+may belong in another layer of the code. Do not silently fall back to payload
+copies while validating the zero-copy design. In lease mode, copied WAL traffic
+stays at `wal_Gbitps=0`, logical admitted write traffic is reported as
+`wal_ref_Gbitps`, and `touched_Gbitps` counts only payload bytes actually copied
+by materialized reads or reduction.
 
 For large ordered read streams, benchmark the range-HWM zipper instead of
 per-4K result descriptors. Each branch publishes contiguous result-log HWMs, and
@@ -276,6 +665,244 @@ batch handoff.
 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=4,5 \
   zcfanout-logshm-bench 2000000 4K 2048 2048 spin true
 ```
+
+`zcfanout-shmlease-bench` extends that control path with a memfd payload arena.
+It measures same-host fan-to-leaf ownership transfer where payload bodies stay
+in shared mapped storage and the result stream carries descriptors, not copied
+4K buffers. `touch=none` measures descriptor lease overhead, `touch=cacheline`
+measures descriptor plus first/last cacheline inspection, and `touch=full`
+forces a full payload cacheline sweep so memory bandwidth shows up explicitly.
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-15 \
+  zcfanout-shmlease-bench 5000000 4K 2048 8192 cacheline spin true 8
+```
+
+The optional tail is `lanes workload sync_records working_set_records`. Each
+lane gets a primary fan thread and a secondary leaf thread, using affinity
+indexes `lane*2` and `lane*2+1`. `workload=write-read-same` serves same-sector
+reads from the local dirty lease by reference and waits for mirrored leaf HWMs
+only at arena pressure or `sync_records` boundaries; `sync_records=0` means EOF
+sync only. `workload=random-write-read-same` additionally uses a deterministic
+random working set and verifies that dirty-table reads return the latest
+descriptor token for each logical page.
+`workload=zcnblk-shm-onramp` flips the same arena into a first-hop
+client-to-fan control: the client-onramp thread publishes zcnblk-shaped
+write/read requests into shared memory, the fan-ingress thread consumes them in
+order and publishes read responses, and the client drains responses on window
+pressure, `sync_records`, or EOF. It is a same-host transport prototype only;
+it does not make mirror, stripe, tier, spill, or leaf-placement decisions.
+`workload=zcnblk-shm-pipeline` extends that into a three-role local
+client-onramp -> fan-stage -> leaf-stage pipeline. The fan bridges an ingress
+ring to a leaf ring and forwards payload ownership by descriptor reference back
+to the ingress arena, so the leaf reads the original payload without a fan-side
+copy. Client-visible response progress and payload slot reuse are released at
+the leaf HWM (`client_response_release=leaf-hwm`), so descriptors cannot point
+at a client-reused slot. This is a single-leaf transport/control proof, not a
+RAID placement primitive.
+`workload=zcnblk-shm-mirror` extends the shape to four roles per lane:
+client-onramp -> fan-mirror -> leaf0-stage + leaf1-stage. The fan is the
+userspace mirror primitive: it publishes two branch descriptors that both lease
+the same ingress payload, and client-visible completion plus ingress slot reuse
+advance only at the minimum leaf HWM
+(`client_response_release=mirror-leaf-hwm`). The branch payload is not copied;
+copy fallback is treated as fatal in this control path.
+By default the synthetic fan and leaf stages also inspect the payload according
+to `touch=...` so full-touch runs expose memory bandwidth. Set
+`URING_PLAY_SHMLEASE_FAN_TOUCH_PAYLOAD=0` or
+`URING_PLAY_SHMLEASE_LEAF_TOUCH_PAYLOAD=0` to measure descriptor/lease
+forwarding without that role rereading payload bytes. That mode is a forwarding
+control, not a data-verification run.
+Set `URING_PLAY_SHMLEASE_HWM_ONLY_RESULTS=1` to make zcnblk shared-memory
+onramp, pipeline, and mirror stages publish ordered range HWMs instead of
+per-record result descriptors. This models the fast write-heavy WAL contract:
+payload ownership and slot reuse are still gated by leaf HWMs, while the client
+edge can complete local requests from the HWM range without remote per-record
+result churn. Leave it off when validating per-record response checksum logic.
+For the `zcnblk-shm-*` workloads, a nonzero `working_set_records` tail switches
+the synthetic request stream from linear sectors to deterministic random logical
+pages. The logical page is carried in the zcnblk request token, the fan updates a
+per-lane dirty-token table, and response drains verify that reads see the latest
+dirty token for that page without materializing a 4K read buffer.
+These workloads validate a shared-WAL descriptor contract: token-decoded
+logical page, payload offset/length/checksum, response checksum, and HWM release
+are checked through the same code path for onramp, pipeline, and mirror stages.
+The zcnblk shared-memory runs print `shm_wal_contract_version=1`. Their
+`client_fan_socket_payload_copy_bytes_lower_bound=0` and
+`client_fan_tcp_socket_payload_copy_avoided_bytes=...` fields line up with the
+TCP fan-WAL `socket_payload_copy_bytes_lower_bound` field, making the avoided
+same-host TCP onramp cost explicit. Pipeline and mirror runs also print
+`fan_leaf_socket_payload_copy_bytes_lower_bound=0` and
+`fan_leaf_tcp_socket_payload_copy_avoided_bytes=...` for the leaf handoff.
+The same controls print a `*-wait-latency-summary` line with `sync_wait_*` and
+`dirty_window_wait_*` histograms. Pipeline and mirror controls also include
+`fan_leaf_sync_wait_*` and `fan_leaf_dirty_window_wait_*`, which separate
+client/fan waiting from fan/leaf HWM waiting. For a true low-queue-depth sync
+smoke, use `batch_records=1 sync_records=1`; otherwise syncs are observed at
+batch boundaries.
+Representative output must include the `lane_cpu_map=` summary before the number
+is accepted as a topology-aligned same-host result. On a busy local host, repeat
+runs before trusting absolute IOPS; CPU and memory-bandwidth contention can move
+the score while copy bytes and context-switch counts remain the better signal.
+The shared-memory summaries print `first_hop_write_bytes` and
+`first_hop_Gibitps` for client-to-fan traffic. Pipeline and mirror summaries
+also print `leaf_reference_Gibitps` or `mirror_reference_Gibitps`; those count
+descriptor-referenced branch payload ownership, not a block-device RAID path.
+They also print `descriptor_slot_bytes`, `control_descriptor_bytes`,
+`payload_reference_bytes`, `observed_payload_touch_bytes`, and
+`local_memory_traffic_bytes_lower_bound`. Read these together:
+`payload_reference_bytes` is ownership passed by descriptor, not a copy;
+`observed_payload_touch_bytes` is intentional benchmark payload write/read
+traffic; `control_descriptor_bytes` is the descriptor-ring metadata footprint;
+and `payload_copy_bytes` must remain zero for these zero-copy controls.
+Mirror dirty-cache summaries also print `client_visible_read_records` and
+`internal_dirty_cache_read_records`. Only `client_visible_read_records` belongs
+in logical block IOPS; the internal value is the fan's local dirty-cache lookup
+probe and is reported so it cannot accidentally inflate benchmark claims.
+
+`scripts/zcfanout-shmlease-ladder.sh` wraps those controls into a repeatable
+same-host ladder. It builds `zcfanout-shmlease-bench` when needed, pins each
+lane role to an explicit CPU, skips lane counts that cannot be pinned without
+SMT overlap unless `ALLOW_SMT_OVERLAP=1`, and writes `summary.tsv` with
+workload, lanes, touch mode, topology preflight representative/warning fields,
+IOPS, Gbit/s, copy bytes, reference bytes, descriptor bytes, payload slots,
+client-visible/internal dirty-cache read counts, ack/sync wait, context
+switches, wait-latency p50s, `leaf_batch_delay_ns`, and `lane_cpu_map`.
+Use it before changing the integrated TCP/RDMA fan path so descriptor/HWM
+changes can be separated from socket or NIC movement. On a shared local system,
+keep `REPEATS` greater than one and compare the copy/context-switch counters as
+well as the absolute IOPS.
+
+```bash
+RUN_ID=local-shmlease-ladder-$(date -u +%Y%m%dT%H%M%SZ) \
+LANES_LIST="1 2 4" TOUCH_MODES="none cacheline" \
+RECORDS=300000 BATCH_RECORDS=2048 WINDOW=8192 SYNC_RECORDS=8192 REPEATS=2 \
+  scripts/zcfanout-shmlease-ladder.sh
+```
+
+`ACK_RECORDS=N` models write acknowledgement and payload-slot release without
+an explicit sync. `SYNC_RECORDS=N` remains the sync/HWM durability cadence.
+`WORKING_SET_RECORDS=N` passes the final `working-set-records` argument through
+the ladder wrapper for `zcnblk-shm-*` random logical page tests; `summary.tsv`
+records `working_set_records` and `dirty_table_bytes`.
+`PAYLOAD_SLOTS=N` decouples the hot payload ring from the descriptor window:
+for example `WINDOW=65536 PAYLOAD_SLOTS=8192 ACK_RECORDS=8192` keeps a larger
+descriptor/HWM window while reusing a smaller topology-local payload ring after
+ack release. The runner records `payload_slots_per_lane` and fails under strict
+topology if payload slots are smaller than the ack/sync release cadence.
+`ARENA_HUGEPAGE=1` requests `MADV_HUGEPAGE`; `ARENA_PREFAULT=1` faults arena
+pages before timing. Use `ALLOW_SMT_OVERLAP=1` only for an explicit SMT study;
+the runner logs a warning and those numbers are topology-specific.
+For the zero-copy forwarding target, set `FAN_TOUCH_PAYLOAD=0` and
+`LEAF_TOUCH_PAYLOAD=0`; leaving them enabled is a deliberate payload-inspection
+control and should be reported as such. Set
+`ZERO_COPY_FORWARDING_TARGET=1` in the ladder wrapper, or
+`URING_PLAY_SHMLEASE_ZERO_COPY_FORWARDING_TARGET=1` for direct runs, when a
+representative forwarding run must warn or fail under
+`URING_PLAY_TOPOLOGY_STRICT=1` instead of silently rereading payload bytes in
+fan or leaf stages.
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-7 \
+  zcfanout-shmlease-bench 5000000 4K 2048 8192 cacheline spin true 4 write-read-same 8192
+```
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-3 \
+  zcfanout-shmlease-bench 20000 4K 1 256 cacheline spin true 2 zcnblk-shm-onramp 1
+```
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-7 \
+  zcfanout-shmlease-bench 5000000 4K 2048 8192 cacheline spin true 4 random-write-read-same 0 65536
+```
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-7 \
+  zcfanout-shmlease-bench 5000000 4K 2048 8192 cacheline spin true 4 zcnblk-shm-onramp 8192
+```
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-11 \
+  zcfanout-shmlease-bench 2000000 4K 2048 8192 cacheline spin true 4 zcnblk-shm-pipeline 8192
+```
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-15 \
+URING_PLAY_SHMLEASE_HWM_ONLY_RESULTS=1 \
+  zcfanout-shmlease-bench 2000000 4K 2048 8192 cacheline spin true 4 zcnblk-shm-mirror 8192
+```
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-15 \
+URING_PLAY_SHMLEASE_FAN_TOUCH_PAYLOAD=0 \
+URING_PLAY_SHMLEASE_LEAF_TOUCH_PAYLOAD=0 \
+URING_PLAY_SHMLEASE_ZERO_COPY_FORWARDING_TARGET=1 \
+  zcfanout-shmlease-bench 2000000 4K 2048 8192 cacheline spin true 4 zcnblk-shm-mirror 8192
+```
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-15 \
+  zcfanout-shmlease-bench 500000 4K 2048 8192 cacheline spin true 4 zcnblk-shm-mirror 8192 65536
+```
+
+`workload=zcnblk-shm-mirror-dirty-cache` adds a same-host dirty-cache read
+probe into the mirror fan path. The default backend is
+`URING_PLAY_SHMLEASE_DIRTY_CACHE_MODE=arena-hwm`: a lane-local arena lease ring
+that holds shared-WAL payload ownership until the mirror leaf HWM allows commit
+and slot reuse. It is the fast topology-local path for linear WAL streams and
+for deterministic random working sets when the metadata table is at least the
+working-set size. Use `URING_PLAY_SHMLEASE_DIRTY_CACHE_MODE=general` only as a
+regression control for the hash-map-backed production dirty cache; it is much
+slower on this topology and remains linear-only in this benchmark.
+By default `URING_PLAY_SHMLEASE_DIRTY_EARLY_RESPONSES=1` reports unsynced
+client responses after local dirty-cache admission while keeping payload slot
+reuse on the mirror leaf HWM. Set it to `0` to force client-visible responses
+to wait for mirror leaf HWM. `URING_PLAY_SHMLEASE_LEAF_BATCH_DELAY_NS=N` is a
+benchmark-only busy-spin delay before each leaf HWM publish; use it to prove
+that local dirty responses decouple client latency from a lagging mirror leaf
+without introducing sleep-driven context switches.
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-15 \
+URING_PLAY_SHMLEASE_FAN_TOUCH_PAYLOAD=0 \
+URING_PLAY_SHMLEASE_LEAF_TOUCH_PAYLOAD=0 \
+URING_PLAY_SHMLEASE_ZERO_COPY_FORWARDING_TARGET=1 \
+  zcfanout-shmlease-bench 500000 4K 2048 8192 none spin true 4 zcnblk-shm-mirror-dirty-cache 8192
+```
+
+```bash
+WORKLOADS="zcnblk-shm-mirror-dirty-cache" LANES_LIST="4" TOUCH_MODES="none cacheline" \
+WINDOW=65536 PAYLOAD_SLOTS=65536 SYNC_RECORDS=65536 WORKING_SET_RECORDS=65536 \
+HWM_ONLY_RESULTS=1 FAN_TOUCH_PAYLOAD=0 LEAF_TOUCH_PAYLOAD=0 \
+ZERO_COPY_FORWARDING_TARGET=1 REPEATS=3 \
+  scripts/zcfanout-shmlease-ladder.sh
+```
+
+`workload=zcnblk-fan-dirty-cache` isolates the production fan WAL dirty cache
+without TCP, block devices, or mirror/stripe placement. It writes exact 4K
+leased dirty records, reads them back by descriptor, and prints copy,
+materialization, context-switch, and lane-map counters. Use it to validate that
+random dirty read/write freshness stays on the record path; exact 4K writes must
+not fall into the extent BTreeMap path. Materialized fallback reads must use the
+same sequence-aware record/extent resolver as leased descriptor reads; otherwise
+an older covering extent can hide a newer exact 4K dirty record.
+
+```bash
+URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-3 \
+  zcfanout-shmlease-bench 1000000 4K 2048 8192 cacheline spin true 4 zcnblk-fan-dirty-cache 0 65536
+```
+
+`URING_PLAY_ZCNBLK_FAN_DIRTY_DIRECT_RECORDS=N` enables an experimental bounded
+direct lookaside in front of the production dirty cache. It is not recommended
+by default: after exact 4K writes were moved to the record cache path, repeated
+local runs were faster with the normal record map than with the extra direct
+admission work. Keep it as a diagnostic knob for collision/cache experiments.
+On a busy shared local host, repeat the command before treating the absolute
+number as meaningful. The July 8, 2026 repeat artifact
+`bench-results/local-zcnblk-dirty-cache-overlay-repeat-20260708T171136Z` held at
+60.7-61.3M logical 4K IOPS, with zero payload copies, zero materialized reads,
+no migrations, and explicit `lane_cpu_map=lane0:worker_cpu0,...`.
 
 ```bash
 URING_PLAY_ZCNBLK_WRITE_ACKS=1 \
@@ -1059,14 +1686,212 @@ reserve hugetlb pages, raise memlock, pin target workers, pin the zcnblk client
 kthreads, keep `hctx_affinity=1`, and state the lane-to-CPU mapping. The
 zcnblk tools intentionally print `PERF WARNING` lines when these assumptions
 are missing; treat those warnings as benchmark blockers unless the run is only a
-functional smoke test.
+functional smoke test. Set `URING_PLAY_TOPOLOGY_STRICT=1` or
+`URING_PLAY_TOPOLOGY_FATAL=1` for representative runs; the zcnblk
+sender/fan/target/leaf paths, WAL extent, OFI, zcraid mirror, and fanout
+zipper/TCP/shared-memory benches then fail before printing benchmark summaries
+when worker pinning, explicit CPU maps, lane/worker sizing, route proof, or
+required fast-path knobs are wrong.
+
+Use `scripts/zcnblk-shm-block-bench.sh` for the repeatable local
+`/dev/zcnblk0` to userspace-memory control. It reserves the block edge with
+`agent-coord`, derives one client, target, and kernel physical core per hctx,
+pins every role, records whether its soft-exclusive CPU/memory request was
+honored, runs repeated `zcblockbench` samples with context-switch counters, and
+uses exact PID files for cleanup. The default is explicitly a noisy local
+control because it uses small pages and leaves the governor unchanged:
+
+```bash
+LANES=4 REPEATS=3 scripts/zcnblk-shm-block-bench.sh
+```
+
+Set `REPRESENTATIVE=1 BUFFER_MODE=hugetlb` only after provisioning huge pages
+and memlock headroom. Representative mode refuses an unhonored coordination
+request or missing topology prerequisites. The hugetlb preflight accounts for
+one huge page per registered io_uring slot, so the minimum free-page count is
+`LANES * IODEPTH`. Representative mode uses a fixed 1 ms active completion
+poll; ordinary control mode retains the short idle policy and enables longer
+polling only after sustained traffic. Target summaries distinguish
+block-request descriptor IOPS from 4K-equivalent logical IOPS because Linux
+may merge adjacent requests before the userspace handoff.
+
+The shared block ABI is version 2. Descriptor/completion rings use
+`shm_ring_entries`, while payload ownership uses the independently sized
+`shm_payload_entries` pool. A userspace stage may ACK a write and recycle its
+descriptor while retaining the payload slot until reducer/leaf commit advances
+`payload_lease_hwm`; the kernel gates reuse on both completion consumption and
+that HWM. Keep the descriptor ring hot and small, and size the payload pool for
+the longest permitted unsynced/writeback window.
+
+`zcnblk-shm-target ... wal-memory` is the first concrete local writeback stage
+on that ABI. It admits ordinary writes by shared-slot reference, serves dirty
+read-after-write from the latest slot, materializes ordered batches into a
+userspace RAM reduction arena at pressure or sync, and ACKs flush only after all
+prior writes are reduced. The module advertises a volatile write cache and does
+not advertise FUA, so `fsync(2)` reaches the `REQ_OP_FLUSH` to sync-HWM path.
+This backend is currently restricted to one lane; it fails startup for multiple
+lanes until cross-lane submit order and the global sync HWM have a dedicated
+overlap test. It is a single-leaf baseline and makes no RAID placement decision.
+
+Run the deterministic dirty-read/overwrite/fsync smoke before performance:
+
+```bash
+scripts/zcnblk-shm-walmem-smoke.sh
+```
+
+Then use the ordinary benchmark harness with a larger payload pool:
+
+```bash
+LANES=1 BACKEND=wal-memory SHM_RING_ENTRIES=128 \
+SHM_PAYLOAD_ENTRIES=4096 URING_PLAY_ZCNBLK_SHM_WRITEBACK_BATCH=2048 \
+REPEATS=3 OPS_PER_WORKER=2000000 scripts/zcnblk-shm-block-bench.sh
+```
+
+The smoke reserves `/dev/zcnblk0`, tracks the daemon through its PID file, and
+uses `dd count=0 conv=fsync` to issue `fsync(2)` on the block fd. Do not replace
+that check with `blockdev --flushbufs`: in a direct-I/O-only test the latter can
+sync/invalidate the block page cache without submitting a device flush.
+
+Use `BACKEND=wal-tcp` to keep `/dev/zcnblk0` as the client edge while sending
+the userspace WAL stage to a `zcnblk-wal-leaf`. The harness starts a local
+userspace leaf by default, assigns client/target/kernel/leaf to four distinct
+physical cores, records every leaf thread in context-switch accounting, and
+uses a 4,096-slot payload pool by default. A WAL run with payload entries less
+than or equal to descriptor entries collapses the safe writeback window to one;
+the harness warns loudly and representative mode rejects that geometry.
+
+The high-IOPS harness defaults to the unified lane-owned request path, sizes
+WAL extents to `SHM_RING_ENTRIES`, waits up to 20 us to fill deferred write extents,
+uses adaptive leaf receive spinning, and asks `zcblockbench` to reap at least
+16 completions when `IODEPTH >= 128`. Local paired controls showed that changing
+only the completion minimum from 1 to 16 raised four-lane random-write
+throughput from 2.07M to 2.72M IOPS and reduced kernel context switches from
+roughly 1.75-2.27 to 0.08-0.11 per 1K I/O. Disabling lane batching or using a
+deep-queue completion minimum below 8 prints a `PERF WARNING`; representative
+runs reject either configuration.
+
+The current block-to-WAL dirty directory has an explicit 4K record contract.
+Do not lower the client logical block size or bypass the target's 4K checks for
+a 1K experiment: four 1K sectors would otherwise alias one dirty-directory key
+and violate read-after-write semantics. The userspace reduce microbenchmark can
+vary `--record-bytes` safely. Its random 50/50 reference controls measured
+about 378M logical IOPS at 1K and 376M at 4K, showing that descriptor/dirty-map
+work is per record rather than payload-bandwidth limited.
+
+`URING_PLAY_ZCNBLK_SHM_READ_BATCH=N` bounds each FIFO mixed request window.
+Writes in the window are admitted by shared-slot reference, dirty reads are
+resolved at their exact position in the window, and cold reads are combined
+into one WAL `REQUEST_BATCH`. Result descriptors are checked before payloads
+are received directly into their leased shared output slots. The target
+publishes block completions in FIFO order. Leaf application order is per-sector
+with a global sync HWM, not a claim that unrelated unsynced sectors are applied
+in one global order. The target must flush on either write-count pressure or
+payload-arena pressure; omitting the latter can deadlock a 50/50 workload when
+the payload pool fills just before the write threshold.
+
+For a `zcmem` terminal leaf, request batches mark their descriptor-first write
+layout explicitly. The leaf reads only the descriptor table into heap memory,
+builds destination iovecs, and receives write bodies directly into final arena
+offsets. This applies to mixed batches as well as write-only batches; reads are
+then emitted in descriptor order. The sender's sector-predecessor boundary
+prevents an overlapping write and dependent read from sharing a batch. Verify
+the fast path with nonzero `direct_memory_recv_bytes` and zero
+`heap_payload_data_bytes` and `copy_submit_bytes` in the leaf summary.
+
+The high-IOPS `wal-tcp` harness defaults
+`URING_PLAY_ZCNBLK_SHM_WAL_COMPACT_WRITES=1`, encoding an all-write batch as
+32-byte `WRITE_EXTENT_BATCH` entries instead of 128-byte request descriptors.
+Set it to zero for an A/B control. Mixed batches retain the full request format. The leaf receives
+the compact descriptor table into heap memory, then uses `MSG_WAITALL` only for
+that batch's scattered payload receive into final `zcmem` offsets; applying
+`MSG_WAITALL` to full request batches was slower. Alternating noisy-local QD128
+four-lane controls on 2026-07-12 averaged 2.696M write IOPS with compact
+descriptors versus 2.612M without them, while descriptor traffic fell 75%
+(1.536 GB to 384 MB per 12M writes). Random 50/50 controls were 3.184M versus
+3.135M IOPS. Treat these as directional shared-host results, not a hardware
+ceiling. Confirm `compact_write_batches`, `descriptor_bytes_saved`, and zero
+`heap_payload_data_bytes`/`copy_submit_bytes` in each run summary.
+
+The 20 us extent-fill default is operation-aware rather than a foreground I/O
+delay: a read, sector dependency boundary, sync, shutdown, or full extent
+forces an immediate send, while locally acknowledged writes can accumulate in
+the remote writeback stream. In noisy-local four-lane controls, compact QD128
+write throughput peaked near this knee at 2.812M IOPS; 40-160 us formed larger
+batches but fell to 2.38-2.59M because the transport pipeline starved. At QD1,
+random 50/50 throughput improved from 358K IOPS with 2 us to 420K with 20 us;
+sampled average latency improved from about 11.0 to 9.6 us and read p50 stayed
+at 16 us. Override `URING_PLAY_ZCNBLK_SHM_WAL_EXTENT_FILL_US` for a measured
+topology rather than assuming that a larger batch-fill interval is faster.
+
+`URING_PLAY_ZCNBLK_SHM_SECTOR_ORDER_SLOTS` controls the power-of-two hashed
+predecessor table used only for same-sector ordering metadata; it does not make
+placement decisions. The harness records it and defaults to 65,536. A 2026-07-12
+four-lane write sweep measured 1.63M IOPS with 16,384 slots versus about 2.67M
+with either 65,536 or 262,144, showing that a cache-small table can be slower
+when false dependencies serialize independent lanes. The harness warns below
+`min(device_4k_pages, 65536)` and representative mode rejects that geometry.
+
+The global completion tracker now backpressures a lane before its sequence can
+alias a still-live ring entry. This matters when reduced false dependencies let
+one lane run far ahead: a one-million-slot stress control previously failed at
+exactly a 32,768-sequence alias. The bounded tracker now leaves the next
+descriptor in the kernel ring and drains transport completions until the global
+HWM advances. Summaries expose `completion_window_stalls`; a collision remains
+fatal because it indicates a broken admission invariant.
+
+The request-fill delay is opt-in. Set
+`URING_PLAY_ZCNBLK_SHM_READ_BATCH_FILL_US=5` for a bulk/read-heavy experiment.
+`URING_PLAY_ZCNBLK_SHM_READ_BATCH_FILL_MIN=32` prevents that delay unless the
+queue is already busy; this preserved the QD1 control while allowing fuller
+QD128 batches. Run `scripts/zcnblk-shm-tcp-leaf-smoke.sh` first. It now includes
+`zcnblk-order-smoke`, which verifies concurrent `read -> write` and
+`write -> read` same-sector windows plus sync terminal state.
+
+Noisy local one-lane, small-page, QD128 controls on 2026-07-11 measured
+1.211-1.293M random 50/50 4K IOPS (1.258M mean), 1.000-1.058M cold-read IOPS
+without fill, and 1.057-1.185M with a 5 us busy-window fill. QD1 cold reads were
+77.5K IOPS both with no fill and with the minimum-32 adaptive guard; applying an
+unconditional 5 us delay reduced QD1 to 54.9K. These are shared-host controls,
+not hardware ceilings. Relevant artifacts are
+`local-zcnblk-shm-tcp-mixed50-requestwindow-fixed-20260711T1100Z`,
+`local-zcnblk-shm-tcp-coldread-long-fill0-paired-20260711T1110Z`, and
+`local-zcnblk-shm-tcp-coldread-long-fill5-valid-20260711T1110Z`.
+
+`scripts/zcnblk-fanwal-plan-bench.sh` also writes
+`topology-preflight.log` and appends `topology_preflight_representative=0|1`
+to `topology.env`. The preflight checks mapped CPU lists, exact CPU overlap,
+SMT sibling placement, CPU governor, currently busy mapped CPUs, memlock, and
+hugepage state before launching traffic. Set `TOPOLOGY_PREFLIGHT_FATAL=1` when
+an automation job must fail instead of producing a known-noisy smoke result.
+The helper defaults `SEND_WRITE_WINDOW` and `SEND_READ_WINDOW` to at least
+`URING_PLAY_ZCNBLK_BATCH_DEPTH * URING_PLAY_ZCNBLK_WAL_BATCH_WINDOW`, records
+the values in `topology.env`, and passes them to the fan as diagnostic hints.
+If the fan still reports `max_outstanding_batches` below the batch window while
+the sender window hint is large enough, investigate fan-to-leaf egress, leaf
+writeback, socket backpressure, copied 4K payload fallback, and shared-host
+CPU/memory contention before treating the IOPS as architectural.
+The fan summary also warns when the average upstream batch fill is much smaller
+than `URING_PLAY_ZCNBLK_BATCH_DEPTH`. The fan reports both physical WAL frames
+and `upstream_batch_logical_records`; extent runs should be judged by logical
+records because a full `write-read-same` request can be two physical frames
+covering hundreds of 4 KiB records. Read a low logical fill as a 4K IOPS blocker
+until the sender window, mixed read/write ordering, and batch fallback counters
+explain why the fan is not seeing large request batches.
+`URING_PLAY_ZCNBLK_FAN_ORDER_MODE=lane-local` is also blocked in strict mode
+unless a topology plan proves each lane owns a disjoint logical range; otherwise
+use the default `global-record` ordering for random or overlapping traffic.
 
 For multi-NIC tests, set `URING_PLAY_EXPECT_ROUTE_DEV=IFACE` and
 `URING_PLAY_EXPECT_ROUTE_SRC=IP` on the client, fan, and edge processes. The
 TCP mux/zcnblk/WAL tools source-probe established sockets with
-`ip route get <peer> from <socket-local-ip>` and warn if Linux would route a peer
-through a different interface or source address. Set `URING_PLAY_ROUTE_PROBE=1`
-to log the chosen route without enforcing an expected device/source.
+`ip route get <peer> from <socket-local-ip>`. When either expected-route
+variable is set, a mismatch or failed proof is a fatal topology error; fix host
+routes, source binding, file-descriptor limits, or data-NIC selection before
+using the result. Set `URING_PLAY_ROUTE_PROBE=1` without expected-route
+variables to log the chosen route in warning-only exploratory runs. Set
+`URING_PLAY_TOPOLOGY_STRICT=1` to make route-proof failures fatal even when no
+expected interface/source is configured. `URING_PLAY_TOPOLOGY_FATAL=1` is an
+alias for tools where the intent is clearer than "strict."
 
 `zcwal-extent-send` and `zcwal-extent-recv` are isolated tcpmux-compatible
 WAL extent smoke tools. They preserve lane/shard identity in a fixed extent
@@ -1076,8 +1901,33 @@ is `stream` with an io_uring bulk payload path: one lane header, bulk payload,
 and one ack per lane. Pass `extent blocking` at the end to force the older
 per-extent header/ack blocking path. The uring path defaults to a 32-deep send
 pipeline and receive buffers up to 4 MiB; override with
-`URING_PLAY_ZCWAL_URING_PIPELINE`, `URING_PLAY_ZCWAL_URING_ENTRIES`, and
-`URING_PLAY_ZCWAL_RECV_BYTES` when tuning. They intentionally do not implement
+`URING_PLAY_ZCWAL_URING_PIPELINE`, `URING_PLAY_ZCWAL_URING_ENTRIES`,
+`URING_PLAY_ZCWAL_FRAME_BYTES`, `URING_PLAY_ZCWAL_SEND_BYTES`, and
+`URING_PLAY_ZCWAL_RECV_BYTES` when tuning. `FRAME_BYTES` sets both send and
+receive transport chunks; the side-specific variables override it. Logical WAL
+extent accounting remains controlled by the positional `extent-bytes` argument,
+so a run can keep 1 MiB WAL extents while using a 4 MiB receive chunk. On the
+c8gn.48xlarge two-NIC TCP WAL transport path, `send=1M, recv=4M` was the best
+tested frame split so far and reached about 529 Gbit/s aggregate receive-side
+payload throughput across both NICs with explicit source binding and CPU/NIC
+pinning. The receive summary prints CQE size/count distribution, io_uring wait
+syscalls, CQ spin loops, and context switches; use `URING_PLAY_CQE_SPIN=N` for
+a fixed spin window or opt into adaptive busy-period spinning with
+`URING_PLAY_CQE_ADAPTIVE_SPIN=1`, `URING_PLAY_CQE_ADAPTIVE_SPIN_MIN=N`, and
+`URING_PLAY_CQE_ADAPTIVE_SPIN_MAX=N`; the adaptive path grows when an
+io_uring wait returns within `URING_PLAY_CQE_ADAPTIVE_WAIT_NS` nanoseconds
+(default 50000) and shrinks on slower waits. `URING_PLAY_CQE_HOT_POLL=1` is
+only for dedicated ultra-low-latency lanes where burning a core is acceptable.
+`URING_PLAY_ZCWAL_URING_RECV_PIPELINE=N` preposts multiple receive buffers per
+lane to reduce rearm churn after short TCP CQEs; state this value with the
+lane/CPU mapping because it changes memory footprint and completion behavior.
+It is diagnostic, not a recommended default: current c8gn TCP tests showed
+depths above 1 collapsing throughput even though the run remained correct.
+For receive-heavy TCP tests on kernels with io_uring NAPI registration, try
+`URING_PLAY_REGISTER_NAPI=1`, `URING_PLAY_NAPI_BUSY_POLL_US=N`, and
+`URING_PLAY_NAPI_PREFER_BUSY_POLL=1`; the log prints requested and effective
+NAPI values because kernels may normalize the registration fields.
+They intentionally do not implement
 RAID, tiering, spill, or any block-device striping/mirroring path; those remain
 userspace topology decisions outside this primitive.
 
@@ -1124,8 +1974,28 @@ The kernel client module uses the same stream framing when loaded with
 the summaries to compare are `zcnblk-target-summary`, `zcnblk-send-summary`,
 and the final `zcnblk-target:` / `zcnblk-send:` throughput lines.
 
+## Enterprise Mixed Workload
+
+`zcworkload` generates a deterministic, destructive mixed block workload with
+4-64 KiB logical operations, synchronous and io_uring engines, open-loop or
+saturation pacing, latency distributions, completion-contract accounting,
+context-switch counts, strict topology preflight, and repeated-run spread.
+See [enterprise-workload-benchmark.md](enterprise-workload-benchmark.md) for
+the workload shape, safety rules, commands, and result interpretation.
+
 ## Compatibility
 
 Existing benchmark subcommands remain available, including
 `tcp-bench-uring-mux-send` and `tcp-bench-uring-mux-server`. The receive side
 now defaults to `auto` ZCRX. Use `recv` explicitly to force the old copied path.
+
+`tcp-bench-uring-mux-send ... send-zc-vectorized` exercises Linux 7.0
+`IORING_SEND_VECTORIZED` without involving the block edge. Set
+`URING_PLAY_TCP_SEND_VECTOR_IOVECS` to `1..=1024` (default `16`) to choose the
+number of payload segments represented by each SQE. The existing host safety
+gate still refuses every send-zc mode outside QEMU unless
+`URING_PLAY_ALLOW_UNSAFE_SEND_ZC=1`; use an isolated adhoc host for performance
+validation. `zcmux --zero-copy-send required` and
+`URING_PLAY_TCP_SEND_ZC_REQUIRE_ZERO_COPY=1` make copied notifications or
+completed bytes without notification CQEs fatal rather than merely reporting
+them.

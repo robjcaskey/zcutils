@@ -20,6 +20,17 @@ Hard rules:
   recovering a failed old run. The helper owns those resources and their tags.
 - Do not use any block device as a mirror or stripe primitive. Block devices are
   terminal leaf media only after userspace placement.
+- The aggregate zcutils adhoc ceiling is `$20/day`. Every launch must pass
+  `--max-total-cost` no greater than the unspent daily budget.
+
+Use a two-level performance cadence while changing a hot path. First run at
+least three repetitions of the corresponding local harness and retain the
+spread, topology, coordination result, and process-noise snapshots; this host
+is shared, so those numbers are controls rather than hardware limits. Launch
+adhoc validation only after the local correctness and topology gates pass.
+Record the day's already-spent adhoc cost, cap `--max-total-cost` at the smaller
+of the experiment estimate and remaining `$20`, and tear down as soon as the
+cross-host question is answered.
 
 ## 1. Pick Capacity
 
@@ -73,7 +84,7 @@ scripts/ec2_perf_spot.py launch \
   --instance-type c8gn.48xlarge \
   --nodes 4 \
   --max-spot-price 2.00 \
-  --max-total-cost 50 \
+  --max-total-cost 20 \
   --root-gb 256 \
   --enable-efa \
   --network-card-count 2 \
@@ -233,8 +244,18 @@ Minimum benchmark metadata to record in every run directory:
 Minimum benchmark measurements for judging an architectural change:
 
 - Low-queue-depth random mixed read/write IOPS and latency. Record QD1, QD2,
-  QD4, QD8, and QD16 when possible, plus read/write ratio, sync/FUA policy,
-  and whether the run entered through `/dev/zcnblk0` or a userspace harness.
+  QD4, QD8, and QD16 per worker, plus worker/lane count, aggregate outstanding
+  depth, read/write ratio, sync/FUA policy, and whether the run entered through
+  `/dev/zcnblk0` or a userspace harness. Never publish only "QD1" when several
+  workers make the aggregate depth greater than one.
+- Low-QD theoretical efficiency. Measure raw 4 KiB request/response RTT on the
+  same transport, NIC, AZ, and CPU/queue topology. For operations requiring a
+  remote response, report the latency ceiling as `aggregate_depth / RTT` and
+  cap it by the link-rate and CPU/protocol ceilings where those are lower.
+  Publish actual IOPS, theoretical IOPS, and actual/theoretical percent at each
+  QD. Keep remote reads, remotely acknowledged writes, early local write ACKs,
+  and sync/FUA drains in separate columns because their completion contracts
+  have different denominators.
 - Context switches for each hot process and worker: voluntary, involuntary,
   migrations, CPU time, lane-to-worker map, and lane-to-CPU map. Report
   switches per second and per 1,000 logical 4K I/O.
@@ -245,6 +266,12 @@ Minimum benchmark measurements for judging an architectural change:
 If any of those three measurement families is missing, the result is a smoke
 test. Do not use it to decide that a topology, zero-copy, batching, RAID, fan,
 or transport architecture is better.
+
+Treat the QD1-QD16 latency-efficiency curve and the very-high-QD random
+read/write saturation curve as equal performance north stars. The first catches
+per-request software, wakeup, and hop overhead hidden by concurrency; the
+second catches bandwidth, batching, cache, and scaling limits. An architectural
+change is not a win when it improves one curve by silently regressing the other.
 
 Keep raw logs under `qemu-zcrx/${RUN_ID}-.../` or `bench-results/${RUN_ID}-.../`
 so teardown does not lose the result trail.

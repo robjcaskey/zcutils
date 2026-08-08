@@ -6,7 +6,7 @@
 #include <linux/types.h>
 
 #define ZCNBLK_SHM_MAGIC 0x31304d48534e435aULL /* "ZCNSHM01" */
-#define ZCNBLK_SHM_VERSION 2U
+#define ZCNBLK_SHM_VERSION 3U
 #define ZCNBLK_SHM_DESC_BYTES 64U
 
 #define ZCNBLK_SHM_OP_WRITE 1U
@@ -19,6 +19,8 @@
 #define ZCNBLK_SHM_CAP_SECTOR_PREDECESSOR (1ULL << 0)
 #define ZCNBLK_SHM_CAP_TRANSFER_PAYLOAD_SLOTS (1ULL << 1)
 #define ZCNBLK_SHM_CAP_READ_PAYLOAD_REF (1ULL << 2)
+#define ZCNBLK_SHM_CAP_REQUEST_WAKE_ARMED (1ULL << 3)
+#define ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED (1ULL << 4)
 
 #define ZCNBLK_SHM_CQE_F_READ_PAYLOAD_REF (1U << 0)
 #define ZCNBLK_SHM_CQE_REF_CHANNEL_SHIFT 8U
@@ -26,7 +28,7 @@
 
 #define ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS (1U << 0)
 
-/* header.reserved[] assignments for version 2 capability extensions. */
+/* header.reserved[] assignments for capability extensions. */
 #define ZCNBLK_SHM_HEADER_CAPABILITIES 0U
 #define ZCNBLK_SHM_HEADER_PAYLOAD_OWNER_OFFSET 1U
 
@@ -37,19 +39,36 @@
  * One control block has one kernel producer and one userspace consumer.
  * In legacy mode payload_lease_hwm is userspace's exclusive upper bound: every
  * request below it has no remaining WAL/leaf reference. With transferred
- * payload slots, reserved is the atomic count of free payload pages and each
- * slot has an owner token at header.reserved[PAYLOAD_OWNER_OFFSET]. A nonzero
- * token is the request submit_sequence that owns the page.
+ * payload slots, payload_free_slots is the atomic count of free payload pages
+ * and each slot has an owner token at header.reserved[PAYLOAD_OWNER_OFFSET]. A
+ * nonzero token is the request submit_sequence that owns the page.
  */
 struct zcnblk_shm_channel {
+	/* Kernel producer, userspace reader. */
 	__u64 req_prod;
-	__u64 req_cons;
-	__u64 comp_prod;
-	__u64 comp_cons;
-	__u64 payload_lease_hwm;
+	__u64 request_publishes;
 	__u64 request_kicks;
+	__u64 request_producer_reserved[5];
+
+	/* Userspace consumer; armed is exchanged only at the sleep boundary. */
+	__u64 req_cons;
+	__u64 request_wake_armed;
+	__u64 request_consumer_reserved[6];
+
+	/* Userspace producer, kernel reader. */
+	__u64 comp_prod;
+	__u64 payload_lease_hwm;
+	__u64 completion_producer_reserved[6];
+
+	/* Kernel consumer. */
+	__u64 comp_cons;
 	__u64 completion_kicks;
-	__u64 reserved;
+	__u64 completion_wake_armed;
+	__u64 completion_consumer_reserved[5];
+
+	/* Cross-owner atomic used only by transferred-payload mode. */
+	__u64 payload_free_slots;
+	__u64 payload_reserved[7];
 };
 
 struct zcnblk_shm_request {

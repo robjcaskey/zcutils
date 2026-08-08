@@ -46,7 +46,8 @@ ZC_CAPS_V1
   node_id, process_id, boot_id
   cpus, numa_nodes, cache_groups, smt_siblings
   nics: ifindex, card_id, rx_queues, tx_queues, numa_node, private_ip
-  memory: zcrx pools, registered buffers, hugetlb, memlock, arena ids
+  memory: zcrx pools, registered buffers, hugetlb, memlock, arena ids,
+          transferable page credits, ownership token format
   transport: tcp, send_zc, zcrx, liburing, libfabric, efa, fallback copy
   storage: wal shards, zcdevnull, zcbrd terminal leaves, raw allowlisted media
   limits: max_lanes, max_iov, ring_entries, cq_entries, batch_min/max
@@ -74,12 +75,13 @@ ZC_PLAN_V1
            -> ACK policy -> result-log contract
   coalescing: extent_bytes, record_count, age_budget_ns, batch_window
   zipper: owner lane, primary branch, secondary handoff, reorder_window
-  backpressure: descriptor credits, byte credits, wal credits, branch credits
+  backpressure: descriptor credits, transferable page credits, byte credits,
+                wal credits, branch credits
   ack: per-write ack rule, sync epoch rule, read freshness rule
 
 ZC_STATS_V1
   plan_id, lane, worker_cpu, rx_queue, tx_queue
-  bytes, records, acks, syncs, retries, copies
+  bytes, records, acks, syncs, retries, copies, pages_free, stale_releases
   send_zc_copied, zcrx_fallback, cqe_overflows
   voluntary_ctx, involuntary_ctx, migrations
   branch_lag, reorder_depth, pool_pressure
@@ -145,6 +147,24 @@ For mirror writes, branch records reference the same payload lease. They do not
 copy payload per branch. For striped writes, branch records point at explicit
 payload slices chosen by the userspace placement plan. For reads, result records
 return descriptors and the zipper produces the ordered upstream view.
+
+For TCP fan reads, the planner must distinguish forwarding from cache ownership.
+Plain TCP `splice(2)` can keep leaf-to-fan-to-client forwarding kernel-resident,
+but a materialized fan page cache implemented by teeing into a memfd is a
+diagnostic path, not the 600 Gbit/s target architecture. A production fan cache
+needs a leased receive-buffer owner: zcrx pages, libfabric/RDMA registered
+memory, or an equivalent transport that can hand stable payload ownership to the
+fan dirty/read cache. If `SEND_ZC` reports copied completions, the run is not a
+representative zero-copy plan; benchmark tools should warn loudly or fail when
+`zero_copy_policy=required`.
+
+The fan dirty/read cache should store non-overlapping extent leases, not one
+owned allocation per 4 KiB record. Fully cached reads return descriptor parts
+that keep the original pool owner alive until the upstream response is written.
+Response writers must coalesce adjacent leased parts into large iovecs before
+entering TCP or libfabric. A hot read path that materializes each 4 KiB response,
+or emits one iovec/syscall per record, is a diagnostic path even if it is
+functionally correct.
 
 For parallel EFA or multi-NIC TCP, the plan must name branch ownership rather
 than relying on a process-local default. Example: a two-leg mirror can map
@@ -236,9 +256,14 @@ context-switch data, and a low-latency change still needs bulk multi-NIC
 throughput data. Missing data means the result is a smoke test, not an
 architecture decision.
 
-If hugetlb, memlock headroom, worker pinning, hctx affinity, batching, route
-checks, or io_uring fast-path knobs are missing, the benchmark should warn
-loudly and mark the result as a smoke run.
+If hugetlb, memlock headroom, worker pinning, hctx affinity, batching, or
+io_uring fast-path knobs are missing, the benchmark should warn loudly and mark
+the result as a smoke run. If explicit route expectations are configured and
+the observed socket route does not match, the benchmark must fail before it
+prints a representative IOPS or throughput number. `URING_PLAY_TOPOLOGY_STRICT=1`
+or `URING_PLAY_TOPOLOGY_FATAL=1` promotes missing worker pinning, missing CPU
+maps, unsafe lane/worker sizing, missing fast-path knobs, and route-proof
+failures into startup errors for strict validation runs.
 
 ## Implementation Milestones
 

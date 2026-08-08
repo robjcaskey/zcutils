@@ -8,6 +8,7 @@ CLIENTS="${CLIENTS:-256}"
 JOBS="${JOBS:-16}"
 DURATION="${DURATION:-20}"
 REPEATS="${REPEATS:-3}"
+VECTOR_HWM="${VECTOR_HWM:-1}"
 SIZE_MIB="${SIZE_MIB:-65536}"
 LEAF_SIZE="${LEAF_SIZE:-64G}"
 PORT="${PORT:-55432}"
@@ -51,7 +52,7 @@ cleanup() {
 	[ "$mounted" = 0 ] || sudo -n umount "$MOUNTPOINT" >>"$OUTDIR/cleanup.log" 2>&1
 	stop_exact "$target_pid" zcnblk-shm-targ INT >>"$OUTDIR/cleanup.log" 2>&1
 	[ -z "$target_job_pid" ] || wait "$target_job_pid" 2>/dev/null
-	stop_exact "$leaf_pid" zcnblk-wal-lea TERM >>"$OUTDIR/cleanup.log" 2>&1
+	stop_exact "$leaf_pid" zcnblk-wal-leaf TERM >>"$OUTDIR/cleanup.log" 2>&1
 	[ -z "$leaf_pid" ] || wait "$leaf_pid" 2>/dev/null
 	grep -q '^zcnblk_client_mod ' /proc/modules 2>/dev/null && sudo -n rmmod zcnblk_client_mod >>"$OUTDIR/cleanup.log" 2>&1
 	sudo -n rm -rf "$MOUNTPOINT" "$SOCKET_DIR"
@@ -107,6 +108,10 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$OUTDIR/target.pid" \
 	URING_PLAY_ZCNBLK_SHM_LEASE_RELEASE_BATCH=1 \
 	URING_PLAY_ZCNBLK_SHM_WRITEBACK_BATCH=4096 \
 	URING_PLAY_ZCNBLK_SHM_READ_BATCH=512 \
+	URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH=1 \
+	URING_PLAY_ZCNBLK_SHM_VECTOR_HWM="$VECTOR_HWM" \
+	URING_PLAY_ZCNBLK_SHM_WAL_OWNER_DISPATCH=0 \
+	URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS=0 \
 	URING_PLAY_ZCNBLK_SHM_WAL_LANE_WINDOW=4 \
 	URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1 \
 	URING_PLAY_ZCNBLK_SHM_REMOTE_RECV_POLICY=adaptive \
@@ -137,7 +142,7 @@ done
 	printf 'lane1=target:9,kthread:10,leaf:11,hctx:%s\n' "$(cat /sys/block/zcnblk0/mq/1/cpu_list)"
 	printf 'sync_coordinator_cpu=17\n'
 	printf 'postgres_cpus=4-7,12-15,20-23,28-31\npgbench_cpus=0,8,16,24\n'
-	printf 'scale=%s clients=%s jobs=%s duration=%s repeats=%s\n' "$SCALE" "$CLIENTS" "$JOBS" "$DURATION" "$REPEATS"
+	printf 'scale=%s clients=%s jobs=%s duration=%s repeats=%s vector_hwm=%s\n' "$SCALE" "$CLIENTS" "$JOBS" "$DURATION" "$REPEATS" "$VECTOR_HWM"
 	printf 'completion=early-local-write-ack; durability=remote-all-lane-sync-hwm\n'
 	printf 'hugepages_total=%s memlock_kib=%s loadavg=%s\n' \
 		"$(awk '/HugePages_Total:/{print $2}' /proc/meminfo)" "$(ulimit -l)" "$(cat /proc/loadavg)"

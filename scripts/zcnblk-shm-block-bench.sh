@@ -48,6 +48,8 @@ TARGET_CPU_LIST="${TARGET_CPU_LIST:-}"
 KERNEL_CPU_LIST="${KERNEL_CPU_LIST:-}"
 LEAF_CPU_LIST="${LEAF_CPU_LIST:-}"
 SHM_RING_ENTRIES="${SHM_RING_ENTRIES:-128}"
+KERNEL_QUEUE_DEPTH="${KERNEL_QUEUE_DEPTH:-$IODEPTH}"
+KERNEL_PIPELINE_DEPTH="${KERNEL_PIPELINE_DEPTH:-$SHM_RING_ENTRIES}"
 SECTOR_ORDER_SLOTS="${URING_PLAY_ZCNBLK_SHM_SECTOR_ORDER_SLOTS:-65536}"
 BACKEND="${BACKEND:-memory}"
 if [ -z "${SHM_PAYLOAD_ENTRIES+x}" ]; then
@@ -78,6 +80,7 @@ if [ -z "${POLL_US+x}" ]; then
 fi
 BUSY_POLL_US="${BUSY_POLL_US:-1000}"
 BUSY_HYSTERESIS_US="${BUSY_HYSTERESIS_US:-10000}"
+POLL_CLOCK_CHECK_SPINS="${URING_PLAY_ZCNBLK_SHM_POLL_CLOCK_CHECK_SPINS:-64}"
 KERNEL_POLL_US="${KERNEL_POLL_US:-$POLL_US}"
 LEASE_RELEASE_BATCH="${LEASE_RELEASE_BATCH:-1}"
 SIZE_MIB="${SIZE_MIB:-$((LANES * 128))}"
@@ -112,6 +115,7 @@ fi
 WAL_SPLIT_TRANSPORT="${URING_PLAY_ZCNBLK_SHM_WAL_SPLIT_TRANSPORT:-0}"
 WAL_OWNER_DISPATCH="${URING_PLAY_ZCNBLK_SHM_WAL_OWNER_DISPATCH:-0}"
 WAL_OWNER_INGRESS="${URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS:-0}"
+WAL_OWNER_COUNT="${URING_PLAY_ZCNBLK_SHM_OWNER_COUNT:-$LANES}"
 WAL_OWNER_CPU_LIST="${URING_PLAY_ZCNBLK_SHM_OWNER_CPU_LIST:-}"
 WAL_OWNER_EXTENT_RECORDS="${URING_PLAY_ZCNBLK_SHM_OWNER_EXTENT_RECORDS:-256}"
 WAL_OWNER_WORKER_SPINS="${URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_SPINS:-65536}"
@@ -121,7 +125,11 @@ WAL_OWNER_WORKER_ADAPTIVE_WAIT_NS="${URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_ADAPTIVE
 WAL_OWNER_MIXED_HYSTERESIS_US="${URING_PLAY_ZCNBLK_SHM_OWNER_MIXED_HYSTERESIS_US:-10000}"
 WAL_OWNER_WRITE_FILL_US="${URING_PLAY_ZCNBLK_SHM_OWNER_WRITE_FILL_US:-0}"
 WAL_OWNER_WRITE_FILL_MIN="${URING_PLAY_ZCNBLK_SHM_OWNER_WRITE_FILL_MIN:-256}"
+WAL_OWNER_DEBOUNCE_US="${URING_PLAY_ZCNBLK_SHM_OWNER_DEBOUNCE_US:-2}"
+WAL_OWNER_BACKLOG_HIGH_RECORDS="${URING_PLAY_ZCNBLK_SHM_OWNER_BACKLOG_HIGH_RECORDS:-$WAL_OWNER_WRITE_FILL_MIN}"
+WAL_OWNER_BACKLOG_LOW_RECORDS="${URING_PLAY_ZCNBLK_SHM_OWNER_BACKLOG_LOW_RECORDS:-16}"
 WAL_OWNER_PIPELINE_BATCHES="${URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES:-16}"
+WAL_OWNER_PIPELINE_REFILL_SPINS="${URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_REFILL_SPINS:-256}"
 WAL_OWNER_BATCH_RECORDS="${URING_PLAY_ZCNBLK_SHM_OWNER_BATCH_RECORDS:-2048}"
 if [ -n "${URING_PLAY_ZCNBLK_SHM_OWNER_FRAGMENT_RECORDS+x}" ]; then
 	WAL_OWNER_FRAGMENT_RECORDS="$URING_PLAY_ZCNBLK_SHM_OWNER_FRAGMENT_RECORDS"
@@ -131,8 +139,16 @@ else
 	WAL_OWNER_FRAGMENT_RECORDS=16
 fi
 WAL_OWNER_FRAGMENT_FILL_US="${URING_PLAY_ZCNBLK_SHM_OWNER_FRAGMENT_FILL_US:-500}"
+WAL_OWNER_FOREGROUND_IMMEDIATE_LIMIT="${URING_PLAY_ZCNBLK_SHM_OWNER_FOREGROUND_IMMEDIATE_LIMIT:-1}"
 WAL_OWNER_QUEUE_DEPTH="${URING_PLAY_ZCNBLK_SHM_OWNER_QUEUE_DEPTH:-128}"
 WAL_OWNER_MAX_TX_IOVECS="${URING_PLAY_ZCNBLK_SHM_OWNER_MAX_TX_IOVECS:-960}"
+if [ -n "${URING_PLAY_ZCNBLK_SHM_WAL_LANE_WINDOW+x}" ]; then
+	WAL_LANE_WINDOW="$URING_PLAY_ZCNBLK_SHM_WAL_LANE_WINDOW"
+elif [ "$WAL_OWNER_INGRESS" = 1 ]; then
+	WAL_LANE_WINDOW=16
+else
+	WAL_LANE_WINDOW=4
+fi
 WAL_TRANSPORT_CPU_LIST="${URING_PLAY_ZCNBLK_SHM_WAL_TRANSPORT_CPU_LIST:-}"
 WAL_TRANSPORT_GREEDY="${URING_PLAY_ZCNBLK_SHM_WAL_TRANSPORT_GREEDY:-1}"
 TRANSFER_SLOTS="${URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS:-1}"
@@ -166,6 +182,7 @@ else
 fi
 DIRTY_PRESSURE_RESERVE="${URING_PLAY_ZCNBLK_SHM_DIRTY_PRESSURE_RESERVE:-0}"
 WAL_DEBUG_STATE="${URING_PLAY_ZCNBLK_SHM_WAL_DEBUG_STATE:-0}"
+KERNEL_STATE_INTERVAL_MS="${URING_PLAY_ZCNBLK_SHM_KERNEL_STATE_INTERVAL_MS:-$([ "$WAL_DEBUG_STATE" = 1 ] && printf 1000 || printf 0)}"
 LEAF_TARGET="${LEAF_TARGET:-zcmem:${SIZE_MIB}M}"
 START_LOCAL_LEAF="${START_LOCAL_LEAF:-$([ "$BACKEND" = wal-tcp ] && printf 1 || printf 0)}"
 MODE="${MODE:-rw}"
@@ -180,6 +197,7 @@ perf_lease=""
 target_pid=""
 target_job_pid=""
 leaf_pid=""
+kernel_state_pid=""
 declare -a tracked_pids=()
 declare -a kthread_pids=()
 pid_file="$OUTDIR/target.pid"
@@ -221,6 +239,16 @@ expand_cpu_list() {
 join_comma() {
 	local IFS=,
 	printf '%s' "$*"
+}
+
+cpu_numa_node() {
+	local cpu="$1" node_path
+	for node_path in "/sys/devices/system/cpu/cpu$cpu"/node[0-9]*; do
+		[ -e "$node_path" ] || continue
+		printf '%s' "${node_path##*node}"
+		return 0
+	done
+	printf unknown
 }
 
 snapshot_contexts() {
@@ -279,6 +307,10 @@ restore_governors() {
 cleanup() {
 	local status=$?
 	set +e
+	if [ -n "$kernel_state_pid" ] && kill -0 "$kernel_state_pid" 2>/dev/null; then
+		kill "$kernel_state_pid" 2>/dev/null
+		wait "$kernel_state_pid" 2>/dev/null
+	fi
 	safe_stop_target
 	if [ -n "$target_job_pid" ]; then
 		wait "$target_job_pid" 2>/dev/null
@@ -297,6 +329,18 @@ trap cleanup EXIT INT TERM
 
 [ "$LANES" -gt 0 ] || die "LANES must be positive"
 [ "$REPEATS" -gt 0 ] || die "REPEATS must be positive"
+[[ "$SHM_RING_ENTRIES" =~ ^[0-9]+$ ]] && [ "$SHM_RING_ENTRIES" -gt 0 ] || \
+	die "SHM_RING_ENTRIES must be a positive integer"
+[[ "$KERNEL_QUEUE_DEPTH" =~ ^[0-9]+$ ]] && [ "$KERNEL_QUEUE_DEPTH" -gt 0 ] || \
+	die "KERNEL_QUEUE_DEPTH must be a positive integer"
+[[ "$KERNEL_PIPELINE_DEPTH" =~ ^[0-9]+$ ]] && [ "$KERNEL_PIPELINE_DEPTH" -gt 0 ] || \
+	die "KERNEL_PIPELINE_DEPTH must be a positive integer"
+[ "$KERNEL_PIPELINE_DEPTH" -le "$SHM_RING_ENTRIES" ] || \
+	die "KERNEL_PIPELINE_DEPTH must not exceed SHM_RING_ENTRIES"
+[[ "$POLL_CLOCK_CHECK_SPINS" =~ ^[0-9]+$ ]] && [ "$POLL_CLOCK_CHECK_SPINS" -gt 0 ] || \
+	die "POLL_CLOCK_CHECK_SPINS must be a positive integer"
+[[ "$KERNEL_STATE_INTERVAL_MS" =~ ^[0-9]+$ ]] || \
+	die "KERNEL_STATE_INTERVAL_MS must be an integer"
 [[ "$SECTOR_ORDER_SLOTS" =~ ^[0-9]+$ ]] || die "SECTOR_ORDER_SLOTS must be an integer"
 [ "$SECTOR_ORDER_SLOTS" -gt 0 ] || die "SECTOR_ORDER_SLOTS must be positive"
 (( (SECTOR_ORDER_SLOTS & (SECTOR_ORDER_SLOTS - 1)) == 0 )) || \
@@ -343,6 +387,10 @@ if [ "$WAL_OWNER_INGRESS" = 1 ]; then
 	[ "$WAL_SPLIT_TRANSPORT" != 1 ] || die "stable owner ingress owns separate transport workers"
 	[ "$START_LOCAL_LEAF" != 1 ] || die "stable owner ingress currently requires an external userspace leaf"
 fi
+[[ "$WAL_OWNER_COUNT" =~ ^[0-9]+$ ]] && [ "$WAL_OWNER_COUNT" -gt 0 ] || \
+	die "WAL owner count must be a positive integer"
+[ "$WAL_OWNER_COUNT" -le "$LANES" ] || \
+	die "WAL owner count must not exceed LANES"
 [[ "$WAL_OWNER_EXTENT_RECORDS" =~ ^[0-9]+$ ]] && [ "$WAL_OWNER_EXTENT_RECORDS" -gt 0 ] || \
 	die "WAL owner extent records must be a positive integer"
 [[ "$WAL_OWNER_WORKER_SPINS" =~ ^[0-9]+$ ]] || die "WAL owner worker spins must be an integer"
@@ -359,19 +407,33 @@ fi
 [[ "$WAL_OWNER_WRITE_FILL_US" =~ ^[0-9]+$ ]] || die "WAL owner write fill usec must be an integer"
 [[ "$WAL_OWNER_WRITE_FILL_MIN" =~ ^[0-9]+$ ]] && [ "$WAL_OWNER_WRITE_FILL_MIN" -gt 0 ] || \
 	die "WAL owner write fill minimum must be a positive integer"
+[[ "$WAL_OWNER_DEBOUNCE_US" =~ ^[0-9]+$ ]] || \
+	die "WAL owner debounce usec must be an integer"
+[[ "$WAL_OWNER_BACKLOG_HIGH_RECORDS" =~ ^[0-9]+$ ]] && [ "$WAL_OWNER_BACKLOG_HIGH_RECORDS" -gt 0 ] || \
+	die "WAL owner backlog high watermark must be a positive integer"
+[[ "$WAL_OWNER_BACKLOG_LOW_RECORDS" =~ ^[0-9]+$ ]] || \
+	die "WAL owner backlog low watermark must be an integer"
+[ "$WAL_OWNER_BACKLOG_LOW_RECORDS" -lt "$WAL_OWNER_BACKLOG_HIGH_RECORDS" ] || \
+	die "WAL owner backlog low watermark must be below the high watermark"
 [[ "$WAL_OWNER_PIPELINE_BATCHES" =~ ^[0-9]+$ ]] && [ "$WAL_OWNER_PIPELINE_BATCHES" -gt 0 ] || \
 	die "WAL owner pipeline batches must be a positive integer"
+[[ "$WAL_OWNER_PIPELINE_REFILL_SPINS" =~ ^[0-9]+$ ]] || \
+	die "WAL owner pipeline refill spins must be an integer"
 [[ "$WAL_OWNER_BATCH_RECORDS" =~ ^[0-9]+$ ]] && [ "$WAL_OWNER_BATCH_RECORDS" -gt 0 ] || \
 	die "WAL owner batch records must be a positive integer"
 [[ "$WAL_OWNER_FRAGMENT_RECORDS" =~ ^[0-9]+$ ]] && [ "$WAL_OWNER_FRAGMENT_RECORDS" -gt 0 ] || \
 	die "WAL owner fragment records must be a positive integer"
 [[ "$WAL_OWNER_FRAGMENT_FILL_US" =~ ^[0-9]+$ ]] || \
 	die "WAL owner fragment fill usec must be an integer"
+[[ "$WAL_OWNER_FOREGROUND_IMMEDIATE_LIMIT" =~ ^[0-9]+$ ]] || \
+	die "WAL owner foreground immediate limit must be an integer"
 [[ "$WAL_OWNER_QUEUE_DEPTH" =~ ^[0-9]+$ ]] && [ "$WAL_OWNER_QUEUE_DEPTH" -gt 1 ] || \
 	die "WAL owner queue depth must be at least two"
 [[ "$WAL_OWNER_MAX_TX_IOVECS" =~ ^[0-9]+$ ]] && \
 	[ "$WAL_OWNER_MAX_TX_IOVECS" -gt 0 ] && [ "$WAL_OWNER_MAX_TX_IOVECS" -le 1022 ] || \
 	die "WAL owner max tx iovecs must be in 1..=1022"
+[[ "$WAL_LANE_WINDOW" =~ ^[0-9]+$ ]] && [ "$WAL_LANE_WINDOW" -gt 0 ] || \
+	die "WAL lane window must be a positive integer"
 if [ "$START_LOCAL_LEAF" = 1 ] && [ "$LEAF_SPIN_READS" != 1 ] && [ "$LEAF_ADAPTIVE_SPIN" != 1 ]; then
 	printf 'PERF WARNING: WAL leaf receive spinning is disabled; blocking once or more per network batch adds avoidable context switches. Enable URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN=1 for high-IOPS controls\n' >&2
 	[ "$REPRESENTATIVE" != 1 ] || die "representative local WAL leaf runs require adaptive or fixed receive spinning"
@@ -435,10 +497,10 @@ fi
 
 log "loading placement-free shared-memory client edge"
 sudo -n insmod "$MODULE" transport=shm lanes="$LANES" connections_per_lane=1 \
-	size_mib="$SIZE_MIB" queues="$LANES" queue_depth="$IODEPTH" \
+	size_mib="$SIZE_MIB" queues="$LANES" queue_depth="$KERNEL_QUEUE_DEPTH" \
 	shm_sector_order_slots="$SECTOR_ORDER_SLOTS" \
 	max_frame_bytes="$MAX_FRAME_BYTES" \
-	pipeline_depth="$SHM_RING_ENTRIES" shm_ring_entries="$SHM_RING_ENTRIES" \
+	pipeline_depth="$KERNEL_PIPELINE_DEPTH" shm_ring_entries="$SHM_RING_ENTRIES" \
 	shm_payload_entries="$SHM_PAYLOAD_ENTRIES" shm_poll_us="$KERNEL_POLL_US" pin_threads=0
 for _ in $(seq 1 100); do
 	[ -e /dev/zcnblk0 ] && [ -e /dev/zcnblk-shmctl ] && break
@@ -457,7 +519,6 @@ fi
 roles_per_lane=3
 [ "$START_LOCAL_LEAF" != 1 ] || roles_per_lane=4
 [ "$WAL_SPLIT_TRANSPORT" != 1 ] || [ "$START_LOCAL_LEAF" = 1 ] || roles_per_lane=4
-[ "$WAL_OWNER_INGRESS" != 1 ] || roles_per_lane=4
 for ((lane = 0; lane < LANES; lane++)); do
 	hctx="/sys/block/zcnblk0/mq/$lane/cpu_list"
 	[ -r "$hctx" ] || die "missing hctx CPU map: $hctx"
@@ -481,39 +542,29 @@ for ((lane = 0; lane < LANES; lane++)); do
 		leaf_cpus+=("${selected[3]}")
 	elif [ "$WAL_SPLIT_TRANSPORT" = 1 ]; then
 		transport_cpus+=("${selected[3]}")
-	elif [ "$WAL_OWNER_INGRESS" = 1 ]; then
-		owner_cpus+=("${selected[3]}")
 	fi
 	all_cpus+=("${selected[@]}")
 done
-if [ -n "$CLIENT_CPU_LIST$TARGET_CPU_LIST$KERNEL_CPU_LIST$LEAF_CPU_LIST$WAL_OWNER_CPU_LIST" ]; then
+if [ -n "$CLIENT_CPU_LIST$TARGET_CPU_LIST$KERNEL_CPU_LIST$LEAF_CPU_LIST" ]; then
 	[ -n "$CLIENT_CPU_LIST" ] && [ -n "$TARGET_CPU_LIST" ] && [ -n "$KERNEL_CPU_LIST" ] || \
 		die "explicit topology requires CLIENT_CPU_LIST, TARGET_CPU_LIST, and KERNEL_CPU_LIST"
 	[ "$START_LOCAL_LEAF" != 1 ] || [ -n "$LEAF_CPU_LIST" ] || \
 		die "explicit local-leaf topology requires LEAF_CPU_LIST"
-	[ "$WAL_OWNER_INGRESS" != 1 ] || [ -n "$WAL_OWNER_CPU_LIST" ] || \
-		die "explicit stable-owner topology requires URING_PLAY_ZCNBLK_SHM_OWNER_CPU_LIST"
 	mapfile -t client_cpus < <(expand_cpu_list "$CLIENT_CPU_LIST")
 	mapfile -t target_cpus < <(expand_cpu_list "$TARGET_CPU_LIST")
 	mapfile -t kernel_cpus < <(expand_cpu_list "$KERNEL_CPU_LIST")
 	transport_cpus=()
-	owner_cpus=()
 	if [ "$START_LOCAL_LEAF" = 1 ]; then
 		mapfile -t leaf_cpus < <(expand_cpu_list "$LEAF_CPU_LIST")
 	else
 		leaf_cpus=()
-	fi
-	if [ "$WAL_OWNER_INGRESS" = 1 ]; then
-		mapfile -t owner_cpus < <(expand_cpu_list "$WAL_OWNER_CPU_LIST")
 	fi
 	[ "${#client_cpus[@]}" -eq "$LANES" ] || die "CLIENT_CPU_LIST must provide one CPU per lane"
 	[ "${#target_cpus[@]}" -eq "$LANES" ] || die "TARGET_CPU_LIST must provide one CPU per lane"
 	[ "${#kernel_cpus[@]}" -eq "$LANES" ] || die "KERNEL_CPU_LIST must provide one CPU per lane"
 	[ "$START_LOCAL_LEAF" != 1 ] || [ "${#leaf_cpus[@]}" -eq "$LANES" ] || \
 		die "LEAF_CPU_LIST must provide one CPU per lane"
-	[ "$WAL_OWNER_INGRESS" != 1 ] || [ "${#owner_cpus[@]}" -eq "$LANES" ] || \
-		die "WAL_OWNER_CPU_LIST must provide one CPU per owner"
-	all_cpus=("${client_cpus[@]}" "${target_cpus[@]}" "${kernel_cpus[@]}" "${leaf_cpus[@]}" "${owner_cpus[@]}")
+	all_cpus=("${client_cpus[@]}" "${target_cpus[@]}" "${kernel_cpus[@]}" "${leaf_cpus[@]}")
 	for ((lane = 0; lane < LANES; lane++)); do
 		hctx="$(cat "/sys/block/zcnblk0/mq/$lane/cpu_list")"
 		for cpu in "${client_cpus[$lane]}" "${target_cpus[$lane]}" "${kernel_cpus[$lane]}"; do
@@ -526,18 +577,53 @@ if [ -n "$CLIENT_CPU_LIST$TARGET_CPU_LIST$KERNEL_CPU_LIST$LEAF_CPU_LIST$WAL_OWNE
 			done < <(expand_cpu_list "$hctx")
 			[ "$cpu_allowed" = true ] || die "explicit lane $lane CPU $cpu is outside hctx map $hctx"
 		done
-		if [ "$WAL_OWNER_INGRESS" = 1 ]; then
-			cpu="${owner_cpus[$lane]}"
-			cpu_allowed=false
-			while IFS= read -r allowed_cpu; do
-				if [ "$allowed_cpu" = "$cpu" ]; then
-					cpu_allowed=true
-					break
-				fi
-			done < <(expand_cpu_list "$hctx")
-			[ "$cpu_allowed" = true ] || die "explicit owner $lane CPU $cpu is outside hctx map $hctx"
+	done
+fi
+declare -a owner_hctx_lanes=()
+if [ "$WAL_OWNER_INGRESS" = 1 ]; then
+	owner_cpus=()
+	if [ -n "$WAL_OWNER_CPU_LIST" ]; then
+		mapfile -t owner_cpus < <(expand_cpu_list "$WAL_OWNER_CPU_LIST")
+		[ "${#owner_cpus[@]}" -eq "$WAL_OWNER_COUNT" ] || \
+			die "WAL_OWNER_CPU_LIST must provide one CPU per configured owner"
+		for ((owner = 0; owner < WAL_OWNER_COUNT; owner++)); do
+			owner_hctx_lanes+=(explicit)
+		done
+	else
+		for ((owner = 0; owner < WAL_OWNER_COUNT; owner++)); do
+			owner_lane=$((owner * LANES / WAL_OWNER_COUNT))
+			hctx="/sys/block/zcnblk0/mq/$owner_lane/cpu_list"
+			owner_cpu=""
+			while IFS= read -r cpu; do
+				[ -z "$TOPOLOGY_CPU_LIST" ] || [ "${allowed_cpus[$cpu]:-}" = 1 ] || continue
+				package="$(cat "/sys/devices/system/cpu/cpu$cpu/topology/physical_package_id")"
+				core="$(cat "/sys/devices/system/cpu/cpu$cpu/topology/core_id")"
+				key="$package:$core"
+				[ -z "${used_cores[$key]:-}" ] || continue
+				used_cores[$key]=1
+				owner_cpu="$cpu"
+				break
+			done < <(expand_cpu_list "$(cat "$hctx")")
+			[ -n "$owner_cpu" ] || \
+				die "owner $owner cannot find an unused CPU near hctx$owner_lane"
+			owner_cpus+=("$owner_cpu")
+			owner_hctx_lanes+=("$owner_lane")
+		done
+	fi
+	for ((owner = 0; owner < WAL_OWNER_COUNT; owner++)); do
+		cpu="${owner_cpus[$owner]}"
+		[ -z "$TOPOLOGY_CPU_LIST" ] || [ "${allowed_cpus[$cpu]:-}" = 1 ] || \
+			die "owner $owner CPU $cpu is outside TOPOLOGY_CPU_LIST"
+		package="$(cat "/sys/devices/system/cpu/cpu$cpu/topology/physical_package_id")"
+		core="$(cat "/sys/devices/system/cpu/cpu$cpu/topology/core_id")"
+		key="$package:$core"
+		if [ "${owner_hctx_lanes[$owner]}" = explicit ]; then
+			[ -z "${used_cores[$key]:-}" ] || \
+				die "owner $owner CPU $cpu overlaps an ingress role core"
+			used_cores[$key]=1
 		fi
 	done
+	all_cpus+=("${owner_cpus[@]}")
 fi
 if [ "$WAL_SPLIT_TRANSPORT" = 1 ]; then
 	if [ -n "$WAL_TRANSPORT_CPU_LIST" ]; then
@@ -653,11 +739,20 @@ fi
 	printf 'topology_cpu_list=%s\n' "${TOPOLOGY_CPU_LIST:-unrestricted}"
 	printf 'coordinator_cpu=%s\n' "$coordinator_cpu"
 	for ((lane = 0; lane < LANES; lane++)); do
+		lane_leaf_cpu=none
+		[ "$START_LOCAL_LEAF" != 1 ] || lane_leaf_cpu="${leaf_cpus[$lane]}"
 		printf 'lane=%s client_cpu=%s target_cpu=%s transport_cpu=%s kernel_cpu=%s leaf_cpu=%s hctx_cpus=%s\n' \
 			"$lane" "${client_cpus[$lane]}" "${target_cpus[$lane]}" \
 			"$([ "$WAL_SPLIT_TRANSPORT" = 1 ] && printf '%s' "${transport_cpus[$lane]}" || printf inline)" \
-			"${kernel_cpus[$lane]}" "$leaf_cpu_list" "$(cat "/sys/block/zcnblk0/mq/$lane/cpu_list")"
+			"${kernel_cpus[$lane]}" "$lane_leaf_cpu" "$(cat "/sys/block/zcnblk0/mq/$lane/cpu_list")"
 	done
+	if [ "$WAL_OWNER_INGRESS" = 1 ]; then
+		for ((owner = 0; owner < WAL_OWNER_COUNT; owner++)); do
+			printf 'owner=%s owner_cpu=%s source_hctx_lane=%s numa_node=%s\n' \
+				"$owner" "${owner_cpus[$owner]}" "${owner_hctx_lanes[$owner]}" \
+				"$(cpu_numa_node "${owner_cpus[$owner]}")"
+		done
+	fi
 	printf 'hugepages_total=%s\n' "$(awk '/HugePages_Total:/{print $2}' /proc/meminfo)"
 	printf 'hugepages_free=%s\n' "$(awk '/HugePages_Free:/{print $2}' /proc/meminfo)"
 	printf 'hugepage_size_kib=%s\n' "$(awk '/Hugepagesize:/{print $2}' /proc/meminfo)"
@@ -667,7 +762,9 @@ fi
 	printf 'target_poll_us=%s\n' "$POLL_US"
 	printf 'target_busy_poll_us=%s\n' "$BUSY_POLL_US"
 	printf 'target_busy_hysteresis_us=%s\n' "$BUSY_HYSTERESIS_US"
+	printf 'target_poll_clock_check_spins=%s\n' "$POLL_CLOCK_CHECK_SPINS"
 	printf 'kernel_completion_poll_us=%s\n' "$KERNEL_POLL_US"
+	printf 'kernel_state_interval_ms=%s\n' "$KERNEL_STATE_INTERVAL_MS"
 	printf 'block_ring_mode=%s sqpoll_cpu_list=%s sqpoll_idle_ms=%s\n' \
 		"$BLOCK_RING_MODE" "$sqpoll_cpu_list" "$SQPOLL_IDLE_MS"
 	printf 'block_engine=%s\n' "$BLOCK_ENGINE"
@@ -677,6 +774,8 @@ fi
 		"$BLOCK_CQE_ADAPTIVE_SPIN_MIN" "$BLOCK_CQE_ADAPTIVE_SPIN_MAX" \
 		"$BLOCK_CQE_ADAPTIVE_WAIT_NS" "$BLOCK_CQE_HOT_POLL" "$BLOCK_CQE_HOT_POLL_PROGRESS_SPINS"
 	printf 'shm_descriptor_entries_per_channel=%s\n' "$SHM_RING_ENTRIES"
+	printf 'kernel_queue_depth=%s kernel_pipeline_depth=%s\n' \
+		"$KERNEL_QUEUE_DEPTH" "$KERNEL_PIPELINE_DEPTH"
 	printf 'shm_sector_order_slots=%s\n' "$SECTOR_ORDER_SLOTS"
 	printf 'shm_payload_entries_per_channel=%s\n' "$SHM_PAYLOAD_ENTRIES"
 	safe_writeback_limit=$((SHM_PAYLOAD_ENTRIES - SHM_RING_ENTRIES))
@@ -696,14 +795,19 @@ fi
 		"$WAL_OWNER_DISPATCH" "$WAL_OWNER_EXTENT_RECORDS" "$WAL_OWNER_WORKER_SPINS" \
 		"$WAL_OWNER_WORKER_ADAPTIVE_SPIN" "$WAL_OWNER_WORKER_SPIN_MIN" \
 		"$WAL_OWNER_WORKER_ADAPTIVE_WAIT_NS"
-	printf 'wal_owner_ingress=%s wal_owner_cpu_list=%s\n' \
-		"$WAL_OWNER_INGRESS" "$([ "$WAL_OWNER_INGRESS" = 1 ] && join_comma "${owner_cpus[@]}" || printf none)"
-	printf 'wal_owner_write_fill_us=%s wal_owner_write_fill_min=%s wal_owner_pipeline_batches=%s wal_owner_mixed_hysteresis_us=%s\n' \
+	printf 'wal_owner_ingress=%s wal_owner_count=%s wal_owner_cpu_list=%s\n' \
+		"$WAL_OWNER_INGRESS" "$WAL_OWNER_COUNT" \
+		"$([ "$WAL_OWNER_INGRESS" = 1 ] && join_comma "${owner_cpus[@]}" || printf none)"
+	printf 'wal_owner_write_fill_us=%s wal_owner_write_fill_min=%s wal_owner_pipeline_batches=%s wal_owner_pipeline_refill_spins=%s wal_owner_mixed_hysteresis_us=%s\n' \
 		"$WAL_OWNER_WRITE_FILL_US" "$WAL_OWNER_WRITE_FILL_MIN" "$WAL_OWNER_PIPELINE_BATCHES" \
-		"$WAL_OWNER_MIXED_HYSTERESIS_US"
+		"$WAL_OWNER_PIPELINE_REFILL_SPINS" "$WAL_OWNER_MIXED_HYSTERESIS_US"
+	printf 'wal_owner_debounce_us=%s wal_owner_backlog_low_records=%s wal_owner_backlog_high_records=%s\n' \
+		"$WAL_OWNER_DEBOUNCE_US" "$WAL_OWNER_BACKLOG_LOW_RECORDS" "$WAL_OWNER_BACKLOG_HIGH_RECORDS"
 	printf 'wal_owner_batch_records=%s wal_owner_fragment_records=%s wal_owner_fragment_fill_us=%s wal_owner_queue_depth=%s\n' \
 		"$WAL_OWNER_BATCH_RECORDS" "$WAL_OWNER_FRAGMENT_RECORDS" "$WAL_OWNER_FRAGMENT_FILL_US" "$WAL_OWNER_QUEUE_DEPTH"
+	printf 'wal_owner_foreground_immediate_limit=%s\n' "$WAL_OWNER_FOREGROUND_IMMEDIATE_LIMIT"
 	printf 'wal_owner_max_tx_iovecs=%s\n' "$WAL_OWNER_MAX_TX_IOVECS"
+	printf 'wal_lane_window=%s\n' "$WAL_LANE_WINDOW"
 	printf 'wal_split_transport=%s wal_transport_cpu_list=%s\n' \
 		"$WAL_SPLIT_TRANSPORT" "$transport_cpu_list"
 	printf 'wal_transport_wait_policy=%s\n' \
@@ -794,6 +898,7 @@ fi
 log "starting userspace shared target/fan; no placement decision exists in the kernel edge"
 sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
 	URING_PLAY_TOPOLOGY_REPRESENTATIVE="$REPRESENTATIVE" \
+	URING_PLAY_ZCNBLK_SHM_POLL_CLOCK_CHECK_SPINS="$POLL_CLOCK_CHECK_SPINS" \
 	URING_PLAY_ZCNBLK_SHM_COORDINATOR_CPU="$coordinator_cpu" \
 	URING_PLAY_ZCNBLK_SHM_LEASE_RELEASE_BATCH="$LEASE_RELEASE_BATCH" \
 	URING_PLAY_ZCNBLK_SHM_WRITEBACK_BATCH="$WRITEBACK_BATCH" \
@@ -803,6 +908,7 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
 	URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH="$WAL_LANE_BATCH" \
 	URING_PLAY_ZCNBLK_SHM_WAL_OWNER_DISPATCH="$WAL_OWNER_DISPATCH" \
 	URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS="$WAL_OWNER_INGRESS" \
+	URING_PLAY_ZCNBLK_SHM_OWNER_COUNT="$WAL_OWNER_COUNT" \
 	URING_PLAY_ZCNBLK_SHM_OWNER_CPU_LIST="$([ "$WAL_OWNER_INGRESS" = 1 ] && join_comma "${owner_cpus[@]}" || printf '')" \
 	URING_PLAY_ZCNBLK_SHM_OWNER_EXTENT_RECORDS="$WAL_OWNER_EXTENT_RECORDS" \
 	URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_SPINS="$WAL_OWNER_WORKER_SPINS" \
@@ -811,13 +917,19 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
 	URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_ADAPTIVE_WAIT_NS="$WAL_OWNER_WORKER_ADAPTIVE_WAIT_NS" \
 	URING_PLAY_ZCNBLK_SHM_OWNER_MIXED_HYSTERESIS_US="$WAL_OWNER_MIXED_HYSTERESIS_US" \
 	URING_PLAY_ZCNBLK_SHM_OWNER_WRITE_FILL_US="$WAL_OWNER_WRITE_FILL_US" \
-	URING_PLAY_ZCNBLK_SHM_OWNER_WRITE_FILL_MIN="$WAL_OWNER_WRITE_FILL_MIN" \
+		URING_PLAY_ZCNBLK_SHM_OWNER_WRITE_FILL_MIN="$WAL_OWNER_WRITE_FILL_MIN" \
+		URING_PLAY_ZCNBLK_SHM_OWNER_DEBOUNCE_US="$WAL_OWNER_DEBOUNCE_US" \
+		URING_PLAY_ZCNBLK_SHM_OWNER_BACKLOG_HIGH_RECORDS="$WAL_OWNER_BACKLOG_HIGH_RECORDS" \
+		URING_PLAY_ZCNBLK_SHM_OWNER_BACKLOG_LOW_RECORDS="$WAL_OWNER_BACKLOG_LOW_RECORDS" \
 	URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES="$WAL_OWNER_PIPELINE_BATCHES" \
+	URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_REFILL_SPINS="$WAL_OWNER_PIPELINE_REFILL_SPINS" \
 	URING_PLAY_ZCNBLK_SHM_OWNER_BATCH_RECORDS="$WAL_OWNER_BATCH_RECORDS" \
 	URING_PLAY_ZCNBLK_SHM_OWNER_FRAGMENT_RECORDS="$WAL_OWNER_FRAGMENT_RECORDS" \
-	URING_PLAY_ZCNBLK_SHM_OWNER_FRAGMENT_FILL_US="$WAL_OWNER_FRAGMENT_FILL_US" \
-	URING_PLAY_ZCNBLK_SHM_OWNER_QUEUE_DEPTH="$WAL_OWNER_QUEUE_DEPTH" \
+		URING_PLAY_ZCNBLK_SHM_OWNER_FRAGMENT_FILL_US="$WAL_OWNER_FRAGMENT_FILL_US" \
+		URING_PLAY_ZCNBLK_SHM_OWNER_FOREGROUND_IMMEDIATE_LIMIT="$WAL_OWNER_FOREGROUND_IMMEDIATE_LIMIT" \
+		URING_PLAY_ZCNBLK_SHM_OWNER_QUEUE_DEPTH="$WAL_OWNER_QUEUE_DEPTH" \
 	URING_PLAY_ZCNBLK_SHM_OWNER_MAX_TX_IOVECS="$WAL_OWNER_MAX_TX_IOVECS" \
+	URING_PLAY_ZCNBLK_SHM_WAL_LANE_WINDOW="$WAL_LANE_WINDOW" \
 	URING_PLAY_ZCNBLK_SHM_WAL_SPLIT_TRANSPORT="$WAL_SPLIT_TRANSPORT" \
 	URING_PLAY_ZCNBLK_SHM_WAL_TRANSPORT_CPU_LIST="$([ "$WAL_SPLIT_TRANSPORT" = 1 ] && printf '%s' "$transport_cpu_list" || printf '')" \
 	URING_PLAY_ZCNBLK_SHM_WAL_TRANSPORT_GREEDY="$WAL_TRANSPORT_GREEDY" \
@@ -885,7 +997,7 @@ case "$BACKEND" in
 	*) expected_target_tasks=$((LANES > 1 ? LANES + 1 : 1)) ;;
 esac
 [ "$WAL_SPLIT_TRANSPORT" != 1 ] || expected_target_tasks=$((LANES * 2 + 1))
-[ "$WAL_OWNER_INGRESS" != 1 ] || expected_target_tasks=$((LANES * 2 + 1))
+[ "$WAL_OWNER_INGRESS" != 1 ] || expected_target_tasks=$((LANES + WAL_OWNER_COUNT + 1))
 for _ in $(seq 1 100); do
 	mapfile -t target_tasks < <(find "/proc/$target_pid/task" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -n)
 	[ "${#target_tasks[@]}" -ge "$expected_target_tasks" ] && break
@@ -903,6 +1015,21 @@ if [ "$START_LOCAL_LEAF" = 1 ]; then
 	tracked_pids+=("${leaf_tasks[@]}")
 fi
 snapshot_contexts "$OUTDIR/hot-contexts.initial"
+
+if [ "$KERNEL_STATE_INTERVAL_MS" -gt 0 ]; then
+	debug_state=/sys/kernel/debug/zcnblk/state
+	sudo -n test -r "$debug_state" || \
+		die "kernel SHM state sampling requested but $debug_state is unavailable"
+	state_interval="$(awk -v ms="$KERNEL_STATE_INTERVAL_MS" 'BEGIN { printf "%.3f", ms / 1000 }')"
+	(
+		while grep -q '^zcnblk_client_mod ' /proc/modules 2>/dev/null; do
+			printf 'timestamp_ns=%s\n' "$(date +%s%N)"
+			sudo -n cat "$debug_state"
+			sleep "$state_interval"
+		done
+	) >>"$OUTDIR/kernel-shm-state.log" 2>&1 &
+	kernel_state_pid=$!
+fi
 
 if [ "$ORDER_SMOKE_PAIRS" -gt 0 ]; then
 	log "proving same-sector ordering and sync across the live $LANES-lane path"

@@ -146,6 +146,20 @@ these is true:
 - a commit barrier or fsync boundary arrives
 - lane credits or WAL credits are exhausted
 
+For `/dev/zcnblk0` ingress, extent coalescing must not require a payload copy.
+The shared transport negotiates individually transferable payload pages: the
+kernel assigns a free physical slot and publishes its submit-sequence owner
+token; the dirty cache and coalescer retain references to those slots until the
+extent result HWM permits retirement. Request-ring order and payload-page reuse
+are independent. A stale owner token is fatal, and sync seals partial extents
+before waiting for every lane's remote HWM.
+
+The payload pool is a byte-credit budget, not an excuse for unbounded buffering.
+At low traffic, the age budget flushes a partial extent immediately enough for
+latency-sensitive I/O. At high traffic, byte and record thresholds should form
+large extents naturally. At hard pressure, admission waits or retires only
+remotely committed dirty pages; it must not fall back to a hidden payload copy.
+
 Based on the current EC2 c8gn tests, the first serious defaults should be:
 
 - latency-biased: 64 KiB, 16 logical 4K records
@@ -279,6 +293,46 @@ URING_PLAY_OFI_TIMEOUT_MS=5000 \
 target/release/zcutils zcwal-ofi-send tcp rdm 127.0.0.1 30100 4 8M 4K 4 true
 ```
 
+`zcwal-ofi-relay` is the head/fan point for a userspace RAID1 WAL path. It
+receives one upstream lane-local WAL extent stream, forwards the same in-memory
+slot to every configured tail, and sends one upstream high-water-mark ACK only
+after all tails have ACKed the same logical range. `tail-addr` and
+`out-base-service` both accept comma-separated lists; a single value is
+expanded across all tails. This keeps the client from duplicating mirror
+traffic while still keeping mirror placement in userspace.
+
+Local two-tail functional smoke:
+
+```bash
+# Tail 0
+target/release/zcutils zcwal-ofi-recv tcp rdm 127.0.0.1 30600 2 8M 64K 2 true
+
+# Tail 1
+target/release/zcutils zcwal-ofi-recv tcp rdm 127.0.0.1 31600 2 8M 64K 2 true
+
+# Head relay: one upstream, two downstream tails
+target/release/zcutils zcwal-ofi-relay \
+  tcp rdm 127.0.0.1 127.0.0.1 29600 30600,31600 2 8M 64K 2 true
+
+# Upstream sender
+target/release/zcutils zcwal-ofi-send tcp rdm 127.0.0.1 29600 2 8M 64K 2 true
+```
+
+For a real cross-host mirror, run one tail on each leaf host and pass
+`tail0-private-ip,tail1-private-ip` to the relay. The relay prints
+`ack_policy=all-tails-before-upstream-hwm`, `tail_count`, lane/worker placement,
+context switches, migrations, logical IOPS, and branch wire throughput.
+Set `URING_PLAY_OFI_ACK_WINDOW=N` to use one HWM/range ACK per contiguous batch
+on the sender, relay, and terminal receiver. This reduces ACK/CQ churn without
+changing the commit contract: upstream ACKs are sent only after all tails have
+ACKed the same lane-local logical range. `URING_PLAY_OFI_RELAY_BRANCH_POST_NOWAIT=1`
+is an opt-in experiment that posts a batch to every tail before draining
+completions; benchmark it per provider because it did not improve the local
+`tcp;rdm` mirror path. For local TCP-provider tests, compare direct and mirrored
+results by total data movement: a two-tail relay performs one upstream receive
+plus two downstream sends, so saturating the same copied-data budget can show up
+as about one third of direct one-hop logical IOPS.
+
 For ultra-low-latency ACK experiments, the shim can spin on empty CQs instead
 of sleeping:
 
@@ -347,6 +401,55 @@ remote WAL progress without receiving one control message per lane. If the
 initiator completion level does not imply target visibility for a provider, use
 a fenced delivery-complete doorbell or provider-supported remote CQ data before
 advancing the high-water mark.
+
+### RDMA Parallel WAL Path
+
+The RDMA equivalent of the high-rate TCP WAL target-drain path is not a
+block-device mirror or stripe. It is the same userspace RAID placement contract
+mapped onto lane-local registered memory:
+
+```text
+client/fan lane N
+  -> local WAL extent lease in a registered lane arena
+  -> RDMA write into remote lane arena slot N,S
+  -> small descriptor/doorbell record {lane, seq, slot, len, hwm_epoch}
+  -> leaf consumes committed slots in lane order
+  -> leaf result/HWM log returns one range ACK per contiguous batch
+```
+
+The hot data path is one-sided `fi_write`/provider RMA into pre-registered,
+lane-owned slots. The control path is small: initial arena metadata exchange,
+credit return, descriptor doorbells, and high-water-mark ACKs. A lane leader owns
+its source arena, remote slot credits, transmit CQ, and ACK/result CQ. It should
+post many RDMA writes from stable per-slot buffers, drain completions in batches,
+and advance remote visibility with one doorbell per slot batch, not one message
+per 4 KiB logical record.
+
+For mirror fanout, userspace RAID writes the same payload lease to each selected
+remote arena according to placement. Commit is the minimum contiguous HWM across
+the required branches. For stripe, placement emits segment descriptors that
+target distinct remote arena slots; the zipper emits upstream completion only
+after the segment mask for that `(lane, sequence)` is complete. Both policies
+use the same per-lane descriptor/result-log zipper as TCP mux.
+
+The first production-shaped implementation should add:
+
+- persistent registered source and target arena pools, preferably hugetlb-backed;
+- per-lane remote slot tables with credits and wrap-safe sequence numbers;
+- batched `fi_write` posting and batched CQ draining;
+- a descriptor doorbell format that carries lane, sequence, slot, byte range,
+  checksum/encryption state, placement epoch, and sync epoch;
+- range/HWM ACKs, never per-4K ACKs, with sync/flush/FUA using explicit epochs;
+- topology warnings for missing fabric domain, MR registration, memlock,
+  hugetlb, lane CPU pinning, CQ busy-poll policy, and provider smoke proof.
+
+This path can share the `ZcWalExtentV1` logical header, ACK/range semantics,
+branch placement, and result-log zipper with TCP mux. It should not share the
+TCP socket framing, per-message receive loop, or block-leaf placement decisions.
+If encryption is enabled, encrypt once at the WAL extent lease boundary and send
+ciphertext descriptors to every branch that is allowed to hold that ciphertext;
+do not decrypt and re-encrypt at each fan hop unless the key domain explicitly
+requires it.
 
 On June 5, 2026, local release-mode loopback with libfabric `tcp` RDM, receiver
 CPUs `4,5,6,7`, sender CPUs `20,21,22,23`, 4 lanes, and 4 KiB logical records

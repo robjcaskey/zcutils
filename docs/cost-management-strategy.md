@@ -1,14 +1,15 @@
 # Cost Management Strategy
 
 This project uses adhoc EC2 Spot instances for disposable performance tests.
-The cost target is a hard maximum of $50/day, with each experiment bounded by
+The cost target is a hard maximum of $20/day, with each experiment bounded by
 an explicit UTC drop-dead time and automatic termination tags.
 
 ## Budget Rules
 
-- Default daily ceiling: $50 total.
-- Default selector ceiling: $12.50/hour for a three-node run, which keeps a
-  four-hour experiment under $50 before small control-plane costs.
+- Default daily ceiling: $20 total across all zcutils adhoc runs.
+- Default experiment ceiling: $20 including conservative instance, public IPv4,
+  and root-volume estimates. A sequence of experiments must use the remaining
+  daily budget, not reset the ceiling for each launch.
 - Never launch without `adhocKeepaliveModeAction=terminate`.
 - Never launch a run longer than 15 minutes without an absolute
   `adhocKeepalive` UTC timestamp.
@@ -23,7 +24,8 @@ The launcher estimates a conservative ceiling from:
 - public IPv4 address hours when SSH public IPs are attached;
 - root EBS volume GB-hours.
 
-It refuses launches above `--max-total-cost`, which defaults to `$50`.
+For zcutils work, always pass `--max-total-cost 20` or a lower remaining daily
+budget even if the helper's generic default is higher.
 
 ## Spot Helper
 
@@ -62,7 +64,7 @@ For high-bandwidth metal searches, prefer:
   --metal-only \
   --min-network-gbps 300 \
   --score-mode bandwidth \
-  --max-hourly-total 50
+  --max-hourly-total 20
 ```
 
 ## Allowed Network Shape

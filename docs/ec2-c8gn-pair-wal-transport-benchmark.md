@@ -91,6 +91,41 @@ export URING_PLAY_EXPECT_ROUTE_DEV=ens146
 export URING_PLAY_EXPECT_LOCAL_ADDR=172.31.40.131
 ```
 
+For `zcnblk-fan --engine wal` mirror/fan tests that send different branches out
+different cards from the same fan process, use
+`URING_PLAY_ZCNBLK_FAN_LEAF_SOURCE_IPS=card0_ip,card1_ip` instead of relying on
+the global source bind. Confirm the fan logs show `leaf_source_ips=` and each
+`zcnblk-fan-wal-leaf-stream` line has the expected `source_ip=`.
+
+The planner-backed fan WAL runner can be split across a two-node pair without
+hand-editing the topology contract. On the leaf host, start terminal userspace
+RAM leaves:
+
+```bash
+LANES=64 \
+LEAF0_BIND="$LEAF_CARD0_PRIV" \
+LEAF1_BIND="$LEAF_CARD1_PRIV" \
+OUTDIR="bench-results/${RUN_ID}-leaf" \
+scripts/zcnblk-fanwal-plan-bench.sh leaf-node
+```
+
+On the client/fan host, connect both fan branches to those leaves and bind each
+branch to the matching local card:
+
+```bash
+LANES=64 \
+LEAF_ADDRS="$LEAF_CARD0_PRIV,$LEAF_CARD1_PRIV" \
+FAN_LEAF_SOURCE_IPS="$FAN_CARD0_PRIV,$FAN_CARD1_PRIV" \
+OUTDIR="bench-results/${RUN_ID}-fan" \
+scripts/zcnblk-fanwal-plan-bench.sh fan-node
+```
+
+`fan-node` defaults leaf CPU lists to the `leaf-node` topology domain so strict
+CPU checks do not compare local fan CPU numbers with remote leaf CPU numbers.
+If both leaves share one host, keep one shared `LEAF_CPU_DOMAIN`; if the leaves
+are on different hosts, use separate domains through
+`FAN_LEAF_CPU_LISTS='leaf0@leaf-a=...;leaf1@leaf-b=...'`.
+
 ## Standard TCP/WAL Results
 
 All runs used:
@@ -309,6 +344,45 @@ Implementations:
 Userspace RAID, fanout, mirror, spill, placement, and backpressure sit above
 this transport. Block devices are terminal leaf media only after userspace
 placement has already been decided.
+
+## Block-Edge Revalidation Gate: July 11, 2026
+
+Keep bulk WAL transport records separate from block-edge IOPS. The 522.6 Gbit/s
+TCP/WAL result is 15.95M normalized 4 KiB records/s through large ordered
+extents; it is not `/dev/zcnblk0` random IOPS. The latest saved single-target
+cloud block result before the bounded-arena changes was 832k IOPS, with an 874k
+hot repeat, for 16 workers at QD128 each. That is aggregate QD2048. Its implied
+queue residence is about 2.46-2.34 ms by Little's law, not a measured latency
+percentile.
+
+Current local code completed a 20M-operation, four-lane, random 50/50 read/write
+control at 2.30M IOPS. It used `/dev/zcnblk0 -> userspace WAL target -> TCP
+loopback -> zcmem leaf`, retained writes by shared-slot reference, and evicted
+remote-completed cache generations before arena wrap. The run was on a shared
+host without huge pages and its soft-exclusive CPU/memory claim was not
+honored, so it is a regression gate only. Artifact:
+`bench-results/local-zcnblk-wal-target-profile-batched-20260711T150826Z`.
+
+The next `c8gn.48xlarge` single-target run must measure the current binary before
+adding mirror or stripe placement:
+
+- QD1, QD2, QD4, QD8, and QD16 per lane, with lane count and aggregate depth
+  stated explicitly;
+- raw TCP and EFA 4 KiB RTT on the same NIC/CPU topology, plus theoretical
+  `aggregate_depth / RTT` IOPS and actual/theoretical efficiency at every
+  low-QD point;
+- random read, random write, and 50/50 mixed traffic over private data NICs;
+- real sampled p50/p95/p99/p999 latency, not queue-depth/IOPS inference;
+- client, kernel hctx, target lane, leaf lane, NIC, NUMA, and IRQ/RPS mapping;
+- context switches per 1,000 logical I/O for every process and kernel lane;
+- dirty pressure events, evictions, peak outstanding slots, and sync drain time;
+- a separate large-extent bulk run on both NICs to prove the transport ceiling.
+
+Use latency sample rate 1 for low-QD points and 64 for throughput points after
+an unsampled control. Do not call a cloud result representative if hugetlb,
+memlock, socket buffers, CPU/hctx pinning, private-NIC routing, or the lane map
+is missing. First validate one non-RAID userspace leaf; only then insert the
+userspace mirror/fan stage and attribute the delta hop by hop.
 
 ## Teardown
 

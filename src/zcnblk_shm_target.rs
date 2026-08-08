@@ -10,9 +10,10 @@ use super::{
     ZCNBLK_OP_WRITE, ZcnblkFanWalAdaptiveRecvSpin, ZcnblkFanWalCompactWriteExtent,
     ZcnblkFanWalFrame, ZcnblkFanWalSharedLeaseSource, ZcnblkShmArenaDirtyHwmCache,
     advance_send_zc_iovecs, connect_tcp_bound_local_ip, env_enabled_or,
-    kernel_supports_request_opcode, validate_uring_send_mode_location,
-    zcnblk_fan_wal_decode_frame_slice, zcnblk_fan_wal_recv_exact_spin_then_block,
-    zcnblk_fan_wal_write_frame, zcnblk_fan_wal_write_leaf_batch_payload,
+    kernel_supports_request_opcode, set_tcp_bench_buffers, socket_bench_buffer_bytes,
+    validate_uring_send_mode_location, zcnblk_fan_wal_decode_frame_slice,
+    zcnblk_fan_wal_recv_exact_spin_then_block, zcnblk_fan_wal_write_frame,
+    zcnblk_fan_wal_write_leaf_batch_payload,
 };
 use std::cell::UnsafeCell;
 use std::cmp::Reverse;
@@ -32,7 +33,7 @@ use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
 const ZCNBLK_SHM_MAGIC: u64 = 0x3130_4d48_534e_435a;
-const ZCNBLK_SHM_VERSION: u32 = 2;
+const ZCNBLK_SHM_VERSION: u32 = 3;
 const ZCNBLK_SHM_DESC_BYTES: u32 = 64;
 const ZCNBLK_SHM_OP_WRITE: u16 = 1;
 const ZCNBLK_SHM_OP_READ: u16 = 2;
@@ -40,6 +41,8 @@ const ZCNBLK_SHM_OP_SYNC: u16 = 7;
 const ZCNBLK_SHM_CAP_SECTOR_PREDECESSOR: u64 = 1 << 0;
 const ZCNBLK_SHM_CAP_TRANSFER_PAYLOAD_SLOTS: u64 = 1 << 1;
 const ZCNBLK_SHM_CAP_READ_PAYLOAD_REF: u64 = 1 << 2;
+const ZCNBLK_SHM_CAP_REQUEST_WAKE_ARMED: u64 = 1 << 3;
+const ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED: u64 = 1 << 4;
 const ZCNBLK_SHM_CQE_F_READ_PAYLOAD_REF: u32 = 1 << 0;
 const ZCNBLK_SHM_CQE_REF_CHANNEL_SHIFT: u32 = 8;
 const ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS: u32 = 1 << 0;
@@ -70,13 +73,21 @@ const ZCNBLK_SHM_IOC_GET_INFO: libc::c_ulong =
 #[derive(Clone, Copy, Default)]
 struct ZcnblkShmChannel {
     req_prod: u64,
-    req_cons: u64,
-    comp_prod: u64,
-    comp_cons: u64,
-    payload_lease_hwm: u64,
+    request_publishes: u64,
     request_kicks: u64,
+    request_producer_reserved: [u64; 5],
+    req_cons: u64,
+    request_wake_armed: u64,
+    request_consumer_reserved: [u64; 6],
+    comp_prod: u64,
+    payload_lease_hwm: u64,
+    completion_producer_reserved: [u64; 6],
+    comp_cons: u64,
     completion_kicks: u64,
-    reserved: u64,
+    completion_wake_armed: u64,
+    completion_consumer_reserved: [u64; 5],
+    payload_free_slots: u64,
+    payload_reserved: [u64; 7],
 }
 
 #[repr(C)]
@@ -144,7 +155,7 @@ struct ZcnblkShmAttach {
     flags: u32,
 }
 
-const _: () = assert!(size_of::<ZcnblkShmChannel>() == 64);
+const _: () = assert!(size_of::<ZcnblkShmChannel>() == 320);
 const _: () = assert!(size_of::<ZcnblkShmRequest>() == 64);
 const _: () = assert!(size_of::<ZcnblkShmCompletion>() == 64);
 const _: () = assert!(size_of::<ZcnblkShmHeader>() == 144);
@@ -300,6 +311,15 @@ struct RemoteWalLeaf {
     control_writev_batches: u64,
     send_zc_notifications: u64,
     send_zc_copied_notifications: u64,
+    tcp_nodelay: bool,
+    quickack: bool,
+    request_send_calls: u64,
+    request_send_time: Duration,
+    result_recv_calls: u64,
+    result_recv_time: Duration,
+    result_header_time: Duration,
+    result_descriptor_time: Duration,
+    result_payload_time: Duration,
 }
 
 struct SharedPayloadPlan {
@@ -447,6 +467,24 @@ fn parse_optional_usize_env(name: &str) -> io::Result<Option<usize>> {
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))
         })
         .transpose()
+}
+
+fn set_tcp_quickack(stream: &TcpStream) -> io::Result<()> {
+    let enabled: libc::c_int = 1;
+    let ret = unsafe {
+        libc::setsockopt(
+            stream.as_raw_fd(),
+            libc::IPPROTO_TCP,
+            libc::TCP_QUICKACK,
+            (&enabled as *const libc::c_int).cast(),
+            size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 impl RemoteWalSendMode {
@@ -930,9 +968,16 @@ impl RemoteWalLeaf {
             Some(source_ip) => connect_tcp_bound_local_ip(socket_address, source_ip)?,
             None => TcpStream::connect(socket_address)?,
         };
+        set_tcp_bench_buffers(&stream);
         let local_address = stream.local_addr()?;
         let address = format!("{local_address}->{socket_address}");
         stream.set_nodelay(true)?;
+        let tcp_nodelay = stream.nodelay()?;
+        let quickack = env_enabled_or("URING_PLAY_ZCNBLK_SHM_REMOTE_QUICKACK", false);
+        eprintln!(
+            "zcnblk-shm-target-remote-connect: lane={lane_id} address={address} tcp_nodelay={tcp_nodelay} quickack={quickack} socket_buffer_bytes={}",
+            socket_bench_buffer_bytes(),
+        );
         let hello = ZcnblkFanWalFrame {
             op: ZCNBLK_FAN_WAL_OP_HELLO,
             flags: ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH,
@@ -990,6 +1035,15 @@ impl RemoteWalLeaf {
             control_writev_batches: 0,
             send_zc_notifications: 0,
             send_zc_copied_notifications: 0,
+            tcp_nodelay,
+            quickack,
+            request_send_calls: 0,
+            request_send_time: Duration::ZERO,
+            result_recv_calls: 0,
+            result_recv_time: Duration::ZERO,
+            result_header_time: Duration::ZERO,
+            result_descriptor_time: Duration::ZERO,
+            result_payload_time: Duration::ZERO,
         })
     }
 
@@ -1426,6 +1480,22 @@ impl RemoteWalLeaf {
         if requests.is_empty() {
             return Ok(());
         }
+        let started = Instant::now();
+        let result = self.send_request_batch_inner(tx, mapping, requests);
+        self.request_send_calls = self.request_send_calls.saturating_add(1);
+        self.request_send_time = self.request_send_time.saturating_add(started.elapsed());
+        result
+    }
+
+    fn send_request_batch_inner(
+        &mut self,
+        tx: &mut RemoteWalTxContext,
+        mapping: &Mapping,
+        requests: &[PendingRemoteRead],
+    ) -> io::Result<()> {
+        if requests.is_empty() {
+            return Ok(());
+        }
         if self.compact_writes
             && requests
                 .iter()
@@ -1526,9 +1596,32 @@ impl RemoteWalLeaf {
         if requests.is_empty() {
             return Ok(());
         }
+        let started = Instant::now();
+        let result = self.recv_request_batch_into_inner(tx, mapping, requests);
+        self.result_recv_calls = self.result_recv_calls.saturating_add(1);
+        self.result_recv_time = self.result_recv_time.saturating_add(started.elapsed());
+        result
+    }
+
+    fn recv_request_batch_into_inner(
+        &mut self,
+        tx: &mut RemoteWalTxContext,
+        mapping: &Mapping,
+        requests: &[PendingRemoteRead],
+    ) -> io::Result<()> {
+        if requests.is_empty() {
+            return Ok(());
+        }
         let (descriptor_len, read_payload_len, write_payload_len) =
             Self::request_batch_lengths(requests)?;
+        let header_started = Instant::now();
         let result_batch = self.read_result_frame()?;
+        self.result_header_time = self
+            .result_header_time
+            .saturating_add(header_started.elapsed());
+        if self.quickack {
+            set_tcp_quickack(&self.stream)?;
+        }
         self.finish_next_send_batch(tx)?;
         if read_payload_len == 0 {
             if result_batch.op != ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH
@@ -1586,7 +1679,11 @@ impl RemoteWalLeaf {
             ));
         }
         let mut result_descriptors = vec![0u8; descriptor_len];
+        let descriptor_started = Instant::now();
         self.recv_result_exact(&mut result_descriptors)?;
+        self.result_descriptor_time = self
+            .result_descriptor_time
+            .saturating_add(descriptor_started.elapsed());
         for (idx, request) in requests.iter().enumerate() {
             let start = idx * ZCNBLK_FAN_WAL_HEADER_LEN;
             let result = zcnblk_fan_wal_decode_frame_slice(
@@ -1620,6 +1717,7 @@ impl RemoteWalLeaf {
                 ));
             }
         }
+        let payload_started = Instant::now();
         for request in requests {
             if request.request.op == ZCNBLK_SHM_OP_READ {
                 let out = unsafe {
@@ -1630,6 +1728,12 @@ impl RemoteWalLeaf {
                 };
                 self.recv_result_exact(out)?;
             }
+        }
+        self.result_payload_time = self
+            .result_payload_time
+            .saturating_add(payload_started.elapsed());
+        if self.quickack {
+            set_tcp_quickack(&self.stream)?;
         }
         let read_records = requests
             .iter()
@@ -2225,6 +2329,7 @@ enum WalOwnerIngressCommand {
     Batch {
         ingress: u32,
         requests: Vec<PendingRemoteRead>,
+        immediate: bool,
     },
     Sync {
         ingress: u32,
@@ -2354,6 +2459,7 @@ struct WalOwnerIngressWorker {
 
 impl WalOwnerIngressWorker {
     fn mixed_dispatch_is_immediate(
+        explicit_immediate: bool,
         requests: &[PendingRemoteRead],
         read_hot_until: &mut Option<Instant>,
         hysteresis: Duration,
@@ -2362,11 +2468,36 @@ impl WalOwnerIngressWorker {
             .iter()
             .any(|pending| pending.request.op != ZCNBLK_SHM_OP_WRITE);
         let now = Instant::now();
-        if has_read {
+        if has_read && explicit_immediate {
             *read_hot_until = now.checked_add(hysteresis);
             return true;
         }
+        if has_read {
+            return false;
+        }
         read_hot_until.is_some_and(|deadline| now < deadline)
+    }
+
+    fn note_command_dequeued(
+        command: &WalOwnerIngressCommand,
+        queued_records: &AtomicUsize,
+    ) -> io::Result<usize> {
+        let WalOwnerIngressCommand::Batch { requests, .. } = command else {
+            return Ok(queued_records.load(Ordering::Acquire));
+        };
+        Self::note_records_dequeued(requests.len(), queued_records)
+    }
+
+    fn note_records_dequeued(count: usize, queued_records: &AtomicUsize) -> io::Result<usize> {
+        let previous = queued_records.fetch_sub(count, Ordering::AcqRel);
+        if previous < count {
+            queued_records.fetch_add(count, Ordering::Relaxed);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "WAL owner queued-record counter underflow",
+            ));
+        }
+        Ok(previous - count)
     }
 
     fn start(
@@ -2374,16 +2505,25 @@ impl WalOwnerIngressWorker {
         mapping: Arc<Mapping>,
         cpu: usize,
         result_txs: Arc<[SyncSender<WalOwnerIngressResult>]>,
+        queued_records_by_owner: Arc<[AtomicUsize]>,
         queue_depth: usize,
     ) -> io::Result<Self> {
         remote.attach_mapping(Arc::clone(&mapping));
         remote.target_cpu = Some(cpu);
         let owner = remote.lane_id;
+        let owner_index = owner as usize;
+        if owner_index >= queued_records_by_owner.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "WAL owner queue counter is missing",
+            ));
+        }
         let (command_tx, command_rx) = sync_channel(queue_depth.max(2));
         let (startup_tx, startup_rx) = sync_channel::<io::Result<()>>(1);
         let handle = thread::Builder::new()
             .name(format!("zcwal-owner-{owner}"))
             .spawn(move || {
+                let queued_records = &queued_records_by_owner[owner_index];
                 if let Err(error) = pin_current_thread(cpu) {
                     let reported = io::Error::new(error.kind(), error.to_string());
                     let _ = startup_tx.send(Err(reported));
@@ -2423,6 +2563,31 @@ impl WalOwnerIngressWorker {
                     .transpose()
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
                     .unwrap_or(0);
+                let debounce_us = env::var("URING_PLAY_ZCNBLK_SHM_OWNER_DEBOUNCE_US")
+                    .ok()
+                    .map(|value| value.parse::<u64>())
+                    .transpose()
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+                    .unwrap_or(2);
+                let backlog_high = env::var("URING_PLAY_ZCNBLK_SHM_OWNER_BACKLOG_HIGH_RECORDS")
+                    .ok()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+                    .unwrap_or(fill_records)
+                    .max(1);
+                let backlog_low = env::var("URING_PLAY_ZCNBLK_SHM_OWNER_BACKLOG_LOW_RECORDS")
+                    .ok()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+                    .unwrap_or(16);
+                if backlog_low >= backlog_high {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "WAL owner backlog low watermark must be below the high watermark",
+                    ));
+                }
                 let pipeline_batches = env::var("URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES")
                     .ok()
                     .map(|value| value.parse::<usize>())
@@ -2430,6 +2595,13 @@ impl WalOwnerIngressWorker {
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
                     .unwrap_or(16)
                     .max(1);
+                let pipeline_refill_spins =
+                    env::var("URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_REFILL_SPINS")
+                        .ok()
+                        .map(|value| value.parse::<usize>())
+                        .transpose()
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+                        .unwrap_or(256);
                 let wait_spins = env::var("URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_SPINS")
                     .ok()
                     .map(|value| value.parse::<usize>())
@@ -2477,6 +2649,14 @@ impl WalOwnerIngressWorker {
                 };
                 let mut carry = None::<WalOwnerIngressCommand>;
                 let mut read_hot_until = None::<Instant>;
+                let mut bulk_mode = false;
+                let mut wire_batches = 0u64;
+                let mut wire_records = 0u64;
+                let mut immediate_batches = 0u64;
+                let mut debounced_batches = 0u64;
+                let mut bulk_batches = 0u64;
+                let mut max_queued_records = 0usize;
+                let mut max_wire_batch_records = 0usize;
                 loop {
                     let first = match carry.take() {
                         Some(command) => command,
@@ -2488,38 +2668,80 @@ impl WalOwnerIngressWorker {
                             }
                         },
                     };
+                    let queued_after_first = match Self::note_command_dequeued(&first, queued_records)
+                    {
+                        Ok(queued) => queued,
+                        Err(error) => {
+                            report_failure(&error);
+                            return Err(error);
+                        }
+                    };
+                    max_queued_records = max_queued_records.max(queued_after_first);
                     match first {
-                        WalOwnerIngressCommand::Batch { ingress, requests } => {
-                            let mut immediate = Self::mixed_dispatch_is_immediate(
+                        WalOwnerIngressCommand::Batch {
+                            ingress,
+                            requests,
+                            immediate: explicit_immediate,
+                        } => {
+                            if queued_after_first.saturating_add(requests.len()) >= backlog_high {
+                                bulk_mode = true;
+                            } else if queued_after_first <= backlog_low {
+                                bulk_mode = false;
+                            }
+                            let mut immediate = !bulk_mode
+                                && queued_after_first <= backlog_low
+                                && Self::mixed_dispatch_is_immediate(
+                                explicit_immediate,
                                 &requests,
                                 &mut read_hot_until,
                                 mixed_hysteresis,
                             );
-                            let mut commands = VecDeque::from([(ingress, requests)]);
-                            let mut records = commands.front().map_or(0, |(_, batch)| batch.len());
+                            let mut commands =
+                                VecDeque::from([(ingress, requests, explicit_immediate)]);
+                            let mut records =
+                                commands.front().map_or(0, |(_, batch, _)| batch.len());
+                            let fill_budget_us = if bulk_mode { fill_us } else { debounce_us };
                             let deadline = Instant::now()
-                                .checked_add(Duration::from_micros(fill_us))
+                                .checked_add(Duration::from_micros(fill_budget_us))
                                 .unwrap_or_else(Instant::now);
                             while records < fill_records && records < batch_records {
                                 match command_rx.try_recv() {
-                                    Ok(WalOwnerIngressCommand::Batch { ingress, requests }) => {
+                                    Ok(WalOwnerIngressCommand::Batch {
+                                        ingress,
+                                        requests,
+                                        immediate: next_immediate,
+                                    }) => {
+                                        let queued = Self::note_records_dequeued(
+                                            requests.len(),
+                                            queued_records,
+                                        )?;
+                                        max_queued_records = max_queued_records.max(queued);
+                                        if queued.saturating_add(records) >= backlog_high {
+                                            bulk_mode = true;
+                                        }
                                         if records != 0
                                             && records.saturating_add(requests.len())
                                                 > batch_records
                                         {
+                                            queued_records
+                                                .fetch_add(requests.len(), Ordering::Release);
                                             carry = Some(WalOwnerIngressCommand::Batch {
                                                 ingress,
                                                 requests,
+                                                immediate: next_immediate,
                                             });
                                             break;
                                         }
-                                        immediate |= Self::mixed_dispatch_is_immediate(
-                                            &requests,
-                                            &mut read_hot_until,
-                                            mixed_hysteresis,
-                                        );
+                                        immediate |= !bulk_mode
+                                            && queued <= backlog_low
+                                            && Self::mixed_dispatch_is_immediate(
+                                                next_immediate,
+                                                &requests,
+                                                &mut read_hot_until,
+                                                mixed_hysteresis,
+                                            );
                                         records = records.saturating_add(requests.len());
-                                        commands.push_back((ingress, requests));
+                                        commands.push_back((ingress, requests, next_immediate));
                                     }
                                     Ok(control) => {
                                         carry = Some(control);
@@ -2545,12 +2767,140 @@ impl WalOwnerIngressWorker {
                             while !commands.is_empty() {
                                 let mut windows = Vec::with_capacity(pipeline_batches);
                                 for _ in 0..pipeline_batches {
+                                    if commands.is_empty()
+                                        && carry.is_none()
+                                        && !windows.is_empty()
+                                    {
+                                        for spin in 0..=pipeline_refill_spins {
+                                            match command_rx.try_recv() {
+                                                Ok(WalOwnerIngressCommand::Batch {
+                                                    ingress,
+                                                    requests,
+                                                    immediate,
+                                                }) => {
+                                                    let queued = Self::note_records_dequeued(
+                                                        requests.len(),
+                                                        queued_records,
+                                                    )?;
+                                                    max_queued_records =
+                                                        max_queued_records.max(queued);
+                                                    if queued >= backlog_high {
+                                                        bulk_mode = true;
+                                                    }
+                                                    commands.push_back((
+                                                        ingress, requests, immediate,
+                                                    ));
+                                                    break;
+                                                }
+                                                Ok(control) => {
+                                                    carry = Some(control);
+                                                    break;
+                                                }
+                                                Err(TryRecvError::Disconnected) => {
+                                                    let error = io::Error::new(
+                                                        io::ErrorKind::BrokenPipe,
+                                                        "WAL owner command queue disconnected",
+                                                    );
+                                                    report_failure(&error);
+                                                    return Err(error);
+                                                }
+                                                Err(TryRecvError::Empty) => {
+                                                    if spin != pipeline_refill_spins {
+                                                        std::hint::spin_loop();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     if commands.is_empty() {
                                         break;
                                     }
+                                    let mut staged_records = commands
+                                        .iter()
+                                        .map(|(_, requests, _)| requests.len())
+                                        .sum::<usize>();
+                                    let staged_immediate = windows.is_empty()
+                                        && !bulk_mode
+                                        && commands.iter().any(|(_, _, immediate)| *immediate)
+                                        && queued_records.load(Ordering::Acquire) <= backlog_low;
+                                    let staged_budget_us = if bulk_mode {
+                                        fill_us
+                                    } else {
+                                        debounce_us
+                                    };
+                                    let staged_deadline = Instant::now()
+                                        .checked_add(Duration::from_micros(staged_budget_us))
+                                        .unwrap_or_else(Instant::now);
+                                    while staged_records < fill_records
+                                        && staged_records < batch_records
+                                        && carry.is_none()
+                                    {
+                                        match command_rx.try_recv() {
+                                            Ok(WalOwnerIngressCommand::Batch {
+                                                ingress,
+                                                requests,
+                                                immediate,
+                                            }) => {
+                                                let request_count = requests.len();
+                                                let queued = Self::note_records_dequeued(
+                                                    request_count,
+                                                    queued_records,
+                                                )?;
+                                                max_queued_records =
+                                                    max_queued_records.max(queued);
+                                                if queued.saturating_add(staged_records)
+                                                    >= backlog_high
+                                                {
+                                                    bulk_mode = true;
+                                                }
+                                                if staged_records
+                                                    .saturating_add(request_count)
+                                                    > batch_records
+                                                {
+                                                    queued_records.fetch_add(
+                                                        request_count,
+                                                        Ordering::Release,
+                                                    );
+                                                    carry = Some(WalOwnerIngressCommand::Batch {
+                                                        ingress,
+                                                        requests,
+                                                        immediate,
+                                                    });
+                                                    break;
+                                                }
+                                                staged_records =
+                                                    staged_records.saturating_add(request_count);
+                                                commands.push_back((
+                                                    ingress, requests, immediate,
+                                                ));
+                                            }
+                                            Ok(control) => {
+                                                carry = Some(control);
+                                                break;
+                                            }
+                                            Err(TryRecvError::Disconnected) => {
+                                                let error = io::Error::new(
+                                                    io::ErrorKind::BrokenPipe,
+                                                    "WAL owner command queue disconnected",
+                                                );
+                                                report_failure(&error);
+                                                return Err(error);
+                                            }
+                                            Err(TryRecvError::Empty) => {
+                                                if staged_immediate
+                                                    || staged_budget_us == 0
+                                                    || Instant::now() >= staged_deadline
+                                                {
+                                                    break;
+                                                }
+                                                std::hint::spin_loop();
+                                            }
+                                        }
+                                    }
                                     let mut batch = Vec::new();
                                     let mut segments = Vec::new();
-                                    while let Some((segment_ingress, segment)) = commands.front() {
+                                    while let Some((segment_ingress, segment, _)) = commands.front()
+                                    {
                                         if !batch.is_empty()
                                             && batch.len().saturating_add(segment.len())
                                                 > batch_records
@@ -2566,11 +2916,72 @@ impl WalOwnerIngressWorker {
                                         batch.append(&mut segment);
                                     }
                                     if batch.is_empty() {
-                                        let (segment_ingress, mut segment) = commands
+                                        let (segment_ingress, mut segment, _) = commands
                                             .pop_front()
                                             .expect("nonempty owner queue lost its command");
                                         segments.push((segment_ingress, segment.len()));
                                         batch.append(&mut segment);
+                                    }
+                                    while batch.len() < batch_records && carry.is_none() {
+                                        match command_rx.try_recv() {
+                                            Ok(WalOwnerIngressCommand::Batch {
+                                                ingress,
+                                                mut requests,
+                                                immediate,
+                                            }) => {
+                                                let queued = Self::note_records_dequeued(
+                                                    requests.len(),
+                                                    queued_records,
+                                                )?;
+                                                max_queued_records =
+                                                    max_queued_records.max(queued);
+                                                if queued >= backlog_high {
+                                                    bulk_mode = true;
+                                                }
+                                                if batch
+                                                    .len()
+                                                    .saturating_add(requests.len())
+                                                    > batch_records
+                                                {
+                                                    queued_records.fetch_add(
+                                                        requests.len(),
+                                                        Ordering::Release,
+                                                    );
+                                                    carry = Some(WalOwnerIngressCommand::Batch {
+                                                        ingress,
+                                                        requests,
+                                                        immediate,
+                                                    });
+                                                    break;
+                                                }
+                                                segments.push((ingress, requests.len()));
+                                                batch.append(&mut requests);
+                                            }
+                                            Ok(control) => {
+                                                carry = Some(control);
+                                                break;
+                                            }
+                                            Err(TryRecvError::Disconnected) => {
+                                                let error = io::Error::new(
+                                                    io::ErrorKind::BrokenPipe,
+                                                    "WAL owner command queue disconnected",
+                                                );
+                                                report_failure(&error);
+                                                return Err(error);
+                                            }
+                                            Err(TryRecvError::Empty) => break,
+                                        }
+                                    }
+                                    wire_batches = wire_batches.saturating_add(1);
+                                    wire_records =
+                                        wire_records.saturating_add(batch.len() as u64);
+                                    max_wire_batch_records = max_wire_batch_records.max(batch.len());
+                                    if windows.is_empty() && immediate && !bulk_mode {
+                                        immediate_batches = immediate_batches.saturating_add(1);
+                                    } else if bulk_mode {
+                                        bulk_batches = bulk_batches.saturating_add(1);
+                                    } else {
+                                        debounced_batches = debounced_batches.saturating_add(1);
                                     }
                                     if let Err(error) =
                                         remote.send_request_batch(&mut tx, mapping.as_ref(), &batch)
@@ -2627,13 +3038,26 @@ impl WalOwnerIngressWorker {
                             tx.ensure_idle()?;
                             remote.eof()?;
                             eprintln!(
-                                "zcnblk-shm-owner-wait-summary: owner={} adaptive={} min_spins={} max_spins={} final_spins={} quick_wait_ns={} spin_hits={} blocking_waits={} quick_blocking_waits={}",
+                                "zcnblk-shm-owner-wait-summary: owner={} adaptive={} min_spins={} max_spins={} final_spins={} quick_wait_ns={} pipeline_refill_spins={} debounce_us={} backlog_low={} backlog_high={} wire_batches={} wire_records={} avg_wire_batch_records={:.2} max_wire_batch_records={} immediate_batches={} debounced_batches={} bulk_batches={} max_queued_records={} final_queued_records={} spin_hits={} blocking_waits={} quick_blocking_waits={}",
                                 owner,
                                 command_wait.enabled,
                                 command_wait.min_spins,
                                 command_wait.max_spins,
                                 command_wait.current_spins,
                                 command_wait.quick_wait_ns,
+                                pipeline_refill_spins,
+                                debounce_us,
+                                backlog_low,
+                                backlog_high,
+                                wire_batches,
+                                wire_records,
+                                wire_records as f64 / wire_batches.max(1) as f64,
+                                max_wire_batch_records,
+                                immediate_batches,
+                                debounced_batches,
+                                bulk_batches,
+                                max_queued_records,
+                                queued_records.load(Ordering::Acquire),
                                 command_wait.spin_hits,
                                 command_wait.blocking_waits,
                                 command_wait.quick_blocking_waits,
@@ -2671,6 +3095,7 @@ impl WalOwnerIngressWorker {
 struct WalOwnerIngressEndpoint {
     ingress: u32,
     owner_commands: Arc<[SyncSender<WalOwnerIngressCommand>]>,
+    queued_records_by_owner: Arc<[AtomicUsize]>,
     result_rx: Receiver<WalOwnerIngressResult>,
     owner_extent_records: u64,
 }
@@ -2688,6 +3113,8 @@ enum WalLaneTransport {
     OwnerIngress {
         endpoint: WalOwnerIngressEndpoint,
         in_flight: usize,
+        foreground_in_flight: usize,
+        foreground_immediate_limit: usize,
         pending_by_owner: Vec<Vec<PendingRemoteRead>>,
         urgent_owner_words: Vec<u64>,
         fragment_records: usize,
@@ -2697,6 +3124,12 @@ enum WalLaneTransport {
 }
 
 impl WalLaneTransport {
+    fn batch_has_foreground(batch: &[PendingRemoteRead]) -> bool {
+        batch
+            .iter()
+            .any(|pending| pending.request.op != ZCNBLK_SHM_OP_WRITE)
+    }
+
     fn default_owner_fragment_records(owner_count: usize) -> usize {
         owner_count.clamp(1, 16)
     }
@@ -2741,9 +3174,16 @@ impl WalLaneTransport {
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(500);
+        let foreground_immediate_limit =
+            env::var("URING_PLAY_ZCNBLK_SHM_OWNER_FOREGROUND_IMMEDIATE_LIMIT")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(1);
         Self::OwnerIngress {
             endpoint,
             in_flight: 0,
+            foreground_in_flight: 0,
+            foreground_immediate_limit,
             pending_by_owner: vec![Vec::with_capacity(fragment_records); owner_count],
             urgent_owner_words: vec![0; owner_count.div_ceil(64)],
             fragment_records,
@@ -2756,6 +3196,7 @@ impl WalLaneTransport {
         endpoint: &WalOwnerIngressEndpoint,
         pending_by_owner: &mut [Vec<PendingRemoteRead>],
         in_flight: &mut usize,
+        foreground_in_flight: &mut usize,
         only_full: bool,
         fragment_records: usize,
     ) -> io::Result<()> {
@@ -2765,8 +3206,10 @@ impl WalLaneTransport {
                 owner,
                 pending,
                 in_flight,
+                foreground_in_flight,
                 only_full,
                 fragment_records,
+                false,
             )?;
         }
         Ok(())
@@ -2777,20 +3220,29 @@ impl WalLaneTransport {
         owner: usize,
         pending: &mut Vec<PendingRemoteRead>,
         in_flight: &mut usize,
+        foreground_in_flight: &mut usize,
         only_full: bool,
         fragment_records: usize,
+        immediate: bool,
     ) -> io::Result<()> {
         while pending.len() >= fragment_records || (!only_full && !pending.is_empty()) {
             let take = pending.len().min(fragment_records);
             let requests = pending.drain(..take).collect::<Vec<_>>();
-            send_sync_channel_spinning(
+            let has_foreground = Self::batch_has_foreground(&requests);
+            endpoint.queued_records_by_owner[owner].fetch_add(take, Ordering::Release);
+            if let Err(error) = send_sync_channel_spinning(
                 &endpoint.owner_commands[owner],
                 WalOwnerIngressCommand::Batch {
                     ingress: endpoint.ingress,
                     requests,
+                    immediate,
                 },
-            )?;
+            ) {
+                endpoint.queued_records_by_owner[owner].fetch_sub(take, Ordering::AcqRel);
+                return Err(error);
+            }
             *in_flight += 1;
+            *foreground_in_flight += usize::from(has_foreground);
         }
         Ok(())
     }
@@ -2800,6 +3252,27 @@ impl WalLaneTransport {
             Self::Inline { batches, .. } => batches.len(),
             Self::Split { in_flight, .. } => *in_flight,
             Self::OwnerIngress { in_flight, .. } => *in_flight,
+        }
+    }
+
+    fn foreground_in_flight_len(&self) -> usize {
+        match self {
+            Self::OwnerIngress {
+                foreground_in_flight,
+                ..
+            } => *foreground_in_flight,
+            Self::Inline { .. } | Self::Split { .. } => self.in_flight_len(),
+        }
+    }
+
+    fn foreground_immediate_available(&self) -> bool {
+        match self {
+            Self::OwnerIngress {
+                foreground_in_flight,
+                foreground_immediate_limit,
+                ..
+            } => *foreground_in_flight < *foreground_immediate_limit,
+            Self::Inline { .. } | Self::Split { .. } => true,
         }
     }
 
@@ -2816,6 +3289,7 @@ impl WalLaneTransport {
         let Self::OwnerIngress {
             endpoint,
             in_flight,
+            foreground_in_flight,
             pending_by_owner,
             fragment_records,
             fragment_fill_us,
@@ -2841,6 +3315,7 @@ impl WalLaneTransport {
             endpoint,
             pending_by_owner,
             in_flight,
+            foreground_in_flight,
             false,
             *fragment_records,
         )?;
@@ -2865,6 +3340,8 @@ impl WalLaneTransport {
             Self::OwnerIngress {
                 endpoint,
                 in_flight,
+                foreground_in_flight,
+                foreground_immediate_limit,
                 pending_by_owner,
                 urgent_owner_words,
                 fragment_records,
@@ -2872,14 +3349,21 @@ impl WalLaneTransport {
                 ..
             } => {
                 urgent_owner_words.fill(0);
+                let mut urgent_budget =
+                    foreground_immediate_limit.saturating_sub(*foreground_in_flight);
                 for pending in batch {
                     let owner = wal_transport_owner(
                         pending.request.offset,
                         pending_by_owner.len(),
                         endpoint.owner_extent_records,
                     )?;
-                    if pending.request.op != ZCNBLK_SHM_OP_WRITE {
-                        urgent_owner_words[owner / 64] |= 1_u64 << (owner % 64);
+                    let owner_bit = 1_u64 << (owner % 64);
+                    if pending.request.op != ZCNBLK_SHM_OP_WRITE
+                        && urgent_budget != 0
+                        && urgent_owner_words[owner / 64] & owner_bit == 0
+                    {
+                        urgent_owner_words[owner / 64] |= owner_bit;
+                        urgent_budget -= 1;
                     }
                     pending_by_owner[owner].push(pending);
                     fragment_started.get_or_insert_with(Instant::now);
@@ -2894,8 +3378,10 @@ impl WalLaneTransport {
                             owner,
                             &mut pending_by_owner[owner],
                             in_flight,
+                            foreground_in_flight,
                             false,
                             *fragment_records,
+                            true,
                         )?;
                     }
                 }
@@ -2903,6 +3389,7 @@ impl WalLaneTransport {
                     endpoint,
                     pending_by_owner,
                     in_flight,
+                    foreground_in_flight,
                     true,
                     *fragment_records,
                 )?;
@@ -2949,6 +3436,7 @@ impl WalLaneTransport {
             Self::OwnerIngress {
                 endpoint,
                 in_flight,
+                foreground_in_flight,
                 pending_by_owner,
                 fragment_records,
                 fragment_started,
@@ -2959,6 +3447,7 @@ impl WalLaneTransport {
                         endpoint,
                         pending_by_owner,
                         in_flight,
+                        foreground_in_flight,
                         false,
                         *fragment_records,
                     )?;
@@ -2969,7 +3458,15 @@ impl WalLaneTransport {
                     .checked_sub(1)
                     .ok_or_else(|| io::Error::other("owner ingress in-flight count underflow"))?;
                 match result {
-                    WalOwnerIngressResult::Batch(batch) => Ok(batch),
+                    WalOwnerIngressResult::Batch(batch) => {
+                        if Self::batch_has_foreground(&batch) {
+                            *foreground_in_flight =
+                                foreground_in_flight.checked_sub(1).ok_or_else(|| {
+                                    io::Error::other("owner foreground in-flight count underflow")
+                                })?;
+                        }
+                        Ok(batch)
+                    }
                     WalOwnerIngressResult::Sync(sequence) => Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("unexpected owner sync result sequence={sequence}"),
@@ -2995,6 +3492,8 @@ impl WalLaneTransport {
             Self::OwnerIngress {
                 endpoint,
                 in_flight,
+                foreground_in_flight,
+                foreground_immediate_limit: _,
                 pending_by_owner: _,
                 urgent_owner_words: _,
                 fragment_records: _,
@@ -3005,6 +3504,12 @@ impl WalLaneTransport {
                     *in_flight = in_flight.checked_sub(1).ok_or_else(|| {
                         io::Error::other("owner ingress in-flight count underflow")
                     })?;
+                    if Self::batch_has_foreground(&batch) {
+                        *foreground_in_flight =
+                            foreground_in_flight.checked_sub(1).ok_or_else(|| {
+                                io::Error::other("owner foreground in-flight count underflow")
+                            })?;
+                    }
                     Ok(Some(batch))
                 }
                 Ok(WalOwnerIngressResult::Sync(sequence)) => Err(io::Error::new(
@@ -3049,6 +3554,7 @@ impl WalLaneTransport {
                 endpoint,
                 pending_by_owner,
                 in_flight,
+                foreground_in_flight,
                 fragment_records,
                 fragment_started,
                 ..
@@ -3057,6 +3563,7 @@ impl WalLaneTransport {
                     endpoint,
                     pending_by_owner,
                     in_flight,
+                    foreground_in_flight,
                     false,
                     *fragment_records,
                 )?;
@@ -3117,10 +3624,14 @@ impl WalLaneTransport {
             }
             Self::OwnerIngress {
                 in_flight,
+                foreground_in_flight,
                 pending_by_owner,
                 ..
             } => {
-                if in_flight != 0 || pending_by_owner.iter().any(|pending| !pending.is_empty()) {
+                if in_flight != 0
+                    || foreground_in_flight != 0
+                    || pending_by_owner.iter().any(|pending| !pending.is_empty())
+                {
                     return Err(io::Error::other(
                         "owner ingress stopped with batches in flight",
                     ));
@@ -3242,10 +3753,15 @@ struct Stats {
     completion_window_stalls: u64,
 }
 
+#[repr(align(64))]
+struct WalCompletionSlot {
+    sequence: AtomicU64,
+}
+
 struct WalCompletionTracker {
     hwm: AtomicU64,
     advancing: AtomicBool,
-    slots: Box<[AtomicU64]>,
+    slots: Box<[WalCompletionSlot]>,
     mask: usize,
 }
 
@@ -3261,7 +3777,9 @@ impl WalCompletionTracker {
             hwm: AtomicU64::new(0),
             advancing: AtomicBool::new(false),
             slots: (0..capacity)
-                .map(|_| AtomicU64::new(0))
+                .map(|_| WalCompletionSlot {
+                    sequence: AtomicU64::new(0),
+                })
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
             mask: capacity - 1,
@@ -3272,7 +3790,11 @@ impl WalCompletionTracker {
         if sequence == 0 || sequence <= self.hwm.load(Ordering::Acquire) {
             return true;
         }
-        if self.slots[sequence as usize & self.mask].load(Ordering::Acquire) == sequence {
+        if self.slots[sequence as usize & self.mask]
+            .sequence
+            .load(Ordering::Acquire)
+            == sequence
+        {
             return true;
         }
         sequence <= self.hwm.load(Ordering::Acquire)
@@ -3297,7 +3819,7 @@ impl WalCompletionTracker {
                 "WAL completion sequence zero is reserved",
             ));
         }
-        let slot = &self.slots[sequence as usize & self.mask];
+        let slot = &self.slots[sequence as usize & self.mask].sequence;
         slot.compare_exchange(0, sequence, Ordering::Release, Ordering::Acquire)
             .map_err(|occupied| {
                 io::Error::new(
@@ -3311,22 +3833,14 @@ impl WalCompletionTracker {
         Ok(())
     }
 
-    fn advance_hwm(&self) -> u64 {
-        while self
-            .advancing
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            std::hint::spin_loop();
-        }
-
+    fn advance_hwm_locked(&self) -> u64 {
         let current = self.hwm.load(Ordering::Relaxed);
         let mut advanced = current;
         loop {
             let Some(next) = advanced.checked_add(1) else {
                 break;
             };
-            let next_slot = &self.slots[next as usize & self.mask];
+            let next_slot = &self.slots[next as usize & self.mask].sequence;
             if next_slot.load(Ordering::Acquire) != next {
                 break;
             }
@@ -3345,6 +3859,24 @@ impl WalCompletionTracker {
         advanced
     }
 
+    fn try_advance_hwm(&self) -> Option<u64> {
+        self.advancing
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()?;
+        Some(self.advance_hwm_locked())
+    }
+
+    fn advance_hwm(&self) -> u64 {
+        while self
+            .advancing
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            std::hint::spin_loop();
+        }
+        self.advance_hwm_locked()
+    }
+
     fn mark_complete(&self, sequence: u64) -> io::Result<u64> {
         self.mark_complete_deferred(sequence)?;
         Ok(self.advance_hwm())
@@ -3360,18 +3892,40 @@ impl WalCompletionTracker {
 
 struct WalSyncCoordinator {
     epoch: AtomicU64,
-    acknowledgements: AtomicU64,
+    beginning: AtomicBool,
+    requested_epoch: AtomicU64,
+    announcements: AtomicU64,
+    acknowledged_lanes: AtomicU64,
     failed: AtomicBool,
+    committed_hwm: AtomicU64,
+    remote_epochs: AtomicU64,
+    joined_syncs: AtomicU64,
+    lane_tails: Box<[AtomicU64]>,
+    frozen_lane_tails: Box<[AtomicU64]>,
+    independent_lane_release: bool,
     lanes: u64,
+    coalesce_us: u64,
 }
 
 impl WalSyncCoordinator {
-    fn new(lanes: u32) -> Self {
+    fn new(lanes: u32, coalesce_us: u64, independent_lane_release: bool) -> Self {
+        let lane_tails = (0..lanes).map(|_| AtomicU64::new(0)).collect();
+        let frozen_lane_tails = (0..lanes).map(|_| AtomicU64::new(0)).collect();
         Self {
             epoch: AtomicU64::new(0),
-            acknowledgements: AtomicU64::new(0),
+            beginning: AtomicBool::new(false),
+            requested_epoch: AtomicU64::new(0),
+            announcements: AtomicU64::new(0),
+            acknowledged_lanes: AtomicU64::new(0),
             failed: AtomicBool::new(false),
+            committed_hwm: AtomicU64::new(0),
+            remote_epochs: AtomicU64::new(0),
+            joined_syncs: AtomicU64::new(0),
+            lane_tails,
+            frozen_lane_tails,
+            independent_lane_release,
             lanes: u64::from(lanes),
+            coalesce_us,
         }
     }
 
@@ -3379,6 +3933,37 @@ impl WalSyncCoordinator {
         self.epoch.load(Ordering::Acquire)
     }
 
+    fn observe_lane_tail(&self, lane: u32, submit_sequence: u64) -> io::Result<()> {
+        let tail = self.lane_tails.get(lane as usize).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("WAL lane tail {lane} exceeds {} lanes", self.lanes),
+            )
+        })?;
+        // Each lane has one descriptor consumer, so this remains lane-local.
+        tail.store(submit_sequence, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn freeze_lane_tails(&self) {
+        for (live, frozen) in self.lane_tails.iter().zip(self.frozen_lane_tails.iter()) {
+            frozen.store(live.load(Ordering::Acquire), Ordering::Release);
+        }
+    }
+
+    fn frozen_lane_tail(&self, lane: u32) -> io::Result<u64> {
+        self.frozen_lane_tails
+            .get(lane as usize)
+            .map(|tail| tail.load(Ordering::Acquire))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("WAL frozen lane tail {lane} exceeds {} lanes", self.lanes),
+                )
+            })
+    }
+
+    #[cfg(test)]
     fn begin(&self, epoch: u64) -> io::Result<()> {
         if epoch == 0 {
             return Err(io::Error::new(
@@ -3386,37 +3971,221 @@ impl WalSyncCoordinator {
                 "WAL sync epoch zero is reserved",
             ));
         }
-        self.acknowledgements.store(0, Ordering::Relaxed);
-        self.failed.store(false, Ordering::Relaxed);
-        self.epoch
-            .compare_exchange(0, epoch, Ordering::Release, Ordering::Acquire)
-            .map_err(|active| {
-                io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    format!("WAL sync epoch {active} is already active"),
-                )
-            })?;
+        if self
+            .beginning
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "another WAL lane is starting a sync epoch",
+            ));
+        }
+        let result = if self.epoch() != 0 {
+            Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("WAL sync epoch {} is already active", self.epoch()),
+            ))
+        } else {
+            self.acknowledged_lanes.store(0, Ordering::Relaxed);
+            self.failed.store(false, Ordering::Relaxed);
+            self.freeze_lane_tails();
+            self.epoch.store(epoch, Ordering::Release);
+            self.remote_epochs.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        };
+        self.beginning.store(false, Ordering::Release);
+        result
+    }
+
+    fn announce(&self, epoch: u64) -> io::Result<()> {
+        if epoch == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "WAL sync epoch zero is reserved",
+            ));
+        }
+        self.requested_epoch.fetch_max(epoch, Ordering::AcqRel);
+        self.announcements.fetch_add(1, Ordering::AcqRel);
         Ok(())
+    }
+
+    fn retire_announcement(&self) -> io::Result<()> {
+        self.announcements
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |announcements| {
+                announcements.checked_sub(1)
+            })
+            .map(|_| ())
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "WAL sync announcement count underflow",
+                )
+            })
+    }
+
+    fn requested_epoch(&self) -> u64 {
+        self.requested_epoch.load(Ordering::Acquire)
+    }
+
+    fn announcement_count(&self) -> u64 {
+        self.announcements.load(Ordering::Acquire)
+    }
+
+    fn coalesce_us(&self) -> u64 {
+        self.coalesce_us
+    }
+
+    fn try_begin_requested(&self, remote_hwm: u64) -> io::Result<Option<u64>> {
+        if self.epoch() != 0
+            || self
+                .beginning
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+        {
+            return Ok(None);
+        }
+        let result = if self.epoch() != 0 {
+            None
+        } else {
+            let requested = self.requested_epoch();
+            if requested == 0 {
+                None
+            } else if requested <= self.committed_hwm() {
+                let _ = self.requested_epoch.compare_exchange(
+                    requested,
+                    0,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                None
+            } else if remote_hwm < requested {
+                None
+            } else {
+                self.acknowledged_lanes.store(0, Ordering::Relaxed);
+                self.failed.store(false, Ordering::Relaxed);
+                self.freeze_lane_tails();
+                self.epoch.store(requested, Ordering::Release);
+                self.remote_epochs.fetch_add(1, Ordering::Relaxed);
+                Some(requested)
+            }
+        };
+        self.beginning.store(false, Ordering::Release);
+        Ok(result)
+    }
+
+    fn committed_hwm(&self) -> u64 {
+        self.committed_hwm.load(Ordering::Acquire)
+    }
+
+    fn try_join(&self, epoch: u64) -> bool {
+        if epoch == 0
+            || self
+                .beginning
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+        {
+            return false;
+        }
+        let joined = if self.epoch() != 0 || self.requested_epoch() != 0 {
+            false
+        } else {
+            let required_hwm = epoch - 1;
+            let mut committed = self.committed_hwm();
+            loop {
+                if committed == 0 || required_hwm > committed {
+                    break false;
+                }
+                if epoch <= committed {
+                    self.joined_syncs.fetch_add(1, Ordering::Relaxed);
+                    break true;
+                }
+                match self.committed_hwm.compare_exchange_weak(
+                    committed,
+                    epoch,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => {
+                        self.joined_syncs.fetch_add(1, Ordering::Relaxed);
+                        break true;
+                    }
+                    Err(actual) => committed = actual,
+                }
+            }
+        };
+        self.beginning.store(false, Ordering::Release);
+        joined
+    }
+
+    fn remote_epochs(&self) -> u64 {
+        self.remote_epochs.load(Ordering::Relaxed)
+    }
+
+    fn joined_syncs(&self) -> u64 {
+        self.joined_syncs.load(Ordering::Relaxed)
     }
 
     fn service(
         &self,
+        lane: u32,
         last_synced_epoch: &mut u64,
         mut sync_remote: impl FnMut(u64) -> io::Result<()>,
     ) -> io::Result<bool> {
+        if lane >= 64 || u64::from(lane) >= self.lanes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("WAL sync service lane {lane} exceeds {} lanes", self.lanes),
+            ));
+        }
         let epoch = self.epoch();
         if epoch == 0 || epoch == *last_synced_epoch {
             return Ok(false);
         }
+        // A lane may already have admitted post-fence writes before another
+        // lane observes the flush. Freezing that larger tail is conservative:
+        // the marker makes those writes durable too, and the cut never grows.
+        let _required_tail = self.frozen_lane_tail(lane)?;
         if let Err(error) = sync_remote(epoch) {
             self.failed.store(true, Ordering::Release);
             return Err(error);
         }
         *last_synced_epoch = epoch;
-        self.acknowledgements.fetch_add(1, Ordering::AcqRel);
+        self.acknowledged_lanes
+            .fetch_or(1u64 << lane, Ordering::AcqRel);
         Ok(true)
     }
 
+    fn acknowledged_lane_mask(&self) -> u64 {
+        self.acknowledged_lanes.load(Ordering::Acquire)
+    }
+
+    fn lane_acknowledged(&self, lane: u32) -> bool {
+        lane < 64 && self.acknowledged_lane_mask() & (1u64 << lane) != 0
+    }
+
+    fn lane_needs_service(&self, lane: u32) -> bool {
+        self.epoch() != 0 && (!self.independent_lane_release || !self.lane_acknowledged(lane))
+    }
+
+    fn frozen_vector(&self) -> String {
+        self.frozen_lane_tails
+            .iter()
+            .enumerate()
+            .map(|(lane, tail)| format!("{lane}:{}", tail.load(Ordering::Acquire)))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn expected_lane_mask(&self) -> u64 {
+        if self.lanes >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << self.lanes) - 1
+        }
+    }
+
+    #[cfg(test)]
     fn all_acknowledged(&self, epoch: u64) -> io::Result<bool> {
         if self.failed.load(Ordering::Acquire) {
             return Err(io::Error::other(format!(
@@ -3429,25 +4198,71 @@ impl WalSyncCoordinator {
                 format!("WAL sync epoch changed while waiting for {epoch}"),
             ));
         }
-        Ok(self.acknowledgements.load(Ordering::Acquire) == self.lanes)
+        Ok(self.acknowledged_lane_mask() == self.expected_lane_mask())
     }
 
-    fn finish(&self, epoch: u64) -> io::Result<()> {
-        if !self.all_acknowledged(epoch)? {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                format!("WAL sync epoch {epoch} is not fully acknowledged"),
-            ));
+    fn try_finish(&self, epoch: u64) -> io::Result<bool> {
+        if self
+            .beginning
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return Ok(false);
         }
-        self.epoch
-            .compare_exchange(epoch, 0, Ordering::Release, Ordering::Acquire)
-            .map_err(|active| {
-                io::Error::new(
+        let result = (|| {
+            if self.failed.load(Ordering::Acquire) {
+                return Err(io::Error::other(format!(
+                    "one or more WAL lanes failed sync epoch {epoch}"
+                )));
+            }
+            let active = self.epoch();
+            if active != epoch {
+                if self.committed_hwm() >= epoch {
+                    return Ok(false);
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("WAL sync epoch changed while finishing {epoch}: active={active}"),
+                ));
+            }
+            if self.acknowledged_lane_mask() != self.expected_lane_mask() {
+                return Ok(false);
+            }
+            self.committed_hwm.fetch_max(epoch, Ordering::AcqRel);
+            match self
+                .epoch
+                .compare_exchange(epoch, 0, Ordering::Release, Ordering::Acquire)
+            {
+                Ok(_) => {
+                    let _ = self.requested_epoch.compare_exchange(
+                        epoch,
+                        0,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                    Ok(true)
+                }
+                Err(0) if self.committed_hwm() >= epoch => Ok(false),
+                Err(active) => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("WAL sync finish expected {epoch}, found {active}"),
-                )
-            })?;
-        Ok(())
+                )),
+            }
+        })();
+        self.beginning.store(false, Ordering::Release);
+        result
+    }
+
+    #[cfg(test)]
+    fn finish(&self, epoch: u64) -> io::Result<()> {
+        if self.try_finish(epoch)? || self.committed_hwm() >= epoch {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("WAL sync epoch {epoch} is not fully acknowledged"),
+            ))
+        }
     }
 }
 
@@ -3929,6 +4744,10 @@ unsafe fn atomic_store(ptr: *mut u64, value: u64, ordering: Ordering) {
     unsafe { (&*ptr.cast::<AtomicU64>()).store(value, ordering) };
 }
 
+unsafe fn atomic_swap(ptr: *mut u64, value: u64, ordering: Ordering) -> u64 {
+    unsafe { (&*ptr.cast::<AtomicU64>()).swap(value, ordering) }
+}
+
 fn release_payload_owner_token(
     owner: &AtomicU64,
     free_slots: &AtomicU64,
@@ -3967,6 +4786,24 @@ fn wal_transport_owner(offset: u64, owner_count: usize, extent_records: u64) -> 
     Ok(((offset / 4096 / extent_records) % owner_count as u64) as usize)
 }
 
+fn wal_owner_count(channels: u32) -> io::Result<usize> {
+    let channels = channels as usize;
+    let count = env::var("URING_PLAY_ZCNBLK_SHM_OWNER_COUNT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+        .unwrap_or(channels);
+    if count == 0 || count > channels {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("stable WAL owner count must be in 1..={channels}, got {count}"),
+        ));
+    }
+    Ok(count)
+}
+
 struct SharedTarget {
     file: File,
     mapping: Arc<Mapping>,
@@ -3990,6 +4827,7 @@ struct SharedTarget {
     poll_us: u64,
     busy_poll_us: u64,
     busy_hysteresis_us: u64,
+    poll_clock_check_spins: u64,
     lease_release_batch: u64,
     owner_extent_records: u64,
     owner_max_tx_iovecs: usize,
@@ -4015,6 +4853,16 @@ impl SharedTarget {
             return Err(io::Error::last_os_error());
         }
         Self::validate_header(&header)?;
+        let required_wake_capabilities =
+            ZCNBLK_SHM_CAP_REQUEST_WAKE_ARMED | ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED;
+        if header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] & required_wake_capabilities
+            != required_wake_capabilities
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "zcnblk shared transport lacks armed request/completion wakeups",
+            ));
+        }
         if lease_release_batch == 0 || lease_release_batch > u64::from(header.payload_entries) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -4124,8 +4972,17 @@ impl SharedTarget {
             None
         };
         let remote_leaves = if backend == BackendMode::WalTcp {
-            (0..header.channels)
-                .map(|lane| RemoteWalLeaf::connect(lane, header.channels))
+            let owner_ingress = env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS", false);
+            let stream_count = if owner_ingress {
+                wal_owner_count(header.channels)?
+            } else {
+                header.channels as usize
+            };
+            let stream_count_u32 = u32::try_from(stream_count).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "WAL stream count exceeds u32")
+            })?;
+            (0..stream_count_u32)
+                .map(|lane| RemoteWalLeaf::connect(lane, stream_count_u32))
                 .collect::<io::Result<Vec<_>>>()?
         } else {
             Vec::new()
@@ -4187,6 +5044,13 @@ impl SharedTarget {
             poll_us,
             busy_poll_us: busy_poll_us.max(poll_us),
             busy_hysteresis_us: busy_hysteresis_us.max(busy_poll_us),
+            poll_clock_check_spins: env::var("URING_PLAY_ZCNBLK_SHM_POLL_CLOCK_CHECK_SPINS")
+                .ok()
+                .map(|value| value.parse::<u64>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(64)
+                .max(1),
             lease_release_batch,
             owner_extent_records: env::var("URING_PLAY_ZCNBLK_SHM_OWNER_EXTENT_RECORDS")
                 .ok()
@@ -4411,7 +5275,8 @@ impl SharedTarget {
                 .cast::<AtomicU64>()
         };
         let control = self.channel_ptr(channel)?;
-        let free_slots = unsafe { &*ptr::addr_of_mut!((*control).reserved).cast::<AtomicU64>() };
+        let free_slots =
+            unsafe { &*ptr::addr_of_mut!((*control).payload_free_slots).cast::<AtomicU64>() };
         release_payload_owner_token(owner, free_slots, request.submit_sequence).map_err(
             |actual| {
                 io::Error::new(
@@ -4431,7 +5296,12 @@ impl SharedTarget {
             return Ok(0);
         }
         let control = self.channel_ptr(channel)?;
-        Ok(unsafe { atomic_load(ptr::addr_of!((*control).reserved), Ordering::Acquire) })
+        Ok(unsafe {
+            atomic_load(
+                ptr::addr_of!((*control).payload_free_slots),
+                Ordering::Acquire,
+            )
+        })
     }
 
     fn mark_payload_releasable(
@@ -5465,21 +6335,59 @@ impl SharedTarget {
     }
 
     fn kick(&mut self, channel: u32) -> io::Result<()> {
-        let ret = unsafe { libc::ioctl(self.file.as_raw_fd(), ZCNBLK_SHM_IOC_KICK, &channel) };
-        if ret < 0 {
-            return Err(io::Error::last_os_error());
+        if self.kick_channel(channel)? {
+            self.stats.kicks += 1;
         }
-        self.stats.kicks += 1;
         Ok(())
     }
 
     fn poll_for_requests(&mut self, timeout_ms: i32) -> io::Result<()> {
+        for channel in 0..self.header.channels {
+            let control = self.channel_ptr(channel)?;
+            unsafe {
+                atomic_store(
+                    ptr::addr_of_mut!((*control).request_wake_armed),
+                    1,
+                    Ordering::Release,
+                );
+            }
+        }
+        let mut ready = false;
+        for channel in 0..self.header.channels {
+            if self.channel_request_ready(channel)? {
+                ready = true;
+                break;
+            }
+        }
+        if ready {
+            for channel in 0..self.header.channels {
+                let control = self.channel_ptr(channel)?;
+                unsafe {
+                    atomic_store(
+                        ptr::addr_of_mut!((*control).request_wake_armed),
+                        0,
+                        Ordering::Release,
+                    );
+                }
+            }
+            return Ok(());
+        }
         let mut pfd = libc::pollfd {
             fd: self.file.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
         let ret = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+        for channel in 0..self.header.channels {
+            let control = self.channel_ptr(channel)?;
+            unsafe {
+                atomic_store(
+                    ptr::addr_of_mut!((*control).request_wake_armed),
+                    0,
+                    Ordering::Release,
+                );
+            }
+        }
         if ret < 0 {
             let err = io::Error::last_os_error();
             if err.kind() != io::ErrorKind::Interrupted {
@@ -5490,12 +6398,23 @@ impl SharedTarget {
         Ok(())
     }
 
-    fn kick_channel(&self, channel: u32) -> io::Result<()> {
+    fn kick_channel(&self, channel: u32) -> io::Result<bool> {
+        let control = self.channel_ptr(channel)?;
+        let armed = unsafe {
+            atomic_swap(
+                ptr::addr_of_mut!((*control).completion_wake_armed),
+                0,
+                Ordering::AcqRel,
+            )
+        };
+        if armed == 0 {
+            return Ok(false);
+        }
         let ret = unsafe { libc::ioctl(self.file.as_raw_fd(), ZCNBLK_SHM_IOC_KICK, &channel) };
         if ret < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(())
+        Ok(true)
     }
 
     fn channel_request_ready(&self, channel: u32) -> io::Result<bool> {
@@ -5579,34 +6498,6 @@ impl SharedTarget {
             released += 1;
         }
         Ok(released)
-    }
-
-    fn lock_request_range<'a>(
-        &self,
-        locks: &'a [Mutex<()>],
-        offset: u64,
-        len: u32,
-    ) -> io::Result<Vec<std::sync::MutexGuard<'a, ()>>> {
-        if len == 0 {
-            return Ok(Vec::new());
-        }
-        let last = offset
-            .checked_add(u64::from(len) - 1)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "request range overflow"))?;
-        let first_page = offset / 4096;
-        let last_page = last / 4096;
-        let mut ids = (first_page..=last_page)
-            .map(|page| page as usize % locks.len())
-            .collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids.dedup();
-        ids.into_iter()
-            .map(|id| {
-                locks[id]
-                    .lock()
-                    .map_err(|_| io::Error::other("zcnblk shared sector lock poisoned"))
-            })
-            .collect()
     }
 
     fn flush_wal_lane_completions(
@@ -5765,8 +6656,7 @@ impl SharedTarget {
             .count();
         while self.completion_capacity(channel)? < read_count {
             if *completion_kicks != 0 {
-                self.kick_channel(channel)?;
-                stats.kicks += 1;
+                stats.kicks += u64::from(self.kick_channel(channel)?);
                 *completion_kicks = 0;
             }
             std::hint::spin_loop();
@@ -5902,6 +6792,7 @@ impl SharedTarget {
             .unwrap_or(usize::MAX)
             .max(1);
         let mut pending_send = VecDeque::<PendingRemoteRead>::with_capacity(extent_records);
+        let mut pending_syncs = VecDeque::<PendingRemoteRead>::new();
         let mut retained_writes = VecDeque::<PendingRemoteRead>::new();
         let mut releases = WalLaneReleaseTracker::new(self.header.payload_entries as usize);
         let mut lane_completions =
@@ -5910,14 +6801,16 @@ impl SharedTarget {
         let mut outstanding_read_refs = VecDeque::<OutstandingWalDirtyReadRef>::new();
         let mut completion_kicks = 0usize;
         let mut fill_started = None::<Instant>;
+        let mut sync_coalesce_started = None::<Instant>;
         let mut last_synced_epoch = 0u64;
         let debug_state = env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_DEBUG_STATE", false);
         let mut last_debug = Instant::now();
-        'lane: while RUNNING.load(Ordering::Relaxed)
+        while RUNNING.load(Ordering::Relaxed)
             || !pending_send.is_empty()
             || transport.in_flight_len() != 0
             || transport.has_pending()
             || !lane_completions.is_empty()
+            || !pending_syncs.is_empty()
         {
             self.release_consumed_wal_read_refs(channel, &mut outstanding_read_refs, dirty)?;
             if pending_send.is_empty()
@@ -5925,7 +6818,10 @@ impl SharedTarget {
                 && !transport.has_pending()
                 && syncs.epoch() != 0
             {
-                if syncs.service(&mut last_synced_epoch, |epoch| transport.sync(epoch))? {
+                let active_sync_epoch = syncs.epoch();
+                if syncs.service(channel, &mut last_synced_epoch, |epoch| {
+                    transport.sync(epoch)
+                })? {
                     stats.lease_releases += self.release_wal_lane_retained(
                         channel,
                         &mut retained_writes,
@@ -5935,6 +6831,7 @@ impl SharedTarget {
                         usize::MAX,
                     )? as u64;
                 }
+                let _ = syncs.try_finish(active_sync_epoch)?;
             }
             let control = self.channel_ptr(channel)?;
             if debug_state && last_debug.elapsed() >= Duration::from_secs(1) {
@@ -5943,7 +6840,7 @@ impl SharedTarget {
                 let request_prod =
                     unsafe { atomic_load(ptr::addr_of!((*control).req_prod), Ordering::Acquire) };
                 eprintln!(
-                    "zcnblk-shm-target-wal-debug: channel={channel} req_cons={request_cons} req_prod={request_prod} pending_send={} pending_front_submit={} pending_front_predecessor={} transport_pending={} in_flight={} lane_completion_ready={} lane_completions={} logical_hwm={} remote_hwm={} sync_epoch={} release_hwm={}",
+                    "zcnblk-shm-target-wal-debug: channel={channel} req_cons={request_cons} req_prod={request_prod} pending_send={} pending_front_submit={} pending_front_predecessor={} transport_pending={} in_flight={} lane_completion_ready={} lane_completions={} logical_hwm={} remote_hwm={} sync_epoch={} sync_requested_epoch={} sync_announcements={} sync_ack_mask={:#x} sync_expected_mask={:#x} sync_committed_hwm={} release_hwm={}",
                     pending_send.len(),
                     pending_send
                         .front()
@@ -5958,12 +6855,18 @@ impl SharedTarget {
                     completions.hwm(),
                     remote_completions.hwm(),
                     syncs.epoch(),
+                    syncs.requested_epoch(),
+                    syncs.announcement_count(),
+                    syncs.acknowledged_lane_mask(),
+                    syncs.expected_lane_mask(),
+                    syncs.committed_hwm(),
                     releases.hwm,
                 );
                 last_debug = Instant::now();
             }
             let mut progressed = false;
             let mut force_send = false;
+            let mut sync_completion_ready = false;
             let mut deferred_remote_completions = 0usize;
             while let Some(batch) = transport.try_recv()? {
                 let (read_count, published) = self.complete_wal_transport_batch(
@@ -5983,14 +6886,13 @@ impl SharedTarget {
                 )?;
                 completion_kicks += published;
                 if read_count != 0 || completion_kicks >= completion_kick_batch {
-                    self.kick_channel(channel)?;
-                    stats.kicks += 1;
+                    stats.kicks += u64::from(self.kick_channel(channel)?);
                     completion_kicks = 0;
                 }
                 progressed = true;
             }
             while RUNNING.load(Ordering::Relaxed)
-                && syncs.epoch() == 0
+                && !syncs.lane_needs_service(channel)
                 && pending_send.len() < pending_limit
             {
                 let consumed =
@@ -6017,14 +6919,6 @@ impl SharedTarget {
                     break;
                 }
                 if request.op == ZCNBLK_SHM_OP_SYNC {
-                    if !pending_send.is_empty()
-                        || transport.in_flight_len() != 0
-                        || transport.has_pending()
-                        || !lane_completions.is_empty()
-                    {
-                        force_send = true;
-                        break;
-                    }
                     if request.queue_id != channel || request.len != 0 {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -6033,95 +6927,45 @@ impl SharedTarget {
                     }
                     let sync_payload_offset =
                         self.request_payload_offset(channel, consumed, &request)?;
-                    while remote_completions.hwm() < request.submit_sequence.saturating_sub(1) {
-                        if syncs.epoch() != 0 {
-                            if syncs
-                                .service(&mut last_synced_epoch, |epoch| transport.sync(epoch))?
-                            {
-                                stats.lease_releases += self.release_wal_lane_retained(
-                                    channel,
-                                    &mut retained_writes,
-                                    &mut releases,
-                                    dirty,
-                                    false,
-                                    usize::MAX,
-                                )? as u64;
-                            }
-                        }
-                        if !RUNNING.load(Ordering::Relaxed) {
-                            return Err(io::Error::new(
-                                io::ErrorKind::Interrupted,
-                                "WAL target stopped while waiting for remote sync HWM",
-                            ));
-                        }
-                        std::hint::spin_loop();
-                    }
-                    syncs.begin(request.submit_sequence)?;
-                    if syncs.service(&mut last_synced_epoch, |epoch| transport.sync(epoch))? {
-                        stats.lease_releases += self.release_wal_lane_retained(
-                            channel,
-                            &mut retained_writes,
-                            &mut releases,
-                            dirty,
-                            false,
-                            usize::MAX,
-                        )? as u64;
-                    }
-                    while !syncs.all_acknowledged(request.submit_sequence)? {
-                        if !RUNNING.load(Ordering::Relaxed) {
-                            return Err(io::Error::new(
-                                io::ErrorKind::Interrupted,
-                                "WAL target stopped while waiting for lane sync acknowledgements",
-                            ));
-                        }
-                        std::hint::spin_loop();
-                    }
-                    syncs.finish(request.submit_sequence)?;
-                    while self.completion_capacity(channel)? == 0 {
-                        self.kick_channel(channel)?;
-                        stats.kicks += 1;
-                        std::hint::spin_loop();
-                    }
                     let pending = PendingRemoteRead {
                         request,
                         request_sequence: consumed,
                         payload_offset: sync_payload_offset,
                         dirty_ref: None,
                     };
+                    let required_hwm = request.submit_sequence.saturating_sub(1);
+                    let joined = remote_completions.hwm() >= required_hwm
+                        && syncs.try_join(request.submit_sequence);
                     remote_completions.mark_complete(request.submit_sequence)?;
-                    lane_completions.admit(pending, true)?;
-                    let published = self.flush_wal_lane_completions(
-                        channel,
-                        &mut lane_completions,
-                        completions,
-                        &mut completion_scratch,
-                        &mut outstanding_read_refs,
-                    )?;
-                    if published != 1 {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "sync completion did not advance the lane FIFO",
-                        ));
+                    if joined {
+                        lane_completions.admit(pending, true)?;
+                        let payload_hwm = self.mark_payload_releasable(&mut releases, consumed)?;
+                        unsafe {
+                            atomic_store(
+                                ptr::addr_of_mut!((*control).payload_lease_hwm),
+                                payload_hwm,
+                                Ordering::Release,
+                            );
+                        }
+                        stats.lease_releases += 1;
+                        sync_completion_ready = true;
+                    } else {
+                        syncs.announce(request.submit_sequence)?;
+                        lane_completions.admit(pending, false)?;
+                        pending_syncs.push_back(pending);
+                        sync_coalesce_started.get_or_insert_with(Instant::now);
                     }
-                    let payload_hwm = self.mark_payload_releasable(&mut releases, consumed)?;
                     unsafe {
                         atomic_store(
                             ptr::addr_of_mut!((*control).req_cons),
                             consumed + 1,
                             Ordering::Release,
                         );
-                        atomic_store(
-                            ptr::addr_of_mut!((*control).payload_lease_hwm),
-                            payload_hwm,
-                            Ordering::Release,
-                        );
                     }
                     stats.requests += 1;
                     stats.syncs += 1;
-                    stats.lease_releases += 1;
-                    self.kick_channel(channel)?;
-                    stats.kicks += 1;
-                    continue 'lane;
+                    progressed = true;
+                    continue;
                 }
                 if request.queue_id != channel
                     || request.len != 4096
@@ -6137,6 +6981,7 @@ impl SharedTarget {
                         "lane WAL request topology or range mismatch",
                     ));
                 }
+                syncs.observe_lane_tail(channel, request.submit_sequence)?;
                 if request.sector_predecessor != 0
                     && !completions.is_complete(request.sector_predecessor)
                 {
@@ -6228,6 +7073,66 @@ impl SharedTarget {
                 remote_completions.advance_hwm();
             }
 
+            if syncs.epoch() == 0
+                && syncs.requested_epoch() != 0
+                && sync_coalesce_started.is_some_and(|started| {
+                    syncs.announcement_count() > 1
+                        || started.elapsed() >= Duration::from_micros(syncs.coalesce_us())
+                })
+                && syncs
+                    .try_begin_requested(remote_completions.hwm())?
+                    .is_some()
+            {
+                progressed = true;
+            }
+
+            if pending_send.is_empty()
+                && transport.in_flight_len() == 0
+                && !transport.has_pending()
+                && syncs.lane_needs_service(channel)
+            {
+                let active_sync_epoch = syncs.epoch();
+                if syncs.service(channel, &mut last_synced_epoch, |epoch| {
+                    transport.sync(epoch)
+                })? {
+                    stats.lease_releases += self.release_wal_lane_retained(
+                        channel,
+                        &mut retained_writes,
+                        &mut releases,
+                        dirty,
+                        false,
+                        usize::MAX,
+                    )? as u64;
+                }
+                let _ = syncs.try_finish(active_sync_epoch)?;
+                progressed = true;
+            }
+
+            let committed_sync_hwm = syncs.committed_hwm();
+            while pending_syncs
+                .front()
+                .is_some_and(|pending| pending.request.submit_sequence <= committed_sync_hwm)
+            {
+                let pending = pending_syncs.pop_front().expect("pending sync front");
+                lane_completions.mark_ready(pending.request_sequence)?;
+                let payload_hwm =
+                    self.mark_payload_releasable(&mut releases, pending.request_sequence)?;
+                unsafe {
+                    atomic_store(
+                        ptr::addr_of_mut!((*control).payload_lease_hwm),
+                        payload_hwm,
+                        Ordering::Release,
+                    );
+                }
+                syncs.retire_announcement()?;
+                stats.lease_releases += 1;
+                sync_completion_ready = true;
+                progressed = true;
+            }
+            if pending_syncs.is_empty() {
+                sync_coalesce_started = None;
+            }
+
             self.release_wal_lane_dirty_cache(
                 channel,
                 &mut retained_writes,
@@ -6244,9 +7149,8 @@ impl SharedTarget {
                 &mut outstanding_read_refs,
             )?;
 
-            if completion_kicks >= completion_kick_batch {
-                self.kick_channel(channel)?;
-                stats.kicks += 1;
+            if sync_completion_ready || completion_kicks >= completion_kick_batch {
+                stats.kicks += u64::from(self.kick_channel(channel)?);
                 completion_kicks = 0;
             }
 
@@ -6264,15 +7168,16 @@ impl SharedTarget {
                     || fill_started.get_or_insert_with(Instant::now).elapsed()
                         >= Duration::from_micros(extent_fill_us);
                 let dependency_boundary = send_ready < pending_send.len().min(extent_records);
-                let latency_sensitive_read = pending_send
-                    .iter()
-                    .take(send_ready)
-                    .any(|pending| pending.request.op == ZCNBLK_SHM_OP_READ);
+                let latency_sensitive_read = transport.foreground_immediate_available()
+                    && pending_send
+                        .iter()
+                        .take(send_ready)
+                        .any(|pending| pending.request.op == ZCNBLK_SHM_OP_READ);
                 let should_send = send_ready >= extent_records
                     || pending_send.len() >= pending_limit
                     || dependency_boundary
                     || !RUNNING.load(Ordering::Relaxed)
-                    || syncs.epoch() != 0
+                    || syncs.lane_needs_service(channel)
                     || force_send
                     || latency_sensitive_read
                     || (!channel_ready && (send_ready >= split_min_batch_records || fill_expired));
@@ -6295,16 +7200,19 @@ impl SharedTarget {
             }
 
             if transport.flush_owner_pending_if_due(
-                !RUNNING.load(Ordering::Relaxed) || syncs.epoch() != 0,
+                !RUNNING.load(Ordering::Relaxed) || syncs.lane_needs_service(channel),
             )? {
                 progressed = true;
             }
 
+            let foreground_in_flight = transport.foreground_in_flight_len();
             let receive_now = transport.in_flight_len() != 0
                 && (transport.in_flight_len() >= lane_window
                     || !RUNNING.load(Ordering::Relaxed)
-                    || syncs.epoch() != 0
-                    || (!progressed && (!channel_ready || send_ready == 0)));
+                    || syncs.lane_needs_service(channel)
+                    || (!progressed
+                        && foreground_in_flight != 0
+                        && (!channel_ready || send_ready == 0)));
             if receive_now {
                 let batch = transport.recv(self.mapping.as_ref())?;
                 let (read_count, published) = self.complete_wal_transport_batch(
@@ -6324,8 +7232,7 @@ impl SharedTarget {
                 )?;
                 completion_kicks += published;
                 if read_count != 0 || completion_kicks >= completion_kick_batch {
-                    self.kick_channel(channel)?;
-                    stats.kicks += 1;
+                    stats.kicks += u64::from(self.kick_channel(channel)?);
                     completion_kicks = 0;
                 }
                 continue;
@@ -6341,13 +7248,16 @@ impl SharedTarget {
                 continue;
             }
             if !progressed {
+                if syncs.requested_epoch() != 0 {
+                    std::hint::spin_loop();
+                    continue;
+                }
                 if !pending_send.is_empty() && transport.in_flight_len() < lane_window {
                     std::hint::spin_loop();
                     continue;
                 }
                 if completion_kicks != 0 {
-                    self.kick_channel(channel)?;
-                    stats.kicks += 1;
+                    stats.kicks += u64::from(self.kick_channel(channel)?);
                     completion_kicks = 0;
                 }
                 let deadline = Instant::now()
@@ -6356,7 +7266,7 @@ impl SharedTarget {
                 let mut deadline_spins = 0u32;
                 while !self.channel_request_ready(channel)?
                     && RUNNING.load(Ordering::Relaxed)
-                    && syncs.epoch() == 0
+                    && !syncs.lane_needs_service(channel)
                     && transport.in_flight_len() == 0
                     && !transport.has_pending()
                 {
@@ -6366,7 +7276,7 @@ impl SharedTarget {
                         break;
                     }
                 }
-                if syncs.epoch() != 0 {
+                if syncs.lane_needs_service(channel) {
                     continue;
                 }
                 if self.channel_request_ready(channel)?
@@ -6379,12 +7289,37 @@ impl SharedTarget {
                 if let Some(epoch) = active_epoch.take() {
                     active += epoch.elapsed();
                 }
+                unsafe {
+                    atomic_store(
+                        ptr::addr_of_mut!((*control).request_wake_armed),
+                        1,
+                        Ordering::Release,
+                    );
+                }
+                if self.channel_request_ready(channel)? {
+                    unsafe {
+                        atomic_store(
+                            ptr::addr_of_mut!((*control).request_wake_armed),
+                            0,
+                            Ordering::Release,
+                        );
+                    }
+                    active_epoch.get_or_insert_with(Instant::now);
+                    continue;
+                }
                 let mut pfd = libc::pollfd {
                     fd: self.file.as_raw_fd(),
                     events: libc::POLLIN,
                     revents: 0,
                 };
                 let ret = unsafe { libc::poll(&mut pfd, 1, 100) };
+                unsafe {
+                    atomic_store(
+                        ptr::addr_of_mut!((*control).request_wake_armed),
+                        0,
+                        Ordering::Release,
+                    );
+                }
                 if ret < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
                     return Err(io::Error::last_os_error());
                 }
@@ -6392,8 +7327,7 @@ impl SharedTarget {
             }
         }
         while !outstanding_read_refs.is_empty() {
-            self.kick_channel(channel)?;
-            stats.kicks += 1;
+            stats.kicks += u64::from(self.kick_channel(channel)?);
             self.release_consumed_wal_read_refs(channel, &mut outstanding_read_refs, dirty)?;
             std::hint::spin_loop();
         }
@@ -6433,7 +7367,18 @@ impl SharedTarget {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "WAL inflight overflow"))?;
         let completions = WalCompletionTracker::new(max_in_flight)?;
         let remote_completions = WalCompletionTracker::new(max_in_flight)?;
-        let syncs = WalSyncCoordinator::new(self.header.channels);
+        let sync_coalesce_us = env::var("URING_PLAY_ZCNBLK_SHM_SYNC_COALESCE_US")
+            .ok()
+            .map(|value| value.parse::<u64>())
+            .transpose()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+            .unwrap_or(if self.header.channels > 1 { 20 } else { 0 });
+        let independent_lane_release = env_enabled_or("URING_PLAY_ZCNBLK_SHM_VECTOR_HWM", false);
+        let syncs = WalSyncCoordinator::new(
+            self.header.channels,
+            sync_coalesce_us,
+            independent_lane_release,
+        );
         let logical_pages = usize::try_from(self.header.capacity_bytes / 4096).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -6449,12 +7394,6 @@ impl SharedTarget {
         for remote in &mut leaves {
             remote.attach_mapping(Arc::clone(&self.mapping));
         }
-        if leaves.len() != self.header.channels as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "lane-batched WAL path requires exactly one remote stream per channel",
-            ));
-        }
         if owner_cpus.is_some() && transport_cpus.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -6462,6 +7401,20 @@ impl SharedTarget {
             ));
         }
         let owner_mode = owner_cpus.is_some();
+        let expected_streams = if owner_mode {
+            wal_owner_count(self.header.channels)?
+        } else {
+            self.header.channels as usize
+        };
+        if leaves.len() != expected_streams {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "lane-batched WAL path expected {expected_streams} remote streams, got {}",
+                    leaves.len()
+                ),
+            ));
+        }
         let mut owner_workers = Vec::<WalOwnerIngressWorker>::new();
         let lane_inputs = if let Some(owner_cpus) = owner_cpus {
             if owner_cpus.len() != leaves.len() {
@@ -6477,20 +7430,26 @@ impl SharedTarget {
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
                 .unwrap_or(128)
                 .max(2);
-            let mut result_txs = Vec::with_capacity(leaves.len());
-            let mut result_rxs = Vec::with_capacity(leaves.len());
-            for _ in 0..leaves.len() {
+            let ingress_count = self.header.channels as usize;
+            let mut result_txs = Vec::with_capacity(ingress_count);
+            let mut result_rxs = Vec::with_capacity(ingress_count);
+            for _ in 0..ingress_count {
                 let (result_tx, result_rx) = sync_channel(queue_depth);
                 result_txs.push(result_tx);
                 result_rxs.push(result_rx);
             }
             let result_txs: Arc<[SyncSender<WalOwnerIngressResult>]> = result_txs.into();
+            let queued_records_by_owner: Arc<[AtomicUsize]> = (0..leaves.len())
+                .map(|_| AtomicUsize::new(0))
+                .collect::<Vec<_>>()
+                .into();
             for (remote, cpu) in leaves.into_iter().zip(owner_cpus.iter().copied()) {
                 owner_workers.push(WalOwnerIngressWorker::start(
                     remote,
                     Arc::clone(&self.mapping),
                     cpu,
                     Arc::clone(&result_txs),
+                    Arc::clone(&queued_records_by_owner),
                     queue_depth,
                 )?);
             }
@@ -6508,6 +7467,7 @@ impl SharedTarget {
                         Some(WalOwnerIngressEndpoint {
                             ingress: ingress as u32,
                             owner_commands: Arc::clone(&owner_commands),
+                            queued_records_by_owner: Arc::clone(&queued_records_by_owner),
                             result_rx,
                             owner_extent_records: self.owner_extent_records,
                         }),
@@ -6533,7 +7493,7 @@ impl SharedTarget {
                     .and_then(|values| values.get(channel))
                     .copied();
                 handles.push(scope.spawn(move || {
-                    target.run_wal_lane_channel(
+                    let result = target.run_wal_lane_channel(
                         channel as u32,
                         completions,
                         remote_completions,
@@ -6543,7 +7503,11 @@ impl SharedTarget {
                         transport_cpu,
                         remote,
                         owner_ingress,
-                    )
+                    );
+                    if result.is_err() {
+                        RUNNING.store(false, Ordering::Release);
+                    }
+                    result
                 }));
             }
             handles
@@ -6694,6 +7658,24 @@ impl SharedTarget {
             },
             cpus.is_some() && env_enabled_or("URING_PLAY_TOPOLOGY_REPRESENTATIVE", false),
         );
+        eprintln!(
+            "zcnblk-shm-target-sync-summary: logical_syncs={} remote_sync_epochs={} collapsed_syncs={} joined_syncs={} coalesce_us={} remote_lane_syncs_expected={} committed_submit_hwm={} pending_requested_epoch={} pending_announcements={} pending_ack_mask={:#x} expected_ack_mask={:#x} frozen_lane_hwm={} vector_hwm={}",
+            total.syncs,
+            syncs.remote_epochs(),
+            total.syncs.saturating_sub(syncs.remote_epochs()),
+            syncs.joined_syncs(),
+            syncs.coalesce_us(),
+            syncs
+                .remote_epochs()
+                .saturating_mul(u64::from(self.header.channels)),
+            syncs.committed_hwm(),
+            syncs.requested_epoch(),
+            syncs.announcement_count(),
+            syncs.acknowledged_lane_mask(),
+            syncs.expected_lane_mask(),
+            syncs.frozen_vector(),
+            independent_lane_release,
+        );
         if let Some(first) = self.remote_leaves.first() {
             let write_batches = self
                 .remote_leaves
@@ -6833,6 +7815,25 @@ impl SharedTarget {
                 send_zc_notifications,
                 send_zc_copied_notifications,
             );
+            for remote in &self.remote_leaves {
+                eprintln!(
+                    "zcnblk-shm-target-remote-timing: lane={} tcp_nodelay={} quickack={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
+                    remote.lane_id,
+                    remote.tcp_nodelay,
+                    remote.quickack,
+                    remote.request_send_calls,
+                    remote.request_send_time.as_secs_f64(),
+                    remote.request_send_time.as_secs_f64() * 1_000_000.0
+                        / remote.request_send_calls.max(1) as f64,
+                    remote.result_recv_calls,
+                    remote.result_recv_time.as_secs_f64(),
+                    remote.result_recv_time.as_secs_f64() * 1_000_000.0
+                        / remote.result_recv_calls.max(1) as f64,
+                    remote.result_header_time.as_secs_f64(),
+                    remote.result_descriptor_time.as_secs_f64(),
+                    remote.result_payload_time.as_secs_f64(),
+                );
+            }
         }
         Ok(())
     }
@@ -6840,7 +7841,7 @@ impl SharedTarget {
     fn run_channel(
         &self,
         channel: u32,
-        locks: &[Mutex<()>],
+        completions: &WalCompletionTracker,
         cpu: Option<usize>,
     ) -> io::Result<(Stats, Duration)> {
         if let Some(cpu) = cpu {
@@ -6853,8 +7854,8 @@ impl SharedTarget {
         let mut pending_kick = 0u64;
         let mut burst_requests = 0u64;
         let busy_activation_requests = self.kick_batch;
-        let mut last_request_at = None;
         let mut busy_until = None;
+        let mut completions_since_advance = 0u64;
         while RUNNING.load(Ordering::Relaxed) {
             let control = self.channel_ptr(channel)?;
             let request_sequence =
@@ -6869,26 +7870,55 @@ impl SharedTarget {
                 } else {
                     self.poll_us
                 };
-                let deadline = Instant::now()
+                let deadline = now
                     .checked_add(Duration::from_micros(spin_us))
                     .unwrap_or_else(Instant::now);
-                while !self.channel_request_ready(channel)?
+                let mut clock_check_countdown = self.poll_clock_check_spins;
+                while unsafe { atomic_load(ptr::addr_of!((*control).req_prod), Ordering::Acquire) }
+                    == request_sequence
                     && RUNNING.load(Ordering::Relaxed)
-                    && Instant::now() < deadline
                 {
                     std::hint::spin_loop();
+                    clock_check_countdown -= 1;
+                    if clock_check_countdown == 0 {
+                        if Instant::now() >= deadline {
+                            break;
+                        }
+                        clock_check_countdown = self.poll_clock_check_spins;
+                    }
                 }
-                if self.channel_request_ready(channel)? {
+                if unsafe { atomic_load(ptr::addr_of!((*control).req_prod), Ordering::Acquire) }
+                    != request_sequence
+                {
                     active_epoch.get_or_insert_with(Instant::now);
                     continue;
                 }
                 if pending_kick != 0 {
-                    self.kick_channel(channel)?;
-                    stats.kicks += 1;
+                    stats.kicks += u64::from(self.kick_channel(channel)?);
                     pending_kick = 0;
                 }
                 if let Some(epoch) = active_epoch.take() {
                     active += epoch.elapsed();
+                }
+                unsafe {
+                    atomic_store(
+                        ptr::addr_of_mut!((*control).request_wake_armed),
+                        1,
+                        Ordering::Release,
+                    );
+                }
+                if unsafe { atomic_load(ptr::addr_of!((*control).req_prod), Ordering::Acquire) }
+                    != request_sequence
+                {
+                    unsafe {
+                        atomic_store(
+                            ptr::addr_of_mut!((*control).request_wake_armed),
+                            0,
+                            Ordering::Release,
+                        );
+                    }
+                    active_epoch.get_or_insert_with(Instant::now);
+                    continue;
                 }
                 let mut pfd = libc::pollfd {
                     fd: self.file.as_raw_fd(),
@@ -6896,26 +7926,26 @@ impl SharedTarget {
                     revents: 0,
                 };
                 let ret = unsafe { libc::poll(&mut pfd, 1, 100) };
+                unsafe {
+                    atomic_store(
+                        ptr::addr_of_mut!((*control).request_wake_armed),
+                        0,
+                        Ordering::Release,
+                    );
+                }
                 if ret < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
                     return Err(io::Error::last_os_error());
                 }
                 stats.idle_polls += 1;
+                burst_requests = 0;
                 continue;
             }
             active_epoch.get_or_insert_with(Instant::now);
-            let request_now = Instant::now();
-            if last_request_at.is_some_and(|last: Instant| {
-                request_now.saturating_duration_since(last)
-                    <= Duration::from_micros(self.busy_poll_us)
-            }) {
-                burst_requests = burst_requests.saturating_add(1);
-            } else {
-                burst_requests = 1;
-            }
-            last_request_at = Some(request_now);
+            burst_requests = burst_requests.saturating_add(1);
             if burst_requests >= busy_activation_requests {
                 busy_until =
-                    request_now.checked_add(Duration::from_micros(self.busy_hysteresis_us));
+                    Instant::now().checked_add(Duration::from_micros(self.busy_hysteresis_us));
+                burst_requests = 0;
             }
             if produced.wrapping_sub(request_sequence) > u64::from(self.header.ring_entries) {
                 return Err(io::Error::new(
@@ -6941,9 +7971,21 @@ impl SharedTarget {
                     "request descriptor topology or payload slot mismatch",
                 ));
             }
+            let dependency_ready = match request.op {
+                ZCNBLK_SHM_OP_SYNC => {
+                    completions.advance_hwm() >= request.submit_sequence.saturating_sub(1)
+                }
+                ZCNBLK_SHM_OP_WRITE | ZCNBLK_SHM_OP_READ => {
+                    completions.is_complete(request.sector_predecessor)
+                }
+                _ => true,
+            };
+            if !dependency_ready {
+                std::hint::spin_loop();
+                continue;
+            }
             while !self.completion_has_capacity(channel)? && RUNNING.load(Ordering::Relaxed) {
-                self.kick_channel(channel)?;
-                stats.kicks += 1;
+                stats.kicks += u64::from(self.kick_channel(channel)?);
                 std::hint::spin_loop();
             }
 
@@ -6958,7 +8000,6 @@ impl SharedTarget {
             if end > self.header.capacity_bytes {
                 status = -(libc::EINVAL as i16);
             } else {
-                let _guards = self.lock_request_range(locks, request.offset, request.len)?;
                 match request.op {
                     ZCNBLK_SHM_OP_WRITE => {
                         stats.writes += 1;
@@ -7002,6 +8043,15 @@ impl SharedTarget {
             }
 
             stats.requests += 1;
+            completions.mark_complete_deferred(request.submit_sequence)?;
+            completions_since_advance = completions_since_advance.saturating_add(1);
+            if request.op == ZCNBLK_SHM_OP_SYNC {
+                completions.advance_hwm();
+                completions_since_advance = 0;
+            } else if completions_since_advance >= self.kick_batch {
+                let _ = completions.try_advance_hwm();
+                completions_since_advance = 0;
+            }
             let completion_sequence =
                 unsafe { atomic_load(ptr::addr_of!((*control).comp_prod), Ordering::Acquire) };
             let completion = self.completion_ptr(channel, completion_sequence)?;
@@ -7051,15 +8101,14 @@ impl SharedTarget {
             }
             pending_kick += 1;
             if pending_kick >= self.kick_batch {
-                self.kick_channel(channel)?;
-                stats.kicks += 1;
+                stats.kicks += u64::from(self.kick_channel(channel)?);
                 pending_kick = 0;
             }
         }
         if pending_kick != 0 {
-            self.kick_channel(channel)?;
-            stats.kicks += 1;
+            stats.kicks += u64::from(self.kick_channel(channel)?);
         }
+        completions.advance_hwm();
         self.release_channel_payloads(channel)?;
         if let Some(epoch) = active_epoch {
             active += epoch.elapsed();
@@ -7070,16 +8119,22 @@ impl SharedTarget {
 
     fn run_parallel(&mut self, cpus: Option<&[usize]>) -> io::Result<()> {
         let started = Instant::now();
-        let locks = (0..16_384).map(|_| Mutex::new(())).collect::<Vec<_>>();
+        let max_in_flight = (self.header.channels as usize)
+            .checked_mul(self.header.payload_entries.max(self.header.ring_entries) as usize)
+            .and_then(|value| value.checked_mul(2))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "completion tracker overflow")
+            })?;
+        let completions = WalCompletionTracker::new(max_in_flight)?;
         let results = thread::scope(|scope| {
             let mut handles = Vec::with_capacity(self.header.channels as usize);
             for channel in 0..self.header.channels {
-                let locks = &locks;
+                let completions = &completions;
                 let target: &SharedTarget = self;
                 let cpu = cpus
                     .and_then(|values| values.get(channel as usize))
                     .copied();
-                handles.push(scope.spawn(move || target.run_channel(channel, locks, cpu)));
+                handles.push(scope.spawn(move || target.run_channel(channel, completions, cpu)));
             }
             handles
                 .into_iter()
@@ -7114,8 +8169,29 @@ impl SharedTarget {
         }
         let active_seconds = max_active.as_secs_f64().max(f64::MIN_POSITIVE);
         let payload_bytes = total.write_bytes + total.read_bytes;
+        let mut request_publishes = 0u64;
+        let mut request_wake_kicks = 0u64;
+        let mut completion_kicks = 0u64;
+        for channel in 0..self.header.channels {
+            let control = self.channel_ptr(channel)?;
+            request_publishes = request_publishes.saturating_add(unsafe {
+                atomic_load(
+                    ptr::addr_of!((*control).request_publishes),
+                    Ordering::Acquire,
+                )
+            });
+            request_wake_kicks = request_wake_kicks.saturating_add(unsafe {
+                atomic_load(ptr::addr_of!((*control).request_kicks), Ordering::Acquire)
+            });
+            completion_kicks = completion_kicks.saturating_add(unsafe {
+                atomic_load(
+                    ptr::addr_of!((*control).completion_kicks),
+                    Ordering::Acquire,
+                )
+            });
+        }
         eprintln!(
-            "zcnblk-shm-target-summary: backend={:?} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} lease_release_batch={} poll_us={} busy_poll_us={} busy_hysteresis_us={} busy_activation_requests={} ordering=per-channel-fifo+sector-lock sync_boundary=global-after-prior-completions placement_owner=downstream-userspace-stage block_client_placement=no kernel_payload_copies=one-per-direction",
+            "zcnblk-shm-target-summary: backend={:?} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} completion_ioctl_kicks={} request_publishes={} request_wake_kicks={} request_wake_pct={:.4} idle_polls={} lease_releases={} lease_release_batch={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} busy_activation_requests={} ordering=per-channel-fifo+sector-predecessor sync_boundary=global-completion-hwm-before-sync placement_owner=downstream-userspace-stage block_client_placement=no kernel_payload_copies=one-per-direction",
             self.backend,
             self.header.channels,
             total.requests,
@@ -7127,13 +8203,17 @@ impl SharedTarget {
             total.requests as f64 / active_seconds,
             payload_bytes as f64 / 4096.0 / active_seconds,
             payload_bytes as f64 * 8.0 / active_seconds / (1024.0 * 1024.0 * 1024.0),
-            total.kicks,
+            completion_kicks,
+            request_publishes,
+            request_wake_kicks,
+            request_wake_kicks as f64 * 100.0 / request_publishes.max(1) as f64,
             total.idle_polls,
             total.lease_releases,
             self.lease_release_batch,
             self.poll_us,
             self.busy_poll_us,
             self.busy_hysteresis_us,
+            self.poll_clock_check_spins,
             self.kick_batch,
         );
         Ok(())
@@ -7267,7 +8347,7 @@ impl SharedTarget {
                 _ => ("request-order", "immediate-copy", "reduced-memory", "none"),
             };
         eprintln!(
-            "zcnblk-shm-target-summary: backend={:?} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={elapsed:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} lease_release_batch={} writeback_batch={} writeback_batches={} writeback_writes={} writeback_bytes={} durable_submit_hwm={} pending_writes={} poll_us={} busy_poll_us={} busy_hysteresis_us={} completion_order=global-fifo data_order=per-sector+sync-hwm sync_boundary={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress={} dirty_read_source={} kernel_payload_copies=one-per-direction writeback_materialization_copies={}",
+            "zcnblk-shm-target-summary: backend={:?} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={elapsed:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} lease_release_batch={} writeback_batch={} writeback_batches={} writeback_writes={} writeback_bytes={} durable_submit_hwm={} pending_writes={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} completion_order=global-fifo data_order=per-sector+sync-hwm sync_boundary={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress={} dirty_read_source={} kernel_payload_copies=one-per-direction writeback_materialization_copies={}",
             self.backend,
             self.header.channels,
             self.stats.requests,
@@ -7293,6 +8373,7 @@ impl SharedTarget {
             self.poll_us,
             self.busy_poll_us,
             self.busy_hysteresis_us,
+            self.poll_clock_check_spins,
             sync_boundary,
             write_ingress,
             dirty_read_source,
@@ -7420,7 +8501,7 @@ impl SharedTarget {
             );
             for remote in &self.remote_leaves {
                 eprintln!(
-                    "zcnblk-shm-target-remote-lane: lane={} lane_count={} target_cpu={} send_mode={} recv_policy={} recv_spin_budget={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} write_batches={} write_records={} write_bytes={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={}",
+                    "zcnblk-shm-target-remote-lane: lane={} lane_count={} target_cpu={} send_mode={} recv_policy={} recv_spin_budget={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} write_batches={} write_records={} write_bytes={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} tcp_nodelay={} quickack={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
                     remote.lane_id,
                     remote.lane_count,
                     remote
@@ -7448,6 +8529,19 @@ impl SharedTarget {
                     remote.control_writev_batches,
                     remote.send_zc_notifications,
                     remote.send_zc_copied_notifications,
+                    remote.tcp_nodelay,
+                    remote.quickack,
+                    remote.request_send_calls,
+                    remote.request_send_time.as_secs_f64(),
+                    remote.request_send_time.as_secs_f64() * 1_000_000.0
+                        / remote.request_send_calls.max(1) as f64,
+                    remote.result_recv_calls,
+                    remote.result_recv_time.as_secs_f64(),
+                    remote.result_recv_time.as_secs_f64() * 1_000_000.0
+                        / remote.result_recv_calls.max(1) as f64,
+                    remote.result_header_time.as_secs_f64(),
+                    remote.result_descriptor_time.as_secs_f64(),
+                    remote.result_payload_time.as_secs_f64(),
                 );
             }
         }
@@ -7666,16 +8760,20 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
         );
     }
     if owner_ingress {
+        let owner_count = wal_owner_count(target.header.channels)?;
         let values = owner_cpus.as_ref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "stable owner ingress requires URING_PLAY_ZCNBLK_SHM_OWNER_CPU_LIST",
             )
         })?;
-        if values.len() != target.header.channels as usize {
+        if values.len() != owner_count {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "stable owner CPU list must provide exactly one CPU per transport owner",
+                format!(
+                    "stable owner CPU list must provide exactly {owner_count} CPUs, got {}",
+                    values.len()
+                ),
             ));
         }
         if cpus
@@ -7734,7 +8832,7 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
         }
     }
     eprintln!(
-        "zcnblk-shm-target: device={} backend={backend:?} channels={} ring_entries={} payload_entries={} slot_bytes={} region_bytes={} capacity_bytes={} kick_batch={} lease_release_batch={} writeback_batch={} read_batch={} read_batch_fill_us={} read_batch_fill_min={} write_batch_fill_us={} write_batch_fill_min={} remote_leaf={} cpu_list={} owner_dispatch={} owner_extent_records={} owner_max_tx_iovecs={} split_transport={} transport_cpu_list={} transport_wait={} poll_us={} busy_poll_us={} busy_hysteresis_us={} wait_policy={} ordering={} shared_payload_slots=true payload_ownership={} placement_owner=downstream-userspace-stage block_client_placement=no representative={} ",
+        "zcnblk-shm-target: device={} backend={backend:?} channels={} ring_entries={} payload_entries={} slot_bytes={} region_bytes={} capacity_bytes={} kick_batch={} lease_release_batch={} writeback_batch={} read_batch={} read_batch_fill_us={} read_batch_fill_min={} write_batch_fill_us={} write_batch_fill_min={} remote_leaf={} cpu_list={} owner_dispatch={} owner_count={} owner_extent_records={} owner_max_tx_iovecs={} split_transport={} transport_cpu_list={} transport_wait={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} wait_policy={} ordering={} shared_payload_slots=true payload_ownership={} placement_owner=downstream-userspace-stage block_client_placement=no representative={} ",
         device,
         target.header.channels,
         target.header.ring_entries,
@@ -7766,6 +8864,11 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
                 .join(",")
         ),
         owner_dispatch,
+        if owner_ingress {
+            wal_owner_count(target.header.channels)?
+        } else {
+            target.header.channels as usize
+        },
         target.owner_extent_records,
         target.owner_max_tx_iovecs,
         split_transport,
@@ -7785,6 +8888,7 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
         poll_us,
         busy_poll_us,
         busy_hysteresis_us,
+        target.poll_clock_check_spins,
         if poll_us == busy_poll_us {
             "fixed-active"
         } else {
@@ -7810,7 +8914,7 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
     );
     if target.header.channels > 1 && !backend.is_wal_writeback() {
         eprintln!(
-            "zcnblk-shm-target-topology: channel_worker_cpu_map={} sector_lock_shards=16384 independent_sectors_parallel=true",
+            "zcnblk-shm-target-topology: channel_worker_cpu_map={} sector_order=descriptor-predecessor independent_sectors_parallel=true",
             cpus.as_ref().map_or_else(
                 || "unpinned".to_string(),
                 |values| values
@@ -7918,7 +9022,23 @@ mod tests {
 
     #[test]
     fn shared_abi_layout_matches_kernel_header() {
-        assert_eq!(size_of::<ZcnblkShmChannel>(), 64);
+        assert_eq!(size_of::<ZcnblkShmChannel>(), 320);
+        assert_eq!(std::mem::offset_of!(ZcnblkShmChannel, req_prod), 0);
+        assert_eq!(std::mem::offset_of!(ZcnblkShmChannel, req_cons), 64);
+        assert_eq!(
+            std::mem::offset_of!(ZcnblkShmChannel, request_wake_armed),
+            72
+        );
+        assert_eq!(std::mem::offset_of!(ZcnblkShmChannel, comp_prod), 128);
+        assert_eq!(std::mem::offset_of!(ZcnblkShmChannel, comp_cons), 192);
+        assert_eq!(
+            std::mem::offset_of!(ZcnblkShmChannel, completion_wake_armed),
+            208
+        );
+        assert_eq!(
+            std::mem::offset_of!(ZcnblkShmChannel, payload_free_slots),
+            256
+        );
         assert_eq!(size_of::<ZcnblkShmRequest>(), 64);
         assert_eq!(size_of::<ZcnblkShmCompletion>(), 64);
         assert_eq!(size_of::<ZcnblkShmHeader>(), 144);
@@ -8197,6 +9317,38 @@ mod tests {
     }
 
     #[test]
+    fn lane_completion_tracker_withholds_flush_while_later_write_drains() {
+        let pending = |request_sequence: u64, submit_sequence: u64, op: u16| PendingRemoteRead {
+            request: ZcnblkShmRequest {
+                submit_sequence,
+                op,
+                ..ZcnblkShmRequest::default()
+            },
+            request_sequence,
+            payload_offset: request_sequence as usize * 4096,
+            dirty_ref: None,
+        };
+        let mut completions = WalLaneCompletionTracker::new(8);
+        completions
+            .admit(pending(0, 10, ZCNBLK_SHM_OP_SYNC), false)
+            .unwrap();
+        completions
+            .admit(pending(1, 11, ZCNBLK_SHM_OP_WRITE), true)
+            .unwrap();
+
+        assert_eq!(
+            completions.pop_ready().unwrap().request.op,
+            ZCNBLK_SHM_OP_WRITE
+        );
+        completions.mark_ready(0).unwrap();
+        assert_eq!(
+            completions.pop_ready().unwrap().request.op,
+            ZCNBLK_SHM_OP_SYNC
+        );
+        assert!(completions.is_empty());
+    }
+
+    #[test]
     fn dirty_read_ref_pins_transferred_slot_until_consumer_release() {
         let dirty = WalConcurrentDirtyCache::new(1, 2, 4).unwrap();
         dirty.admit(1, 2, 0, 24_576, 7).unwrap();
@@ -8231,6 +9383,109 @@ mod tests {
         assert!(tracker.is_complete(1));
         assert!(tracker.is_complete(2));
         assert!(tracker.is_complete(3));
+    }
+
+    #[test]
+    fn wal_sync_coordinator_joins_contiguous_and_groups_announced_prefixes() {
+        let syncs = WalSyncCoordinator::new(2, 20, true);
+        assert!(!syncs.try_join(1));
+
+        syncs.begin(10).unwrap();
+        let mut lane_zero_epoch = 0;
+        let mut lane_one_epoch = 0;
+        let mut remote_syncs = 0;
+        assert!(
+            syncs
+                .service(0, &mut lane_zero_epoch, |_| {
+                    remote_syncs += 1;
+                    Ok(())
+                })
+                .unwrap()
+        );
+        assert!(
+            syncs
+                .service(1, &mut lane_one_epoch, |_| {
+                    remote_syncs += 1;
+                    Ok(())
+                })
+                .unwrap()
+        );
+        assert!(syncs.all_acknowledged(10).unwrap());
+        syncs.finish(10).unwrap();
+
+        assert_eq!(remote_syncs, 2);
+        assert_eq!(syncs.committed_hwm(), 10);
+        assert!(syncs.try_join(11));
+        assert_eq!(syncs.committed_hwm(), 11);
+        assert!(!syncs.try_join(13));
+
+        syncs.announce(13).unwrap();
+        syncs.announce(15).unwrap();
+        assert_eq!(syncs.requested_epoch(), 15);
+        assert_eq!(syncs.announcement_count(), 2);
+        assert_eq!(syncs.try_begin_requested(14).unwrap(), None);
+        assert_eq!(syncs.try_begin_requested(15).unwrap(), Some(15));
+        assert!(!syncs.try_finish(10).unwrap());
+        assert!(
+            syncs
+                .service(0, &mut lane_zero_epoch, |_| {
+                    remote_syncs += 1;
+                    Ok(())
+                })
+                .unwrap()
+        );
+        assert!(
+            syncs
+                .service(1, &mut lane_one_epoch, |_| {
+                    remote_syncs += 1;
+                    Ok(())
+                })
+                .unwrap()
+        );
+        syncs.finish(15).unwrap();
+        syncs.retire_announcement().unwrap();
+        syncs.retire_announcement().unwrap();
+
+        assert_eq!(remote_syncs, 4);
+        assert_eq!(syncs.committed_hwm(), 15);
+        assert_eq!(syncs.requested_epoch(), 0);
+        assert_eq!(syncs.announcement_count(), 0);
+        assert_eq!(syncs.remote_epochs(), 2);
+        assert_eq!(syncs.joined_syncs(), 1);
+
+        syncs.announce(15).unwrap();
+        assert_eq!(syncs.try_begin_requested(15).unwrap(), None);
+        assert_eq!(syncs.epoch(), 0);
+        assert_eq!(syncs.requested_epoch(), 0);
+        assert_eq!(syncs.remote_epochs(), 2);
+        syncs.retire_announcement().unwrap();
+    }
+
+    #[test]
+    fn wal_sync_vector_freezes_lane_tails_and_releases_lanes_independently() {
+        let syncs = WalSyncCoordinator::new(2, 0, true);
+        syncs.observe_lane_tail(0, 4).unwrap();
+        syncs.observe_lane_tail(1, 9).unwrap();
+        syncs.begin(10).unwrap();
+
+        assert_eq!(syncs.frozen_lane_tail(0).unwrap(), 4);
+        assert_eq!(syncs.frozen_lane_tail(1).unwrap(), 9);
+        assert!(syncs.lane_needs_service(0));
+        assert!(syncs.lane_needs_service(1));
+
+        let mut lane_zero_epoch = 0;
+        syncs.service(0, &mut lane_zero_epoch, |_| Ok(())).unwrap();
+        assert!(!syncs.lane_needs_service(0));
+        assert!(syncs.lane_needs_service(1));
+
+        // Post-HWM traffic advances the live tail without changing the cut.
+        syncs.observe_lane_tail(0, 12).unwrap();
+        assert_eq!(syncs.frozen_lane_tail(0).unwrap(), 4);
+
+        let mut lane_one_epoch = 0;
+        syncs.service(1, &mut lane_one_epoch, |_| Ok(())).unwrap();
+        syncs.finish(10).unwrap();
+        assert_eq!(syncs.committed_hwm(), 10);
     }
 
     #[test]
@@ -8349,6 +9604,28 @@ mod tests {
     }
 
     #[test]
+    fn owner_write_results_are_background_only() {
+        let pending = |op| PendingRemoteRead {
+            request: ZcnblkShmRequest {
+                op,
+                ..ZcnblkShmRequest::default()
+            },
+            request_sequence: 0,
+            payload_offset: 0,
+            dirty_ref: None,
+        };
+
+        assert!(!WalLaneTransport::batch_has_foreground(&[
+            pending(ZCNBLK_SHM_OP_WRITE),
+            pending(ZCNBLK_SHM_OP_WRITE),
+        ]));
+        assert!(WalLaneTransport::batch_has_foreground(&[
+            pending(ZCNBLK_SHM_OP_WRITE),
+            pending(ZCNBLK_SHM_OP_READ),
+        ]));
+    }
+
+    #[test]
     fn owner_mixed_hysteresis_bypasses_write_fill_until_quiescent() {
         let pending = |op| PendingRemoteRead {
             request: ZcnblkShmRequest {
@@ -8363,6 +9640,7 @@ mod tests {
         let hysteresis = Duration::from_secs(1);
         let mut read_hot_until = None;
         assert!(!WalOwnerIngressWorker::mixed_dispatch_is_immediate(
+            false,
             &[pending(ZCNBLK_SHM_OP_WRITE), pending(ZCNBLK_SHM_OP_WRITE)],
             &mut read_hot_until,
             hysteresis,
@@ -8370,12 +9648,14 @@ mod tests {
         assert!(read_hot_until.is_none());
 
         assert!(WalOwnerIngressWorker::mixed_dispatch_is_immediate(
+            true,
             &[pending(ZCNBLK_SHM_OP_WRITE), pending(ZCNBLK_SHM_OP_READ)],
             &mut read_hot_until,
             hysteresis,
         ));
         assert!(read_hot_until.is_some());
         assert!(WalOwnerIngressWorker::mixed_dispatch_is_immediate(
+            false,
             &[pending(ZCNBLK_SHM_OP_WRITE)],
             &mut read_hot_until,
             hysteresis,
@@ -8383,10 +9663,20 @@ mod tests {
 
         read_hot_until = Instant::now().checked_sub(Duration::from_nanos(1));
         assert!(!WalOwnerIngressWorker::mixed_dispatch_is_immediate(
+            false,
             &[pending(ZCNBLK_SHM_OP_WRITE)],
             &mut read_hot_until,
             hysteresis,
         ));
+
+        read_hot_until = None;
+        assert!(!WalOwnerIngressWorker::mixed_dispatch_is_immediate(
+            false,
+            &[pending(ZCNBLK_SHM_OP_WRITE), pending(ZCNBLK_SHM_OP_READ)],
+            &mut read_hot_until,
+            hysteresis,
+        ));
+        assert!(read_hot_until.is_none());
     }
 
     #[test]

@@ -8,12 +8,21 @@ OUT_DIR="${OUT_DIR:-$REPO_ROOT/qemu-zcrx/ec2-graviton-kernel-out}"
 JOBS="${JOBS:-$(nproc)}"
 KERNEL_SUFFIX="${KERNEL_SUFFIX:--io-slots-graviton}"
 PKG_VERSION="${PKG_VERSION:-7.0.8.io-slots-graviton1}"
+KERNEL_PROFILE="${KERNEL_PROFILE:-io-slots}"
 CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
 ARCH="${ARCH:-arm64}"
 KBUILD_DEBARCH="${KBUILD_DEBARCH:-arm64}"
-EXPECTED_BRANCH="${EXPECTED_BRANCH:-rob/io-slots-v7.0.8-backport-attempt}"
+if [ "$KERNEL_PROFILE" = "io-slots" ]; then
+	EXPECTED_BRANCH="${EXPECTED_BRANCH:-rob/io-slots-v7.0.8-backport-attempt}"
+else
+	EXPECTED_BRANCH="${EXPECTED_BRANCH:-}"
+fi
 ALLOW_DIRTY_SOURCE="${ALLOW_DIRTY_SOURCE:-0}"
 CONFIG_ONLY="${CONFIG_ONLY:-0}"
+SOURCE_REMOTE_URL="${SOURCE_REMOTE_URL:-}"
+SOURCE_REF="${SOURCE_REF:-}"
+SOURCE_COMMIT="${SOURCE_COMMIT:-}"
+BUILD_KEY="${BUILD_KEY:-}"
 
 need() {
 	if ! command -v "$1" >/dev/null 2>&1; then
@@ -30,13 +39,21 @@ if [ ! -d "$LINUX_SRC" ]; then
 	exit 1
 fi
 
-if [ ! -d "$LINUX_SRC/.git" ]; then
+if ! git -C "$LINUX_SRC" rev-parse --git-dir >/dev/null 2>&1; then
 	echo "LINUX_SRC is not a git checkout: $LINUX_SRC" >&2
 	exit 1
 fi
 
+case "$KERNEL_PROFILE" in
+	io-slots | nightly) ;;
+	*)
+		echo "KERNEL_PROFILE must be io-slots or nightly, got: $KERNEL_PROFILE" >&2
+		exit 1
+		;;
+esac
+
 branch="$(git -C "$LINUX_SRC" branch --show-current 2>/dev/null || true)"
-if [ "$branch" != "$EXPECTED_BRANCH" ]; then
+if [ -n "$EXPECTED_BRANCH" ] && [ "$branch" != "$EXPECTED_BRANCH" ]; then
 	echo "warning: expected $EXPECTED_BRANCH, got ${branch:-unknown}" >&2
 fi
 
@@ -49,10 +66,7 @@ fi
 
 for path in \
 	include/uapi/linux/io_uring.h \
-	io_uring/query.c \
-	io_uring/slot.c \
-	io_uring/zcrx.c \
-	drivers/net/netdevsim/netdev.c \
+	io_uring/Kconfig \
 	drivers/net/ethernet/amazon/ena/ena_netdev.c
 do
 	if [ ! -e "$LINUX_SRC/$path" ]; then
@@ -61,12 +75,39 @@ do
 	fi
 done
 
-for token in IORING_OP_SLOT_RW IORING_REGISTER_ZCRX_IFQ IORING_REGISTER_IO_SLOT; do
+required_tokens=(IORING_OP_SEND_ZC)
+if [ "$KERNEL_PROFILE" = "io-slots" ]; then
+	required_tokens+=(IORING_OP_SLOT_RW IORING_REGISTER_ZCRX_IFQ IORING_REGISTER_IO_SLOT)
+fi
+for token in "${required_tokens[@]}"; do
 	if ! grep -q "$token" "$LINUX_SRC/include/uapi/linux/io_uring.h"; then
 		echo "required io_uring UAPI token missing: $token" >&2
 		exit 1
 	fi
 done
+
+source_has_symbol() {
+	grep -RqsE "^(menuconfig|config)[[:space:]]+$1([[:space:]]|$)" \
+		"$LINUX_SRC"/arch/arm64/Kconfig* \
+		"$LINUX_SRC"/drivers \
+		"$LINUX_SRC"/fs \
+		"$LINUX_SRC"/io_uring \
+		"$LINUX_SRC"/kernel \
+		"$LINUX_SRC"/lib \
+		"$LINUX_SRC"/mm \
+		"$LINUX_SRC"/net 2>/dev/null
+}
+
+enable_if_present() {
+	local mode="$1"
+	local symbol="$2"
+	if source_has_symbol "$symbol"; then
+		"$LINUX_SRC/scripts/config" --file "$CONFIG" "--$mode" "$symbol"
+		OPTIONAL_CONFIG_SYMBOLS+=("CONFIG_$symbol")
+	else
+		echo "optional config symbol absent in this source: CONFIG_$symbol"
+	fi
+}
 
 mkdir -p "$BUILD_DIR" "$OUT_DIR"
 
@@ -80,15 +121,18 @@ make_args=(
 
 if [ "$CONFIG_ONLY" != "1" ]; then
 	need dpkg-buildpackage
+	need dpkg-deb
 fi
 
 echo "building arm64 kernel from $LINUX_SRC"
+echo "kernel profile: $KERNEL_PROFILE"
 echo "build dir: $BUILD_DIR"
 echo "output dir: $OUT_DIR"
 
 make "${make_args[@]}" defconfig
 
 CONFIG="$BUILD_DIR/.config"
+OPTIONAL_CONFIG_SYMBOLS=()
 "$LINUX_SRC/scripts/config" --file "$CONFIG" \
 	--set-str LOCALVERSION "$KERNEL_SUFFIX" \
 	--disable LOCALVERSION_AUTO \
@@ -112,13 +156,13 @@ CONFIG="$BUILD_DIR/.config"
 	--enable TMPFS \
 	--enable BLK_DEV_INITRD \
 	--enable RD_GZIP \
+	--enable RD_XZ \
+	--enable XZ_DEC \
 	--enable BLK_DEV_NVME \
 	--enable NVME_MULTIPATH \
 	--enable ENA_ETHERNET \
 	--enable INET \
 	--enable IO_URING \
-	--enable IO_URING_ZCRX \
-	--enable IO_URING_SLOT_RW \
 	--enable PAGE_POOL \
 	--enable DMA_SHARED_BUFFER \
 	--enable NET_RX_BUSY_POLL \
@@ -127,6 +171,11 @@ CONFIG="$BUILD_DIR/.config"
 	--enable CONFIGFS_FS \
 	--enable EXT4_FS \
 	--enable XFS_FS \
+	--enable SQUASHFS \
+	--enable SQUASHFS_XATTR \
+	--enable SQUASHFS_XZ \
+	--enable FW_LOADER_COMPRESS \
+	--enable FW_LOADER_COMPRESS_XZ \
 	--enable BPF \
 	--enable BPF_SYSCALL \
 	--enable DEBUG_FS \
@@ -138,6 +187,11 @@ CONFIG="$BUILD_DIR/.config"
 	--enable VIRTIO_BLK \
 	--enable VIRTIO_NET
 
+enable_if_present enable IO_URING_ZCRX
+enable_if_present enable IO_URING_SLOT_RW
+enable_if_present module NETDEVSIM
+enable_if_present module BLK_DEV_NULL_BLK
+
 make "${make_args[@]}" olddefconfig
 
 KREL="$(make -s "${make_args[@]}" kernelrelease)"
@@ -145,9 +199,6 @@ echo "kernel release: $KREL"
 
 for sym in \
 	CONFIG_IO_URING \
-	CONFIG_IO_URING_ZCRX \
-	CONFIG_IO_URING_SLOT_RW \
-	CONFIG_NET_DEVMEM \
 	CONFIG_NET_RX_BUSY_POLL \
 	CONFIG_PAGE_POOL \
 	CONFIG_DMA_SHARED_BUFFER \
@@ -159,6 +210,13 @@ for sym in \
 	CONFIG_SYSFS \
 	CONFIG_TMPFS \
 	CONFIG_RD_GZIP \
+	CONFIG_RD_XZ \
+	CONFIG_XZ_DEC \
+	CONFIG_SQUASHFS \
+	CONFIG_SQUASHFS_XATTR \
+	CONFIG_SQUASHFS_XZ \
+	CONFIG_FW_LOADER_COMPRESS \
+	CONFIG_FW_LOADER_COMPRESS_XZ \
 	CONFIG_EFI_STUB \
 	CONFIG_SERIAL_AMBA_PL011 \
 	CONFIG_SERIAL_AMBA_PL011_CONSOLE \
@@ -167,6 +225,18 @@ do
 	if ! grep -Eq "^${sym}=(y|m)$" "$CONFIG"; then
 		echo "required symbol not enabled after olddefconfig: $sym" >&2
 		exit 1
+	fi
+done
+
+for sym in "${OPTIONAL_CONFIG_SYMBOLS[@]}"; do
+	if grep -Eq "^${sym}=(y|m)$" "$CONFIG"; then
+		echo "optional symbol enabled: $sym"
+	elif [ "$KERNEL_PROFILE" = "io-slots" ] &&
+		{ [ "$sym" = CONFIG_IO_URING_ZCRX ] || [ "$sym" = CONFIG_IO_URING_SLOT_RW ]; }; then
+		echo "required io-slots symbol not enabled after olddefconfig: $sym" >&2
+		exit 1
+	else
+		echo "optional symbol unavailable after dependency resolution: $sym"
 	fi
 done
 
@@ -187,18 +257,49 @@ make "${make_args[@]}" \
 	DPKG_FLAGS="-d" \
 	-j"$JOBS" bindeb-pkg
 
+shopt -s nullglob
+image_candidates=()
+for pkg in \
+	"$(dirname "$BUILD_DIR")"/linux-image-*_${PKG_VERSION}_${KBUILD_DEBARCH}.deb \
+	"$(dirname "$LINUX_SRC")"/linux-image-*_${PKG_VERSION}_${KBUILD_DEBARCH}.deb
+do
+	case "$pkg" in
+		*-dbg_*.deb) ;;
+		*) image_candidates+=("$pkg") ;;
+	esac
+done
+if [ "${#image_candidates[@]}" -ne 1 ]; then
+	echo "expected exactly one final linux-image package, found ${#image_candidates[@]}" >&2
+	printf '  %s\n' "${image_candidates[@]}" >&2
+	exit 1
+fi
+final_package="$(dpkg-deb -f "${image_candidates[0]}" Package)"
+FINAL_KREL="${final_package#linux-image-}"
+if [ -z "$FINAL_KREL" ] || [ "$FINAL_KREL" = "$final_package" ]; then
+	echo "could not derive final kernel release from ${image_candidates[0]}" >&2
+	exit 1
+fi
+if [ "$KREL" != "$FINAL_KREL" ]; then
+	echo "kbuild finalized kernel release after packaging: $KREL -> $FINAL_KREL"
+	KREL="$FINAL_KREL"
+fi
+
 manifest="$OUT_DIR/manifest-$KREL.txt"
 : > "$manifest"
 {
 	echo "kernel_release=$KREL"
 	echo "package_version=$PKG_VERSION"
+	echo "kernel_profile=$KERNEL_PROFILE"
+	echo "source_remote_url=$SOURCE_REMOTE_URL"
+	echo "source_ref=$SOURCE_REF"
+	echo "source_commit=${SOURCE_COMMIT:-$(git -C "$LINUX_SRC" rev-parse HEAD)}"
+	echo "build_key=$BUILD_KEY"
 	echo "linux_src=$LINUX_SRC"
 	echo "build_dir=$BUILD_DIR"
-	git -C "$LINUX_SRC" rev-parse --short=12 HEAD 2>/dev/null | sed 's/^/git_head=/'
+	git -C "$LINUX_SRC" rev-parse HEAD 2>/dev/null | sed 's/^/git_head=/'
 	git -C "$LINUX_SRC" status --short --branch 2>/dev/null | sed 's/^/git_status=/'
 } >> "$manifest"
 
-shopt -s nullglob
 packages=()
 add_packages() {
 	local pattern="$1"

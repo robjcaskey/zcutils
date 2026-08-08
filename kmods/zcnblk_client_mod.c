@@ -7,6 +7,7 @@
 #include <linux/atomic.h>
 #include <linux/cpu.h>
 #include <linux/crypto.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/highmem.h>
@@ -285,10 +286,11 @@ struct zcnblk_dev {
 };
 
 static struct zcnblk_dev *zcnblk_dev;
+static struct dentry *zcnblk_debugfs_dir;
 static __be32 zcnblk_remote_addrs[ZCNBLK_MAX_REMOTE_IPS];
 static u32 zcnblk_remote_addr_count;
 
-static_assert(sizeof(struct zcnblk_shm_channel) == 64);
+static_assert(sizeof(struct zcnblk_shm_channel) == 320);
 static_assert(sizeof(struct zcnblk_shm_request) == ZCNBLK_SHM_DESC_BYTES);
 static_assert(sizeof(struct zcnblk_shm_completion) == ZCNBLK_SHM_DESC_BYTES);
 
@@ -1016,7 +1018,7 @@ static void zcnblk_shm_release_payload_slot(struct zcnblk_conn *conn,
 		return;
 	}
 	channel = zcnblk_shm_channel(conn->dev, conn->conn_id);
-	atomic64_inc((atomic64_t *)&channel->reserved);
+	atomic64_inc((atomic64_t *)&channel->payload_free_slots);
 }
 
 static int zcnblk_shm_claim_payload_slot(struct zcnblk_conn *conn, u32 *slot)
@@ -1035,7 +1037,7 @@ static int zcnblk_shm_claim_payload_slot(struct zcnblk_conn *conn, u32 *slot)
 		if (cmpxchg(owner, 0, ZCNBLK_SHM_PAYLOAD_OWNER_RESERVED))
 			continue;
 		conn->shm_payload_cursor = (candidate + 1) % hdr->payload_entries;
-		atomic64_dec((atomic64_t *)&channel->reserved);
+		atomic64_dec((atomic64_t *)&channel->payload_free_slots);
 		*slot = candidate;
 		return 0;
 	}
@@ -1064,7 +1066,7 @@ static bool zcnblk_shm_has_capacity(struct zcnblk_conn *conn)
 		inflight_slot = prod % conn->shm_inflight_entries;
 		return prod - req < hdr->ring_entries &&
 			!READ_ONCE(conn->shm_inflight[inflight_slot]) &&
-			atomic64_read((atomic64_t *)&channel->reserved) > 0;
+			atomic64_read((atomic64_t *)&channel->payload_free_slots) > 0;
 	}
 
 	if (hdr->payload_entries == hdr->ring_entries)
@@ -1307,6 +1309,73 @@ static u32 zcnblk_pending_count(struct zcnblk_conn *conn, u32 limit)
 	spin_unlock(&conn->queue_lock);
 	return count;
 }
+
+static int zcnblk_debugfs_state_show(struct seq_file *m, void *unused)
+{
+	struct zcnblk_dev *dev = READ_ONCE(zcnblk_dev);
+	u32 conn_id;
+
+	if (!dev) {
+		seq_puts(m, "online=0\n");
+		return 0;
+	}
+	seq_printf(m, "online=1 transport=%s total_conns=%u active_conns=%u\n",
+		   transport, dev->total_conns, READ_ONCE(dev->active_conns));
+	if (!dev->shm) {
+		seq_puts(m, "shm=0\n");
+		return 0;
+	}
+	seq_printf(m,
+		   "shm=1 daemon_online=%llu daemon_generation=%llu global_submit_sequence=%llu ring_entries=%u payload_entries=%u transfer_payload_slots=%u\n",
+		   smp_load_acquire(&dev->shm->header->daemon_online),
+		   READ_ONCE(dev->shm->header->daemon_generation),
+		   READ_ONCE(dev->shm->header->global_submit_sequence),
+		   dev->shm->header->ring_entries,
+		   dev->shm->header->payload_entries,
+		   dev->shm->transfer_payload_slots);
+
+	for (conn_id = 0; conn_id < dev->total_conns; conn_id++) {
+		struct zcnblk_conn *conn = &dev->conns[conn_id];
+		struct zcnblk_shm_channel *channel =
+			zcnblk_shm_channel(dev, conn_id);
+		u64 req_prod = smp_load_acquire(&channel->req_prod);
+		u64 req_cons = smp_load_acquire(&channel->req_cons);
+		u64 comp_prod = smp_load_acquire(&channel->comp_prod);
+		u64 comp_cons = smp_load_acquire(&channel->comp_cons);
+		struct zcnblk_shm_completion *next_completion =
+			zcnblk_shm_completion(dev, conn_id, comp_cons);
+		u64 next_completion_sequence =
+			smp_load_acquire(&next_completion->sequence);
+		u32 next_slot = req_prod % conn->shm_inflight_entries;
+		u32 pending = zcnblk_pending_count(conn, UINT_MAX);
+		u32 inflight_slots = 0;
+		u32 slot;
+
+		for (slot = 0; slot < conn->shm_inflight_entries; slot++)
+			inflight_slots += !!READ_ONCE(conn->shm_inflight[slot]);
+		seq_printf(m,
+			   "conn=%u lane=%u stream=%u failed=%u pending=%u inflight_count=%u inflight_slots=%u req_prod=%llu req_cons=%llu req_used=%llu comp_prod=%llu comp_cons=%llu comp_ready=%llu next_comp_sequence=%llu next_req_slot=%u next_req_slot_busy=%u payload_free_slots=%llu payload_lease_hwm=%llu request_wake_armed=%llu completion_wake_armed=%llu request_publishes=%llu request_kicks=%llu completion_kicks=%llu has_capacity=%u\n",
+			   conn_id, conn->lane, conn->stream,
+			   READ_ONCE(conn->failed), pending,
+			   READ_ONCE(conn->inflight_count), inflight_slots,
+			   req_prod, req_cons, req_prod - req_cons,
+			   comp_prod, comp_cons, comp_prod - comp_cons,
+			   next_completion_sequence,
+			   next_slot,
+			   !!READ_ONCE(conn->shm_inflight[next_slot]),
+			   atomic64_read((atomic64_t *)&channel->payload_free_slots),
+			   smp_load_acquire(&channel->payload_lease_hwm),
+			   smp_load_acquire(&channel->request_wake_armed),
+			   smp_load_acquire(&channel->completion_wake_armed),
+			   READ_ONCE(channel->request_publishes),
+			   READ_ONCE(channel->request_kicks),
+			   READ_ONCE(channel->completion_kicks),
+			   zcnblk_shm_has_capacity(conn));
+	}
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(zcnblk_debugfs_state);
 
 static void zcnblk_wait_for_batch_fill(struct zcnblk_conn *conn, u32 depth)
 {
@@ -1833,11 +1902,16 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 	smp_store_release(&channel->req_prod, sequence + 1);
 	WRITE_ONCE(dev->shm->header->global_submit_sequence,
 		   desc->submit_sequence);
-	WRITE_ONCE(channel->request_kicks,
-		   READ_ONCE(channel->request_kicks) + 1);
+	WRITE_ONCE(channel->request_publishes,
+		   READ_ONCE(channel->request_publishes) + 1);
 	list_add_tail(&pdu->entry, &conn->inflight);
 	conn->inflight_count++;
-	wake_up_interruptible_poll(&dev->shm->poll_wait, EPOLLIN | EPOLLRDNORM);
+	if (xchg(&channel->request_wake_armed, 0)) {
+		WRITE_ONCE(channel->request_kicks,
+			   READ_ONCE(channel->request_kicks) + 1);
+		wake_up_interruptible_poll(&dev->shm->poll_wait,
+					   EPOLLIN | EPOLLRDNORM);
+	}
 	return 0;
 
 out_release_slot:
@@ -2002,12 +2076,25 @@ static int zcnblk_shm_conn_thread(void *data)
 		if (zcnblk_shm_spin_for_work(conn))
 			continue;
 
+		smp_store_release(&zcnblk_shm_channel(conn->dev, conn->conn_id)
+					->completion_wake_armed, 1);
+		if (kthread_should_stop() || conn->failed ||
+		    zcnblk_shm_completion_ready(conn) ||
+		    (zcnblk_shm_daemon_online(conn->dev) &&
+		     !list_empty_careful(&conn->pending) &&
+		     zcnblk_shm_has_capacity(conn))) {
+			WRITE_ONCE(zcnblk_shm_channel(conn->dev, conn->conn_id)
+					->completion_wake_armed, 0);
+			continue;
+		}
 		wait_event_interruptible(conn->wait,
 			kthread_should_stop() || conn->failed ||
 			zcnblk_shm_completion_ready(conn) ||
 			(zcnblk_shm_daemon_online(conn->dev) &&
 			 !list_empty_careful(&conn->pending) &&
 			 zcnblk_shm_has_capacity(conn)));
+		WRITE_ONCE(zcnblk_shm_channel(conn->dev, conn->conn_id)
+				->completion_wake_armed, 0);
 	}
 
 	{
@@ -2169,6 +2256,11 @@ static blk_status_t zcnblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 	}
 	if (null_backend) {
 		blk_mq_end_request(rq, zcnblk_null_complete_request(dev, rq));
+		return BLK_STS_OK;
+	}
+	if (!dev->shm ||
+	    !smp_load_acquire(&dev->shm->header->daemon_online)) {
+		blk_mq_end_request(rq, BLK_STS_IOERR);
 		return BLK_STS_OK;
 	}
 
@@ -2528,9 +2620,11 @@ static int zcnblk_shm_layout_init(struct zcnblk_dev *dev)
 	hdr->reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] =
 		ZCNBLK_SHM_CAP_SECTOR_PREDECESSOR |
 		ZCNBLK_SHM_CAP_TRANSFER_PAYLOAD_SLOTS |
-		ZCNBLK_SHM_CAP_READ_PAYLOAD_REF;
+		ZCNBLK_SHM_CAP_READ_PAYLOAD_REF |
+		ZCNBLK_SHM_CAP_REQUEST_WAKE_ARMED |
+		ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED;
 	for (ret = 0; ret < dev->total_conns; ret++)
-		atomic64_set((atomic64_t *)&zcnblk_shm_channel(dev, ret)->reserved,
+		atomic64_set((atomic64_t *)&zcnblk_shm_channel(dev, ret)->payload_free_slots,
 			     payload_entries);
 	init_waitqueue_head(&shm->poll_wait);
 	atomic_set(&shm->daemon_open, 0);
@@ -2932,6 +3026,16 @@ static int __init zcnblk_init(void)
 	ret = add_disk(zcnblk_dev->disk);
 	if (ret)
 		goto out_put_disk;
+	zcnblk_debugfs_dir = debugfs_create_dir(ZCNBLK_NAME, NULL);
+	if (IS_ERR_OR_NULL(zcnblk_debugfs_dir)) {
+		if (IS_ERR(zcnblk_debugfs_dir))
+			pr_warn("zcnblk: debugfs state unavailable: %ld\n",
+				PTR_ERR(zcnblk_debugfs_dir));
+		zcnblk_debugfs_dir = NULL;
+	} else {
+		debugfs_create_file("state", 0444, zcnblk_debugfs_dir, NULL,
+				    &zcnblk_debugfs_state_fops);
+	}
 
 	pr_info("zcnblk: /dev/%s transport=%s remote=%s remote_ips=%s remote_count=%u port_base=%u lanes=%u connections_per_lane=%u total_conns=%u shards=%u bytes=%llu frame=%u queues=%u depth=%u pipeline_depth=%u batch_depth=%u batch_fill_timeout_us=%u fill_timeout_ms=%u write_acks=%d null_backend=%d null_read_zero=%d hctx_affinity=%d pin_threads=%d pin_base_cpu=%u pin_cpu_count=%u pin_stride=%u shard_affinity=%d encryption=%s aes_frame=%u publish_delay_ms=%u shm_ring_entries=%u shm_payload_entries=%u shm_region_bytes=%zu shm_poll_us=%u placement_owner=userspace block_client_placement=no\n",
 		ZCNBLK_DISK_NAME, transport, remote_ip, remote_ips ? remote_ips : "-", zcnblk_remote_addr_count,
@@ -2972,6 +3076,8 @@ static void __exit zcnblk_exit(void)
 {
 	if (!zcnblk_dev)
 		return;
+	debugfs_remove(zcnblk_debugfs_dir);
+	zcnblk_debugfs_dir = NULL;
 	del_gendisk(zcnblk_dev->disk);
 	zcnblk_disconnect_all(zcnblk_dev);
 	zcnblk_shm_layout_destroy(zcnblk_dev);

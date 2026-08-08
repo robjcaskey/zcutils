@@ -24,6 +24,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub mod block;
 pub mod dirty_pool;
+pub mod enterprise_workload;
 pub mod fanout;
 mod io_slots;
 pub mod readcache_bench;
@@ -76,6 +77,7 @@ const IORING_REGISTER_MEM_REGION: u32 = 34;
 const IORING_REGISTER_ZCRX_CTRL: u32 = 36;
 const IORING_REGISTER_BPF_FILTER: u32 = 37;
 
+const IORING_SETUP_IOPOLL: u32 = 1 << 0;
 const IORING_SETUP_SQPOLL: u32 = 1 << 1;
 const IORING_SETUP_SQ_AFF: u32 = 1 << 2;
 const IORING_SETUP_CQSIZE: u32 = 1 << 3;
@@ -85,6 +87,7 @@ const IORING_SETUP_CQE32: u32 = 1 << 11;
 const IORING_SETUP_SINGLE_ISSUER: u32 = 1 << 12;
 const IORING_SETUP_DEFER_TASKRUN_U32: u32 = 1 << 13;
 const IORING_SETUP_NO_SQARRAY_U32: u32 = 1 << 16;
+const IORING_SETUP_HYBRID_IOPOLL: u32 = 1 << 17;
 const IORING_SETUP_SQ_REWIND_U32: u32 = 1 << 20;
 
 const IORING_RECV_MULTISHOT: u16 = 1 << 1;
@@ -356,6 +359,23 @@ enum RawRingCqeMode {
     Cqe32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RawRingIoPollMode {
+    Off,
+    Classic,
+    Hybrid,
+}
+
+impl RawRingIoPollMode {
+    fn setup_flags(self) -> u32 {
+        match self {
+            Self::Off => 0,
+            Self::Classic => IORING_SETUP_IOPOLL,
+            Self::Hybrid => IORING_SETUP_IOPOLL | IORING_SETUP_HYBRID_IOPOLL,
+        }
+    }
+}
+
 impl RawRingCqeMode {
     fn cqe_size(self) -> usize {
         match self {
@@ -437,6 +457,7 @@ struct RawRingOptions {
     stats_enabled: bool,
     cqe_mode: RawRingCqeMode,
     sq_mode: RawRingSqMode,
+    io_poll_mode: RawRingIoPollMode,
     registered_ring_fd: bool,
     sq_thread_idle_ms: u32,
 }
@@ -447,6 +468,7 @@ impl Default for RawRingOptions {
             stats_enabled: false,
             cqe_mode: RawRingCqeMode::Cqe32,
             sq_mode: RawRingSqMode::Normal,
+            io_poll_mode: RawRingIoPollMode::Off,
             registered_ring_fd: false,
             sq_thread_idle_ms: 1000,
         }
@@ -975,6 +997,7 @@ impl RawRing {
             | IORING_SETUP_SUBMIT_ALL
             | IORING_SETUP_CQSIZE
             | options.cqe_mode.setup_flags()
+            | options.io_poll_mode.setup_flags()
             | options.sq_mode.setup_flags()?;
         let mut sq_thread_cpu = 0;
         if let RawRingSqMode::SqPoll { cpu: Some(cpu), .. } = options.sq_mode {
@@ -22841,6 +22864,47 @@ fn zcnblk_target_worker(
             streams[stream_idx].read_exact(&mut header_buf)?;
             let frame = ZcnblkFrameHeader::decode(&header_buf)?;
 
+            if frame.op == ZCNBLK_OP_SYNC {
+                zcnblk_validate_frame_topology(
+                    frame,
+                    stream_lanes[stream_idx],
+                    topology_lane_base,
+                    topology_lane_count,
+                )?;
+                if frame.len != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("zcnblk sync frame carried len={}", frame.len),
+                    ));
+                }
+                if streams[stream_idx].uses_payload_crypto() {
+                    let mut empty = [];
+                    let header = frame.encode();
+                    streams[stream_idx].read_frame_payload(&header, &mut empty, false)?;
+                }
+                for file in &files {
+                    file.sync_all()?;
+                }
+                let ack = ZcnblkFrameHeader::with_topology(
+                    ZCNBLK_OP_SYNC_ACK,
+                    frame.flags,
+                    frame.shard as usize,
+                    0,
+                    frame.offset,
+                    frame.topology,
+                )?
+                .encode();
+                total_response = total_response
+                    .checked_add(streams[stream_idx].write_frame_payload(&ack, &[], true)?)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "zcnblk response overflow")
+                    })?;
+                frames = frames.checked_add(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "zcnblk frame count overflow")
+                })?;
+                continue;
+            }
+
             if frame.op == ZCNBLK_OP_BATCH {
                 batches = batches.checked_add(1).ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "zcnblk batch count overflow")
@@ -28704,11 +28768,12 @@ fn zcnblk_fan_wal_write_frame(
             ),
         ));
     }
-    stream.write_all(&frame.encode())?;
-    if !payload.is_empty() {
-        stream.write_all(payload)?;
+    let header = frame.encode();
+    if payload.is_empty() {
+        return stream.write_all(&header);
     }
-    Ok(())
+    let mut parts = [IoSlice::new(&header), IoSlice::new(payload)];
+    tcp_write_all_vectored(stream, &mut parts, "fan WAL frame")
 }
 
 fn tcp_write_all_vectored(
@@ -28734,13 +28799,6 @@ fn tcp_write_all_vectored(
         bufs = tail;
     }
     Ok(())
-}
-
-fn zcnblk_fan_wal_write_vectored_payload(
-    stream: &mut TcpStream,
-    bufs: &mut [IoSlice<'_>],
-) -> io::Result<()> {
-    tcp_write_all_vectored(stream, bufs, "fan WAL payload")
 }
 
 fn zcnblk_fan_wal_write_frame_vectored(
@@ -28772,11 +28830,16 @@ fn zcnblk_fan_wal_write_frame_vectored(
             ),
         ));
     }
-    stream.write_all(&frame.encode())?;
+    let header = frame.encode();
     if expected_payload_len == 0 {
-        return Ok(());
+        return stream.write_all(&header);
     }
-    zcnblk_fan_wal_write_vectored_payload(stream, payloads)
+    let mut parts = Vec::with_capacity(payloads.len().saturating_add(1));
+    parts.push(IoSlice::new(&header));
+    for payload in payloads.iter() {
+        parts.push(IoSlice::new(payload));
+    }
+    tcp_write_all_vectored(stream, &mut parts, "fan WAL frame")
 }
 
 fn zcnblk_fan_wal_coalesce_leaf_payloads_enabled() -> bool {
@@ -62162,6 +62225,26 @@ fn blockbench_cqe_mode_label(mode: RawRingCqeMode) -> &'static str {
     }
 }
 
+fn parse_blockbench_iopoll_mode(value: &str) -> io::Result<RawRingIoPollMode> {
+    match value {
+        "off" | "false" | "no" | "0" => Ok(RawRingIoPollMode::Off),
+        "classic" | "on" | "true" | "yes" | "1" => Ok(RawRingIoPollMode::Classic),
+        "hybrid" => Ok(RawRingIoPollMode::Hybrid),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unknown zcblockbench IOPOLL mode {other:?}; use off, classic, or hybrid"),
+        )),
+    }
+}
+
+fn blockbench_iopoll_mode_label(mode: RawRingIoPollMode) -> &'static str {
+    match mode {
+        RawRingIoPollMode::Off => "off",
+        RawRingIoPollMode::Classic => "classic",
+        RawRingIoPollMode::Hybrid => "hybrid",
+    }
+}
+
 #[derive(Clone, Debug)]
 enum BlockBenchTarget {
     NullChar,
@@ -62207,6 +62290,7 @@ struct BlockBenchConfig {
     engine: BlockBenchEngine,
     ring_mode: BlockBenchRingMode,
     cqe_mode: RawRingCqeMode,
+    io_poll_mode: RawRingIoPollMode,
     registered_ring_fd: bool,
     sqpoll_cpu_list: Option<Vec<usize>>,
     sqpoll_idle_ms: u32,
@@ -62230,6 +62314,7 @@ impl Default for BlockBenchConfig {
             engine: BlockBenchEngine::Suite,
             ring_mode: BlockBenchRingMode::Normal,
             cqe_mode: RawRingCqeMode::Cqe16,
+            io_poll_mode: RawRingIoPollMode::Off,
             registered_ring_fd: false,
             sqpoll_cpu_list: None,
             sqpoll_idle_ms: 1000,
@@ -62288,7 +62373,8 @@ fn zcblockbench_help() {
            [--bs BYTES] [--iodepth N] [--region-bytes-per-worker BYTES]\n\
            [--read-percent N] [--ring-entries N] [--buffer-mode small-pages|hugetlb]\n\
            [--pin true|false] [--ring-mode normal|no-sqarray|sq-rewind|sqpoll|sqpoll-no-sqarray]\n\
-           [--cqe 16|32] [--registered-ring true|false] [--sqpoll-cpus CPU-LIST]\n\
+           [--cqe 16|32] [--iopoll off|classic|hybrid] [--registered-ring true|false]\n\
+           [--sqpoll-cpus CPU-LIST]\n\
            [--latency-sample-rate N|--latency]\n\
          \n\
          Defaults run a short multithreaded write suite against /dev/null.\n\
@@ -62349,6 +62435,9 @@ fn parse_zcblockbench_args(args: impl Iterator<Item = String>) -> io::Result<Blo
             }
             "--cqe" | "--cqe-mode" => {
                 cfg.cqe_mode = parse_blockbench_cqe_mode(&next_flag_value(&mut args, &arg)?)?
+            }
+            "--iopoll" | "--io-poll" => {
+                cfg.io_poll_mode = parse_blockbench_iopoll_mode(&next_flag_value(&mut args, &arg)?)?
             }
             "--registered-ring" | "--registered-ring-fd" => {
                 cfg.registered_ring_fd = parse_bool_arg(&next_flag_value(&mut args, &arg)?, &arg)?
@@ -62463,6 +62552,17 @@ fn zcblockbench_validate_config(cfg: &BlockBenchConfig) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "iodepth/pipeline must be non-zero",
+        ));
+    }
+    if cfg.io_poll_mode != RawRingIoPollMode::Off
+        && !matches!(
+            cfg.engine,
+            BlockBenchEngine::UringPlain | BlockBenchEngine::UringFixed
+        )
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "IOPOLL is supported only by --engine uring-plain or uring-fixed",
         ));
     }
     validate_slot_wal_pipeline(cfg.pipeline, cfg.ring_entries)?;
@@ -62655,6 +62755,7 @@ fn zcblockbench_uring_fixed_worker(
     planned_cpu: Option<usize>,
     ring_mode: BlockBenchRingMode,
     cqe_mode: RawRingCqeMode,
+    io_poll_mode: RawRingIoPollMode,
     registered_ring_fd: bool,
     sqpoll_cpu: Option<usize>,
     sqpoll_idle_ms: u32,
@@ -62692,6 +62793,7 @@ fn zcblockbench_uring_fixed_worker(
             stats_enabled: ring_stats_enabled,
             cqe_mode,
             sq_mode: ring_mode.raw_mode(sqpoll_cpu),
+            io_poll_mode,
             registered_ring_fd,
             sq_thread_idle_ms: sqpoll_idle_ms,
         },
@@ -63398,7 +63500,7 @@ fn zcblockbench_print_results(
         "zcblockbench-result: target={} engine={} mode={} workers={} \
          ops_per_worker={} total_ops={} reads={} writes={} read_percent={} \
          chunk_bytes={} region_bytes_per_worker={} pipeline_per_worker={} \
-         total_pipeline={} wait_min_completions={} ring_entries={} ring_mode={} cqe={} registered_ring={} \
+         total_pipeline={} wait_min_completions={} ring_entries={} ring_mode={} cqe={} iopoll={} registered_ring={} \
          buffers={} pin_workers={} \
 	         wall_seconds={wall_seconds:.6} io_seconds={io_seconds:.6} \
 	         slowest_worker_seconds={slowest_worker_seconds:.6} \
@@ -63424,6 +63526,7 @@ fn zcblockbench_print_results(
         cfg.ring_entries,
         cfg.ring_mode.as_str(),
         blockbench_cqe_mode_label(cfg.cqe_mode),
+        blockbench_iopoll_mode_label(cfg.io_poll_mode),
         cfg.registered_ring_fd,
         cfg.buffer_mode.as_str(),
         cfg.pin_workers,
@@ -63581,6 +63684,7 @@ fn zcblockbench_run_direct_engine(
                         planned_cpu,
                         cfg.ring_mode,
                         cfg.cqe_mode,
+                        cfg.io_poll_mode,
                         cfg.registered_ring_fd,
                         sqpoll_cpu,
                         cfg.sqpoll_idle_ms,
@@ -63672,6 +63776,12 @@ fn zcblockbench(args: impl Iterator<Item = String>) -> io::Result<()> {
     };
     zcblockbench_validate_config(&cfg)?;
     let (target, target_validation) = zcblockbench_prepare_target(&cfg)?;
+    if cfg.io_poll_mode != RawRingIoPollMode::Off && !target.is_block() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "IOPOLL requires an O_DIRECT block target",
+        ));
+    }
     if cfg.pin_workers
         && env::var("URING_PLAY_PIN_CPU_LIST")
             .ok()
@@ -63727,7 +63837,7 @@ fn zcblockbench(args: impl Iterator<Item = String>) -> io::Result<()> {
     println!(
         "zcblockbench-plan: target={} engine={} mode={} workers={} ops_per_worker={} \
          chunk_bytes={} iodepth={} ring_entries={} read_percent={} region_bytes_per_worker={} \
-         ring_mode={} cqe={} registered_ring={} sqpoll_idle_ms={} buffers={} pin_workers={} \
+         ring_mode={} cqe={} iopoll={} registered_ring={} sqpoll_idle_ms={} buffers={} pin_workers={} \
          latency_sample_rate={} target_kind={}",
         target.label(),
         cfg.engine.as_str(),
@@ -63741,6 +63851,7 @@ fn zcblockbench(args: impl Iterator<Item = String>) -> io::Result<()> {
         cfg.region_bytes_per_worker,
         cfg.ring_mode.as_str(),
         blockbench_cqe_mode_label(cfg.cqe_mode),
+        blockbench_iopoll_mode_label(cfg.io_poll_mode),
         cfg.registered_ring_fd,
         cfg.sqpoll_idle_ms,
         cfg.buffer_mode.as_str(),
@@ -63851,6 +63962,30 @@ fn zcnblk_order_smoke_phase(
     Ok(())
 }
 
+fn zcnblk_order_smoke_read_expect(
+    file: &fs::File,
+    buffer: &mut [u8],
+    offset: u64,
+    expected: u8,
+    phase: &str,
+) -> io::Result<()> {
+    let read = file.read_at(buffer, offset)?;
+    if read != buffer.len() || buffer.iter().any(|byte| *byte != expected) {
+        let first_bad = buffer
+            .iter()
+            .position(|byte| *byte != expected)
+            .unwrap_or(0);
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "zcnblk order smoke {phase} mismatch byte={first_bad} got={} expected={expected}",
+                buffer[first_bad]
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub fn zcnblk_order_smoke_cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
     let target = args.next().unwrap_or_else(|| "/dev/zcnblk0".to_string());
     let pairs = args
@@ -63912,8 +64047,54 @@ pub fn zcnblk_order_smoke_cli(mut args: impl Iterator<Item = String>) -> io::Res
             ));
         }
     }
+
+    let cross_lane_cpus = env::var("URING_PLAY_PIN_CPU_LIST")
+        .ok()
+        .map(|value| parse_cpu_list(&value))
+        .transpose()?
+        .filter(|cpus| cpus.len() >= 2 && cpus[0] != cpus[1]);
+    let cross_lane_label = if let Some(cpus) = cross_lane_cpus {
+        let offset = (pairs * 4096) as u64;
+        let first = unsafe { slice::from_raw_parts(buffers.ptr(1), 4096) };
+        let second = unsafe { slice::from_raw_parts(buffers.ptr(2), 4096) };
+        set_current_thread_affinity(cpus[0])?;
+        if file.write_at(first, offset)? != 4096 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "cross-lane first write was short",
+            ));
+        }
+        set_current_thread_affinity(cpus[1])?;
+        if file.write_at(second, offset)? != 4096 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "cross-lane second write was short",
+            ));
+        }
+        let verify = unsafe { slice::from_raw_parts_mut(buffers.ptr(pairs + 3), 4096) };
+        set_current_thread_affinity(cpus[0])?;
+        zcnblk_order_smoke_read_expect(
+            &file,
+            verify,
+            offset,
+            0x33,
+            "cross-lane dirty read before sync",
+        )?;
+        file.sync_data()?;
+        set_current_thread_affinity(cpus[1])?;
+        zcnblk_order_smoke_read_expect(
+            &file,
+            verify,
+            offset,
+            0x33,
+            "cross-lane remote read after sync",
+        )?;
+        format!("true cross_lane_cpus={},{}", cpus[0], cpus[1])
+    } else {
+        "skipped cross_lane_cpus=unavailable".to_string()
+    };
     println!(
-        "zcnblk-order-smoke: PASS target={target} pairs={pairs} uring_dependency=io-link read_before_write=old-value write_before_read=new-value sync_terminal_state=true"
+        "zcnblk-order-smoke: PASS target={target} pairs={pairs} uring_dependency=io-link read_before_write=old-value write_before_read=new-value sync_terminal_state=true cross_lane_same_sector={cross_lane_label}"
     );
     Ok(())
 }

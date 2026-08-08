@@ -4,6 +4,155 @@ This is the practical path for testing the Linux 7.0.8 io-slot/ZCRX/send-zc
 kernel work on one sacrificial `c8gn` Graviton node before baking an AMI or
 touching a benchmark cluster.
 
+## Hash-Addressed Nightly Kernels
+
+Use this path for bleeding-edge io_uring work from Jens Axboe's integration
+branch or Torvalds' mainline. The default is Jens' `for-next` branch:
+
+```bash
+scripts/arm64-kernel-nightly-build.sh resolve
+scripts/arm64-kernel-nightly-build.sh status || \
+  JOBS=16 scripts/arm64-kernel-nightly-build.sh build
+```
+
+`resolve` queries the remote ref and prints the exact 40-character source SHA,
+build-policy hash, build key, and artifact directory. `build` fetches that exact
+commit into an isolated bare cache and cross-builds arm64 packages. A complete
+artifact with matching checksums and build key prints `action=reuse` and does
+not compile again. A changed upstream SHA or a changed local build/config script
+gets a different key and forces a new build. The build-key prefix is embedded in
+both `uname -r` and the Debian package version, so a policy-only change cannot
+be mistaken for the previously deployed kernel at the same source commit.
+
+Never identify a nightly kernel by `for-next` or `master` alone in a benchmark
+record. Those refs move. Record `SOURCE_COMMIT`, `BUILD_KEY`, and
+`KERNEL_RELEASE` from the artifact's `nightly.env`.
+
+Select Torvalds' mainline or another branch without changing the script:
+
+```bash
+KERNEL_REMOTE_URL=https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git \
+KERNEL_REF=refs/heads/master \
+  scripts/arm64-kernel-nightly-build.sh build
+
+KERNEL_REMOTE_URL=https://git.kernel.org/pub/scm/linux/kernel/git/axboe/linux.git \
+KERNEL_REF=refs/heads/for-7.3/io_uring \
+  scripts/arm64-kernel-nightly-build.sh build
+```
+
+The generic `nightly` profile requires upstream `IORING_OP_SEND_ZC`. It enables
+and audits ZCRX, io-slot, netdevsim, and null-blk config symbols only when the
+selected source contains them. The pinned `io-slots` profile below remains
+strict about its private io-slot UAPI.
+
+### Nightly Build And Deployment Cycle
+
+Build before launching test instances so cache misses do not consume idle EC2
+time. The local build is material shared-host work; claim CPU and memory
+bandwidth with `agent-coord` and choose a job count that the active claims can
+support. A typical invocation is:
+
+```bash
+/home/rob/.local/bin/agent-coord run \
+  --owner user:arm64-kernel-nightly \
+  --resource 'cpu=8-23;memory-bandwidth=*' \
+  --mode shared --sensitivity normal --priority 50 --ttl 3600 \
+  --note 'arm64 kernel nightly cross-build' -- \
+  env JOBS=16 scripts/arm64-kernel-nightly-build.sh build
+```
+
+Optionally boot-smoke the exact cached build before EC2. Derive its build
+directory from the printed build key:
+
+```bash
+build_key=$(scripts/arm64-kernel-nightly-build.sh resolve |
+  sed -n 's/^build_key=//p')
+source_commit=$(scripts/arm64-kernel-nightly-build.sh resolve |
+  sed -n 's/^source_commit=//p')
+BUILD_DIR="/home/rob/dev-workspace/cache/linux-arm64-nightly/build/$build_key" \
+EXPECTED_RELEASE_SUBSTRING="${source_commit:0:12}" \
+  scripts/qemu-arm64-kernel-smoke.sh
+```
+
+Refresh the no-hourly-cost support security group before every launch. This is
+important when the operator's public `/32` changes:
+
+```bash
+SPOT_PY=/home/rob/spot-helper/.venv/bin/python
+SPOT_HELPER=/home/rob/spot-helper/ec2_perf_spot.py
+"$SPOT_PY" "$SPOT_HELPER" prep-region-az \
+  --profile tf --region us-east-1 --availability-zone us-east-1a \
+  --subnet-id subnet-9cf16dc7
+```
+
+Inspect the reported subnet, current SSH `/32`, key fingerprint, and security
+group, then repeat with `--yes` to create or repair the support resources.
+
+Use the control security group printed by `prep-region-az`, plus the private
+self-traffic group when multiple nodes need to communicate. Dry-run a cheap
+two-node ARM64 deployment set first, inspect the AMI, AZ, tags, and cost, then
+repeat with `--yes`:
+
+```bash
+RUN_TS=$(date -u +%Y%m%dT%H%M%SZ)
+RUN_ID="zc-arm64-nightly-adhoc-$RUN_TS"
+DROP_DEAD=$(date -u -d '+2 hours' +%Y-%m-%dT%H:%M:%SZ)
+INVENTORY="$PWD/qemu-zcrx/$RUN_ID-inventory.json"
+
+"$SPOT_PY" "$SPOT_HELPER" launch \
+  --profile tf --region us-east-1 --availability-zone us-east-1a \
+  --subnet-id subnet-9cf16dc7 \
+  --security-group-ids sg-CURRENT-CONTROL,sg-e0dfdb9d \
+  --key-name adhocMasterKeypair --instance-type t4g.small --nodes 2 \
+  --max-spot-price 0.02 --max-total-cost 1 --root-gb 32 \
+  --no-enable-efa --network-card-count 1 --associate-public-ip \
+  --drop-dead-utc "$DROP_DEAD" --run-id "$RUN_ID" \
+  --inventory "$INVENTORY"
+```
+
+Find the artifact and deploy it to every inventory node:
+
+```bash
+ARTIFACT_DIR=$(scripts/arm64-kernel-nightly-build.sh resolve |
+  sed -n 's/^artifact_dir=//p')
+scripts/ec2-arm64-nightly-deploy.sh "$ARTIFACT_DIR" "$INVENTORY"
+```
+
+The deploy driver verifies artifact checksums, uses public IPv4 only for
+SSH/rsync management, records each private data-plane address, installs and
+stages the kernel, reboots, waits for SSH, checks the exact `uname -r`, and runs
+the hardware probe. It also cross-builds a small static
+`io-uring-query-probe.c` and requires direct `IORING_REGISTER_QUERY` success for
+SEND_ZC and ZCRX; config presence alone is not a pass. On a replacement
+instance, an unchanged source/build hash reuses and redeploys the cached
+packages. On an instance already running that exact release, it skips
+install/reboot only when the persisted full build key also matches, then repeats
+both probes.
+
+Terminate by run ID as soon as validation is complete; the absolute
+`adhocKeepalive` tag is still the backstop:
+
+```bash
+"$SPOT_PY" "$SPOT_HELPER" terminate \
+  --profile tf --region us-east-1 --run-id "$RUN_ID" --yes
+```
+
+### Verified Cheap-Instance Cycle
+
+The 2026-07-11 validation used two `t4g.small` spot instances in
+`us-east-1a`. The source was Jens Axboe's `for-next` commit
+`402175ba68e5df935bab04e8975bc1133769d7e3`; the resulting release was
+`7.2.0-rc1-zcnext-402175ba68e5-b12107485`. Both nodes rebooted into that exact
+release, and the direct query probe reported SEND_ZC and ZCRX query/register
+support. Re-running the build resolver with the unchanged ref and policy
+printed `action=reuse`, proving that the hash-addressed artifact was reused
+rather than rebuilt.
+
+This instance shape is suitable for build/deploy and protocol correctness
+checks only. Its two vCPUs cannot isolate a block submitter, zcnblk kernel
+kthread, and userspace WAL lane owner on separate cores. Do not treat its IOPS,
+latency, or context-switch counts as representative.
+
 ## Current Tree
 
 Use the local kernel tree:
