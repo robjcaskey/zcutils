@@ -36140,7 +36140,7 @@ fn zcnblk_fan_wal_sync_local_leaves(
         return Ok(());
     };
     for (leaf_idx, backend) in local_leaves.iter().enumerate() {
-        backend.sync().map_err(|err| {
+        backend.sync(false).map_err(|err| {
             io::Error::new(
                 err.kind(),
                 format!(
@@ -44648,8 +44648,8 @@ impl ZcnblkWalLeafDurability {
 
     fn label(self) -> &'static str {
         match self {
-            Self::Volatile => "volatile-no-sync-ack",
-            Self::Persistent => "persistent-fsync",
+            Self::Volatile => "volatile",
+            Self::Persistent => "persistent",
         }
     }
 }
@@ -44990,6 +44990,24 @@ impl ZcnblkWalLeafBackend {
         }
     }
 
+    fn sync_contract(&self, allow_volatile_sync: bool) -> &'static str {
+        match self {
+            Self::Block {
+                durability: ZcnblkWalLeafDurability::Persistent,
+                ..
+            } => "remote-persistent-sync-data",
+            Self::Memory { .. } | Self::LeaseMemory { .. } if allow_volatile_sync => {
+                "remote-volatile-retained-hwm"
+            }
+            Self::Block {
+                durability: ZcnblkWalLeafDurability::Volatile,
+                ..
+            } if allow_volatile_sync => "remote-volatile-sync-data-hwm",
+            Self::DevNull { .. } => "unsupported-no-state",
+            _ => "unsupported-volatile",
+        }
+    }
+
     fn validate_range(&self, offset: u64, len: usize) -> io::Result<()> {
         let alignment = self.required_alignment();
         if len == 0 || len % alignment != 0 || offset % alignment as u64 != 0 {
@@ -45042,7 +45060,7 @@ impl ZcnblkWalLeafBackend {
         }
     }
 
-    fn sync(&self) -> io::Result<()> {
+    fn sync(&self, allow_volatile_sync: bool) -> io::Result<()> {
         match self {
             Self::Block {
                 file,
@@ -45050,17 +45068,29 @@ impl ZcnblkWalLeafBackend {
                 ..
             } => file.sync_data(),
             Self::Block {
+                file,
+                durability: ZcnblkWalLeafDurability::Volatile,
+                ..
+            } if allow_volatile_sync => file.sync_data(),
+            Self::Memory { .. } | Self::LeaseMemory { .. } if allow_volatile_sync => {
+                std::sync::atomic::fence(Ordering::SeqCst);
+                Ok(())
+            }
+            Self::Block {
                 durability: ZcnblkWalLeafDurability::Volatile,
                 ..
             }
-            | Self::DevNull { .. }
             | Self::Memory { .. }
             | Self::LeaseMemory { .. } => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!(
-                    "refusing to acknowledge block SYNC on volatile WAL leaf {}; use an allowlisted persistent PARTUUID leaf before testing durability",
+                    "refusing to acknowledge block SYNC on volatile WAL leaf {}; use an allowlisted persistent PARTUUID leaf for durability or set URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC=1 for an explicitly remote volatile-commit benchmark",
                     self.label()
                 ),
+            )),
+            Self::DevNull { .. } => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "refusing to acknowledge block SYNC on zcdevnull because it retains no remotely readable state",
             )),
         }
     }
@@ -48010,6 +48040,7 @@ fn zcnblk_wal_leaf_process_stream(
     io_mode: ZcnblkWalLeafIoMode,
     ring_entries: u32,
     ring_cq_entries: u32,
+    allow_volatile_sync: bool,
 ) -> io::Result<ZcnblkWalLeafStreamStats> {
     let affinity = pin_current_thread_if_requested(
         "zcnblk-wal-leaf-stream",
@@ -48245,7 +48276,7 @@ fn zcnblk_wal_leaf_process_stream(
             }
             ZCNBLK_FAN_WAL_OP_SYNC => {
                 zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "sync")?;
-                backend.sync()?;
+                backend.sync(allow_volatile_sync)?;
                 let result = zcnblk_fan_wal_attach_local_topology(
                     ZcnblkFanWalFrame {
                         op: ZCNBLK_FAN_WAL_OP_RESULT,
@@ -48323,6 +48354,7 @@ fn zcnblk_wal_leaf_worker(
     io_mode: ZcnblkWalLeafIoMode,
     ring_entries: u32,
     ring_cq_entries: u32,
+    allow_volatile_sync: bool,
 ) -> io::Result<ZcnblkWalLeafStats> {
     let affinity = pin_current_thread_if_requested("zcnblk-wal-leaf-worker", worker, pin_workers);
     let started = Instant::now();
@@ -48369,6 +48401,7 @@ fn zcnblk_wal_leaf_worker(
                 io_mode,
                 ring_entries,
                 ring_cq_entries,
+                allow_volatile_sync,
             )
         }));
     }
@@ -48545,6 +48578,14 @@ fn zcnblk_wal_leaf(
     let leaf_adaptive_wait_ns = zcnblk_fan_wal_recv_adaptive_wait_ns();
     let leaf_adaptive_hysteresis_ns = zcnblk_fan_wal_recv_adaptive_hysteresis_ns();
     let zero_copy_strict = zcnblk_wal_zero_copy_strict_enabled();
+    let allow_volatile_sync =
+        env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC", false);
+    if allow_volatile_sync && backend.durability() == ZcnblkWalLeafDurability::Volatile {
+        eprintln!(
+            "PERF CONTRACT: zcnblk-wal-leaf target={} may ACK SYNC after remote volatile memory admission; process or host loss can lose acknowledged data",
+            backend.label()
+        );
+    }
     if !pin_workers {
         zc_topology_issue(
             "zcnblk-wal-leaf",
@@ -48597,7 +48638,7 @@ fn zcnblk_wal_leaf(
          leaf_adaptive_wait_ns={} leaf_adaptive_hysteresis_ns={} \
          uninit_read_buffers={} zero_copy_strict={zero_copy_strict} \
          result_ranges_configured={result_ranges_configured} device_bytes={} \
-         required_alignment={} durability={} memory_policy={} memory_hugetlb={} preferred_numa_node={} \
+         required_alignment={} durability={} sync_contract={} allow_volatile_sync={} memory_policy={} memory_hugetlb={} preferred_numa_node={} \
          protocol=fan-wal-v{ZCNBLK_FAN_WAL_VERSION}",
         backend.label(),
         io_mode.label(),
@@ -48632,6 +48673,8 @@ fn zcnblk_wal_leaf(
         backend.device_bytes(),
         backend.required_alignment(),
         backend.durability().label(),
+        backend.sync_contract(allow_volatile_sync),
+        allow_volatile_sync,
         backend.memory_policy(),
         backend.memory_hugetlb(),
         option_i32_label(preferred_numa_node),
@@ -48658,6 +48701,7 @@ fn zcnblk_wal_leaf(
                 io_mode,
                 ring_entries,
                 ring_cq_entries,
+                allow_volatile_sync,
             )
         }));
     }
@@ -58130,12 +58174,27 @@ EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_grou
             required_alignment: 4096,
         };
         assert_eq!(backend.durability(), ZcnblkWalLeafDurability::Volatile);
-        let err = backend.sync().unwrap_err();
+        let err = backend.sync(false).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::Unsupported);
         assert!(
             err.to_string()
                 .contains("refusing to acknowledge block SYNC")
         );
+        assert_eq!(backend.sync_contract(false), "unsupported-no-state");
+        assert!(backend.sync(true).is_err());
+    }
+
+    #[test]
+    fn zcnblk_wal_leaf_allows_explicit_volatile_memory_commit() {
+        let backend = ZcnblkWalLeafBackend::Memory {
+            label: "zcmem:test".to_string(),
+            arena: ZcnblkWalLeafMemoryArena::new(4096, 4096, None).unwrap(),
+        };
+        let err = backend.sync(false).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(backend.sync_contract(false), "unsupported-volatile");
+        assert_eq!(backend.sync_contract(true), "remote-volatile-retained-hwm");
+        backend.sync(true).unwrap();
     }
 
     #[test]

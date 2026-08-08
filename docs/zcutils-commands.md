@@ -1728,7 +1728,10 @@ on that ABI. It admits ordinary writes by shared-slot reference, serves dirty
 read-after-write from the latest slot, materializes ordered batches into a
 userspace RAM reduction arena at pressure or sync. It is volatile benchmark
 media and deliberately rejects flush after reducing prior writes; a successful
-block sync requires the `wal-tcp` path to persistent leaves. The module
+block sync requires the `wal-tcp` path to remote leaves. Persistent leaves call
+`sync_data(2)`. Remote retained-memory benchmarks must explicitly set
+`URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC=1`; this proves the remote HWM
+and readback contract but not power-loss durability. The module
 advertises a volatile write cache and does not advertise FUA, so `fsync(2)`
 reaches the `REQ_OP_FLUSH` to sync-HWM path instead of being silently absorbed.
 This backend is currently restricted to one lane; it fails startup for multiple
@@ -1772,6 +1775,12 @@ throughput from 2.07M to 2.72M IOPS and reduced kernel context switches from
 roughly 1.75-2.27 to 0.08-0.11 per 1K I/O. Disabling lane batching or using a
 deep-queue completion minimum below 8 prints a `PERF WARNING`; representative
 runs reject either configuration.
+
+The benchmark harness enables the explicit volatile-sync option for its default
+`zcmem` leaf. Ordinary writes complete after userspace dirty-lease admission;
+they do not wait for a leaf result. Flush/FUA completion remains remote: it is
+withheld until every frozen lane HWM has reached the leaf and every leaf sync
+result has returned. `zcdevnull` cannot be used for this contract.
 
 The current block-to-WAL dirty directory has an explicit 4K record contract.
 Do not lower the client logical block size or bypass the target's 4K checks for

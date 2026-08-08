@@ -282,7 +282,7 @@ impl BackendMode {
 
     fn sync_contract(self) -> &'static str {
         if self.can_ack_block_sync() {
-            "persistent-remote-leaf-hwm"
+            "remote-leaf-hwm"
         } else {
             "unsupported-volatile"
         }

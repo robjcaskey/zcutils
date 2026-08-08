@@ -1264,17 +1264,24 @@ submitted to the userspace leaf streams. A sync drains the handler's local
 outstanding queue, waits for the shared dirty budget to reach zero across all
 handlers, sends a WAL sync to every leaf, and only then ACKs the flush upstream.
 That makes sync the global high-water mark for the volatile window, but the
-fan may return `SYNC_ACK` only after every configured leaf has also reported a
-persistent commit for that epoch.
+fan may return `SYNC_ACK` only after every configured remote leaf has reported
+commit for that epoch.
 
-Durability is fail-closed. `zcdevnull`, `zcmem`, `zcleasemem`, `/dev/zcbrdN`,
-`/dev/nullbN`, `/dev/ramN`, the shared-memory `null`, `memory`, and `wal-memory`
-backends, and the kernel `null_backend` are volatile benchmark media. They may
-exercise ordinary reads and writes, but they must reject block sync rather than
-return success. The current persistent leaf class is an explicitly allowlisted
+Durability is fail-closed by default. `zcdevnull`, `zcmem`, `zcleasemem`,
+`/dev/zcbrdN`, `/dev/nullbN`, `/dev/ramN`, the shared-memory `null`, `memory`,
+and `wal-memory` backends, and the kernel `null_backend` are volatile benchmark
+media. The current persistent leaf class is an explicitly allowlisted
 `PARTUUID` opened by `zcnblk-wal-leaf`; it completes sync only after
-`sync_data(2)` succeeds. A benchmark using volatile media proves ordering or a
-performance ceiling, never durability.
+`sync_data(2)` succeeds.
+
+A cross-host benchmark may explicitly set
+`URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC=1` on a remote `zcmem` or
+`zcleasemem` leaf. In that mode `SYNC_ACK` means every write through the frozen
+HWM was applied to remotely owned, readable memory before the leaf replied. It
+proves remote commit, ordering, readback, and transport performance, but not
+survival of leaf process or host loss. `zcdevnull` still rejects sync because it
+retains no readable remote state. Local `wal-memory` also still rejects sync;
+the benchmark exception exists only across the userspace WAL leaf protocol.
 
 Shared-memory block edges require ordering epochs and per-lane admission
 vectors. The kernel module defaults `shm_ordering_epochs=1` and refuses

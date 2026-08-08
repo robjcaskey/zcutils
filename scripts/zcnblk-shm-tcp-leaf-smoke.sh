@@ -130,6 +130,7 @@ printf 'classification=correctness-only client=block-edge target_cpu=%s fan_tran
 	"$ALLOW_UNSAFE_SEND_ZC" | tee "$OUTDIR/topology.log"
 
 env URING_PLAY_PIN_CPU_LIST="$LEAF_CPU" URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1 \
+	URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC=1 \
 	"$LEAF_BIN" "zcmem:${SIZE_MIB}M" "$LEAF_ADDR" "$LEAF_PORT" 1 1 4096 1 true blocking \
 	>"$OUTDIR/leaf.log" 2>&1 &
 leaf_pid=$!

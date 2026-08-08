@@ -186,6 +186,7 @@ WAL_DEBUG_STATE="${URING_PLAY_ZCNBLK_SHM_WAL_DEBUG_STATE:-0}"
 KERNEL_STATE_INTERVAL_MS="${URING_PLAY_ZCNBLK_SHM_KERNEL_STATE_INTERVAL_MS:-$([ "$WAL_DEBUG_STATE" = 1 ] && printf 1000 || printf 0)}"
 LEAF_TARGET="${LEAF_TARGET:-zcmem:${SIZE_MIB}M}"
 START_LOCAL_LEAF="${START_LOCAL_LEAF:-$([ "$BACKEND" = wal-tcp ] && printf 1 || printf 0)}"
+LEAF_ALLOW_VOLATILE_SYNC="${URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC:-1}"
 MODE="${MODE:-rw}"
 READ_PERCENT="${READ_PERCENT:-50}"
 PERF_STAT="${PERF_STAT:-1}"
@@ -837,8 +838,8 @@ fi
 	printf 'order_smoke_pairs=%s\n' "$ORDER_SMOKE_PAIRS"
 	printf 'shm_payload_slot_bytes=%s\n' "$MAX_FRAME_BYTES"
 	printf 'shm_lease_release_batch=%s\n' "$LEASE_RELEASE_BATCH"
-	printf 'backend=%s local_leaf=%s leaf_target=%s leaf_addr=%s leaf_port=%s leaf_submit_mode=%s\n' \
-		"$BACKEND" "$START_LOCAL_LEAF" "$LEAF_TARGET" "$LEAF_ADDR" "$LEAF_PORT" "$LEAF_SUBMIT_MODE"
+	printf 'backend=%s local_leaf=%s leaf_target=%s leaf_addr=%s leaf_port=%s leaf_submit_mode=%s leaf_allow_volatile_sync=%s\n' \
+		"$BACKEND" "$START_LOCAL_LEAF" "$LEAF_TARGET" "$LEAF_ADDR" "$LEAF_PORT" "$LEAF_SUBMIT_MODE" "$LEAF_ALLOW_VOLATILE_SYNC"
 	printf 'leaf_source_addr=%s\n' "${LEAF_SOURCE_ADDR:-kernel-route}"
 	printf 'leaf_addrs=%s leaf_source_addrs=%s\n' \
 		"${LEAF_ADDRS:-single-address}" "${LEAF_SOURCE_ADDRS:-single-source}"
@@ -884,6 +885,7 @@ if [ "$START_LOCAL_LEAF" = 1 ]; then
 		URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN_MAX="$LEAF_ADAPTIVE_SPIN_MAX" \
 		URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_WAIT_NS="$LEAF_ADAPTIVE_WAIT_NS" \
 		URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_HYSTERESIS_NS="$LEAF_ADAPTIVE_HYSTERESIS_NS" \
+		URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC="$LEAF_ALLOW_VOLATILE_SYNC" \
 		"$LEAF_BIN" "$LEAF_TARGET" "$LEAF_ADDR" "$LEAF_PORT" "$LANES" 1 4096 "$LANES" true "$LEAF_SUBMIT_MODE" \
 		>"$OUTDIR/leaf.log" 2>&1 &
 	leaf_pid=$!
