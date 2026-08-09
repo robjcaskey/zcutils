@@ -14,6 +14,14 @@ zcutils zcmux --peer-addr 10.0.1.12 --lanes 128
 zcmux --peer-addr 10.0.1.12 --lanes 128
 ```
 
+For external-WAL QD1-QD16 measurements on dedicated EC2 ad-hoc nodes, run
+`scripts/adhoc-nic-low-latency.sh apply OUTDIR` on every client and leaf through
+`scripts/ec2_perf_spot.py exec`. It disables ENA adaptive RX moderation and
+sets RX/TX coalescing to zero, verifies the resulting state, and preserves
+before/after evidence. Only after every endpoint succeeds should the client
+harness receive `URING_PLAY_EXTERNAL_NIC_LOW_LATENCY_CONFIRMED=1`. The helper
+refuses shared hosts, and the benchmark harness does not silently mutate NICs.
+
 ## Command Idiom
 
 The descriptor-native model is:
@@ -1766,21 +1774,36 @@ uses a 4,096-slot payload pool by default. A WAL run with payload entries less
 than or equal to descriptor entries collapses the safe writeback window to one;
 the harness warns loudly and representative mode rejects that geometry.
 
-The high-IOPS harness defaults to the unified lane-owned request path, sizes
-WAL extents to `SHM_RING_ENTRIES`, waits up to 20 us to fill deferred write extents,
-uses adaptive leaf receive spinning, and asks `zcblockbench` to reap at least
-16 completions when `IODEPTH >= 128`. Local paired controls showed that changing
+Local and non-representative controls default to the unified lane-owned request
+path. A representative write-only `wal-tcp` run against an external leaf
+defaults to the separate stable-owner userspace stage; forcing that write run
+back to lane-inline transport is rejected as non-representative. Representative
+read and mixed workloads retain lane-inline ingress because measured
+stable-owner dispatch reduced both to about 1.00M IOPS. Both paths size WAL extents to
+`SHM_RING_ENTRIES`, wait up to 20 us to fill deferred write extents, use
+adaptive leaf receive spinning, and ask `zcblockbench` to reap at least 16
+completions when `IODEPTH >= 128`. Local paired controls showed that changing
 only the completion minimum from 1 to 16 raised four-lane random-write
 throughput from 2.07M to 2.72M IOPS and reduced kernel context switches from
 roughly 1.75-2.27 to 0.08-0.11 per 1K I/O. Disabling lane batching or using a
 deep-queue completion minimum below 8 prints a `PERF WARNING`; representative
-runs reject either configuration.
+runs reject either configuration. For stable-owner controls at
+`IODEPTH >= 128`, the default owner queue depth is the aggregate outstanding
+depth (`LANES * IODEPTH`); an explicit
+`URING_PLAY_ZCNBLK_SHM_OWNER_QUEUE_DEPTH` still takes precedence.
 
 The benchmark harness enables the explicit volatile-sync option for its default
 `zcmem` leaf. Ordinary writes complete after userspace dirty-lease admission;
 they do not wait for a leaf result. Flush/FUA completion remains remote: it is
 withheld until every frozen lane HWM has reached the leaf and every leaf sync
 result has returned. `zcdevnull` cannot be used for this contract.
+
+Set `ORDER_SMOKE_PAIRS=N` to run the linked same-sector ordering and global
+sync-drain gate before throughput. Set `CONTRACT_SMOKE_BLOCK=N` to run a native
+`RWF_DSYNC` FUA plus I/O-priority/write-lifetime/readback gate. The harness
+records each gate's elapsed time and fails unless the final target summary
+contains a nonzero matching `syncs` or `fua_requests` counter. These drain
+timings are reported separately from early-local-write throughput.
 
 The current block-to-WAL dirty directory has an explicit 4K record contract.
 Do not lower the client logical block size or bypass the target's 4K checks for
@@ -1837,11 +1860,13 @@ topology rather than assuming that a larger batch-fill interval is faster.
 
 `URING_PLAY_ZCNBLK_SHM_SECTOR_ORDER_SLOTS` controls the power-of-two hashed
 predecessor table used only for same-sector ordering metadata; it does not make
-placement decisions. The harness records it and defaults to 65,536. A 2026-07-12
-four-lane write sweep measured 1.63M IOPS with 16,384 slots versus about 2.67M
-with either 65,536 or 262,144, showing that a cache-small table can be slower
-when false dependencies serialize independent lanes. The harness warns below
-`min(device_4k_pages, 65536)` and representative mode rejects that geometry.
+placement decisions. The harness records it and defaults to 65,536 outside the
+stable-owner path. Stable-owner ingress instead rounds twice the active
+per-worker page count up to a power of two (1,048,576 slots for the measured
+32-lane topology). A 2026-07-12 four-lane write sweep measured 1.63M IOPS with
+16,384 slots versus about 2.67M with either 65,536 or 262,144, showing that a
+cache-small table can be slower when false dependencies serialize independent
+lanes. Representative mode rejects an explicitly undersized geometry.
 
 The global completion tracker now backpressures a lane before its sequence can
 alias a still-live ring entry. This matters when reduced false dependencies let

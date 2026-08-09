@@ -10,6 +10,8 @@ TARGET_BIN="${TARGET_BIN:-$ROOT/target/release/zcnblk-shm-target}"
 BENCH_BIN="${BENCH_BIN:-$ROOT/target/release/zcblockbench}"
 ORDER_BIN="${ORDER_BIN:-$ROOT/target/release/zcnblk-order-smoke}"
 ORDER_SMOKE_PAIRS="${ORDER_SMOKE_PAIRS:-0}"
+CONTRACT_BIN="${CONTRACT_BIN:-$ROOT/target/release/zcnblk-contract-smoke}"
+CONTRACT_SMOKE_BLOCK="${CONTRACT_SMOKE_BLOCK:-}"
 LEAF_BIN="${LEAF_BIN:-$ROOT/target/release/zcnblk-wal-leaf}"
 LANES="${LANES:-4}"
 REPEATS="${REPEATS:-3}"
@@ -51,8 +53,12 @@ SHM_RING_ENTRIES="${SHM_RING_ENTRIES:-128}"
 KERNEL_QUEUE_DEPTH="${KERNEL_QUEUE_DEPTH:-$IODEPTH}"
 KERNEL_PIPELINE_DEPTH="${KERNEL_PIPELINE_DEPTH:-$SHM_RING_ENTRIES}"
 KERNEL_QUEUES="${KERNEL_QUEUES:-$LANES}"
-SECTOR_ORDER_SLOTS="${URING_PLAY_ZCNBLK_SHM_SECTOR_ORDER_SLOTS:-65536}"
+SIZE_MIB="${SIZE_MIB:-$((LANES * 128))}"
+REGION_BYTES_PER_WORKER="${REGION_BYTES_PER_WORKER:-67108864}"
 BACKEND="${BACKEND:-memory}"
+START_LOCAL_LEAF="${START_LOCAL_LEAF:-$([ "$BACKEND" = wal-tcp ] && printf 1 || printf 0)}"
+MODE="${MODE:-rw}"
+READ_PERCENT="${READ_PERCENT:-50}"
 if [ -z "${SHM_PAYLOAD_ENTRIES+x}" ]; then
 	case "$BACKEND" in
 		wal-memory|wal-tcp|tcp-leaf|fan-tcp) SHM_PAYLOAD_ENTRIES=4096 ;;
@@ -72,6 +78,7 @@ REQUEST_BATCH_FILL_US="${URING_PLAY_ZCNBLK_SHM_READ_BATCH_FILL_US:-0}"
 REQUEST_BATCH_FILL_MIN="${URING_PLAY_ZCNBLK_SHM_READ_BATCH_FILL_MIN:-32}"
 KICK_BATCH="${KICK_BATCH:-128}"
 REPRESENTATIVE="${REPRESENTATIVE:-0}"
+EXTERNAL_NIC_LOW_LATENCY_CONFIRMED="${URING_PLAY_EXTERNAL_NIC_LOW_LATENCY_CONFIRMED:-0}"
 if [ -z "${POLL_US+x}" ]; then
 	if [ "$REPRESENTATIVE" = 1 ]; then
 		POLL_US=1000
@@ -84,8 +91,6 @@ BUSY_HYSTERESIS_US="${BUSY_HYSTERESIS_US:-10000}"
 POLL_CLOCK_CHECK_SPINS="${URING_PLAY_ZCNBLK_SHM_POLL_CLOCK_CHECK_SPINS:-64}"
 KERNEL_POLL_US="${KERNEL_POLL_US:-$POLL_US}"
 LEASE_RELEASE_BATCH="${LEASE_RELEASE_BATCH:-1}"
-SIZE_MIB="${SIZE_MIB:-$((LANES * 128))}"
-REGION_BYTES_PER_WORKER="${REGION_BYTES_PER_WORKER:-67108864}"
 MAX_FRAME_BYTES="${MAX_FRAME_BYTES:-4096}"
 BUFFER_MODE="${BUFFER_MODE:-small-pages}"
 LEAF_ADDR="${LEAF_ADDR:-127.0.0.1}"
@@ -115,7 +120,37 @@ else
 fi
 WAL_SPLIT_TRANSPORT="${URING_PLAY_ZCNBLK_SHM_WAL_SPLIT_TRANSPORT:-0}"
 WAL_OWNER_DISPATCH="${URING_PLAY_ZCNBLK_SHM_WAL_OWNER_DISPATCH:-0}"
-WAL_OWNER_INGRESS="${URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS:-0}"
+if [ -n "${URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS+x}" ]; then
+	WAL_OWNER_INGRESS="$URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS"
+	WAL_OWNER_INGRESS_SOURCE=explicit
+elif [ "$BACKEND" = wal-tcp ] && [ "$START_LOCAL_LEAF" != 1 ] && \
+	[ "$REPRESENTATIVE" = 1 ] && [ "$MODE" = write ]; then
+	# Stable-owner fixes the representative external-WAL write regression.
+	# Read and mixed traffic retain lane-inline ingress because stable-owner
+	# adds an avoidable dispatch stage to their remote-read completion path.
+	WAL_OWNER_INGRESS=1
+	WAL_OWNER_INGRESS_SOURCE=auto-representative-external-write
+elif [ "$BACKEND" = wal-tcp ] && [ "$START_LOCAL_LEAF" != 1 ] && \
+	[ "$REPRESENTATIVE" = 1 ]; then
+	WAL_OWNER_INGRESS=0
+	WAL_OWNER_INGRESS_SOURCE=auto-representative-external-read-mixed
+else
+	WAL_OWNER_INGRESS=0
+	WAL_OWNER_INGRESS_SOURCE=default-off
+fi
+if [ -n "${URING_PLAY_ZCNBLK_SHM_SECTOR_ORDER_SLOTS+x}" ]; then
+	SECTOR_ORDER_SLOTS="$URING_PLAY_ZCNBLK_SHM_SECTOR_ORDER_SLOTS"
+elif [ "$WAL_OWNER_INGRESS" = 1 ]; then
+	# Stable-owner scheduling can have two active ordering generations per
+	# worker. Size the hash table to avoid false dependencies by default.
+	active_order_target=$((LANES * REGION_BYTES_PER_WORKER / 4096 * 2))
+	SECTOR_ORDER_SLOTS=1
+	while [ "$SECTOR_ORDER_SLOTS" -lt "$active_order_target" ]; do
+		SECTOR_ORDER_SLOTS=$((SECTOR_ORDER_SLOTS * 2))
+	done
+else
+	SECTOR_ORDER_SLOTS=65536
+fi
 WAL_OWNER_COUNT="${URING_PLAY_ZCNBLK_SHM_OWNER_COUNT:-$LANES}"
 WAL_OWNER_CPU_LIST="${URING_PLAY_ZCNBLK_SHM_OWNER_CPU_LIST:-}"
 WAL_OWNER_EXTENT_RECORDS="${URING_PLAY_ZCNBLK_SHM_OWNER_EXTENT_RECORDS:-256}"
@@ -141,7 +176,16 @@ else
 fi
 WAL_OWNER_FRAGMENT_FILL_US="${URING_PLAY_ZCNBLK_SHM_OWNER_FRAGMENT_FILL_US:-500}"
 WAL_OWNER_FOREGROUND_IMMEDIATE_LIMIT="${URING_PLAY_ZCNBLK_SHM_OWNER_FOREGROUND_IMMEDIATE_LIMIT:-1}"
-WAL_OWNER_QUEUE_DEPTH="${URING_PLAY_ZCNBLK_SHM_OWNER_QUEUE_DEPTH:-128}"
+if [ -n "${URING_PLAY_ZCNBLK_SHM_OWNER_QUEUE_DEPTH+x}" ]; then
+	WAL_OWNER_QUEUE_DEPTH="$URING_PLAY_ZCNBLK_SHM_OWNER_QUEUE_DEPTH"
+elif [ "$WAL_OWNER_INGRESS" = 1 ] && [ "$IODEPTH" -ge 128 ]; then
+	# Every ingress lane can feed every stable owner. A 128-entry owner queue
+	# lets a temporarily hot owner head-block otherwise independent lanes at
+	# aggregate depth, so cover the benchmark's full outstanding window.
+	WAL_OWNER_QUEUE_DEPTH=$((LANES * IODEPTH))
+else
+	WAL_OWNER_QUEUE_DEPTH=128
+fi
 WAL_OWNER_MAX_TX_IOVECS="${URING_PLAY_ZCNBLK_SHM_OWNER_MAX_TX_IOVECS:-960}"
 if [ -n "${URING_PLAY_ZCNBLK_SHM_WAL_LANE_WINDOW+x}" ]; then
 	WAL_LANE_WINDOW="$URING_PLAY_ZCNBLK_SHM_WAL_LANE_WINDOW"
@@ -185,10 +229,7 @@ DIRTY_PRESSURE_RESERVE="${URING_PLAY_ZCNBLK_SHM_DIRTY_PRESSURE_RESERVE:-0}"
 WAL_DEBUG_STATE="${URING_PLAY_ZCNBLK_SHM_WAL_DEBUG_STATE:-0}"
 KERNEL_STATE_INTERVAL_MS="${URING_PLAY_ZCNBLK_SHM_KERNEL_STATE_INTERVAL_MS:-$([ "$WAL_DEBUG_STATE" = 1 ] && printf 1000 || printf 0)}"
 LEAF_TARGET="${LEAF_TARGET:-zcmem:${SIZE_MIB}M}"
-START_LOCAL_LEAF="${START_LOCAL_LEAF:-$([ "$BACKEND" = wal-tcp ] && printf 1 || printf 0)}"
 LEAF_ALLOW_VOLATILE_SYNC="${URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC:-1}"
-MODE="${MODE:-rw}"
-READ_PERCENT="${READ_PERCENT:-50}"
 PERF_STAT="${PERF_STAT:-1}"
 BUILD="${BUILD:-0}"
 SET_GOVERNOR="${SET_GOVERNOR:-}"
@@ -269,6 +310,18 @@ snapshot_contexts() {
 }
 
 safe_stop_target() {
+	if [ -z "$target_pid" ] && [ -n "$target_job_pid" ] && [ -d "/proc/$target_job_pid" ]; then
+		local child child_comm
+		while read -r child; do
+			[ -n "$child" ] || continue
+			[ -r "/proc/$child/comm" ] || continue
+			child_comm="$(cat "/proc/$child/comm")"
+			if [ "$child_comm" = "zcnblk-shm-targ" ]; then
+				target_pid="$child"
+				break
+			fi
+		done < <(ps -o pid= --ppid "$target_job_pid")
+	fi
 	[ -n "$target_pid" ] || return 0
 	[ -r "/proc/$target_pid/comm" ] || return 0
 	local comm
@@ -331,6 +384,8 @@ trap cleanup EXIT INT TERM
 
 [ "$LANES" -gt 0 ] || die "LANES must be positive"
 [ "$REPEATS" -gt 0 ] || die "REPEATS must be positive"
+[[ "$EXTERNAL_NIC_LOW_LATENCY_CONFIRMED" =~ ^[01]$ ]] || \
+	die "URING_PLAY_EXTERNAL_NIC_LOW_LATENCY_CONFIRMED must be zero or one"
 [[ "$SHM_RING_ENTRIES" =~ ^[0-9]+$ ]] && [ "$SHM_RING_ENTRIES" -gt 0 ] || \
 	die "SHM_RING_ENTRIES must be a positive integer"
 [[ "$KERNEL_QUEUE_DEPTH" =~ ^[0-9]+$ ]] && [ "$KERNEL_QUEUE_DEPTH" -gt 0 ] || \
@@ -356,6 +411,21 @@ if [ "$WAL_OWNER_INGRESS" = 1 ]; then
 	while [ "$sector_order_floor" -lt "$active_order_target" ]; do
 		sector_order_floor=$((sector_order_floor * 2))
 	done
+fi
+if [ "$BACKEND" = wal-tcp ] && [ "$START_LOCAL_LEAF" != 1 ] && \
+	[ "$WAL_OWNER_INGRESS" != 1 ] && [ "$WAL_OWNER_DISPATCH" != 1 ]; then
+	printf 'PERF NOTE: external WAL uses lane-inline transport (mode=%s); stable-owner is the measured high-IOPS write path\n' "$MODE" >&2
+	if [ "$REPRESENTATIVE" = 1 ] && [ "$MODE" = write ]; then
+		die "representative external WAL write runs require stable-owner ingress or owner dispatch"
+	fi
+fi
+if [ "$BACKEND" = wal-tcp ] && [ "$START_LOCAL_LEAF" != 1 ] && \
+	[ "$IODEPTH" -le 16 ] && [ "$EXTERNAL_NIC_LOW_LATENCY_CONFIRMED" != 1 ]; then
+	printf 'PERF WARNING: external low-QD WAL run has no client+leaf NIC low-latency confirmation; ENA adaptive interrupt moderation produced flow-dependent QD1 latency and first-run spread. Configure and verify both endpoints (for ENA: adaptive-rx off, rx-usecs 0, tx-usecs 0), then set URING_PLAY_EXTERNAL_NIC_LOW_LATENCY_CONFIRMED=1\n' >&2
+	if [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
+		[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; then
+		die "representative/strict external low-QD runs require explicit client+leaf NIC low-latency confirmation"
+	fi
 fi
 if [ "$SECTOR_ORDER_SLOTS" -lt "$sector_order_floor" ]; then
 	printf 'PERF WARNING: shm_sector_order_slots=%s is below the measured floor=%s for size_mib=%s; false sector dependencies can serialize otherwise independent lanes\n' \
@@ -761,6 +831,8 @@ fi
 	printf 'memlock_kib=%s\n' "$(ulimit -l)"
 	printf 'loadavg=%s\n' "$(cat /proc/loadavg)"
 	printf 'coordination_honored=%s\n' "$coord_honored"
+	printf 'external_nic_low_latency_confirmed=%s scope=client-and-leaf\n' \
+		"$EXTERNAL_NIC_LOW_LATENCY_CONFIRMED"
 	printf 'target_poll_us=%s\n' "$POLL_US"
 	printf 'target_busy_poll_us=%s\n' "$BUSY_POLL_US"
 	printf 'target_busy_hysteresis_us=%s\n' "$BUSY_HYSTERESIS_US"
@@ -797,8 +869,8 @@ fi
 		"$WAL_OWNER_DISPATCH" "$WAL_OWNER_EXTENT_RECORDS" "$WAL_OWNER_WORKER_SPINS" \
 		"$WAL_OWNER_WORKER_ADAPTIVE_SPIN" "$WAL_OWNER_WORKER_SPIN_MIN" \
 		"$WAL_OWNER_WORKER_ADAPTIVE_WAIT_NS"
-	printf 'wal_owner_ingress=%s wal_owner_count=%s wal_owner_cpu_list=%s\n' \
-		"$WAL_OWNER_INGRESS" "$WAL_OWNER_COUNT" \
+	printf 'wal_owner_ingress=%s wal_owner_ingress_source=%s wal_owner_count=%s wal_owner_cpu_list=%s\n' \
+		"$WAL_OWNER_INGRESS" "$WAL_OWNER_INGRESS_SOURCE" "$WAL_OWNER_COUNT" \
 		"$([ "$WAL_OWNER_INGRESS" = 1 ] && join_comma "${owner_cpus[@]}" || printf none)"
 	printf 'wal_owner_write_fill_us=%s wal_owner_write_fill_min=%s wal_owner_pipeline_batches=%s wal_owner_pipeline_refill_spins=%s wal_owner_mixed_hysteresis_us=%s\n' \
 		"$WAL_OWNER_WRITE_FILL_US" "$WAL_OWNER_WRITE_FILL_MIN" "$WAL_OWNER_PIPELINE_BATCHES" \
@@ -1036,10 +1108,29 @@ fi
 
 if [ "$ORDER_SMOKE_PAIRS" -gt 0 ]; then
 	log "proving same-sector ordering and sync across the live $LANES-lane path"
+	order_started_ns="$(date +%s%N)"
 	sudo -n env "URING_PLAY_PIN_CPU_LIST=$client_cpu_list" \
 		"$ORDER_BIN" /dev/zcnblk0 "$ORDER_SMOKE_PAIRS" | tee "$OUTDIR/order-smoke.log"
+	order_elapsed_ns=$(( $(date +%s%N) - order_started_ns ))
+	printf 'completion_semantics=remote-global-sync-drain elapsed_ns=%s\n' \
+		"$order_elapsed_ns" | tee -a "$OUTDIR/order-smoke.log"
 	grep -q 'sync_terminal_state=true' "$OUTDIR/order-smoke.log" || \
 		die "multi-lane order smoke did not prove terminal sync state"
+fi
+
+if [ -n "$CONTRACT_SMOKE_BLOCK" ]; then
+	[[ "$CONTRACT_SMOKE_BLOCK" =~ ^[0-9]+$ ]] || \
+		die "CONTRACT_SMOKE_BLOCK must be a non-negative integer"
+	log "proving native FUA, I/O priority, write lifetime, and readback"
+	contract_started_ns="$(date +%s%N)"
+	sudo -n env "URING_PLAY_PIN_CPU_LIST=$client_cpu_list" \
+		"$CONTRACT_BIN" /dev/zcnblk0 "$CONTRACT_SMOKE_BLOCK" | \
+		tee "$OUTDIR/contract-smoke.log"
+	contract_elapsed_ns=$(( $(date +%s%N) - contract_started_ns ))
+	printf 'completion_semantics=remote-fua-drain elapsed_ns=%s\n' \
+		"$contract_elapsed_ns" | tee -a "$OUTDIR/contract-smoke.log"
+	grep -q 'fua=RWF_DSYNC' "$OUTDIR/contract-smoke.log" || \
+		die "contract smoke did not issue native FUA"
 fi
 
 log "running $REPEATS repeated $MODE controls on the shared host"
@@ -1152,6 +1243,15 @@ awk '
   }
 ' "$OUTDIR/results.log" | tee "$OUTDIR/summary.log"
 grep 'zcnblk-shm-target-summary:' "$OUTDIR/target.log" | tee -a "$OUTDIR/summary.log"
+target_summary="$(grep 'zcnblk-shm-target-summary:' "$OUTDIR/target.log" | tail -n 1)"
+if [ "$ORDER_SMOKE_PAIRS" -gt 0 ]; then
+	grep -Eq 'syncs=[1-9][0-9]*' <<<"$target_summary" || \
+		die "order smoke completed without a target sync"
+fi
+if [ -n "$CONTRACT_SMOKE_BLOCK" ]; then
+	grep -Eq 'fua_requests=[1-9][0-9]*' <<<"$target_summary" || \
+		die "contract smoke completed without a native target FUA"
+fi
 if [ "$START_LOCAL_LEAF" = 1 ]; then
 	grep 'zcnblk-shm-target-remote-leaf-summary:' "$OUTDIR/target.log" | tee -a "$OUTDIR/summary.log"
 	grep 'zcnblk-wal-leaf-summary:' "$OUTDIR/leaf.log" | tee -a "$OUTDIR/summary.log"

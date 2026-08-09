@@ -157,6 +157,25 @@ jq -r '
 ' "$INV" | tee "qemu-zcrx/${RUN_ID}-role-map.tsv"
 ```
 
+Configure and verify low-latency interrupt moderation on every ad-hoc node
+before a low-QD run. This is deliberately a helper-managed remote action; the
+benchmark harness never changes NIC-wide state on a shared host:
+
+```bash
+scripts/ec2_perf_spot.py exec \
+  --inventory "$INV" \
+  "~/uring-play/scripts/adhoc-nic-low-latency.sh apply \
+   ~/uring-play/bench-results/${RUN_ID}/node-\${URING_NODE_INDEX}"
+```
+
+The command must succeed on every node. Retain each node's
+`nic-low-latency.log` and `nic-low-latency-confirmed.env`. After that
+all-node success, pass
+`URING_PLAY_EXTERNAL_NIC_LOW_LATENCY_CONFIRMED=1` to the external-WAL client
+harness. Representative or topology-strict external QD1-QD16 runs fail before
+printing numbers without this confirmation. The helper refuses to run unless
+the node's bootstrap manifest identifies it as a dedicated ad-hoc instance.
+
 ## 4. Sync Source Everywhere
 
 Use the helper for the broad source sync:

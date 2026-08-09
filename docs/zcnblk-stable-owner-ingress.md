@@ -24,9 +24,17 @@ writer after userspace placement.
 - `URING_PLAY_ZCNBLK_SHM_SECTOR_ORDER_SLOTS` must be a power of two and at
   least twice the active benchmark page count for a representative run.
 
-Enable the path with `URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS=1`. Set the
-owner CPUs explicitly with `URING_PLAY_ZCNBLK_SHM_OWNER_CPU_LIST`; the benchmark
-harness records client, ingress, kthread, and owner CPU assignments per lane.
+Representative write-only `wal-tcp` runs against an external leaf enable this
+path by default. Read-only and mixed runs retain lane-inline ingress: August 9,
+2026 controls measured about 1.00M IOPS through stable-owner versus prior
+lane-inline results of about 1.81M read and 1.89M mixed IOPS. Set
+`URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS` explicitly to override workload-aware
+selection. Set the owner CPUs explicitly with
+`URING_PLAY_ZCNBLK_SHM_OWNER_CPU_LIST`; the
+benchmark harness records client, ingress, kthread, and owner CPU assignments
+per lane. At `IODEPTH >= 128`, the harness also defaults the stable-owner queue
+to the aggregate outstanding depth (`LANES * IODEPTH`) so a temporarily hot
+owner cannot head-block unrelated lanes behind the old 128-entry limit.
 
 ## x48 Dual-NIC Result
 

@@ -303,6 +303,8 @@ static u32 zcnblk_remote_addr_count;
 static_assert(sizeof(struct zcnblk_shm_channel) == 320);
 static_assert(sizeof(struct zcnblk_shm_request) == ZCNBLK_SHM_DESC_BYTES);
 static_assert(sizeof(struct zcnblk_shm_completion) == ZCNBLK_SHM_DESC_BYTES);
+static_assert(sizeof(struct zcnblk_shm_io_contract) ==
+	      ZCNBLK_SHM_IO_CONTRACT_BYTES);
 
 static bool zcnblk_shm_enabled(void)
 {
@@ -990,6 +992,18 @@ zcnblk_shm_completion(struct zcnblk_dev *dev, u32 conn_id, u64 sequence)
 
 	return dev->shm->region + hdr->completion_offset +
 		index * sizeof(struct zcnblk_shm_completion);
+}
+
+static struct zcnblk_shm_io_contract *
+zcnblk_shm_io_contract(struct zcnblk_dev *dev, u32 conn_id, u64 sequence)
+{
+	struct zcnblk_shm_header *hdr = dev->shm->header;
+	u64 index = (u64)conn_id * hdr->ring_entries +
+		sequence % hdr->ring_entries;
+	u64 offset = hdr->reserved[ZCNBLK_SHM_HEADER_IO_CONTRACT_OFFSET];
+
+	return dev->shm->region + offset +
+		index * sizeof(struct zcnblk_shm_io_contract);
 }
 
 static void *zcnblk_shm_payload_slot(struct zcnblk_dev *dev, u32 conn_id,
@@ -1839,6 +1853,7 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 	struct zcnblk_dev *dev = conn->dev;
 	struct zcnblk_shm_channel *channel;
 	struct zcnblk_shm_request *desc;
+	struct zcnblk_shm_io_contract *io_contract;
 	void *payload;
 	u64 sequence;
 	u32 inflight_slot;
@@ -1893,6 +1908,28 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 				  submit_sequence);
 
 	memset(desc, 0, sizeof(*desc));
+	io_contract = zcnblk_shm_io_contract(dev, conn->conn_id, sequence);
+	memset(io_contract, 0, sizeof(*io_contract));
+	if (wire_op != ZCNBLK_SHM_OP_SYNC) {
+		if (wire_op == ZCNBLK_SHM_OP_WRITE &&
+		    pdu->rq->cmd_flags & REQ_FUA)
+			io_contract->flags |= ZCNBLK_SHM_IO_F_FUA;
+		if (pdu->rq->cmd_flags & REQ_POLLED)
+			io_contract->flags |=
+				ZCNBLK_SHM_IO_F_POLLED_COMPLETION;
+		if (wire_op == ZCNBLK_SHM_OP_WRITE &&
+		    pdu->rq->cmd_flags & REQ_ATOMIC)
+			io_contract->flags |= ZCNBLK_SHM_IO_F_ATOMIC_WRITE;
+		io_contract->ioprio = req_get_ioprio(pdu->rq);
+		if (wire_op == ZCNBLK_SHM_OP_WRITE && pdu->rq->bio)
+			io_contract->write_lifetime =
+				pdu->rq->bio->bi_write_hint;
+		if (dev->shm->transfer_payload_slots) {
+			io_contract->flags |=
+				ZCNBLK_SHM_IO_F_REGISTERED_LEASE;
+			io_contract->lease_id = submit_sequence;
+		}
+	}
 	pdu->shm_request_id =
 		(pdu->shm_ordering_epoch << ZCNBLK_SHM_REQUEST_ID_BITS) |
 		((u64)pdu->request_id & ZCNBLK_SHM_REQUEST_ID_MASK);
@@ -2633,6 +2670,13 @@ static int zcnblk_shm_layout_init(struct zcnblk_dev *dev)
 		ret = -EOVERFLOW;
 		goto out_free;
 	}
+	if (check_mul_overflow(descriptor_slots,
+			       (u64)sizeof(struct zcnblk_shm_io_contract), &bytes) ||
+	    check_add_overflow(offset, bytes, &offset) ||
+	    zcnblk_shm_page_align(offset, &offset)) {
+		ret = -EOVERFLOW;
+		goto out_free;
+	}
 	if (check_mul_overflow(payload_slots, (u64)sizeof(u64), &bytes) ||
 	    check_add_overflow(offset, bytes, &offset) ||
 	    zcnblk_shm_page_align(offset, &offset)) {
@@ -2678,6 +2722,12 @@ static int zcnblk_shm_layout_init(struct zcnblk_dev *dev)
 	ret = zcnblk_shm_page_align(
 		hdr->completion_offset +
 			descriptor_slots * sizeof(struct zcnblk_shm_completion),
+		&hdr->reserved[ZCNBLK_SHM_HEADER_IO_CONTRACT_OFFSET]);
+	if (ret)
+		goto out_region;
+	ret = zcnblk_shm_page_align(
+		hdr->reserved[ZCNBLK_SHM_HEADER_IO_CONTRACT_OFFSET] +
+			descriptor_slots * sizeof(struct zcnblk_shm_io_contract),
 		&hdr->reserved[ZCNBLK_SHM_HEADER_PAYLOAD_OWNER_OFFSET]);
 	if (ret)
 		goto out_region;
@@ -2694,7 +2744,10 @@ static int zcnblk_shm_layout_init(struct zcnblk_dev *dev)
 		ZCNBLK_SHM_CAP_TRANSFER_PAYLOAD_SLOTS |
 		ZCNBLK_SHM_CAP_READ_PAYLOAD_REF |
 		ZCNBLK_SHM_CAP_REQUEST_WAKE_ARMED |
-		ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED;
+		ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED |
+		ZCNBLK_SHM_CAP_IO_CONTRACT_SIDECAR;
+	hdr->reserved[ZCNBLK_SHM_HEADER_IO_FEATURES] =
+		ZCNBLK_SHM_IO_FEATURE_ALL;
 	if (shm_ordering_epochs)
 		hdr->reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] |=
 			ZCNBLK_SHM_CAP_ORDERING_EPOCH |
@@ -3087,8 +3140,8 @@ static int __init zcnblk_init(void)
 	lim.max_segments = USHRT_MAX;
 	lim.max_segment_size = UINT_MAX;
 	lim.max_hw_sectors = max_frame_bytes >> SECTOR_SHIFT;
-	/* Normal writes are acknowledged before durable commit; flush carries sync. */
-	lim.features = BLK_FEAT_WRITE_CACHE;
+	/* Normal writes are cached; REQ_FUA is carried to the userspace WAL leaf. */
+	lim.features = BLK_FEAT_WRITE_CACHE | BLK_FEAT_FUA;
 
 	zcnblk_dev->disk = blk_mq_alloc_disk(&zcnblk_dev->tag_set, &lim, zcnblk_dev);
 	if (IS_ERR(zcnblk_dev->disk)) {

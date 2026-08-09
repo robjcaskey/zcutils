@@ -28,6 +28,7 @@ pub mod enterprise_workload;
 pub mod fanout;
 mod io_slots;
 pub mod readcache_bench;
+pub(crate) mod wal_contract;
 pub mod window;
 pub mod zcnblk_shm_target;
 
@@ -36,6 +37,12 @@ use crate::block::zcnblk::{
     ZCNBLK_OP_READ_RANGE_RESP, ZCNBLK_OP_READ_RESP, ZCNBLK_OP_SYNC, ZCNBLK_OP_SYNC_ACK,
     ZCNBLK_OP_WRITE, ZCNBLK_OP_WRITE_ACK, ZCNBLK_TOPOLOGY_PORT_LANE, ZCNBLK_TOPOLOGY_VALID,
     ZcnblkFrameHeader, ZcnblkFrameTopology,
+};
+use crate::wal_contract::{
+    ZCNBLK_WAL_FEATURE_ALL, ZCNBLK_WAL_FEATURE_ATOMIC_WRITE, ZCNBLK_WAL_FEATURE_BATCH_SUBMISSION,
+    ZCNBLK_WAL_FEATURE_FUA, ZCNBLK_WAL_FEATURE_IO_PRIORITY, ZCNBLK_WAL_FEATURE_POLLED_COMPLETION,
+    ZCNBLK_WAL_FEATURE_REGISTERED_LEASE, ZCNBLK_WAL_FEATURE_WRITE_LIFETIME, ZcnblkWalIoContract,
+    ZcnblkWalIoOperation, zcnblk_wal_validate_features,
 };
 
 type ZcAes256Cipher = aws_lc_rs::aead::LessSafeKey;
@@ -28355,7 +28362,8 @@ fn zcnblk_read_fan(
 }
 
 const ZCNBLK_FAN_WAL_MAGIC: &[u8; 8] = b"ZCFANW1\0";
-const ZCNBLK_FAN_WAL_VERSION: u16 = 2;
+const ZCNBLK_FAN_WAL_VERSION: u16 = 3;
+const ZCNBLK_FAN_WAL_MIN_VERSION: u16 = 2;
 const ZCNBLK_FAN_WAL_HEADER_LEN: usize = 128;
 const ZCNBLK_FAN_WAL_OP_HELLO: u16 = 1;
 const ZCNBLK_FAN_WAL_OP_WRITE_DESC: u16 = 2;
@@ -28368,10 +28376,12 @@ const ZCNBLK_FAN_WAL_OP_RESULT_BATCH: u16 = 8;
 const ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH: u16 = 9;
 const ZCNBLK_FAN_WAL_OP_REQUEST_BATCH: u16 = 10;
 const ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH: u16 = 11;
+const ZCNBLK_FAN_WAL_OP_HELLO_ACK: u16 = 12;
 const ZCNBLK_FAN_WAL_STATUS_OK: u32 = 0;
 const ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH: u16 = 1 << 0;
 const ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT: u16 = 1 << 1;
-const ZCNBLK_FAN_WAL_COMPACT_WRITE_EXTENT_LEN: usize = 32;
+const ZCNBLK_FAN_WAL_FLAG_IO_CONTRACT_NEGOTIATION: u16 = 1 << 2;
+const ZCNBLK_FAN_WAL_COMPACT_WRITE_EXTENT_LEN: usize = 48;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ZcnblkFanEngine {
@@ -28554,7 +28564,9 @@ impl ZcnblkFanWalFrame {
         }
         let version = u16::from_le_bytes(input[8..10].try_into().expect("u16"));
         let header_len = u16::from_le_bytes(input[10..12].try_into().expect("u16")) as usize;
-        if version != ZCNBLK_FAN_WAL_VERSION || header_len != ZCNBLK_FAN_WAL_HEADER_LEN {
+        if !(ZCNBLK_FAN_WAL_MIN_VERSION..=ZCNBLK_FAN_WAL_VERSION).contains(&version)
+            || header_len != ZCNBLK_FAN_WAL_HEADER_LEN
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unsupported zcnblk fan WAL version={version} header_len={header_len}"),
@@ -28574,6 +28586,7 @@ impl ZcnblkFanWalFrame {
                 | ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH
                 | ZCNBLK_FAN_WAL_OP_REQUEST_BATCH
                 | ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH
+                | ZCNBLK_FAN_WAL_OP_HELLO_ACK
         ) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -28676,6 +28689,103 @@ impl ZcnblkFanWalFrame {
             topology_numa_node: -1,
         })
     }
+
+    fn with_hello_features(mut self, features: u32) -> io::Result<Self> {
+        if !matches!(
+            self.op,
+            ZCNBLK_FAN_WAL_OP_HELLO | ZCNBLK_FAN_WAL_OP_HELLO_ACK
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "WAL I/O features are valid only on hello frames",
+            ));
+        }
+        self.status = zcnblk_wal_validate_features(features)?;
+        self.flags |= ZCNBLK_FAN_WAL_FLAG_IO_CONTRACT_NEGOTIATION;
+        Ok(self)
+    }
+
+    fn hello_features(self) -> io::Result<Option<u32>> {
+        if !matches!(
+            self.op,
+            ZCNBLK_FAN_WAL_OP_HELLO | ZCNBLK_FAN_WAL_OP_HELLO_ACK
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "WAL I/O features requested from a non-hello frame",
+            ));
+        }
+        if self.flags & ZCNBLK_FAN_WAL_FLAG_IO_CONTRACT_NEGOTIATION == 0 {
+            if self.status != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "legacy WAL hello carries an unnegotiated capability mask",
+                ));
+            }
+            return Ok(None);
+        }
+        Ok(Some(zcnblk_wal_validate_features(self.status)?))
+    }
+
+    fn with_io_contract(mut self, contract: ZcnblkWalIoContract) -> io::Result<Self> {
+        if !matches!(
+            self.op,
+            ZCNBLK_FAN_WAL_OP_WRITE_DESC | ZCNBLK_FAN_WAL_OP_READ_DESC
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "WAL I/O contracts are valid only on request descriptors",
+            ));
+        }
+        self.status = contract.encode()?;
+        self.sync_epoch = contract.lease_id;
+        Ok(self)
+    }
+
+    fn io_contract(self) -> io::Result<ZcnblkWalIoContract> {
+        if !matches!(
+            self.op,
+            ZCNBLK_FAN_WAL_OP_WRITE_DESC | ZCNBLK_FAN_WAL_OP_READ_DESC
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "WAL I/O contract requested from a non-request descriptor",
+            ));
+        }
+        ZcnblkWalIoContract::decode(self.status, self.sync_epoch)
+    }
+
+    fn validate_io_contract(self, negotiated_features: u32, batched: bool) -> io::Result<()> {
+        let operation = match self.op {
+            ZCNBLK_FAN_WAL_OP_WRITE_DESC => ZcnblkWalIoOperation::Write,
+            ZCNBLK_FAN_WAL_OP_READ_DESC => ZcnblkWalIoOperation::Read,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "WAL I/O contract validation requires a request descriptor",
+                ));
+            }
+        };
+        let has_contract = self.status != 0;
+        let contract = self.io_contract()?;
+        contract.validate_for_request(
+            operation,
+            self.logical_offset,
+            self.logical_len,
+            batched && has_contract,
+            negotiated_features,
+        )?;
+        if contract.atomic_write && self.leaf_offset % u64::from(self.logical_len) != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "atomic WAL write leaf placement must be naturally aligned: leaf_offset={} len={}",
+                    self.leaf_offset, self.logical_len
+                ),
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn zcnblk_fan_i16_topology_hint(value: i32) -> i16 {
@@ -28752,6 +28862,7 @@ fn zcnblk_fan_wal_write_frame(
         | ZCNBLK_FAN_WAL_OP_REQUEST_BATCH
         | ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH => frame.payload_len as usize,
         ZCNBLK_FAN_WAL_OP_HELLO
+        | ZCNBLK_FAN_WAL_OP_HELLO_ACK
         | ZCNBLK_FAN_WAL_OP_READ_DESC
         | ZCNBLK_FAN_WAL_OP_SYNC
         | ZCNBLK_FAN_WAL_OP_EOF
@@ -33205,6 +33316,8 @@ struct ZcnblkFanWalCompactWriteExtent {
     payload_len: u32,
     record_count: u32,
     mode_selector: u64,
+    io_contract_word: u32,
+    lease_id: u64,
 }
 
 impl ZcnblkFanWalCompactWriteExtent {
@@ -33215,6 +33328,8 @@ impl ZcnblkFanWalCompactWriteExtent {
         out[16..20].copy_from_slice(&self.payload_len.to_le_bytes());
         out[20..24].copy_from_slice(&self.record_count.to_le_bytes());
         out[24..32].copy_from_slice(&self.mode_selector.to_le_bytes());
+        out[32..36].copy_from_slice(&self.io_contract_word.to_le_bytes());
+        out[40..48].copy_from_slice(&self.lease_id.to_le_bytes());
         out
     }
 
@@ -33230,12 +33345,21 @@ impl ZcnblkFanWalCompactWriteExtent {
                     ),
                 )
             })?;
+        let reserved = u32::from_le_bytes(input[36..40].try_into().expect("u32"));
+        if reserved != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fan WAL compact write extent has nonzero reserved contract bytes",
+            ));
+        }
         Ok(Self {
             leaf_offset: u64::from_le_bytes(input[0..8].try_into().expect("u64")),
             logical_offset: u64::from_le_bytes(input[8..16].try_into().expect("u64")),
             payload_len: u32::from_le_bytes(input[16..20].try_into().expect("u32")),
             record_count: u32::from_le_bytes(input[20..24].try_into().expect("u32")),
             mode_selector: u64::from_le_bytes(input[24..32].try_into().expect("u64")),
+            io_contract_word: u32::from_le_bytes(input[32..36].try_into().expect("u32")),
+            lease_id: u64::from_le_bytes(input[40..48].try_into().expect("u64")),
         })
     }
 }
@@ -38677,7 +38801,11 @@ fn zcnblk_fan_wal_push_compact_write_extent(
             .leaf_offset
             .checked_add(u64::from(last.payload_len))
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "compact extent overflow"))?;
-        if *last_selector == selector && last_end == frame.leaf_offset {
+        if *last_selector == selector
+            && last.io_contract_word == frame.status
+            && last.lease_id == frame.sync_epoch
+            && last_end == frame.leaf_offset
+        {
             let next_len = last
                 .payload_len
                 .checked_add(frame.payload_len)
@@ -38699,6 +38827,8 @@ fn zcnblk_fan_wal_push_compact_write_extent(
             payload_len: frame.payload_len,
             record_count: 1,
             mode_selector: selector,
+            io_contract_word: frame.status,
+            lease_id: frame.sync_epoch,
         },
         selector,
     ));
@@ -45547,6 +45677,45 @@ struct ZcnblkWalLeafPendingWrite {
     submit_mode: ZcnblkWalLeafIoMode,
 }
 
+fn zcnblk_wal_leaf_finish_fua(
+    backend: &ZcnblkWalLeafBackend,
+    requests: &[ZcnblkWalLeafPendingWrite],
+    allow_volatile_sync: bool,
+) -> io::Result<()> {
+    for request in requests {
+        if request.frame.op == ZCNBLK_FAN_WAL_OP_WRITE_DESC && request.frame.io_contract()?.fua {
+            // One drain after the batch is stronger than one drain at the FUA
+            // record's position: every write in this result batch is committed
+            // before any completion is published.
+            return backend.sync(allow_volatile_sync);
+        }
+    }
+    Ok(())
+}
+
+fn zcnblk_wal_leaf_contracts_may_coalesce(
+    left: ZcnblkFanWalFrame,
+    right: ZcnblkFanWalFrame,
+) -> io::Result<bool> {
+    let left = left.io_contract()?;
+    let right = right.io_contract()?;
+    Ok(!left.atomic_write
+        && !right.atomic_write
+        && left.ioprio == right.ioprio
+        && left.write_lifetime == right.write_lifetime)
+}
+
+fn zcnblk_wal_leaf_lease_hwm(requests: &[ZcnblkWalLeafPendingWrite]) -> io::Result<u64> {
+    requests.iter().try_fold(0, |hwm, request| {
+        let contract = request.frame.io_contract()?;
+        Ok(hwm.max(if contract.registered_lease {
+            contract.lease_id
+        } else {
+            0
+        }))
+    })
+}
+
 fn zcnblk_wal_leaf_pending_payload<'a>(
     write: &ZcnblkWalLeafPendingWrite,
     payload_log: &'a [u8],
@@ -45608,6 +45777,7 @@ fn zcnblk_wal_leaf_write_contiguous_runs(
                 || next.submit_mode != mode
                 || next.frame.leaf_offset != next_leaf_offset
                 || next.payload_offset != next_payload_offset
+                || !zcnblk_wal_leaf_contracts_may_coalesce(first.frame, next.frame)?
             {
                 break;
             }
@@ -45710,6 +45880,7 @@ fn zcnblk_wal_leaf_write_contiguous_lease_runs(
             if next.frame.op != ZCNBLK_FAN_WAL_OP_WRITE_DESC
                 || next.frame.leaf_offset != next_leaf_offset
                 || next.payload_offset != next_payload_offset
+                || !zcnblk_wal_leaf_contracts_may_coalesce(first.frame, next.frame)?
             {
                 break;
             }
@@ -45830,6 +46001,7 @@ fn zcnblk_wal_leaf_write_contiguous_memfd_lease_runs(
             if next.frame.op != ZCNBLK_FAN_WAL_OP_WRITE_DESC
                 || next.frame.leaf_offset != next_leaf_offset
                 || next.payload_offset != next_payload_offset
+                || !zcnblk_wal_leaf_contracts_may_coalesce(first.frame, next.frame)?
             {
                 break;
             }
@@ -45940,9 +46112,37 @@ fn zcnblk_wal_leaf_note_submit_mode_records(
     Ok(())
 }
 
+fn zcnblk_wal_leaf_supported_io_features(
+    backend: &ZcnblkWalLeafBackend,
+    allow_volatile_sync: bool,
+) -> u32 {
+    let mut features = ZCNBLK_WAL_FEATURE_POLLED_COMPLETION
+        | ZCNBLK_WAL_FEATURE_BATCH_SUBMISSION
+        | ZCNBLK_WAL_FEATURE_IO_PRIORITY
+        | ZCNBLK_WAL_FEATURE_REGISTERED_LEASE
+        | ZCNBLK_WAL_FEATURE_WRITE_LIFETIME;
+    if !backend
+        .sync_contract(allow_volatile_sync)
+        .starts_with("unsupported")
+    {
+        features |= ZCNBLK_WAL_FEATURE_FUA;
+    }
+    if matches!(
+        backend,
+        ZcnblkWalLeafBackend::Memory { .. } | ZcnblkWalLeafBackend::LeaseMemory { .. }
+    ) {
+        // Volatile userspace media commits a complete request before its result is
+        // published. Persistent block media is not advertised until its atomic
+        // write unit has been queried and RWF_ATOMIC is used for submission.
+        features |= ZCNBLK_WAL_FEATURE_ATOMIC_WRITE;
+    }
+    features
+}
+
 fn zcnblk_wal_leaf_validate_write_batch_descriptor(
     batch: ZcnblkFanWalFrame,
     frame: ZcnblkFanWalFrame,
+    negotiated_features: u32,
 ) -> io::Result<()> {
     if frame.op != ZCNBLK_FAN_WAL_OP_WRITE_DESC {
         return Err(io::Error::new(
@@ -45969,12 +46169,13 @@ fn zcnblk_wal_leaf_validate_write_batch_descriptor(
             ),
         ));
     }
-    Ok(())
+    frame.validate_io_contract(negotiated_features, true)
 }
 
 fn zcnblk_wal_leaf_validate_request_batch_descriptor(
     batch: ZcnblkFanWalFrame,
     frame: ZcnblkFanWalFrame,
+    negotiated_features: u32,
 ) -> io::Result<()> {
     if !matches!(
         frame.op,
@@ -46004,7 +46205,7 @@ fn zcnblk_wal_leaf_validate_request_batch_descriptor(
             ),
         ));
     }
-    Ok(())
+    frame.validate_io_contract(negotiated_features, true)
 }
 
 fn zcnblk_wal_leaf_validate_frame_plan(
@@ -46144,6 +46345,7 @@ fn zcnblk_wal_leaf_write_request_batch_results(
             branch_count: batch.branch_count,
             segment_count: batch.segment_count,
             request_id: batch.request_id,
+            sync_epoch: zcnblk_wal_leaf_lease_hwm(requests)?,
             placement_epoch: batch.placement_epoch,
             payload_len: u32::try_from(result_payload_len).map_err(|_| {
                 io::Error::new(
@@ -46219,6 +46421,8 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
     result_ranges: bool,
     spin_reads: bool,
     spin_budget: Option<usize>,
+    negotiated_features: u32,
+    allow_volatile_sync: bool,
     stats: &mut ZcnblkWalLeafStreamStats,
 ) -> io::Result<bool> {
     if batch.flags & ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT == 0
@@ -46289,7 +46493,13 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
     let mut last_write_end = None::<u64>;
     for descriptor in descriptors.chunks_exact(ZCNBLK_FAN_WAL_HEADER_LEN) {
         let frame = zcnblk_fan_wal_decode_frame_slice(descriptor)?;
-        zcnblk_wal_leaf_validate_request_batch_descriptor(batch, frame)?;
+        zcnblk_wal_leaf_validate_request_batch_descriptor(batch, frame, negotiated_features)?;
+        if frame.io_contract()?.atomic_write {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "atomic WAL writes cannot use the direct-memory receive layout",
+            ));
+        }
         let len = frame.payload_len as usize;
         backend.validate_range(frame.leaf_offset, len)?;
         requests.push(ZcnblkWalLeafPendingWrite {
@@ -46394,6 +46604,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
         };
     }
     stats.phase_submit = stats.phase_submit.saturating_add(submit_started.elapsed());
+    zcnblk_wal_leaf_finish_fua(backend, &requests, allow_volatile_sync)?;
 
     let (leaf_preferred_cpu, leaf_numa_node) = zcnblk_fan_wal_local_topology_hints(affinity);
     if !*logged_descriptor_topology {
@@ -46451,6 +46662,8 @@ fn zcnblk_wal_leaf_process_request_batch(
     result_ranges: bool,
     spin_reads: bool,
     spin_budget: Option<usize>,
+    negotiated_features: u32,
+    allow_volatile_sync: bool,
     stats: &mut ZcnblkWalLeafStreamStats,
 ) -> io::Result<()> {
     if zcnblk_wal_leaf_try_direct_memory_write_batch(
@@ -46467,6 +46680,8 @@ fn zcnblk_wal_leaf_process_request_batch(
         result_ranges,
         spin_reads,
         spin_budget,
+        negotiated_features,
+        allow_volatile_sync,
         stats,
     )? {
         return Ok(());
@@ -46538,7 +46753,7 @@ fn zcnblk_wal_leaf_process_request_batch(
             })?;
         let frame =
             zcnblk_fan_wal_decode_frame_slice(&batch_payload[descriptor_start..descriptor_end])?;
-        zcnblk_wal_leaf_validate_request_batch_descriptor(batch, frame)?;
+        zcnblk_wal_leaf_validate_request_batch_descriptor(batch, frame, negotiated_features)?;
         let io_len = frame.payload_len as usize;
         backend.validate_range(frame.leaf_offset, io_len)?;
         let (payload_offset, payload_len) = if frame.op == ZCNBLK_FAN_WAL_OP_WRITE_DESC {
@@ -46842,6 +47057,7 @@ fn zcnblk_wal_leaf_process_request_batch(
         }
     }
     stats.phase_submit = stats.phase_submit.saturating_add(submit_started.elapsed());
+    zcnblk_wal_leaf_finish_fua(backend, &requests, allow_volatile_sync)?;
 
     let use_range_result = result_ranges
         && requests
@@ -46943,6 +47159,7 @@ fn zcnblk_wal_leaf_process_request_batch(
             branch_count: batch.branch_count,
             segment_count: batch.segment_count,
             request_id: batch.request_id,
+            sync_epoch: zcnblk_wal_leaf_lease_hwm(&requests)?,
             placement_epoch: batch.placement_epoch,
             payload_len: u32::try_from(result_payload_len).map_err(|_| {
                 io::Error::new(
@@ -47017,6 +47234,8 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
     result_ranges: bool,
     spin_reads: bool,
     spin_budget: Option<usize>,
+    negotiated_features: u32,
+    allow_volatile_sync: bool,
     stats: &mut ZcnblkWalLeafStreamStats,
 ) -> io::Result<bool> {
     if batch.flags & ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT == 0
@@ -47158,6 +47377,8 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
             segment_count: extent.record_count,
             payload_len: extent.payload_len,
             sequence: synthetic_sequence,
+            status: extent.io_contract_word,
+            sync_epoch: extent.lease_id,
             request_id: batch.request_id,
             placement_epoch: batch.placement_epoch,
             logical_offset: extent.logical_offset,
@@ -47172,6 +47393,13 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
             topology_flags: batch.topology_flags,
             ..ZcnblkFanWalFrame::default()
         };
+        frame.validate_io_contract(negotiated_features, true)?;
+        if frame.io_contract()?.atomic_write {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "atomic WAL writes cannot use the direct compact receive layout",
+            ));
+        }
         writes.push(ZcnblkWalLeafPendingWrite {
             frame,
             payload_offset: 0,
@@ -47210,6 +47438,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
         .saturating_add(write_payload_len);
     stats.write_submit_runs = stats.write_submit_runs.saturating_add(submit_runs);
     stats.max_write_submit_run_frames = stats.max_write_submit_run_frames.max(max_run_records);
+    zcnblk_wal_leaf_finish_fua(backend, &writes, allow_volatile_sync)?;
 
     let (leaf_preferred_cpu, leaf_numa_node) = zcnblk_fan_wal_local_topology_hints(affinity);
     if !*logged_descriptor_topology {
@@ -47267,6 +47496,8 @@ fn zcnblk_wal_leaf_process_write_extent_batch(
     result_ranges: bool,
     spin_reads: bool,
     spin_budget: Option<usize>,
+    negotiated_features: u32,
+    allow_volatile_sync: bool,
     stats: &mut ZcnblkWalLeafStreamStats,
 ) -> io::Result<()> {
     if !result_ranges {
@@ -47288,6 +47519,8 @@ fn zcnblk_wal_leaf_process_write_extent_batch(
         result_ranges,
         spin_reads,
         spin_budget,
+        negotiated_features,
+        allow_volatile_sync,
         stats,
     )? {
         return Ok(());
@@ -47456,6 +47689,8 @@ fn zcnblk_wal_leaf_process_write_extent_batch(
             segment_count: extent.record_count,
             payload_len: extent.payload_len,
             sequence: synthetic_sequence,
+            status: extent.io_contract_word,
+            sync_epoch: extent.lease_id,
             request_id: batch.request_id,
             placement_epoch: batch.placement_epoch,
             logical_offset: extent.logical_offset,
@@ -47470,6 +47705,7 @@ fn zcnblk_wal_leaf_process_write_extent_batch(
             topology_flags: batch.topology_flags,
             ..ZcnblkFanWalFrame::default()
         };
+        frame.validate_io_contract(negotiated_features, true)?;
         let submit_mode = io_mode.adapter_for_frame(frame);
         writes.push(ZcnblkWalLeafPendingWrite {
             frame,
@@ -47563,6 +47799,7 @@ fn zcnblk_wal_leaf_process_write_extent_batch(
         }
     }
     stats.phase_submit = stats.phase_submit.saturating_add(submit_started.elapsed());
+    zcnblk_wal_leaf_finish_fua(backend, &writes, allow_volatile_sync)?;
     for (idx, write) in writes.iter().enumerate() {
         if !completed[idx] {
             return Err(io::Error::new(
@@ -47605,6 +47842,7 @@ fn zcnblk_wal_leaf_process_write_extent_batch(
             branch_count: batch.branch_count,
             segment_count: batch.segment_count,
             request_id: batch.request_id,
+            sync_epoch: zcnblk_wal_leaf_lease_hwm(&writes)?,
             placement_epoch: batch.placement_epoch,
             payload_len: 0,
             status: ZCNBLK_FAN_WAL_STATUS_OK,
@@ -47634,6 +47872,8 @@ fn zcnblk_wal_leaf_process_write_batch(
     result_ranges: bool,
     spin_reads: bool,
     spin_budget: Option<usize>,
+    negotiated_features: u32,
+    allow_volatile_sync: bool,
     stats: &mut ZcnblkWalLeafStreamStats,
 ) -> io::Result<()> {
     let count = batch.segment_count as usize;
@@ -47713,7 +47953,7 @@ fn zcnblk_wal_leaf_process_write_batch(
             let frame = zcnblk_fan_wal_decode_frame_slice(
                 &batch_payload[descriptor_start..descriptor_end],
             )?;
-            zcnblk_wal_leaf_validate_write_batch_descriptor(batch, frame)?;
+            zcnblk_wal_leaf_validate_write_batch_descriptor(batch, frame, negotiated_features)?;
             let payload_len = frame.payload_len as usize;
             let next_payload_cursor = payload_cursor.checked_add(payload_len).ok_or_else(|| {
                 io::Error::new(
@@ -47755,7 +47995,7 @@ fn zcnblk_wal_leaf_process_write_batch(
     } else {
         for _ in 0..count {
             let frame = zcnblk_fan_wal_read_frame(stream)?;
-            zcnblk_wal_leaf_validate_write_batch_descriptor(batch, frame)?;
+            zcnblk_wal_leaf_validate_write_batch_descriptor(batch, frame, negotiated_features)?;
             let payload_read_started = Instant::now();
             let (payload, alloc_elapsed, recv_elapsed) =
                 zcnblk_fan_wal_read_payload_measured(stream, frame, false, None)?;
@@ -47846,6 +48086,7 @@ fn zcnblk_wal_leaf_process_write_batch(
         )?;
     }
     stats.phase_submit = stats.phase_submit.saturating_add(submit_started.elapsed());
+    zcnblk_wal_leaf_finish_fua(backend, &writes, allow_volatile_sync)?;
 
     let result_write_started = Instant::now();
     let mut result_payload = if result_ranges {
@@ -47920,6 +48161,7 @@ fn zcnblk_wal_leaf_process_write_batch(
             branch_count: batch.branch_count,
             segment_count: batch.segment_count,
             request_id: batch.request_id,
+            sync_epoch: zcnblk_wal_leaf_lease_hwm(&writes)?,
             placement_epoch: batch.placement_epoch,
             payload_len: u32::try_from(result_payload.len()).map_err(|_| {
                 io::Error::new(
@@ -48060,6 +48302,7 @@ fn zcnblk_wal_leaf_process_stream(
     let mut stats = ZcnblkWalLeafStreamStats::default();
     let mut logged_descriptor_topology = false;
     let mut result_ranges = false;
+    let mut negotiated_features = 0u32;
     let mut stream_plan = ZcPlanRuntime::default();
     let result_ranges_configured = zcnblk_fan_wal_result_ranges_enabled();
     let (leaf_preferred_cpu, leaf_numa_node) = zcnblk_fan_wal_local_topology_hints(affinity);
@@ -48121,6 +48364,31 @@ fn zcnblk_wal_leaf_process_stream(
                     plan_hash: frame.request_id,
                     placement_epoch: frame.placement_epoch,
                 };
+                if let Some(requested_features) = frame.hello_features()? {
+                    let supported_features = zcnblk_wal_leaf_supported_io_features(
+                        backend.as_ref(),
+                        allow_volatile_sync,
+                    );
+                    negotiated_features = requested_features & supported_features;
+                    let hello_ack = ZcnblkFanWalFrame {
+                        op: ZCNBLK_FAN_WAL_OP_HELLO_ACK,
+                        lane_id: frame.lane_id,
+                        lane_count: frame.lane_count,
+                        branch_id: frame.branch_id,
+                        branch_count: frame.branch_count,
+                        request_id: frame.request_id,
+                        placement_epoch: frame.placement_epoch,
+                        ..ZcnblkFanWalFrame::default()
+                    }
+                    .with_hello_features(negotiated_features)?;
+                    zcnblk_fan_wal_write_frame(&mut stream, hello_ack, &[])?;
+                    println!(
+                        "zcnblk-wal-leaf-contract: worker={worker} slot={stream_slot} lane={} requested={requested_features:#x} supported={supported_features:#x} negotiated={negotiated_features:#x}",
+                        meta.lane,
+                    );
+                } else {
+                    negotiated_features = 0;
+                }
                 if stream_plan.is_set() {
                     println!(
                         "zcnblk-wal-leaf-plan: worker={worker} slot={stream_slot} lane={} \
@@ -48152,6 +48420,8 @@ fn zcnblk_wal_leaf_process_stream(
                     result_ranges,
                     spin_reads,
                     spin_budget,
+                    negotiated_features,
+                    allow_volatile_sync,
                     &mut stats,
                 )?;
             }
@@ -48171,6 +48441,8 @@ fn zcnblk_wal_leaf_process_stream(
                     result_ranges,
                     spin_reads,
                     spin_budget,
+                    negotiated_features,
+                    allow_volatile_sync,
                     &mut stats,
                 )?;
             }
@@ -48190,11 +48462,15 @@ fn zcnblk_wal_leaf_process_stream(
                     result_ranges,
                     spin_reads,
                     spin_budget,
+                    negotiated_features,
+                    allow_volatile_sync,
                     &mut stats,
                 )?;
             }
             ZCNBLK_FAN_WAL_OP_WRITE_DESC => {
                 zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "write descriptor")?;
+                frame.validate_io_contract(negotiated_features, false)?;
+                let io_contract = frame.io_contract()?;
                 if frame.lane_id as usize != meta.lane {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -48207,6 +48483,9 @@ fn zcnblk_wal_leaf_process_stream(
                 let payload = zcnblk_fan_wal_read_payload(&mut stream, frame)?;
                 let submit_mode = io_mode.adapter_for_frame(frame);
                 backend.write_at_mode(submit_mode, &mut ring, frame.leaf_offset, &payload)?;
+                if io_contract.fua {
+                    backend.sync(allow_volatile_sync)?;
+                }
                 let result = zcnblk_fan_wal_attach_local_topology(
                     ZcnblkFanWalFrame {
                         op: ZCNBLK_FAN_WAL_OP_RESULT,
@@ -48235,6 +48514,7 @@ fn zcnblk_wal_leaf_process_stream(
             }
             ZCNBLK_FAN_WAL_OP_READ_DESC => {
                 zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "read descriptor")?;
+                frame.validate_io_contract(negotiated_features, false)?;
                 if frame.lane_id as usize != meta.lane {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -56880,6 +57160,146 @@ EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_grou
     }
 
     #[test]
+    fn zcnblk_fan_wal_negotiates_all_io_contract_features() {
+        let hello = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_HELLO,
+            lane_id: 1,
+            lane_count: 4,
+            ..ZcnblkFanWalFrame::default()
+        }
+        .with_hello_features(ZCNBLK_WAL_FEATURE_ALL)
+        .unwrap();
+        let decoded = ZcnblkFanWalFrame::decode(&hello.encode()).unwrap();
+        assert_eq!(
+            decoded.hello_features().unwrap(),
+            Some(ZCNBLK_WAL_FEATURE_ALL)
+        );
+
+        let ack = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_HELLO_ACK,
+            lane_id: decoded.lane_id,
+            lane_count: decoded.lane_count,
+            ..ZcnblkFanWalFrame::default()
+        }
+        .with_hello_features(decoded.hello_features().unwrap().unwrap())
+        .unwrap();
+        assert_eq!(
+            ZcnblkFanWalFrame::decode(&ack.encode())
+                .unwrap()
+                .hello_features()
+                .unwrap(),
+            Some(ZCNBLK_WAL_FEATURE_ALL)
+        );
+    }
+
+    #[test]
+    fn zcnblk_fan_wal_request_round_trips_all_io_contract_fields() {
+        let contract = ZcnblkWalIoContract {
+            fua: true,
+            polled_completion: true,
+            registered_lease: true,
+            atomic_write: true,
+            ioprio: 0x4001,
+            write_lifetime: crate::wal_contract::ZCNBLK_WAL_WRITE_LIFE_SHORT,
+            lease_id: 0x1234_5678_9abc_def0,
+        };
+        let frame = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+            logical_offset: 8192,
+            logical_len: 4096,
+            payload_len: 4096,
+            ..ZcnblkFanWalFrame::default()
+        }
+        .with_io_contract(contract)
+        .unwrap();
+        let decoded = ZcnblkFanWalFrame::decode(&frame.encode()).unwrap();
+        assert_eq!(decoded.io_contract().unwrap(), contract);
+        decoded
+            .validate_io_contract(ZCNBLK_WAL_FEATURE_ALL, true)
+            .unwrap();
+    }
+
+    #[test]
+    fn zcnblk_fan_wal_rejects_unnegotiated_contract_features() {
+        let frame = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+            logical_offset: 0,
+            logical_len: 4096,
+            payload_len: 4096,
+            ..ZcnblkFanWalFrame::default()
+        }
+        .with_io_contract(ZcnblkWalIoContract {
+            fua: true,
+            ..ZcnblkWalIoContract::default()
+        })
+        .unwrap();
+        let err = frame.validate_io_contract(0, false).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn zcnblk_fan_wal_legacy_batch_contract_remains_compatible() {
+        let frame = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+            logical_offset: 0,
+            leaf_offset: 0,
+            logical_len: 4096,
+            payload_len: 4096,
+            status: 0,
+            ..ZcnblkFanWalFrame::default()
+        };
+        frame.validate_io_contract(0, true).unwrap();
+    }
+
+    #[test]
+    fn zcnblk_fan_wal_atomic_contract_validates_leaf_alignment() {
+        let frame = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+            logical_offset: 8192,
+            leaf_offset: 10_240,
+            logical_len: 4096,
+            payload_len: 4096,
+            ..ZcnblkFanWalFrame::default()
+        }
+        .with_io_contract(ZcnblkWalIoContract {
+            atomic_write: true,
+            ..ZcnblkWalIoContract::default()
+        })
+        .unwrap();
+        assert!(
+            frame
+                .validate_io_contract(ZCNBLK_WAL_FEATURE_ATOMIC_WRITE, false)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn zcnblk_fan_wal_coalescing_preserves_atomic_priority_and_lifetime_boundaries() {
+        let frame = |contract: ZcnblkWalIoContract| {
+            ZcnblkFanWalFrame {
+                op: ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+                logical_len: 4096,
+                payload_len: 4096,
+                ..ZcnblkFanWalFrame::default()
+            }
+            .with_io_contract(contract)
+            .unwrap()
+        };
+        let normal = frame(ZcnblkWalIoContract::default());
+        assert!(zcnblk_wal_leaf_contracts_may_coalesce(normal, normal).unwrap());
+        let prioritized = frame(ZcnblkWalIoContract {
+            ioprio: 0x4001,
+            ..ZcnblkWalIoContract::default()
+        });
+        assert!(!zcnblk_wal_leaf_contracts_may_coalesce(normal, prioritized).unwrap());
+        let atomic = frame(ZcnblkWalIoContract {
+            atomic_write: true,
+            ..ZcnblkWalIoContract::default()
+        });
+        assert!(!zcnblk_wal_leaf_contracts_may_coalesce(atomic, atomic).unwrap());
+    }
+
+    #[test]
     fn zcfanout_shmlease_zcnblk_request_token_carries_logical_page() {
         let lane = 3usize;
         let sequence = 0x1234_5678_9abc_u64;
@@ -58195,6 +58615,57 @@ EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_grou
         assert_eq!(backend.sync_contract(false), "unsupported-volatile");
         assert_eq!(backend.sync_contract(true), "remote-volatile-retained-hwm");
         backend.sync(true).unwrap();
+    }
+
+    #[test]
+    fn zcnblk_wal_leaf_capabilities_match_backend_contracts() {
+        let devnull = ZcnblkWalLeafBackend::DevNull {
+            device_bytes: 1024 * 1024,
+            required_alignment: 4096,
+        };
+        let devnull_features = zcnblk_wal_leaf_supported_io_features(&devnull, false);
+        assert_eq!(
+            devnull_features & (ZCNBLK_WAL_FEATURE_FUA | ZCNBLK_WAL_FEATURE_ATOMIC_WRITE),
+            0
+        );
+        assert_ne!(devnull_features & ZCNBLK_WAL_FEATURE_BATCH_SUBMISSION, 0);
+
+        let memory = ZcnblkWalLeafBackend::Memory {
+            label: "zcmem:test-contracts".to_string(),
+            arena: ZcnblkWalLeafMemoryArena::new(4096, 4096, None).unwrap(),
+        };
+        assert_eq!(
+            zcnblk_wal_leaf_supported_io_features(&memory, true),
+            ZCNBLK_WAL_FEATURE_ALL
+        );
+        assert_eq!(
+            zcnblk_wal_leaf_supported_io_features(&memory, false) & ZCNBLK_WAL_FEATURE_FUA,
+            0
+        );
+
+        let frame = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+            logical_len: 4096,
+            payload_len: 4096,
+            ..ZcnblkFanWalFrame::default()
+        }
+        .with_io_contract(ZcnblkWalIoContract {
+            fua: true,
+            registered_lease: true,
+            lease_id: 77,
+            ..ZcnblkWalIoContract::default()
+        })
+        .unwrap();
+        let requests = [ZcnblkWalLeafPendingWrite {
+            frame,
+            payload_offset: 0,
+            payload_len: 4096,
+            record_count: 1,
+            submit_mode: ZcnblkWalLeafIoMode::Blocking,
+        }];
+        assert!(zcnblk_wal_leaf_finish_fua(&memory, &requests, false).is_err());
+        zcnblk_wal_leaf_finish_fua(&memory, &requests, true).unwrap();
+        assert_eq!(zcnblk_wal_leaf_lease_hwm(&requests).unwrap(), 77);
     }
 
     #[test]

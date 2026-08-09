@@ -3,9 +3,9 @@ use super::{
     RawRing, SendZcBatchAttempts, UringSendMode, ZCNBLK_FAN_WAL_COMPACT_WRITE_EXTENT_LEN,
     ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT, ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH,
     ZCNBLK_FAN_WAL_HEADER_LEN, ZCNBLK_FAN_WAL_OP_EOF, ZCNBLK_FAN_WAL_OP_HELLO,
-    ZCNBLK_FAN_WAL_OP_READ_DESC, ZCNBLK_FAN_WAL_OP_REQUEST_BATCH, ZCNBLK_FAN_WAL_OP_RESULT,
-    ZCNBLK_FAN_WAL_OP_RESULT_BATCH, ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH, ZCNBLK_FAN_WAL_OP_SYNC,
-    ZCNBLK_FAN_WAL_OP_WRITE_BATCH, ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+    ZCNBLK_FAN_WAL_OP_HELLO_ACK, ZCNBLK_FAN_WAL_OP_READ_DESC, ZCNBLK_FAN_WAL_OP_REQUEST_BATCH,
+    ZCNBLK_FAN_WAL_OP_RESULT, ZCNBLK_FAN_WAL_OP_RESULT_BATCH, ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH,
+    ZCNBLK_FAN_WAL_OP_SYNC, ZCNBLK_FAN_WAL_OP_WRITE_BATCH, ZCNBLK_FAN_WAL_OP_WRITE_DESC,
     ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH, ZCNBLK_FAN_WAL_STATUS_OK, ZCNBLK_OP_READ,
     ZCNBLK_OP_WRITE, ZcnblkFanWalAdaptiveRecvSpin, ZcnblkFanWalCompactWriteExtent,
     ZcnblkFanWalFrame, ZcnblkFanWalSharedLeaseSource, ZcnblkShmArenaDirtyHwmCache,
@@ -15,12 +15,17 @@ use super::{
     zcnblk_fan_wal_recv_exact_spin_then_block, zcnblk_fan_wal_write_frame,
     zcnblk_fan_wal_write_leaf_batch_payload,
 };
+use crate::wal_contract::{
+    ZCNBLK_WAL_FEATURE_ALL, ZCNBLK_WAL_FEATURE_ATOMIC_WRITE, ZCNBLK_WAL_FEATURE_BATCH_SUBMISSION,
+    ZCNBLK_WAL_FEATURE_FUA, ZCNBLK_WAL_FEATURE_IO_PRIORITY, ZCNBLK_WAL_FEATURE_POLLED_COMPLETION,
+    ZCNBLK_WAL_FEATURE_REGISTERED_LEASE, ZCNBLK_WAL_FEATURE_WRITE_LIFETIME, ZcnblkWalIoContract,
+};
 use std::cell::UnsafeCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, IoSlice};
+use std::io::{self, IoSlice, Read};
 use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -33,7 +38,7 @@ use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
 const ZCNBLK_SHM_MAGIC: u64 = 0x3130_4d48_534e_435a;
-const ZCNBLK_SHM_VERSION: u32 = 4;
+const ZCNBLK_SHM_VERSION: u32 = 5;
 const ZCNBLK_SHM_DESC_BYTES: u32 = 64;
 const ZCNBLK_SHM_OP_WRITE: u16 = 1;
 const ZCNBLK_SHM_OP_READ: u16 = 2;
@@ -45,6 +50,19 @@ const ZCNBLK_SHM_CAP_REQUEST_WAKE_ARMED: u64 = 1 << 3;
 const ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED: u64 = 1 << 4;
 const ZCNBLK_SHM_CAP_ORDERING_EPOCH: u64 = 1 << 5;
 const ZCNBLK_SHM_CAP_ORDERING_VECTOR: u64 = 1 << 6;
+const ZCNBLK_SHM_CAP_IO_CONTRACT_SIDECAR: u64 = 1 << 7;
+const ZCNBLK_SHM_IO_FEATURE_ALL: u64 = ZCNBLK_WAL_FEATURE_FUA as u64
+    | ZCNBLK_WAL_FEATURE_POLLED_COMPLETION as u64
+    | ZCNBLK_WAL_FEATURE_BATCH_SUBMISSION as u64
+    | ZCNBLK_WAL_FEATURE_IO_PRIORITY as u64
+    | ZCNBLK_WAL_FEATURE_REGISTERED_LEASE as u64
+    | ZCNBLK_WAL_FEATURE_ATOMIC_WRITE as u64
+    | ZCNBLK_WAL_FEATURE_WRITE_LIFETIME as u64;
+const ZCNBLK_SHM_IO_F_FUA: u32 = 1 << 0;
+const ZCNBLK_SHM_IO_F_POLLED_COMPLETION: u32 = 1 << 1;
+const ZCNBLK_SHM_IO_F_REGISTERED_LEASE: u32 = 1 << 2;
+const ZCNBLK_SHM_IO_F_ATOMIC_WRITE: u32 = 1 << 3;
+const ZCNBLK_SHM_IO_F_ALL: u32 = (1 << 4) - 1;
 const ZCNBLK_SHM_REQUEST_ID_BITS: u32 = 16;
 #[cfg(test)]
 const ZCNBLK_SHM_REQUEST_ID_MASK: u64 = (1 << ZCNBLK_SHM_REQUEST_ID_BITS) - 1;
@@ -53,6 +71,8 @@ const ZCNBLK_SHM_CQE_REF_CHANNEL_SHIFT: u32 = 8;
 const ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS: u32 = 1 << 0;
 const ZCNBLK_SHM_HEADER_CAPABILITIES: usize = 0;
 const ZCNBLK_SHM_HEADER_PAYLOAD_OWNER_OFFSET: usize = 1;
+const ZCNBLK_SHM_HEADER_IO_CONTRACT_OFFSET: usize = 2;
+const ZCNBLK_SHM_HEADER_IO_FEATURES: usize = 3;
 const ZCNBLK_SHM_CHANNEL_FLUSH_TAIL: usize = 0;
 const ZCNBLK_SHM_CHANNEL_FLUSH_EPOCH: usize = 1;
 const ZCNBLK_SHM_IOC_MAGIC: u32 = 0xbc;
@@ -144,6 +164,42 @@ struct ZcnblkShmCompletion {
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+struct ZcnblkShmIoContract {
+    flags: u32,
+    ioprio: u16,
+    write_lifetime: u8,
+    reserved: u8,
+    lease_id: u64,
+}
+
+impl ZcnblkShmIoContract {
+    fn into_wal(self) -> io::Result<ZcnblkWalIoContract> {
+        let unknown = self.flags & !ZCNBLK_SHM_IO_F_ALL;
+        if unknown != 0 || self.reserved != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcnblk SHM I/O contract contains unknown flags={unknown:#x} reserved={}",
+                    self.reserved
+                ),
+            ));
+        }
+        let contract = ZcnblkWalIoContract {
+            fua: self.flags & ZCNBLK_SHM_IO_F_FUA != 0,
+            polled_completion: self.flags & ZCNBLK_SHM_IO_F_POLLED_COMPLETION != 0,
+            registered_lease: self.flags & ZCNBLK_SHM_IO_F_REGISTERED_LEASE != 0,
+            atomic_write: self.flags & ZCNBLK_SHM_IO_F_ATOMIC_WRITE != 0,
+            ioprio: self.ioprio,
+            write_lifetime: self.write_lifetime,
+            lease_id: self.lease_id,
+        };
+        contract.encode()?;
+        Ok(contract)
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
 struct ZcnblkShmHeader {
     magic: u64,
     version: u32,
@@ -176,6 +232,7 @@ struct ZcnblkShmAttach {
 const _: () = assert!(size_of::<ZcnblkShmChannel>() == 320);
 const _: () = assert!(size_of::<ZcnblkShmRequest>() == 64);
 const _: () = assert!(size_of::<ZcnblkShmCompletion>() == 64);
+const _: () = assert!(size_of::<ZcnblkShmIoContract>() == 16);
 const _: () = assert!(size_of::<ZcnblkShmHeader>() == 144);
 
 struct Mapping {
@@ -298,6 +355,7 @@ impl ZcnblkFanWalSharedLeaseSource for Mapping {
 #[derive(Clone, Copy)]
 struct PendingWalWrite {
     request: ZcnblkShmRequest,
+    io_contract: ZcnblkWalIoContract,
     request_sequence: u64,
     submit_sequence: u64,
     offset: u64,
@@ -308,6 +366,7 @@ struct PendingWalWrite {
 #[derive(Clone, Copy)]
 struct PendingRemoteRead {
     request: ZcnblkShmRequest,
+    io_contract: ZcnblkWalIoContract,
     request_sequence: u64,
     payload_offset: usize,
     dirty_ref: Option<WalDirtyReadRef>,
@@ -319,6 +378,7 @@ struct RemoteWalLeaf {
     address: String,
     lane_id: u32,
     lane_count: u32,
+    negotiated_features: u32,
     target_cpu: Option<usize>,
     write_batches: u64,
     write_records: u64,
@@ -516,6 +576,34 @@ fn set_tcp_quickack(stream: &TcpStream) -> io::Result<()> {
     } else {
         Err(io::Error::last_os_error())
     }
+}
+
+fn socket_i32_option(stream: &TcpStream, option: libc::c_int) -> i32 {
+    let mut value = 0i32;
+    let mut len = size_of::<i32>() as libc::socklen_t;
+    let ret = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            option,
+            (&mut value as *mut i32).cast(),
+            &mut len,
+        )
+    };
+    if ret == 0 && len as usize == size_of::<i32>() {
+        value
+    } else if option == libc::SO_INCOMING_CPU {
+        -1
+    } else {
+        0
+    }
+}
+
+fn socket_rx_locality(stream: &TcpStream) -> (i32, i32) {
+    (
+        socket_i32_option(stream, libc::SO_INCOMING_CPU),
+        socket_i32_option(stream, libc::SO_INCOMING_NAPI_ID),
+    )
 }
 
 impl RemoteWalSendMode {
@@ -934,6 +1022,8 @@ fn compact_write_batch_descriptors(
             payload_len: request.request.len,
             record_count: 1,
             mode_selector: request.request.submit_sequence ^ u64::from(lane_id),
+            io_contract_word: request.io_contract.encode()?,
+            lease_id: request.io_contract.lease_id,
         };
         descriptors.extend_from_slice(&extent.encode());
     }
@@ -1017,8 +1107,30 @@ impl RemoteWalLeaf {
             branch_id: 0,
             branch_count: 1,
             ..ZcnblkFanWalFrame::default()
-        };
+        }
+        .with_hello_features(ZCNBLK_WAL_FEATURE_ALL)?;
         zcnblk_fan_wal_write_frame(&mut stream, hello, &[])?;
+        let mut hello_ack_bytes = [0u8; ZCNBLK_FAN_WAL_HEADER_LEN];
+        stream.read_exact(&mut hello_ack_bytes)?;
+        let hello_ack = ZcnblkFanWalFrame::decode(&hello_ack_bytes)?;
+        if hello_ack.op != ZCNBLK_FAN_WAL_OP_HELLO_ACK
+            || hello_ack.lane_id != lane_id
+            || hello_ack.lane_count != lane_count
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "remote WAL leaf returned an invalid I/O contract hello acknowledgement",
+            ));
+        }
+        let negotiated_features = hello_ack.hello_features()?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "remote WAL leaf omitted negotiated I/O capabilities",
+            )
+        })?;
+        eprintln!(
+            "zcnblk-shm-target-remote-contract: lane={lane_id} requested={ZCNBLK_WAL_FEATURE_ALL:#x} negotiated={negotiated_features:#x}"
+        );
         let recv_spin_spec =
             env::var("URING_PLAY_ZCNBLK_SHM_REMOTE_RECV_SPINS").unwrap_or_else(|_| "0".to_string());
         let recv_spin_budget = if matches!(
@@ -1044,6 +1156,7 @@ impl RemoteWalLeaf {
             address,
             lane_id,
             lane_count,
+            negotiated_features,
             target_cpu: None,
             write_batches: 0,
             write_records: 0,
@@ -1203,7 +1316,12 @@ impl RemoteWalLeaf {
         self.recv_wait.recv_exact(&mut self.stream, out)
     }
 
-    fn request_frame(&self, write: &PendingWalWrite, op: u16) -> io::Result<ZcnblkFanWalFrame> {
+    fn request_frame(
+        &self,
+        write: &PendingWalWrite,
+        op: u16,
+        batched: bool,
+    ) -> io::Result<ZcnblkFanWalFrame> {
         let zcnblk_op = match op {
             ZCNBLK_FAN_WAL_OP_WRITE_DESC => ZCNBLK_OP_WRITE,
             ZCNBLK_FAN_WAL_OP_READ_DESC => ZCNBLK_OP_READ,
@@ -1214,7 +1332,7 @@ impl RemoteWalLeaf {
                 ));
             }
         };
-        Ok(ZcnblkFanWalFrame {
+        let frame = ZcnblkFanWalFrame {
             op,
             // The block ingress lane remains in PendingWalWrite for local
             // completion and lease release. Wire topology names the stable
@@ -1242,7 +1360,10 @@ impl RemoteWalLeaf {
             topology_queue_id: self.lane_id,
             topology_flags: u32::from(write.request.flags),
             ..ZcnblkFanWalFrame::default()
-        })
+        }
+        .with_io_contract(write.io_contract)?;
+        frame.validate_io_contract(self.negotiated_features, batched)?;
+        Ok(frame)
     }
 
     fn write_batch(
@@ -1269,7 +1390,7 @@ impl RemoteWalLeaf {
         for write in writes {
             descriptors.extend_from_slice(
                 &self
-                    .request_frame(write, ZCNBLK_FAN_WAL_OP_WRITE_DESC)?
+                    .request_frame(write, ZCNBLK_FAN_WAL_OP_WRITE_DESC, true)?
                     .encode(),
             );
         }
@@ -1305,11 +1426,18 @@ impl RemoteWalLeaf {
             .max(payload_plan.max_run_bytes);
         let result = self.read_result_frame()?;
         self.finish_next_send_batch(tx)?;
+        let expected_lease_hwm = writes
+            .iter()
+            .filter(|write| write.io_contract.registered_lease)
+            .map(|write| write.io_contract.lease_id)
+            .max()
+            .unwrap_or(0);
         if result.op != ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH
             || result.status != ZCNBLK_FAN_WAL_STATUS_OK
             || result.branch_id != 0
             || result.segment_count as usize != writes.len()
             || result.payload_len != 0
+            || result.sync_epoch != expected_lease_hwm
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1332,13 +1460,14 @@ impl RemoteWalLeaf {
     fn read_into(&mut self, request: ZcnblkShmRequest, out: &mut [u8]) -> io::Result<()> {
         let pending = PendingWalWrite {
             request,
+            io_contract: ZcnblkWalIoContract::default(),
             request_sequence: 0,
             submit_sequence: request.submit_sequence,
             offset: request.offset,
             len: out.len(),
             payload_offset: 0,
         };
-        let frame = self.request_frame(&pending, ZCNBLK_FAN_WAL_OP_READ_DESC)?;
+        let frame = self.request_frame(&pending, ZCNBLK_FAN_WAL_OP_READ_DESC, false)?;
         zcnblk_fan_wal_write_frame(&mut self.stream, frame, &[])?;
         let result = self.read_result_frame()?;
         if result.op != ZCNBLK_FAN_WAL_OP_RESULT
@@ -1557,13 +1686,14 @@ impl RemoteWalLeaf {
             };
             let pending = PendingWalWrite {
                 request: request.request,
+                io_contract: request.io_contract,
                 request_sequence: request.request_sequence,
                 submit_sequence: request.request.submit_sequence,
                 offset: request.request.offset,
                 len: request.request.len as usize,
                 payload_offset: request.payload_offset,
             };
-            descriptors.extend_from_slice(&self.request_frame(&pending, op)?.encode());
+            descriptors.extend_from_slice(&self.request_frame(&pending, op, true)?.encode());
         }
         let batch = ZcnblkFanWalFrame {
             op: ZCNBLK_FAN_WAL_OP_REQUEST_BATCH,
@@ -1646,6 +1776,12 @@ impl RemoteWalLeaf {
         }
         let (descriptor_len, read_payload_len, write_payload_len) =
             Self::request_batch_lengths(requests)?;
+        let expected_lease_hwm = requests
+            .iter()
+            .filter(|request| request.io_contract.registered_lease)
+            .map(|request| request.io_contract.lease_id)
+            .max()
+            .unwrap_or(0);
         let header_started = Instant::now();
         let result_batch = self.read_result_frame()?;
         self.result_header_time = self
@@ -1662,6 +1798,7 @@ impl RemoteWalLeaf {
                 || result_batch.segment_count as usize != requests.len()
                 || result_batch.request_id != requests[0].request.request_id
                 || result_batch.payload_len != 0
+                || result_batch.sync_epoch != expected_lease_hwm
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -1693,6 +1830,7 @@ impl RemoteWalLeaf {
             || result_batch.segment_count as usize != requests.len()
             || result_batch.request_id != requests[0].request.request_id
             || result_batch.payload_len as usize != expected_result_len
+            || result_batch.sync_epoch != expected_lease_hwm
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1727,6 +1865,7 @@ impl RemoteWalLeaf {
                 || result.request_id != request.request.request_id
                 || result.logical_offset != request.request.offset
                 || result.leaf_offset != request.request.offset
+                || result.sync_epoch != request.io_contract.lease_id
                 || result.payload_len
                     != if request.request.op == ZCNBLK_SHM_OP_READ {
                         request.request.len
@@ -1914,6 +2053,7 @@ impl RemoteWalWorker {
                                             .iter()
                                             .map(|write| PendingRemoteRead {
                                                 request: write.request,
+                                                io_contract: write.io_contract,
                                                 request_sequence: write.request_sequence,
                                                 payload_offset: write.payload_offset,
                                                 dirty_ref: None,
@@ -3785,6 +3925,12 @@ struct Stats {
     remote_read_misses: u64,
     remote_batches: u64,
     completion_window_stalls: u64,
+    fua_requests: u64,
+    polled_requests: u64,
+    ioprio_requests: u64,
+    registered_lease_requests: u64,
+    atomic_write_requests: u64,
+    write_lifetime_requests: u64,
 }
 
 #[repr(align(64))]
@@ -4899,6 +5045,15 @@ fn wal_dirty_pressure_layout(
 }
 
 impl Stats {
+    fn note_io_contract(&mut self, contract: ZcnblkWalIoContract) {
+        self.fua_requests += u64::from(contract.fua);
+        self.polled_requests += u64::from(contract.polled_completion);
+        self.ioprio_requests += u64::from(contract.ioprio != 0);
+        self.registered_lease_requests += u64::from(contract.registered_lease);
+        self.atomic_write_requests += u64::from(contract.atomic_write);
+        self.write_lifetime_requests += u64::from(contract.write_lifetime != 0);
+    }
+
     fn add(&mut self, other: &Self) {
         self.requests += other.requests;
         self.writes += other.writes;
@@ -4920,6 +5075,12 @@ impl Stats {
         self.remote_read_misses += other.remote_read_misses;
         self.remote_batches += other.remote_batches;
         self.completion_window_stalls += other.completion_window_stalls;
+        self.fua_requests += other.fua_requests;
+        self.polled_requests += other.polled_requests;
+        self.ioprio_requests += other.ioprio_requests;
+        self.registered_lease_requests += other.registered_lease_requests;
+        self.atomic_write_requests += other.atomic_write_requests;
+        self.write_lifetime_requests += other.write_lifetime_requests;
     }
 }
 
@@ -5072,14 +5233,24 @@ impl SharedTarget {
             return Err(io::Error::last_os_error());
         }
         Self::validate_header(&header)?;
-        let required_wake_capabilities =
-            ZCNBLK_SHM_CAP_REQUEST_WAKE_ARMED | ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED;
-        if header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] & required_wake_capabilities
-            != required_wake_capabilities
+        let required_capabilities = ZCNBLK_SHM_CAP_REQUEST_WAKE_ARMED
+            | ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED
+            | ZCNBLK_SHM_CAP_IO_CONTRACT_SIDECAR;
+        if header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] & required_capabilities
+            != required_capabilities
         {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "zcnblk shared transport lacks armed request/completion wakeups",
+                "zcnblk shared transport lacks armed wakeups or the I/O contract sidecar",
+            ));
+        }
+        if header.reserved[ZCNBLK_SHM_HEADER_IO_FEATURES] != ZCNBLK_SHM_IO_FEATURE_ALL {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "zcnblk shared transport I/O feature mismatch expected={ZCNBLK_SHM_IO_FEATURE_ALL:#x} actual={:#x}",
+                    header.reserved[ZCNBLK_SHM_HEADER_IO_FEATURES]
+                ),
             ));
         }
         if lease_release_batch == 0 || lease_release_batch > u64::from(header.payload_entries) {
@@ -5200,9 +5371,18 @@ impl SharedTarget {
             let stream_count_u32 = u32::try_from(stream_count).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidInput, "WAL stream count exceeds u32")
             })?;
-            (0..stream_count_u32)
-                .map(|lane| RemoteWalLeaf::connect(lane, stream_count_u32))
-                .collect::<io::Result<Vec<_>>>()?
+            let connect_handles = (0..stream_count_u32)
+                .map(|lane| thread::spawn(move || RemoteWalLeaf::connect(lane, stream_count_u32)))
+                .collect::<Vec<_>>();
+            let mut leaves = Vec::with_capacity(stream_count);
+            for handle in connect_handles {
+                leaves.push(
+                    handle
+                        .join()
+                        .map_err(|_| io::Error::other("remote WAL leaf connect panicked"))??,
+                );
+            }
+            leaves
         } else {
             Vec::new()
         };
@@ -5332,6 +5512,27 @@ impl SharedTarget {
                 "payload layout exceeds shared region",
             ));
         }
+        let descriptor_slots = u64::from(header.channels)
+            .checked_mul(u64::from(header.ring_entries))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "descriptor layout overflow")
+            })?;
+        let io_contract_end = descriptor_slots
+            .checked_mul(size_of::<ZcnblkShmIoContract>() as u64)
+            .and_then(|bytes| {
+                header.reserved[ZCNBLK_SHM_HEADER_IO_CONTRACT_OFFSET].checked_add(bytes)
+            })
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "I/O contract layout overflow")
+            })?;
+        if header.reserved[ZCNBLK_SHM_HEADER_IO_CONTRACT_OFFSET] == 0
+            || io_contract_end > header.reserved[ZCNBLK_SHM_HEADER_PAYLOAD_OWNER_OFFSET]
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "I/O contract sidecar is outside the negotiated shared layout",
+            ));
+        }
         Ok(())
     }
 
@@ -5412,6 +5613,24 @@ impl SharedTarget {
             self.mapping.len,
         )?;
         Ok(unsafe { self.mapping.ptr.add(offset).cast() })
+    }
+
+    fn io_contract(&self, channel: u32, sequence: u64) -> io::Result<ZcnblkWalIoContract> {
+        let index = u64::from(channel)
+            .checked_mul(u64::from(self.header.ring_entries))
+            .and_then(|base| base.checked_add(sequence % u64::from(self.header.ring_entries)))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "I/O contract index overflow")
+            })?;
+        let offset = checked_offset(
+            self.header.reserved[ZCNBLK_SHM_HEADER_IO_CONTRACT_OFFSET],
+            index,
+            size_of::<ZcnblkShmIoContract>() as u64,
+            self.mapping.len,
+        )?;
+        let sidecar: ZcnblkShmIoContract =
+            unsafe { ptr::read(self.mapping.ptr.add(offset).cast()) };
+        sidecar.into_wal()
     }
 
     fn payload_ptr(&self, channel: u32, sequence: u64) -> io::Result<*mut u8> {
@@ -5998,6 +6217,14 @@ impl SharedTarget {
         request: ZcnblkShmRequest,
         payload: *mut u8,
     ) -> io::Result<u64> {
+        let io_contract = self.io_contract(channel, request_sequence)?;
+        self.stats.note_io_contract(io_contract);
+        if io_contract.fua && self.backend != BackendMode::WalTcp {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "FUA requires a remote WAL leaf with an acknowledged sync contract",
+            ));
+        }
         let previous_payload_hwm = self
             .wal_state
             .as_ref()
@@ -6037,13 +6264,14 @@ impl SharedTarget {
                 }
                 state.pending.push_back(PendingWalWrite {
                     request,
+                    io_contract,
                     request_sequence,
                     submit_sequence: request.submit_sequence,
                     offset: request.offset,
                     len: request.len as usize,
                     payload_offset,
                 });
-                self.stats.early_write_acks += 1;
+                self.stats.early_write_acks += u64::from(!io_contract.fua);
                 if state.pending.len() >= state.writeback_batch {
                     let batch = state.writeback_batch;
                     self.flush_wal_backend(batch)?;
@@ -6071,6 +6299,7 @@ impl SharedTarget {
                             channel,
                             vec![PendingRemoteRead {
                                 request,
+                                io_contract,
                                 request_sequence,
                                 payload_offset: self.payload_offset(channel, request_sequence)?,
                                 dirty_ref: None,
@@ -6194,6 +6423,7 @@ impl SharedTarget {
         }
         Ok(Some(PendingRemoteRead {
             request,
+            io_contract: self.io_contract(channel, request_sequence)?,
             request_sequence,
             payload_offset: self.payload_offset(channel, request_sequence)?,
             dirty_ref: None,
@@ -6318,6 +6548,7 @@ impl SharedTarget {
         let mut last_sequence_by_channel = vec![None::<u64>; channels];
         for (channel, pending) in &requests {
             let request = pending.request;
+            self.stats.note_io_contract(pending.io_contract);
             last_sequence_by_channel[*channel as usize] = Some(pending.request_sequence);
             if request.op == ZCNBLK_SHM_OP_WRITE {
                 let state = self
@@ -6332,6 +6563,7 @@ impl SharedTarget {
                 )?;
                 state.pending.push_back(PendingWalWrite {
                     request,
+                    io_contract: pending.io_contract,
                     request_sequence: pending.request_sequence,
                     submit_sequence: request.submit_sequence,
                     offset: request.offset,
@@ -6340,7 +6572,7 @@ impl SharedTarget {
                 });
                 self.stats.writes += 1;
                 self.stats.write_bytes += u64::from(request.len);
-                self.stats.early_write_acks += 1;
+                self.stats.early_write_acks += u64::from(!pending.io_contract.fua);
             } else {
                 let dirty = self
                     .wal_state
@@ -6381,7 +6613,8 @@ impl SharedTarget {
             let payload_hwm = (0..self.header.channels)
                 .map(|channel| state.payload_hwm(channel))
                 .collect::<io::Result<Vec<_>>>()?;
-            state.pending.len() >= state.writeback_batch
+            requests.iter().any(|(_, request)| request.io_contract.fua)
+                || state.pending.len() >= state.writeback_batch
                 || (!state.pending.is_empty()
                     && last_sequence_by_channel
                         .iter()
@@ -6677,6 +6910,22 @@ impl SharedTarget {
         Ok(true)
     }
 
+    fn force_kick_channel(&self, channel: u32) -> io::Result<()> {
+        let control = self.channel_ptr(channel)?;
+        unsafe {
+            atomic_store(
+                ptr::addr_of_mut!((*control).completion_wake_armed),
+                0,
+                Ordering::Release,
+            );
+        }
+        let ret = unsafe { libc::ioctl(self.file.as_raw_fd(), ZCNBLK_SHM_IOC_KICK, &channel) };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     fn channel_request_ready(&self, channel: u32) -> io::Result<bool> {
         let control = self.channel_ptr(channel)?;
         let consumed =
@@ -6929,7 +7178,12 @@ impl SharedTarget {
             remote_lane_completions.mark_releasable(pending.request_sequence)?;
             let request = pending.request;
             match request.op {
-                ZCNBLK_SHM_OP_WRITE => retained_writes.push_back(*pending),
+                ZCNBLK_SHM_OP_WRITE => {
+                    if pending.io_contract.fua {
+                        lane_completions.mark_ready(pending.request_sequence)?;
+                    }
+                    retained_writes.push_back(*pending);
+                }
                 ZCNBLK_SHM_OP_READ => {
                     lane_completions.mark_ready(pending.request_sequence)?;
                     self.mark_payload_releasable(releases, pending.request_sequence)?;
@@ -7209,10 +7463,12 @@ impl SharedTarget {
                         self.request_payload_offset(channel, consumed, &request)?;
                     let pending = PendingRemoteRead {
                         request,
+                        io_contract: self.io_contract(channel, consumed)?,
                         request_sequence: consumed,
                         payload_offset: sync_payload_offset,
                         dirty_ref: None,
                     };
+                    stats.note_io_contract(pending.io_contract);
                     let required_hwm = request.submit_sequence.saturating_sub(1);
                     let joined = remote_completions.hwm() >= required_hwm
                         && syncs.try_join(request.submit_sequence, ordering_epoch);
@@ -7224,7 +7480,7 @@ impl SharedTarget {
                     remote_lane_completions.mark_releasable(consumed)?;
                     syncs.observe_remote_lane_hwm(channel, remote_lane_completions.hwm)?;
                     if joined {
-                        lane_completions.admit(pending, true)?;
+                        lane_completions.admit(pending, !pending.io_contract.fua)?;
                         let payload_hwm = self.mark_payload_releasable(&mut releases, consumed)?;
                         unsafe {
                             atomic_store(
@@ -7289,10 +7545,12 @@ impl SharedTarget {
                 let payload_offset = self.request_payload_offset(channel, consumed, &request)?;
                 let mut pending = PendingRemoteRead {
                     request,
+                    io_contract: self.io_contract(channel, consumed)?,
                     request_sequence: consumed,
                     payload_offset,
                     dirty_ref: None,
                 };
+                stats.note_io_contract(pending.io_contract);
                 match request.op {
                     ZCNBLK_SHM_OP_WRITE => {
                         dirty.admit(
@@ -7302,12 +7560,12 @@ impl SharedTarget {
                             payload_offset,
                             request.submit_sequence,
                         )?;
-                        lane_completions.admit(pending, true)?;
+                        lane_completions.admit(pending, !pending.io_contract.fua)?;
                         pending_send.push_back(pending);
                         stats.requests += 1;
                         stats.writes += 1;
                         stats.write_bytes += u64::from(request.len);
-                        stats.early_write_acks += 1;
+                        stats.early_write_acks += u64::from(!pending.io_contract.fua);
                     }
                     ZCNBLK_SHM_OP_READ => {
                         let dirty_hit = if self.dirty_read_payload_refs {
@@ -7448,7 +7706,18 @@ impl SharedTarget {
                 &mut outstanding_read_refs,
             )?;
 
-            if sync_completion_ready || completion_kicks >= completion_kick_batch {
+            // Stable owners are shared across ingress lanes, so owner progress
+            // can keep this loop non-idle after the local request ring drains.
+            // Force the final partial completion batch through the armed-wake
+            // transition race: the kernel cannot publish more work on this
+            // lane until it is woken to consume those completions.
+            let local_request_ready = self.channel_request_ready(channel)?;
+            let force_completion_tail = completion_kicks != 0 && !local_request_ready;
+            if force_completion_tail {
+                self.force_kick_channel(channel)?;
+                stats.kicks += 1;
+                completion_kicks = 0;
+            } else if sync_completion_ready || completion_kicks >= completion_kick_batch {
                 stats.kicks += u64::from(self.kick_channel(channel)?);
                 completion_kicks = 0;
             }
@@ -7463,7 +7732,7 @@ impl SharedTarget {
                     send_ready += 1;
                 }
             }
-            let channel_ready = self.channel_request_ready(channel)?;
+            let channel_ready = local_request_ready;
             if send_ready != 0 && transport.in_flight_len() < lane_window {
                 let fill_expired = extent_fill_us == 0
                     || fill_started.get_or_insert_with(Instant::now).elapsed()
@@ -7924,7 +8193,7 @@ impl SharedTarget {
         let transfer_total_slots =
             u64::from(self.header.channels) * u64::from(self.header.payload_entries);
         eprintln!(
-            "zcnblk-shm-target-summary: backend={} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} dirty_read_hits={} dirty_read_refs={} dirty_pressure_events={} dirty_pressure_evictions={} max_payload_slots_outstanding={} remote_read_misses={} completion_window_stalls={} remote_batches={} avg_remote_batch_records={:.2} payload_ownership={} payload_slots_free={}/{} completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order={} sync_boundary={} dirty_retention={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination={} kernel_payload_copies=one-per-direction writeback_materialization_copies=none-userspace;tcp-kernel-copy representative={}",
+            "zcnblk-shm-target-summary: backend={} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} fua_requests={} polled_requests={} ioprio_requests={} registered_lease_requests={} atomic_write_requests={} write_lifetime_requests={} dirty_read_hits={} dirty_read_refs={} dirty_pressure_events={} dirty_pressure_evictions={} max_payload_slots_outstanding={} remote_read_misses={} completion_window_stalls={} remote_batches={} avg_remote_batch_records={:.2} payload_ownership={} payload_slots_free={}/{} completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order={} sync_boundary={} dirty_retention={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination={} kernel_payload_copies=one-per-direction writeback_materialization_copies=none-userspace;tcp-kernel-copy representative={}",
             if owner_mode {
                 "WalTcpStableOwnerExtent"
             } else {
@@ -7944,6 +8213,12 @@ impl SharedTarget {
             total.idle_polls,
             total.lease_releases,
             total.early_write_acks,
+            total.fua_requests,
+            total.polled_requests,
+            total.ioprio_requests,
+            total.registered_lease_requests,
+            total.atomic_write_requests,
+            total.write_lifetime_requests,
             total.dirty_read_hits,
             total.dirty_read_refs,
             total.dirty_pressure_events,
@@ -8141,11 +8416,24 @@ impl SharedTarget {
                 send_zc_copied_notifications,
             );
             for remote in &self.remote_leaves {
+                let (incoming_cpu, incoming_napi_id) = socket_rx_locality(&remote.stream);
                 eprintln!(
-                    "zcnblk-shm-target-remote-timing: lane={} tcp_nodelay={} quickack={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} sync_calls={} sync_seconds={:.6} avg_sync_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
+                    "zcnblk-shm-target-remote-timing: lane={} target_cpu={} incoming_cpu={} incoming_napi_id={} tcp_nodelay={} quickack={} recv_policy={} recv_spin_budget={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} sync_calls={} sync_seconds={:.6} avg_sync_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
                     remote.lane_id,
+                    remote
+                        .target_cpu
+                        .map_or_else(|| "unpinned".to_string(), |cpu| cpu.to_string()),
+                    incoming_cpu,
+                    incoming_napi_id,
                     remote.tcp_nodelay,
                     remote.quickack,
+                    remote.recv_wait.policy().label(),
+                    remote.recv_wait.current_budget_label(),
+                    remote.recv_wait.counters().0,
+                    remote.recv_wait.counters().1,
+                    remote.recv_wait.counters().2,
+                    remote.recv_wait.counters().3,
+                    remote.recv_wait.counters().4,
                     remote.request_send_calls,
                     remote.request_send_time.as_secs_f64(),
                     remote.request_send_time.as_secs_f64() * 1_000_000.0
@@ -8675,7 +8963,7 @@ impl SharedTarget {
                 _ => ("request-order", "immediate-copy", "reduced-memory", "none"),
             };
         eprintln!(
-            "zcnblk-shm-target-summary: backend={:?} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={elapsed:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} lease_release_batch={} writeback_batch={} writeback_batches={} writeback_writes={} writeback_bytes={} durable_submit_hwm={} pending_writes={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} completion_order=global-fifo data_order=per-sector+sync-hwm sync_contract={} sync_boundary={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress={} dirty_read_source={} kernel_payload_copies=one-per-direction writeback_materialization_copies={}",
+            "zcnblk-shm-target-summary: backend={:?} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={elapsed:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} fua_requests={} polled_requests={} ioprio_requests={} registered_lease_requests={} atomic_write_requests={} write_lifetime_requests={} lease_release_batch={} writeback_batch={} writeback_batches={} writeback_writes={} writeback_bytes={} durable_submit_hwm={} pending_writes={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} completion_order=global-fifo data_order=per-sector+sync-hwm sync_contract={} sync_boundary={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress={} dirty_read_source={} kernel_payload_copies=one-per-direction writeback_materialization_copies={}",
             self.backend,
             self.header.channels,
             self.stats.requests,
@@ -8691,6 +8979,12 @@ impl SharedTarget {
             self.stats.idle_polls,
             self.stats.lease_releases,
             self.stats.early_write_acks,
+            self.stats.fua_requests,
+            self.stats.polled_requests,
+            self.stats.ioprio_requests,
+            self.stats.registered_lease_requests,
+            self.stats.atomic_write_requests,
+            self.stats.write_lifetime_requests,
             self.lease_release_batch,
             writeback_batch,
             writeback_batches,
@@ -8829,13 +9123,16 @@ impl SharedTarget {
                 send_zc_copied_notifications,
             );
             for remote in &self.remote_leaves {
+                let (incoming_cpu, incoming_napi_id) = socket_rx_locality(&remote.stream);
                 eprintln!(
-                    "zcnblk-shm-target-remote-lane: lane={} lane_count={} target_cpu={} send_mode={} recv_policy={} recv_spin_budget={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} write_batches={} write_records={} write_bytes={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} tcp_nodelay={} quickack={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
+                    "zcnblk-shm-target-remote-lane: lane={} lane_count={} target_cpu={} incoming_cpu={} incoming_napi_id={} send_mode={} recv_policy={} recv_spin_budget={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} write_batches={} write_records={} write_bytes={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} tcp_nodelay={} quickack={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
                     remote.lane_id,
                     remote.lane_count,
                     remote
                         .target_cpu
                         .map_or_else(|| "unpinned".to_string(), |cpu| cpu.to_string()),
+                    incoming_cpu,
+                    incoming_napi_id,
                     remote.send_mode.label(),
                     remote.recv_wait.policy().label(),
                     remote.recv_wait.current_budget_label(),
@@ -9321,6 +9618,7 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::ZcnblkFanWalDirtyCache;
+    use crate::wal_contract::ZCNBLK_WAL_WRITE_LIFE_EXTREME;
 
     struct TestSharedLease(Vec<u8>);
 
@@ -9371,10 +9669,68 @@ mod tests {
         );
         assert_eq!(size_of::<ZcnblkShmRequest>(), 64);
         assert_eq!(size_of::<ZcnblkShmCompletion>(), 64);
+        assert_eq!(size_of::<ZcnblkShmIoContract>(), 16);
         assert_eq!(size_of::<ZcnblkShmHeader>(), 144);
+        assert_eq!(ZCNBLK_SHM_VERSION, 5);
+        assert_eq!(ZCNBLK_SHM_IO_FEATURE_ALL, 0x7f);
         assert_eq!(ZCNBLK_SHM_IOC_ATTACH, 0x4010_bc01);
         assert_eq!(ZCNBLK_SHM_IOC_KICK, 0x4004_bc02);
         assert_eq!(ZCNBLK_SHM_IOC_GET_INFO, 0x8090_bc03);
+    }
+
+    #[test]
+    fn shared_io_contract_maps_all_seven_wal_features() {
+        let expected_lease_id = 0x1122_3344_5566_7788;
+        let contract = ZcnblkShmIoContract {
+            flags: ZCNBLK_SHM_IO_F_FUA
+                | ZCNBLK_SHM_IO_F_POLLED_COMPLETION
+                | ZCNBLK_SHM_IO_F_REGISTERED_LEASE
+                | ZCNBLK_SHM_IO_F_ATOMIC_WRITE,
+            ioprio: 0x4123,
+            write_lifetime: ZCNBLK_WAL_WRITE_LIFE_EXTREME,
+            reserved: 0,
+            lease_id: expected_lease_id,
+        }
+        .into_wal()
+        .unwrap();
+        assert!(contract.fua);
+        assert!(contract.polled_completion);
+        assert!(contract.registered_lease);
+        assert!(contract.atomic_write);
+        assert_eq!(contract.ioprio, 0x4123);
+        assert_eq!(contract.write_lifetime, ZCNBLK_WAL_WRITE_LIFE_EXTREME);
+        assert_eq!(contract.lease_id, expected_lease_id);
+        assert_eq!(contract.required_features(true), ZCNBLK_WAL_FEATURE_ALL);
+
+        assert!(
+            ZcnblkShmIoContract {
+                reserved: 1,
+                ..ZcnblkShmIoContract::default()
+            }
+            .into_wal()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn io_contract_stats_count_each_per_request_feature() {
+        let mut stats = Stats::default();
+        stats.note_io_contract(ZcnblkWalIoContract {
+            fua: true,
+            polled_completion: true,
+            registered_lease: true,
+            atomic_write: true,
+            ioprio: 0x4001,
+            write_lifetime: ZCNBLK_WAL_WRITE_LIFE_EXTREME,
+            lease_id: 1,
+        });
+
+        assert_eq!(stats.fua_requests, 1);
+        assert_eq!(stats.polled_requests, 1);
+        assert_eq!(stats.ioprio_requests, 1);
+        assert_eq!(stats.registered_lease_requests, 1);
+        assert_eq!(stats.atomic_write_requests, 1);
+        assert_eq!(stats.write_lifetime_requests, 1);
     }
 
     #[test]
@@ -9542,11 +9898,21 @@ mod tests {
                     op: ZCNBLK_SHM_OP_WRITE,
                     ..ZcnblkShmRequest::default()
                 },
+                io_contract: ZcnblkWalIoContract::default(),
                 request_sequence: submit_sequence - 10,
                 payload_offset,
                 dirty_ref: None,
             };
-        let requests = [request(8192, 10, 0), request(24_576, 11, 4096)];
+        let mut requests = [request(8192, 10, 0), request(24_576, 11, 4096)];
+        requests[0].io_contract = ZcnblkWalIoContract {
+            fua: true,
+            polled_completion: true,
+            registered_lease: true,
+            atomic_write: true,
+            ioprio: 0x4001,
+            write_lifetime: ZCNBLK_WAL_WRITE_LIFE_EXTREME,
+            lease_id: 10,
+        };
         let (descriptors, payload_len, original_descriptor_len) =
             compact_write_batch_descriptors(3, &requests).unwrap();
 
@@ -9569,6 +9935,10 @@ mod tests {
         assert_eq!(first.payload_len, 4096);
         assert_eq!(first.record_count, 1);
         assert_eq!(first.mode_selector, 10 ^ 3);
+        assert_eq!(
+            ZcnblkWalIoContract::decode(first.io_contract_word, first.lease_id).unwrap(),
+            requests[0].io_contract
+        );
         assert_eq!(second.leaf_offset, 24_576);
         assert_eq!(second.mode_selector, 11 ^ 3);
 
@@ -9638,6 +10008,7 @@ mod tests {
                 submit_sequence,
                 ..ZcnblkShmRequest::default()
             },
+            io_contract: ZcnblkWalIoContract::default(),
             request_sequence,
             payload_offset: request_sequence as usize * 4096,
             dirty_ref: None,
@@ -9662,6 +10033,7 @@ mod tests {
                 op,
                 ..ZcnblkShmRequest::default()
             },
+            io_contract: ZcnblkWalIoContract::default(),
             request_sequence,
             payload_offset: request_sequence as usize * 4096,
             dirty_ref: None,
@@ -10027,6 +10399,7 @@ mod tests {
                 op,
                 ..ZcnblkShmRequest::default()
             },
+            io_contract: ZcnblkWalIoContract::default(),
             request_sequence: 0,
             payload_offset: 0,
             dirty_ref: None,
@@ -10049,6 +10422,7 @@ mod tests {
                 op,
                 ..ZcnblkShmRequest::default()
             },
+            io_contract: ZcnblkWalIoContract::default(),
             request_sequence: 0,
             payload_offset: 0,
             dirty_ref: None,

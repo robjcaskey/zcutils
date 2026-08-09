@@ -6,8 +6,9 @@
 #include <linux/types.h>
 
 #define ZCNBLK_SHM_MAGIC 0x31304d48534e435aULL /* "ZCNSHM01" */
-#define ZCNBLK_SHM_VERSION 4U
+#define ZCNBLK_SHM_VERSION 5U
 #define ZCNBLK_SHM_DESC_BYTES 64U
+#define ZCNBLK_SHM_IO_CONTRACT_BYTES 16U
 
 #define ZCNBLK_SHM_OP_WRITE 1U
 #define ZCNBLK_SHM_OP_READ 2U
@@ -23,6 +24,22 @@
 #define ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED (1ULL << 4)
 #define ZCNBLK_SHM_CAP_ORDERING_EPOCH (1ULL << 5)
 #define ZCNBLK_SHM_CAP_ORDERING_VECTOR (1ULL << 6)
+#define ZCNBLK_SHM_CAP_IO_CONTRACT_SIDECAR (1ULL << 7)
+
+#define ZCNBLK_SHM_IO_FEATURE_FUA (1ULL << 0)
+#define ZCNBLK_SHM_IO_FEATURE_POLLED_COMPLETION (1ULL << 1)
+#define ZCNBLK_SHM_IO_FEATURE_BATCH_SUBMISSION (1ULL << 2)
+#define ZCNBLK_SHM_IO_FEATURE_IO_PRIORITY (1ULL << 3)
+#define ZCNBLK_SHM_IO_FEATURE_REGISTERED_LEASE (1ULL << 4)
+#define ZCNBLK_SHM_IO_FEATURE_ATOMIC_WRITE (1ULL << 5)
+#define ZCNBLK_SHM_IO_FEATURE_WRITE_LIFETIME (1ULL << 6)
+#define ZCNBLK_SHM_IO_FEATURE_ALL ((1ULL << 7) - 1)
+
+#define ZCNBLK_SHM_IO_F_FUA (1U << 0)
+#define ZCNBLK_SHM_IO_F_POLLED_COMPLETION (1U << 1)
+#define ZCNBLK_SHM_IO_F_REGISTERED_LEASE (1U << 2)
+#define ZCNBLK_SHM_IO_F_ATOMIC_WRITE (1U << 3)
+#define ZCNBLK_SHM_IO_F_ALL ((1U << 4) - 1)
 
 #define ZCNBLK_SHM_REQUEST_ID_BITS 16U
 #define ZCNBLK_SHM_REQUEST_ID_MASK ((1ULL << ZCNBLK_SHM_REQUEST_ID_BITS) - 1)
@@ -36,6 +53,8 @@
 /* header.reserved[] assignments for capability extensions. */
 #define ZCNBLK_SHM_HEADER_CAPABILITIES 0U
 #define ZCNBLK_SHM_HEADER_PAYLOAD_OWNER_OFFSET 1U
+#define ZCNBLK_SHM_HEADER_IO_CONTRACT_OFFSET 2U
+#define ZCNBLK_SHM_HEADER_IO_FEATURES 3U
 
 /* channel.request_producer_reserved[] assignments. */
 #define ZCNBLK_SHM_CHANNEL_FLUSH_TAIL 0U
@@ -110,6 +129,19 @@ struct zcnblk_shm_completion {
 	__s16 status;
 	__u32 flags;
 	__u64 request_sequence;
+};
+
+/*
+ * Cold per-request metadata, indexed exactly like zcnblk_shm_request. The
+ * kernel publishes this sidecar before request.sequence, so userspace needs no
+ * additional synchronization after acquiring the request descriptor.
+ */
+struct zcnblk_shm_io_contract {
+	__u32 flags;
+	__u16 ioprio;
+	__u8 write_lifetime;
+	__u8 reserved;
+	__u64 lease_id;
 };
 
 struct zcnblk_shm_header {
