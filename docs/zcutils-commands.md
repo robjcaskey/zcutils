@@ -48,6 +48,45 @@ and 2N+1 for its request/response workers, and startup logs record that mapping.
 `URING_PLAY_OFI_PIPE_FRAME_BYTES` controls the bounded RDM message size
 (default 64 KiB); it must not exceed the provider's maximum.
 
+The shared-memory WAL target and WAL leaf can also use one direct,
+bidirectional `FI_EP_RDM` endpoint per lane, removing both local TCP bridge
+processes. The leaf is still a separate userspace stage after `/dev/zcnblk0`;
+this transport does not make placement, mirror, stripe, tier, or spill
+decisions. For a 32-lane EFA run:
+
+```bash
+# Leaf host. Services 29000..29031 carry WAL messages; the TCP control-plane
+# address exchange uses ports 30000..30031 by default.
+FI_EFA_USE_DEVICE_RDMA=1 URING_PLAY_OFI_DOMAIN=efa_0-rdm \
+URING_PLAY_OFI_CQ_SLEEP_NS=0 \
+URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED=1 \
+URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT=ofi \
+URING_PLAY_ZCNBLK_WAL_LEAF_OFI_PROVIDER=efa \
+URING_PLAY_PIN_CPU_LIST=LEAF_NIC_LOCAL_CPUS \
+zcnblk-wal-leaf zcmem:16G LEAF_PRIVATE_IP 29000 32 1 4K 32 true blocking
+
+# Client host. wal-tcp names the protocol/backend contract; this selects OFI
+# instead of TCP for its downstream userspace leaf connection.
+FI_EFA_USE_DEVICE_RDMA=1 URING_PLAY_OFI_DOMAIN=efa_0-rdm \
+URING_PLAY_OFI_CQ_SLEEP_NS=0 \
+URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED=1 \
+URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT=ofi \
+URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER=efa \
+URING_PLAY_ZCNBLK_SHM_LEAF_ADDR=LEAF_PRIVATE_IP:29000 \
+URING_PLAY_ZCNBLK_SHM_TARGET_CPU_LIST=CLIENT_NIC_LOCAL_CPUS \
+zcnblk-shm-target /dev/zcnblk-shmctl wal-tcp 64
+```
+
+`URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES` bounds one complete WAL protocol
+emission (default 1 MiB). Oversize frames fail instead of being split across
+unordered RDM messages. The leaf requires exactly one connection and one
+worker per lane and prints the identity lane-to-worker map plus the explicit
+lane-to-CPU map. Direct low-latency runs should raise `RLIMIT_MEMLOCK`, reserve
+huge pages, pin client kthreads and userspace workers, set hctx/NAPI affinity,
+and use `URING_PLAY_TOPOLOGY_STRICT=1`; the strict preflight rejects sleeping
+OFI completions or an incomplete declared topology before benchmark numbers
+are printed.
+
 ## Command Idiom
 
 The descriptor-native model is:

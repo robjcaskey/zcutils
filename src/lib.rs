@@ -10226,6 +10226,11 @@ struct ZcOfiEndpoint {
     raw: *mut ZcOfiRawEndpoint,
 }
 
+// A libfabric endpoint may move between worker threads, but zcutils never
+// accesses one concurrently.  Every owner keeps exclusive `&mut` access.
+#[cfg(zc_has_libfabric)]
+unsafe impl Send for ZcOfiEndpoint {}
+
 #[cfg(not(zc_has_libfabric))]
 struct ZcOfiEndpoint;
 
@@ -11039,6 +11044,194 @@ fn zcofi_client_exchange_peer(
         remote.len()
     );
     Ok(())
+}
+
+struct ZcOfiMessageStream {
+    endpoint: ZcOfiEndpoint,
+    message_bytes: usize,
+    receive: Vec<u8>,
+    receive_start: usize,
+    receive_end: usize,
+    transmit: Vec<u8>,
+}
+
+impl ZcOfiMessageStream {
+    fn connect(
+        provider: &str,
+        endpoint_name: &str,
+        node: &str,
+        service: u16,
+        server: bool,
+    ) -> io::Result<Self> {
+        let service = service.to_string();
+        let mut endpoint = ZcOfiEndpoint::open(provider, endpoint_name, node, &service, server)?;
+        let provider_limit = endpoint.max_msg_size();
+        let requested = env_usize_or("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", 1024 * 1024);
+        if requested < ZCNBLK_FAN_WAL_HEADER_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES is smaller than one WAL header",
+            ));
+        }
+        let message_bytes = if provider_limit == 0 {
+            requested
+        } else {
+            requested.min(provider_limit)
+        };
+        if message_bytes < ZCNBLK_FAN_WAL_HEADER_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "OFI provider maximum message size {provider_limit} is smaller than one WAL header"
+                ),
+            ));
+        }
+        let control_port = zcofi_control_port(&service)?;
+        if server {
+            zcofi_server_exchange_peer(node, control_port, &mut endpoint)?;
+        } else {
+            zcofi_client_exchange_peer(node, control_port, &mut endpoint)?;
+        }
+        Ok(Self {
+            endpoint,
+            message_bytes,
+            receive: vec![0u8; message_bytes],
+            receive_start: 0,
+            receive_end: 0,
+            transmit: Vec::with_capacity(message_bytes),
+        })
+    }
+
+    fn message_bytes(&self) -> usize {
+        self.message_bytes
+    }
+
+    fn refill(&mut self) -> io::Result<()> {
+        let received = self.endpoint.recv(&mut self.receive)?;
+        if received == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "OFI WAL received an empty message",
+            ));
+        }
+        self.receive_start = 0;
+        self.receive_end = received;
+        Ok(())
+    }
+}
+
+impl Read for ZcOfiMessageStream {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        if self.receive_start == self.receive_end {
+            self.refill()?;
+        }
+        let available = self.receive_end - self.receive_start;
+        let take = available.min(out.len());
+        out[..take].copy_from_slice(
+            &self.receive[self.receive_start..self.receive_start.saturating_add(take)],
+        );
+        self.receive_start += take;
+        Ok(take)
+    }
+}
+
+impl Write for ZcOfiMessageStream {
+    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        if input.is_empty() {
+            return Ok(0);
+        }
+        if input.len() > self.message_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "OFI WAL message is {} bytes, above configured maximum {}",
+                    input.len(),
+                    self.message_bytes
+                ),
+            ));
+        }
+        self.endpoint.send(input)?;
+        Ok(input.len())
+    }
+
+    fn write_vectored(&mut self, inputs: &[IoSlice<'_>]) -> io::Result<usize> {
+        let total = inputs.iter().try_fold(0usize, |total, input| {
+            total.checked_add(input.len()).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "OFI WAL message length overflow",
+                )
+            })
+        })?;
+        if total == 0 {
+            return Ok(0);
+        }
+        if total > self.message_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "OFI WAL vectored message is {total} bytes, above configured maximum {}",
+                    self.message_bytes
+                ),
+            ));
+        }
+        self.transmit.clear();
+        for input in inputs {
+            self.transmit.extend_from_slice(input);
+        }
+        self.endpoint.send(&self.transmit)?;
+        Ok(total)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod zcnblk_ofi_message_stream_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a local libfabric sockets provider"]
+    fn vectored_wal_message_round_trips_without_tcp_bridge() {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        unsafe {
+            env::set_var("URING_PLAY_OFI_CQ_SLEEP_NS", "0");
+            env::set_var("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", "65536");
+        }
+        let service = 39_000u16 + u16::try_from(std::process::id() % 500).unwrap();
+        let server = thread::spawn(move || -> io::Result<()> {
+            let mut stream =
+                ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, true)?;
+            let mut request = vec![0u8; ZCNBLK_FAN_WAL_HEADER_LEN + 4096];
+            stream.read_exact(&mut request)?;
+            if request[..ZCNBLK_FAN_WAL_HEADER_LEN] != [0x5au8; ZCNBLK_FAN_WAL_HEADER_LEN]
+                || request[ZCNBLK_FAN_WAL_HEADER_LEN..] != [0xa5u8; 4096]
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "OFI WAL request payload mismatch",
+                ));
+            }
+            stream.write_all(b"remote-ack")
+        });
+        thread::sleep(Duration::from_millis(25));
+        let mut client =
+            ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, false).unwrap();
+        let header = [0x5au8; ZCNBLK_FAN_WAL_HEADER_LEN];
+        let payload = [0xa5u8; 4096];
+        let mut parts = [IoSlice::new(&header), IoSlice::new(&payload)];
+        tcp_write_all_vectored(&mut client, &mut parts, "OFI WAL test request").unwrap();
+        let mut reply = [0u8; 10];
+        client.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"remote-ack");
+        server.join().unwrap().unwrap();
+    }
 }
 
 fn zcofi_wal_check_endpoint_shape(
@@ -28850,8 +29043,8 @@ fn zcnblk_fan_wal_hwm_only_results_enabled() -> bool {
         .get_or_init(|| env_enabled_or("URING_PLAY_ZCNBLK_FAN_HWM_ONLY_RESULTS", false))
 }
 
-fn zcnblk_fan_wal_write_frame(
-    stream: &mut TcpStream,
+fn zcnblk_fan_wal_write_frame<W: Write + ?Sized>(
+    stream: &mut W,
     frame: ZcnblkFanWalFrame,
     payload: &[u8],
 ) -> io::Result<()> {
@@ -28888,8 +29081,8 @@ fn zcnblk_fan_wal_write_frame(
     tcp_write_all_vectored(stream, &mut parts, "fan WAL frame")
 }
 
-fn tcp_write_all_vectored(
-    stream: &mut TcpStream,
+fn tcp_write_all_vectored<W: Write + ?Sized>(
+    stream: &mut W,
     mut bufs: &mut [IoSlice<'_>],
     label: &str,
 ) -> io::Result<()> {
@@ -28913,8 +29106,8 @@ fn tcp_write_all_vectored(
     Ok(())
 }
 
-fn zcnblk_fan_wal_write_frame_vectored(
-    stream: &mut TcpStream,
+fn zcnblk_fan_wal_write_frame_vectored<W: Write + ?Sized>(
+    stream: &mut W,
     frame: ZcnblkFanWalFrame,
     payloads: &mut [IoSlice<'_>],
 ) -> io::Result<()> {
@@ -28963,8 +29156,8 @@ fn zcnblk_fan_wal_leaf_max_batch_records_from_env() -> Option<usize> {
     (records != 0).then_some(records)
 }
 
-fn zcnblk_fan_wal_write_leaf_batch_payload(
-    stream: &mut TcpStream,
+fn zcnblk_fan_wal_write_leaf_batch_payload<W: Write + ?Sized>(
+    stream: &mut W,
     frame: ZcnblkFanWalFrame,
     descriptor_bytes: &[u8],
     payload_slices: &[IoSlice<'_>],
@@ -46231,9 +46424,178 @@ fn zcnblk_wal_leaf_validate_frame_plan(
     Ok(())
 }
 
+enum ZcnblkWalLeafStream {
+    Tcp(TcpStream),
+    Ofi(ZcOfiMessageStream),
+}
+
+struct ZcnblkWalLeafAccepted {
+    meta: TcpBenchStreamMeta,
+    stream: ZcnblkWalLeafStream,
+}
+
+impl From<TcpBenchAcceptedStream> for ZcnblkWalLeafAccepted {
+    fn from(accepted: TcpBenchAcceptedStream) -> Self {
+        let meta = accepted.meta();
+        Self {
+            meta,
+            stream: ZcnblkWalLeafStream::Tcp(accepted.stream),
+        }
+    }
+}
+
+impl ZcnblkWalLeafStream {
+    fn is_tcp(&self) -> bool {
+        matches!(self, Self::Tcp(_))
+    }
+
+    fn read_frame(
+        &mut self,
+        spin_reads: bool,
+        spin_budget: Option<usize>,
+    ) -> io::Result<ZcnblkFanWalFrame> {
+        match self {
+            Self::Tcp(stream) if spin_reads => {
+                zcnblk_fan_wal_read_frame_spin_then_block(stream, spin_budget)
+            }
+            Self::Tcp(stream) => zcnblk_fan_wal_read_frame(stream),
+            Self::Ofi(stream) => {
+                let mut header = [0u8; ZCNBLK_FAN_WAL_HEADER_LEN];
+                stream.read_exact(&mut header)?;
+                ZcnblkFanWalFrame::decode(&header)
+            }
+        }
+    }
+
+    fn read_payload_measured(
+        &mut self,
+        frame: ZcnblkFanWalFrame,
+        spin_reads: bool,
+        spin_budget: Option<usize>,
+    ) -> io::Result<(Vec<u8>, Duration, Duration)> {
+        match self {
+            Self::Tcp(stream) => {
+                zcnblk_fan_wal_read_payload_measured(stream, frame, spin_reads, spin_budget)
+            }
+            Self::Ofi(stream) => {
+                let alloc_started = Instant::now();
+                let mut payload = vec![0u8; frame.payload_len as usize];
+                let alloc_elapsed = alloc_started.elapsed();
+                let recv_started = Instant::now();
+                stream.read_exact(&mut payload)?;
+                Ok((payload, alloc_elapsed, recv_started.elapsed()))
+            }
+        }
+    }
+
+    fn recv_exact_mode(
+        &mut self,
+        out: &mut [u8],
+        spin_reads: bool,
+        spin_budget: Option<usize>,
+    ) -> io::Result<()> {
+        match self {
+            Self::Tcp(stream) if spin_reads => {
+                zcnblk_fan_wal_recv_exact_spin_then_block(stream, out, spin_budget)
+            }
+            Self::Tcp(stream) => stream.read_exact(out),
+            Self::Ofi(stream) => stream.read_exact(out),
+        }
+    }
+
+    fn recv_iovecs(
+        &mut self,
+        iovecs: &mut [libc::iovec],
+        spin_reads: bool,
+        spin_budget: Option<usize>,
+        blocking_wait_all: bool,
+    ) -> io::Result<()> {
+        match self {
+            Self::Tcp(stream) => zcnblk_wal_leaf_recv_iovecs(
+                stream,
+                iovecs,
+                spin_reads,
+                spin_budget,
+                blocking_wait_all,
+            ),
+            Self::Ofi(stream) => {
+                for iovec in iovecs {
+                    let out = unsafe {
+                        std::slice::from_raw_parts_mut(iovec.iov_base.cast::<u8>(), iovec.iov_len)
+                    };
+                    stream.read_exact(out)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn write_iovecs(&mut self, iovecs: &mut [libc::iovec], total: usize) -> io::Result<()> {
+        match self {
+            Self::Tcp(stream) => write_all_iovecs(stream.as_raw_fd(), iovecs, total),
+            Self::Ofi(stream) => {
+                let mut parts = Vec::with_capacity(iovecs.len());
+                for iovec in iovecs {
+                    parts.push(IoSlice::new(unsafe {
+                        std::slice::from_raw_parts(iovec.iov_base.cast::<u8>(), iovec.iov_len)
+                    }));
+                }
+                tcp_write_all_vectored(stream, &mut parts, "OFI WAL result")
+            }
+        }
+    }
+
+    fn write_plaintext_read(&mut self, read: &ZcnblkFanWalLocalRead) -> io::Result<()> {
+        match self {
+            Self::Tcp(stream) => read.write_plaintext_payload_to_tcp(stream),
+            Self::Ofi(_) if read.has_memfd_parts() => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "OFI WAL read results do not support memfd splice parts",
+            )),
+            Self::Ofi(_) => {
+                let mut iovecs = Vec::with_capacity(read.source_part_count());
+                read.push_iovecs(&mut iovecs)?;
+                self.write_iovecs(&mut iovecs, read.len())
+            }
+        }
+    }
+}
+
+impl Read for ZcnblkWalLeafStream {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.read(out),
+            Self::Ofi(stream) => stream.read(out),
+        }
+    }
+}
+
+impl Write for ZcnblkWalLeafStream {
+    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.write(input),
+            Self::Ofi(stream) => stream.write(input),
+        }
+    }
+
+    fn write_vectored(&mut self, inputs: &[IoSlice<'_>]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.write_vectored(inputs),
+            Self::Ofi(stream) => stream.write_vectored(inputs),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.flush(),
+            Self::Ofi(stream) => stream.flush(),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn zcnblk_wal_leaf_write_request_batch_results(
-    stream: &mut TcpStream,
+    stream: &mut ZcnblkWalLeafStream,
     batch: ZcnblkFanWalFrame,
     requests: &[ZcnblkWalLeafPendingWrite],
     read_results: &[Option<ZcnblkFanWalLocalRead>],
@@ -46374,7 +46736,7 @@ fn zcnblk_wal_leaf_write_request_batch_results(
             stream.write_all(&header)?;
             stream.write_all(&result_descriptors)?;
             for read_payload in read_results.iter().filter_map(|payload| payload.as_ref()) {
-                read_payload.write_plaintext_payload_to_tcp(stream)?;
+                stream.write_plaintext_read(read_payload)?;
             }
             stats.phase_result_write = stats
                 .phase_result_write
@@ -46399,7 +46761,7 @@ fn zcnblk_wal_leaf_write_request_batch_results(
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result overflow")
             })?;
-        write_all_iovecs(stream.as_raw_fd(), &mut iovecs, total)?;
+        stream.write_iovecs(&mut iovecs, total)?;
     }
     stats.phase_result_write = stats
         .phase_result_write
@@ -46409,7 +46771,7 @@ fn zcnblk_wal_leaf_write_request_batch_results(
 
 #[allow(clippy::too_many_arguments)]
 fn zcnblk_wal_leaf_try_direct_memory_write_batch(
-    stream: &mut TcpStream,
+    stream: &mut ZcnblkWalLeafStream,
     backend: &ZcnblkWalLeafBackend,
     ring: &mut Option<RawRing>,
     io_mode: ZcnblkWalLeafIoMode,
@@ -46460,28 +46822,9 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
     let alloc_elapsed = alloc_started.elapsed();
     let descriptor_recv_started = Instant::now();
     if zcnblk_uninit_read_buffers_enabled() {
-        unsafe {
-            if spin_reads {
-                zcnblk_fan_wal_recv_exact_raw_spin_then_block(
-                    stream,
-                    descriptors.as_mut_ptr(),
-                    descriptor_bytes_len,
-                    spin_budget,
-                )?;
-            } else {
-                zcnblk_fan_wal_recv_exact_raw_blocking(
-                    stream,
-                    descriptors.as_mut_ptr(),
-                    descriptor_bytes_len,
-                )?;
-            }
-            descriptors.set_len(descriptor_bytes_len);
-        }
-    } else if spin_reads {
-        zcnblk_fan_wal_recv_exact_spin_then_block(stream, &mut descriptors, spin_budget)?;
-    } else {
-        stream.read_exact(&mut descriptors)?;
+        descriptors.resize(descriptor_bytes_len, 0);
     }
+    stream.recv_exact_mode(&mut descriptors, spin_reads, spin_budget)?;
     let mut recv_elapsed = descriptor_recv_started.elapsed();
 
     let decode_started = Instant::now();
@@ -46554,7 +46897,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
 
     let data_recv_started = Instant::now();
     if !direct_iovecs.is_empty() {
-        zcnblk_wal_leaf_recv_iovecs(stream, &mut direct_iovecs, spin_reads, spin_budget, false)?;
+        stream.recv_iovecs(&mut direct_iovecs, spin_reads, spin_budget, false)?;
     }
     recv_elapsed = recv_elapsed.saturating_add(data_recv_started.elapsed());
     stats.phase_payload_read = stats
@@ -46650,7 +46993,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
 
 #[allow(clippy::too_many_arguments)]
 fn zcnblk_wal_leaf_process_request_batch(
-    stream: &mut TcpStream,
+    stream: &mut ZcnblkWalLeafStream,
     backend: &ZcnblkWalLeafBackend,
     ring: &mut Option<RawRing>,
     io_mode: ZcnblkWalLeafIoMode,
@@ -46706,7 +47049,7 @@ fn zcnblk_wal_leaf_process_request_batch(
     let (leaf_preferred_cpu, leaf_numa_node) = zcnblk_fan_wal_local_topology_hints(affinity);
     let payload_read_started = Instant::now();
     let (batch_payload, payload_alloc_elapsed, payload_recv_elapsed) =
-        zcnblk_fan_wal_read_payload_measured(stream, batch, spin_reads, spin_budget)?;
+        stream.read_payload_measured(batch, spin_reads, spin_budget)?;
     stats.phase_payload_read = stats
         .phase_payload_read
         .saturating_add(payload_read_started.elapsed());
@@ -47188,7 +47531,7 @@ fn zcnblk_wal_leaf_process_request_batch(
             stream.write_all(&header)?;
             stream.write_all(&result_descriptors)?;
             for read_payload in read_results.iter().filter_map(|payload| payload.as_ref()) {
-                read_payload.write_plaintext_payload_to_tcp(stream)?;
+                stream.write_plaintext_read(read_payload)?;
             }
             stats.phase_result_write = stats
                 .phase_result_write
@@ -47213,7 +47556,7 @@ fn zcnblk_wal_leaf_process_request_batch(
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "WAL leaf result overflow")
             })?;
-        write_all_iovecs(stream.as_raw_fd(), &mut iovecs, total)?;
+        stream.write_iovecs(&mut iovecs, total)?;
     }
     stats.phase_result_write = stats
         .phase_result_write
@@ -47223,7 +47566,7 @@ fn zcnblk_wal_leaf_process_request_batch(
 
 #[allow(clippy::too_many_arguments)]
 fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
-    stream: &mut TcpStream,
+    stream: &mut ZcnblkWalLeafStream,
     backend: &ZcnblkWalLeafBackend,
     io_mode: ZcnblkWalLeafIoMode,
     batch: ZcnblkFanWalFrame,
@@ -47286,28 +47629,9 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
     let alloc_elapsed = alloc_started.elapsed();
     let descriptor_recv_started = Instant::now();
     if zcnblk_uninit_read_buffers_enabled() {
-        unsafe {
-            if spin_reads {
-                zcnblk_fan_wal_recv_exact_raw_spin_then_block(
-                    stream,
-                    descriptors.as_mut_ptr(),
-                    descriptor_bytes_len,
-                    spin_budget,
-                )?;
-            } else {
-                zcnblk_fan_wal_recv_exact_raw_blocking(
-                    stream,
-                    descriptors.as_mut_ptr(),
-                    descriptor_bytes_len,
-                )?;
-            }
-            descriptors.set_len(descriptor_bytes_len);
-        }
-    } else if spin_reads {
-        zcnblk_fan_wal_recv_exact_spin_then_block(stream, &mut descriptors, spin_budget)?;
-    } else {
-        stream.read_exact(&mut descriptors)?;
+        descriptors.resize(descriptor_bytes_len, 0);
     }
+    stream.recv_exact_mode(&mut descriptors, spin_reads, spin_budget)?;
     let mut recv_elapsed = descriptor_recv_started.elapsed();
 
     let decode_started = Instant::now();
@@ -47420,7 +47744,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
     stats.phase_decode = stats.phase_decode.saturating_add(decode_started.elapsed());
 
     let data_recv_started = Instant::now();
-    zcnblk_wal_leaf_recv_iovecs(stream, &mut direct_iovecs, spin_reads, spin_budget, true)?;
+    stream.recv_iovecs(&mut direct_iovecs, spin_reads, spin_budget, true)?;
     recv_elapsed = recv_elapsed.saturating_add(data_recv_started.elapsed());
     stats.phase_payload_read = stats
         .phase_payload_read
@@ -47484,7 +47808,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
 
 #[allow(clippy::too_many_arguments)]
 fn zcnblk_wal_leaf_process_write_extent_batch(
-    stream: &mut TcpStream,
+    stream: &mut ZcnblkWalLeafStream,
     backend: &ZcnblkWalLeafBackend,
     ring: &mut Option<RawRing>,
     io_mode: ZcnblkWalLeafIoMode,
@@ -47572,7 +47896,7 @@ fn zcnblk_wal_leaf_process_write_extent_batch(
             ),
         ));
     }
-    let memfd_log = backend.memfd_write_log();
+    let memfd_log = stream.is_tcp().then(|| backend.memfd_write_log()).flatten();
     let mut batch_payload = Vec::new();
     let mut extent_bytes = Vec::new();
     let mut payload_alloc_elapsed = Duration::ZERO;
@@ -47585,19 +47909,23 @@ fn zcnblk_wal_leaf_process_write_extent_batch(
         if !extent_bytes.is_empty() {
             let recv_started = Instant::now();
             if spin_reads {
-                zcnblk_fan_wal_recv_exact_spin_then_block(stream, &mut extent_bytes, spin_budget)?;
+                stream.recv_exact_mode(&mut extent_bytes, true, spin_budget)?;
             } else {
                 stream.read_exact(&mut extent_bytes)?;
             }
             payload_recv_elapsed = payload_recv_elapsed.saturating_add(recv_started.elapsed());
         }
         let recv_started = Instant::now();
-        let log_base = log.splice_from_fd(stream.as_raw_fd(), payload_area_len)?;
+        let tcp = match stream {
+            ZcnblkWalLeafStream::Tcp(tcp) => tcp,
+            ZcnblkWalLeafStream::Ofi(_) => unreachable!("OFI disables memfd splice receive"),
+        };
+        let log_base = log.splice_from_fd(tcp.as_raw_fd(), payload_area_len)?;
         payload_recv_elapsed = payload_recv_elapsed.saturating_add(recv_started.elapsed());
         Some((log, log_base))
     } else {
         let (payload, alloc_elapsed, recv_elapsed) =
-            zcnblk_fan_wal_read_payload_measured(stream, batch, spin_reads, spin_budget)?;
+            stream.read_payload_measured(batch, spin_reads, spin_budget)?;
         payload_alloc_elapsed = payload_alloc_elapsed.saturating_add(alloc_elapsed);
         payload_recv_elapsed = payload_recv_elapsed.saturating_add(recv_elapsed);
         batch_payload = payload;
@@ -47860,7 +48188,7 @@ fn zcnblk_wal_leaf_process_write_extent_batch(
 }
 
 fn zcnblk_wal_leaf_process_write_batch(
-    stream: &mut TcpStream,
+    stream: &mut ZcnblkWalLeafStream,
     backend: &ZcnblkWalLeafBackend,
     ring: &mut Option<RawRing>,
     io_mode: ZcnblkWalLeafIoMode,
@@ -47906,7 +48234,7 @@ fn zcnblk_wal_leaf_process_write_batch(
     if batch.payload_len > 0 {
         let payload_read_started = Instant::now();
         let (batch_payload, alloc_elapsed, recv_elapsed) =
-            zcnblk_fan_wal_read_payload_measured(stream, batch, spin_reads, spin_budget)?;
+            stream.read_payload_measured(batch, spin_reads, spin_budget)?;
         payload_read_elapsed = payload_read_elapsed.saturating_add(payload_read_started.elapsed());
         payload_alloc_elapsed = payload_alloc_elapsed.saturating_add(alloc_elapsed);
         payload_recv_elapsed = payload_recv_elapsed.saturating_add(recv_elapsed);
@@ -47995,11 +48323,11 @@ fn zcnblk_wal_leaf_process_write_batch(
         decode_elapsed = decode_elapsed.saturating_add(decode_started.elapsed());
     } else {
         for _ in 0..count {
-            let frame = zcnblk_fan_wal_read_frame(stream)?;
+            let frame = stream.read_frame(false, None)?;
             zcnblk_wal_leaf_validate_write_batch_descriptor(batch, frame, negotiated_features)?;
             let payload_read_started = Instant::now();
             let (payload, alloc_elapsed, recv_elapsed) =
-                zcnblk_fan_wal_read_payload_measured(stream, frame, false, None)?;
+                stream.read_payload_measured(frame, false, None)?;
             payload_read_elapsed =
                 payload_read_elapsed.saturating_add(payload_read_started.elapsed());
             payload_alloc_elapsed = payload_alloc_elapsed.saturating_add(alloc_elapsed);
@@ -48277,7 +48605,7 @@ fn zcnblk_wal_leaf_spin_policy_label() -> &'static str {
 fn zcnblk_wal_leaf_process_stream(
     worker: usize,
     stream_slot: usize,
-    accepted: TcpBenchAcceptedStream,
+    accepted: ZcnblkWalLeafAccepted,
     backend: Arc<ZcnblkWalLeafBackend>,
     pin_workers: bool,
     io_mode: ZcnblkWalLeafIoMode,
@@ -48290,7 +48618,7 @@ fn zcnblk_wal_leaf_process_stream(
         worker.checked_add(stream_slot).unwrap_or(worker),
         pin_workers,
     );
-    let meta = accepted.meta();
+    let meta = accepted.meta;
     println!(
         "zcnblk-wal-leaf-stream: worker={worker} slot={stream_slot} peer={} lane={} port={} conn={} {}",
         meta.peer_addr,
@@ -48338,11 +48666,7 @@ fn zcnblk_wal_leaf_process_stream(
         None
     };
     loop {
-        let frame_result = if spin_reads {
-            zcnblk_fan_wal_read_frame_spin_then_block(&mut stream, spin_budget)
-        } else {
-            zcnblk_fan_wal_read_frame(&mut stream)
-        };
+        let frame_result = stream.read_frame(spin_reads, spin_budget);
         let frame = match frame_result {
             Ok(frame) => frame,
             Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
@@ -48481,7 +48805,7 @@ fn zcnblk_wal_leaf_process_stream(
                         ),
                     ));
                 }
-                let payload = zcnblk_fan_wal_read_payload(&mut stream, frame)?;
+                let (payload, _, _) = stream.read_payload_measured(frame, false, None)?;
                 let submit_mode = io_mode.adapter_for_frame(frame);
                 backend.write_at_mode(submit_mode, &mut ring, frame.leaf_offset, &payload)?;
                 if io_contract.fua {
@@ -48629,7 +48953,7 @@ fn zcnblk_wal_leaf_process_stream(
 
 fn zcnblk_wal_leaf_worker(
     worker: usize,
-    streams: Vec<TcpBenchAcceptedStream>,
+    streams: Vec<ZcnblkWalLeafAccepted>,
     backend: Arc<ZcnblkWalLeafBackend>,
     pin_workers: bool,
     io_mode: ZcnblkWalLeafIoMode,
@@ -48828,6 +49152,15 @@ fn zcnblk_wal_leaf(
     )?);
     let total_connections = tcp_bench_total_connections(ports, connections_per_port)?;
     let workers = if workers == 0 { ports.max(1) } else { workers };
+    let transport =
+        env::var("URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT").unwrap_or_else(|_| "tcp".to_string());
+    let direct_ofi = matches!(transport.as_str(), "ofi" | "rdm" | "efa");
+    if !matches!(transport.as_str(), "tcp" | "ofi" | "rdm" | "efa") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT must be tcp or ofi, got {transport:?}"),
+        ));
+    }
     let result_ranges_configured = zcnblk_fan_wal_result_ranges_enabled();
     let ring_entries = u32::try_from(
         env_usize_or("URING_PLAY_ZCNBLK_WAL_LEAF_RING_ENTRIES", 64).max(1),
@@ -48909,8 +49242,57 @@ fn zcnblk_wal_leaf(
             "SQPOLL requested without URING_PLAY_ZCNBLK_WAL_LEAF_SQPOLL_CPU_LIST or URING_PLAY_SQPOLL_CPU_LIST; SQPOLL kthread placement is not explicit",
         )?;
     }
+    if direct_ofi {
+        let cq_sleep_ns = env_usize_or("URING_PLAY_OFI_CQ_SLEEP_NS", 50_000);
+        if cq_sleep_ns != 0 {
+            zc_topology_issue(
+                "zcnblk-wal-leaf",
+                format!(
+                    "direct OFI completion polling sleeps for {cq_sleep_ns} ns; set URING_PLAY_OFI_CQ_SLEEP_NS=0 for low-latency fabric results"
+                ),
+            )?;
+        }
+        if transport == "efa"
+            || env::var("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_PROVIDER")
+                .map(|provider| provider == "efa")
+                .unwrap_or(true)
+        {
+            if !env_enabled_or("FI_EFA_USE_DEVICE_RDMA", false) {
+                zc_topology_issue(
+                    "zcnblk-wal-leaf",
+                    "EFA device RDMA is not explicitly enabled; set FI_EFA_USE_DEVICE_RDMA=1 and verify the provider before trusting latency results",
+                )?;
+            }
+        }
+        if !env_enabled_or("URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED", false) {
+            zc_topology_issue(
+                "zcnblk-wal-leaf",
+                "OFI hugetlb topology is not confirmed; reserve huge pages and set URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED=1 only after verifying the registered-buffer policy",
+            )?;
+        }
+        let message_bytes = env_usize_or("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", 1024 * 1024);
+        let estimated_registered_bytes = ports
+            .checked_mul(message_bytes)
+            .and_then(|bytes| bytes.checked_mul(2))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "OFI message pool size overflow",
+                )
+            })?;
+        if let Some(limit) = memlock_rlimit_bytes()? {
+            if limit < estimated_registered_bytes as u64 {
+                zc_topology_issue(
+                    "zcnblk-wal-leaf",
+                    format!(
+                        "RLIMIT_MEMLOCK={limit} bytes is below the approximately {estimated_registered_bytes} bytes of per-lane OFI receive/transmit buffers; raise memlock before representative runs"
+                    ),
+                )?;
+            }
+        }
+    }
     println!(
-        "zcnblk-wal-leaf: target={} bind={bind} base_port={base_port} ports={ports} \
+        "zcnblk-wal-leaf: target={} transport={transport} bind={bind} base_port={base_port} ports={ports} \
          connections_per_port={connections_per_port} total_connections={total_connections} \
          chunk_bytes={chunk_bytes} workers={workers} pin_workers={pin_workers} \
          submit_mode={} ring_entries={ring_entries} ring_cq_entries={ring_cq_entries} \
@@ -48960,31 +49342,116 @@ fn zcnblk_wal_leaf(
         backend.memory_hugetlb(),
         option_i32_label(preferred_numa_node),
     );
-    let listeners = tcp_bench_mux_bind_listeners(bind, base_port, ports)?;
-    let accepted = tcp_bench_mux_accept_tagged_listeners(listeners, ports, connections_per_port)?;
-    let shards = zcnblk_partition_accepted_streams(
-        accepted,
-        workers,
-        TcpMuxShardPolicy::PortLane,
-        "zcnblk-wal-leaf",
-        pin_workers,
-    );
     let started = Instant::now();
-    let mut handles = Vec::with_capacity(shards.len());
-    for (worker, streams) in shards.into_iter().enumerate() {
-        let backend = Arc::clone(&backend);
-        handles.push(thread::spawn(move || {
-            zcnblk_wal_leaf_worker(
-                worker,
-                streams,
-                backend,
+    let mut handles = Vec::new();
+    match transport.as_str() {
+        "tcp" => {
+            let listeners = tcp_bench_mux_bind_listeners(bind, base_port, ports)?;
+            let accepted =
+                tcp_bench_mux_accept_tagged_listeners(listeners, ports, connections_per_port)?;
+            let shards = zcnblk_partition_accepted_streams(
+                accepted,
+                workers,
+                TcpMuxShardPolicy::PortLane,
+                "zcnblk-wal-leaf",
                 pin_workers,
-                io_mode,
-                ring_entries,
-                ring_cq_entries,
-                allow_volatile_sync,
-            )
-        }));
+            );
+            handles.reserve(shards.len());
+            for (worker, streams) in shards.into_iter().enumerate() {
+                let backend = Arc::clone(&backend);
+                let streams = streams
+                    .into_iter()
+                    .map(ZcnblkWalLeafAccepted::from)
+                    .collect();
+                handles.push(thread::spawn(move || {
+                    zcnblk_wal_leaf_worker(
+                        worker,
+                        streams,
+                        backend,
+                        pin_workers,
+                        io_mode,
+                        ring_entries,
+                        ring_cq_entries,
+                        allow_volatile_sync,
+                    )
+                }));
+            }
+        }
+        "ofi" | "rdm" | "efa" => {
+            if connections_per_port != 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "direct OFI WAL leaf requires exactly one connection per lane",
+                ));
+            }
+            if workers != ports {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "direct OFI WAL leaf requires one worker per lane: workers={workers} lanes={ports}"
+                    ),
+                ));
+            }
+            let provider = env::var("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_PROVIDER")
+                .unwrap_or_else(|_| "efa".to_string());
+            let endpoint = env::var("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ENDPOINT")
+                .unwrap_or_else(|_| "rdm".to_string());
+            let bind_ip = match zcofi_control_bind_addr(bind).parse::<IpAddr>() {
+                Ok(ip) => ip,
+                Err(err) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("direct OFI WAL leaf bind must be an IP address: {bind:?}: {err}"),
+                    ));
+                }
+            };
+            println!(
+                "zcnblk-wal-leaf-ofi-topology: provider={provider} endpoint={endpoint} lanes={ports} workers={workers} lane_to_worker=identity service_range={}-{} affinity_map={} cq_sleep_ns={} message_bytes={} placement_owner=external-userspace-stage block_client_placement=no",
+                base_port,
+                tcp_bench_port(base_port, ports - 1)?,
+                env::var("URING_PLAY_PIN_CPU_LIST").unwrap_or_else(|_| "implicit".to_string()),
+                env::var("URING_PLAY_OFI_CQ_SLEEP_NS").unwrap_or_else(|_| "50000".to_string()),
+                env_usize_or("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", 1024 * 1024),
+            );
+            handles.reserve(ports);
+            for lane in 0..ports {
+                let backend = Arc::clone(&backend);
+                let provider = provider.clone();
+                let endpoint = endpoint.clone();
+                let bind = bind.to_string();
+                let port = tcp_bench_port(base_port, lane)?;
+                handles.push(thread::spawn(move || {
+                    let stream =
+                        ZcOfiMessageStream::connect(&provider, &endpoint, &bind, port, true)?;
+                    let accepted = ZcnblkWalLeafAccepted {
+                        meta: TcpBenchStreamMeta {
+                            lane,
+                            port,
+                            conn_index: 0,
+                            peer_addr: SocketAddr::new(bind_ip, port),
+                            locality: SocketLocality::default(),
+                        },
+                        stream: ZcnblkWalLeafStream::Ofi(stream),
+                    };
+                    zcnblk_wal_leaf_worker(
+                        lane,
+                        vec![accepted],
+                        backend,
+                        pin_workers,
+                        io_mode,
+                        ring_entries,
+                        ring_cq_entries,
+                        allow_volatile_sync,
+                    )
+                }));
+            }
+        }
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT must be tcp or ofi, got {other:?}"),
+            ));
+        }
     }
     let mut total_read = 0usize;
     let mut total_write = 0usize;

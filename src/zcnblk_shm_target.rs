@@ -7,13 +7,13 @@ use super::{
     ZCNBLK_FAN_WAL_OP_RESULT, ZCNBLK_FAN_WAL_OP_RESULT_BATCH, ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH,
     ZCNBLK_FAN_WAL_OP_SYNC, ZCNBLK_FAN_WAL_OP_WRITE_BATCH, ZCNBLK_FAN_WAL_OP_WRITE_DESC,
     ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH, ZCNBLK_FAN_WAL_STATUS_OK, ZCNBLK_OP_READ,
-    ZCNBLK_OP_WRITE, ZcnblkFanWalAdaptiveRecvSpin, ZcnblkFanWalCompactWriteExtent,
-    ZcnblkFanWalFrame, ZcnblkFanWalSharedLeaseSource, ZcnblkShmArenaDirtyHwmCache,
-    advance_send_zc_iovecs, connect_tcp_bound_local_ip, env_enabled_or,
-    kernel_supports_request_opcode, set_tcp_bench_buffers, socket_bench_buffer_bytes,
-    validate_uring_send_mode_location, zcnblk_fan_wal_decode_frame_slice,
-    zcnblk_fan_wal_recv_exact_spin_then_block, zcnblk_fan_wal_write_frame,
-    zcnblk_fan_wal_write_leaf_batch_payload,
+    ZCNBLK_OP_WRITE, ZcOfiMessageStream, ZcnblkFanWalAdaptiveRecvSpin,
+    ZcnblkFanWalCompactWriteExtent, ZcnblkFanWalFrame, ZcnblkFanWalSharedLeaseSource,
+    ZcnblkShmArenaDirtyHwmCache, advance_send_zc_iovecs, connect_tcp_bound_local_ip,
+    env_enabled_or, kernel_supports_request_opcode, memlock_rlimit_bytes, set_tcp_bench_buffers,
+    socket_bench_buffer_bytes, validate_uring_send_mode_location, zc_topology_issue,
+    zcnblk_fan_wal_decode_frame_slice, zcnblk_fan_wal_recv_exact_spin_then_block,
+    zcnblk_fan_wal_write_frame, zcnblk_fan_wal_write_leaf_batch_payload,
 };
 use crate::wal_contract::{
     ZCNBLK_WAL_FEATURE_ALL, ZCNBLK_WAL_FEATURE_ATOMIC_WRITE, ZCNBLK_WAL_FEATURE_BATCH_SUBMISSION,
@@ -25,7 +25,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, IoSlice, Read};
+use std::io::{self, IoSlice, Read, Write};
 use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -372,8 +372,91 @@ struct PendingRemoteRead {
     dirty_ref: Option<WalDirtyReadRef>,
 }
 
+enum RemoteWalStream {
+    Tcp(TcpStream),
+    Ofi(ZcOfiMessageStream),
+}
+
+// SharedTarget is borrowed by its scoped lane workers only after every
+// RemoteWalLeaf has been moved out into its owning lane.  Its remaining shared
+// stream methods inspect metadata or a TCP fd and never call the OFI endpoint;
+// all OFI I/O still requires exclusive `&mut RemoteWalStream` access.
+unsafe impl Sync for RemoteWalStream {}
+
+impl RemoteWalStream {
+    fn transport_label(&self) -> &'static str {
+        match self {
+            Self::Tcp(_) => "tcp",
+            Self::Ofi(_) => "ofi",
+        }
+    }
+}
+
+impl RemoteWalStream {
+    fn tcp(&self) -> Option<&TcpStream> {
+        match self {
+            Self::Tcp(stream) => Some(stream),
+            Self::Ofi(_) => None,
+        }
+    }
+
+    fn raw_fd(&self) -> Option<i32> {
+        self.tcp().map(AsRawFd::as_raw_fd)
+    }
+
+    fn recv_exact(&mut self, wait: &mut RemoteWalRecvWait, out: &mut [u8]) -> io::Result<()> {
+        match self {
+            Self::Tcp(stream) => wait.recv_exact(stream, out),
+            Self::Ofi(stream) => stream.read_exact(out),
+        }
+    }
+
+    fn set_quickack(&self) -> io::Result<()> {
+        match self {
+            Self::Tcp(stream) => set_tcp_quickack(stream),
+            Self::Ofi(_) => Ok(()),
+        }
+    }
+
+    fn locality(&self) -> (i32, i32) {
+        self.tcp().map_or((-1, -1), socket_rx_locality)
+    }
+}
+
+impl Read for RemoteWalStream {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.read(out),
+            Self::Ofi(stream) => stream.read(out),
+        }
+    }
+}
+
+impl Write for RemoteWalStream {
+    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.write(input),
+            Self::Ofi(stream) => stream.write(input),
+        }
+    }
+
+    fn write_vectored(&mut self, inputs: &[IoSlice<'_>]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.write_vectored(inputs),
+            Self::Ofi(stream) => stream.write_vectored(inputs),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.flush(),
+            Self::Ofi(stream) => stream.flush(),
+        }
+    }
+}
+
 struct RemoteWalLeaf {
-    stream: TcpStream,
+    stream: RemoteWalStream,
     mapping: Option<Arc<Mapping>>,
     address: String,
     lane_id: u32,
@@ -771,7 +854,12 @@ impl RemoteWalTxContext {
         let uring = match remote.send_mode {
             RemoteWalSendMode::Blocking => None,
             RemoteWalSendMode::SendZcVectorized => Some(RemoteWalUringTx::new(
-                remote.stream.as_raw_fd(),
+                remote.stream.raw_fd().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "remote WAL send-zc requires a TCP socket",
+                    )
+                })?,
                 remote.lane_id,
             )?),
         };
@@ -1085,20 +1173,62 @@ impl RemoteWalLeaf {
             })
         })
         .transpose()?;
-        let mut stream = match source_ip {
-            Some(source_ip) => connect_tcp_bound_local_ip(socket_address, source_ip)?,
-            None => TcpStream::connect(socket_address)?,
+        let transport = env::var("URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT")
+            .unwrap_or_else(|_| "tcp".to_string());
+        let (mut stream, address, tcp_nodelay, quickack) = match transport.as_str() {
+            "tcp" => {
+                let tcp = match source_ip {
+                    Some(source_ip) => connect_tcp_bound_local_ip(socket_address, source_ip)?,
+                    None => TcpStream::connect(socket_address)?,
+                };
+                set_tcp_bench_buffers(&tcp);
+                let local_address = tcp.local_addr()?;
+                let address = format!("{local_address}->{socket_address}");
+                tcp.set_nodelay(true)?;
+                let tcp_nodelay = tcp.nodelay()?;
+                let quickack = env_enabled_or("URING_PLAY_ZCNBLK_SHM_REMOTE_QUICKACK", false);
+                eprintln!(
+                    "zcnblk-shm-target-remote-connect: transport=tcp lane={lane_id} address={address} tcp_nodelay={tcp_nodelay} quickack={quickack} socket_buffer_bytes={}",
+                    socket_bench_buffer_bytes(),
+                );
+                (RemoteWalStream::Tcp(tcp), address, tcp_nodelay, quickack)
+            }
+            "ofi" | "rdm" | "efa" => {
+                if source_ip.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "OFI WAL transport selects locality with URING_PLAY_OFI_DOMAIN, not URING_PLAY_ZCNBLK_SHM_LEAF_SOURCE_ADDR",
+                    ));
+                }
+                let provider = env::var("URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER")
+                    .unwrap_or_else(|_| "efa".to_string());
+                let endpoint = env::var("URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_ENDPOINT")
+                    .unwrap_or_else(|_| "rdm".to_string());
+                let node = socket_address.ip().to_string();
+                let ofi = ZcOfiMessageStream::connect(
+                    &provider,
+                    &endpoint,
+                    &node,
+                    socket_address.port(),
+                    false,
+                )?;
+                let message_bytes = ofi.message_bytes();
+                let address = format!("ofi://{node}:{}", socket_address.port());
+                eprintln!(
+                    "zcnblk-shm-target-remote-connect: transport=ofi provider={provider} endpoint={endpoint} lane={lane_id} address={address} message_bytes={message_bytes} cq_sleep_ns={} placement_owner=external-userspace-stage block_client_placement=no",
+                    env::var("URING_PLAY_OFI_CQ_SLEEP_NS").unwrap_or_else(|_| "50000".to_string()),
+                );
+                (RemoteWalStream::Ofi(ofi), address, false, false)
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT must be tcp or ofi, got {other:?}"
+                    ),
+                ));
+            }
         };
-        set_tcp_bench_buffers(&stream);
-        let local_address = stream.local_addr()?;
-        let address = format!("{local_address}->{socket_address}");
-        stream.set_nodelay(true)?;
-        let tcp_nodelay = stream.nodelay()?;
-        let quickack = env_enabled_or("URING_PLAY_ZCNBLK_SHM_REMOTE_QUICKACK", false);
-        eprintln!(
-            "zcnblk-shm-target-remote-connect: lane={lane_id} address={address} tcp_nodelay={tcp_nodelay} quickack={quickack} socket_buffer_bytes={}",
-            socket_bench_buffer_bytes(),
-        );
         let hello = ZcnblkFanWalFrame {
             op: ZCNBLK_FAN_WAL_OP_HELLO,
             flags: ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH,
@@ -1150,6 +1280,12 @@ impl RemoteWalLeaf {
         };
         let recv_wait = RemoteWalRecvWait::from_env(recv_spin_budget)?;
         let send_mode = RemoteWalSendMode::from_env()?;
+        if matches!(stream, RemoteWalStream::Ofi(_)) && send_mode != RemoteWalSendMode::Blocking {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "direct OFI WAL transport requires blocking send mode; io_uring send-zc is TCP-only",
+            ));
+        }
         Ok(Self {
             stream,
             mapping: None,
@@ -1308,12 +1444,12 @@ impl RemoteWalLeaf {
 
     fn read_result_frame(&mut self) -> io::Result<ZcnblkFanWalFrame> {
         let mut header = [0u8; ZCNBLK_FAN_WAL_HEADER_LEN];
-        self.recv_wait.recv_exact(&mut self.stream, &mut header)?;
+        self.stream.recv_exact(&mut self.recv_wait, &mut header)?;
         ZcnblkFanWalFrame::decode(&header)
     }
 
     fn recv_result_exact(&mut self, out: &mut [u8]) -> io::Result<()> {
-        self.recv_wait.recv_exact(&mut self.stream, out)
+        self.stream.recv_exact(&mut self.recv_wait, out)
     }
 
     fn request_frame(
@@ -1788,7 +1924,7 @@ impl RemoteWalLeaf {
             .result_header_time
             .saturating_add(header_started.elapsed());
         if self.quickack {
-            set_tcp_quickack(&self.stream)?;
+            self.stream.set_quickack()?;
         }
         self.finish_next_send_batch(tx)?;
         if read_payload_len == 0 {
@@ -1904,7 +2040,7 @@ impl RemoteWalLeaf {
             .result_payload_time
             .saturating_add(payload_started.elapsed());
         if self.quickack {
-            set_tcp_quickack(&self.stream)?;
+            self.stream.set_quickack()?;
         }
         let read_records = requests
             .iter()
@@ -8192,8 +8328,17 @@ impl SharedTarget {
         };
         let transfer_total_slots =
             u64::from(self.header.channels) * u64::from(self.header.payload_entries);
+        let remote_transport = self
+            .remote_leaves
+            .first()
+            .map_or("none", |remote| remote.stream.transport_label());
+        let transport_copy_contract = if remote_transport == "ofi" {
+            "one-userspace-ofi-message-gather;ofi-provider-copy"
+        } else {
+            "none-userspace;tcp-kernel-copy"
+        };
         eprintln!(
-            "zcnblk-shm-target-summary: backend={} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} fua_requests={} polled_requests={} ioprio_requests={} registered_lease_requests={} atomic_write_requests={} write_lifetime_requests={} dirty_read_hits={} dirty_read_refs={} dirty_pressure_events={} dirty_pressure_evictions={} max_payload_slots_outstanding={} remote_read_misses={} completion_window_stalls={} remote_batches={} avg_remote_batch_records={:.2} payload_ownership={} payload_slots_free={}/{} completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order={} sync_boundary={} dirty_retention={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination={} kernel_payload_copies=one-per-direction writeback_materialization_copies=none-userspace;tcp-kernel-copy representative={}",
+            "zcnblk-shm-target-summary: backend={} remote_transport={remote_transport} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} fua_requests={} polled_requests={} ioprio_requests={} registered_lease_requests={} atomic_write_requests={} write_lifetime_requests={} dirty_read_hits={} dirty_read_refs={} dirty_pressure_events={} dirty_pressure_evictions={} max_payload_slots_outstanding={} remote_read_misses={} completion_window_stalls={} remote_batches={} avg_remote_batch_records={:.2} payload_ownership={} payload_slots_free={}/{} completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order={} sync_boundary={} dirty_retention={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination={} kernel_payload_copies=one-per-direction writeback_materialization_copies={transport_copy_contract} representative={}",
             if owner_mode {
                 "WalTcpStableOwnerExtent"
             } else {
@@ -8383,9 +8528,10 @@ impl SharedTarget {
                     )
                 });
             eprintln!(
-                "zcnblk-shm-target-remote-leaf-summary: address={} lanes={} transport=tcp send_mode={} recv_policy={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} fan_stage=userspace placement=single-leaf write_batches={} write_records={} write_bytes={} compact_write_batches={} request_descriptor_bytes={} wire_descriptor_bytes={} descriptor_bytes_saved={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} avg_write_iovecs_per_batch={:.2} avg_write_tx_iovecs_per_batch={:.2} avg_write_run_bytes={:.0} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} payload_source=shared-slot-coalesced-iovec read_payload_destination=shared-slot-direct result_contract=fifo-mixed-request-batch+global-sync-epoch",
+                "zcnblk-shm-target-remote-leaf-summary: address={} lanes={} transport={} send_mode={} recv_policy={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} fan_stage=userspace placement=single-leaf write_batches={} write_records={} write_bytes={} compact_write_batches={} request_descriptor_bytes={} wire_descriptor_bytes={} descriptor_bytes_saved={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} avg_write_iovecs_per_batch={:.2} avg_write_tx_iovecs_per_batch={:.2} avg_write_run_bytes={:.0} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} payload_source=shared-slot-coalesced-iovec read_payload_destination=shared-slot-direct result_contract=fifo-mixed-request-batch+global-sync-epoch",
                 first.address,
                 self.remote_leaves.len(),
+                first.stream.transport_label(),
                 first.send_mode.label(),
                 first.recv_wait.policy().label(),
                 recv_spin_hits,
@@ -8416,7 +8562,7 @@ impl SharedTarget {
                 send_zc_copied_notifications,
             );
             for remote in &self.remote_leaves {
-                let (incoming_cpu, incoming_napi_id) = socket_rx_locality(&remote.stream);
+                let (incoming_cpu, incoming_napi_id) = remote.stream.locality();
                 eprintln!(
                     "zcnblk-shm-target-remote-timing: lane={} target_cpu={} incoming_cpu={} incoming_napi_id={} tcp_nodelay={} quickack={} recv_policy={} recv_spin_budget={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} sync_calls={} sync_seconds={:.6} avg_sync_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
                     remote.lane_id,
@@ -8946,6 +9092,10 @@ impl SharedTarget {
                 state.pending.len(),
             )
         });
+        let remote_transport = self
+            .remote_leaves
+            .first()
+            .map_or("none", |remote| remote.stream.transport_label());
         let (sync_boundary, write_ingress, dirty_read_source, writeback_copy_count) =
             match self.backend {
                 BackendMode::WalMemory => (
@@ -8958,12 +9108,16 @@ impl SharedTarget {
                     "remote-leaf-hwm",
                     "shared-slot-reference",
                     "shared-slot-reference-or-remote-leaf",
-                    "none-userspace;tcp-kernel-copy",
+                    if remote_transport == "ofi" {
+                        "one-userspace-ofi-message-gather;ofi-provider-copy"
+                    } else {
+                        "none-userspace;tcp-kernel-copy"
+                    },
                 ),
                 _ => ("request-order", "immediate-copy", "reduced-memory", "none"),
             };
         eprintln!(
-            "zcnblk-shm-target-summary: backend={:?} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={elapsed:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} fua_requests={} polled_requests={} ioprio_requests={} registered_lease_requests={} atomic_write_requests={} write_lifetime_requests={} lease_release_batch={} writeback_batch={} writeback_batches={} writeback_writes={} writeback_bytes={} durable_submit_hwm={} pending_writes={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} completion_order=global-fifo data_order=per-sector+sync-hwm sync_contract={} sync_boundary={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress={} dirty_read_source={} kernel_payload_copies=one-per-direction writeback_materialization_copies={}",
+            "zcnblk-shm-target-summary: backend={:?} remote_transport={remote_transport} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={elapsed:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} fua_requests={} polled_requests={} ioprio_requests={} registered_lease_requests={} atomic_write_requests={} write_lifetime_requests={} lease_release_batch={} writeback_batch={} writeback_batches={} writeback_writes={} writeback_bytes={} durable_submit_hwm={} pending_writes={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} completion_order=global-fifo data_order=per-sector+sync-hwm sync_contract={} sync_boundary={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress={} dirty_read_source={} kernel_payload_copies=one-per-direction writeback_materialization_copies={}",
             self.backend,
             self.header.channels,
             self.stats.requests,
@@ -9094,9 +9248,10 @@ impl SharedTarget {
                     )
                 });
             eprintln!(
-                "zcnblk-shm-target-remote-leaf-summary: address={} lanes={} transport=tcp send_mode={} recv_policy={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} fan_stage=userspace placement=single-leaf write_batches={} write_records={} write_bytes={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} avg_write_iovecs_per_batch={:.2} avg_write_tx_iovecs_per_batch={:.2} avg_write_run_bytes={:.0} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} payload_source=shared-slot-coalesced-iovec read_payload_destination=shared-slot-direct result_contract=range-hwm+fifo-read-batch",
+                "zcnblk-shm-target-remote-leaf-summary: address={} lanes={} transport={} send_mode={} recv_policy={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} fan_stage=userspace placement=single-leaf write_batches={} write_records={} write_bytes={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} avg_write_iovecs_per_batch={:.2} avg_write_tx_iovecs_per_batch={:.2} avg_write_run_bytes={:.0} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} payload_source=shared-slot-coalesced-iovec read_payload_destination=shared-slot-direct result_contract=range-hwm+fifo-read-batch",
                 first.address,
                 self.remote_leaves.len(),
+                first.stream.transport_label(),
                 first.send_mode.label(),
                 first.recv_wait.policy().label(),
                 recv_spin_hits,
@@ -9123,7 +9278,7 @@ impl SharedTarget {
                 send_zc_copied_notifications,
             );
             for remote in &self.remote_leaves {
-                let (incoming_cpu, incoming_napi_id) = socket_rx_locality(&remote.stream);
+                let (incoming_cpu, incoming_napi_id) = remote.stream.locality();
                 eprintln!(
                     "zcnblk-shm-target-remote-lane: lane={} lane_count={} target_cpu={} incoming_cpu={} incoming_napi_id={} send_mode={} recv_policy={} recv_spin_budget={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} write_batches={} write_records={} write_bytes={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} tcp_nodelay={} quickack={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
                     remote.lane_id,
@@ -9264,6 +9419,20 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
         .next()
         .or_else(|| env::var("URING_PLAY_ZCNBLK_SHM_TARGET_CPU_LIST").ok());
     let cpus = cpu_text.as_deref().map(parse_cpu_list).transpose()?;
+    let remote_transport =
+        env::var("URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT").unwrap_or_else(|_| "tcp".to_string());
+    let direct_ofi = backend == BackendMode::WalTcp
+        && matches!(remote_transport.as_str(), "ofi" | "rdm" | "efa");
+    if backend == BackendMode::WalTcp
+        && !matches!(remote_transport.as_str(), "tcp" | "ofi" | "rdm" | "efa")
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT must be tcp or ofi, got {remote_transport:?}"
+            ),
+        ));
+    }
     let poll_us = args
         .next()
         .map(|value| value.parse::<u64>())
@@ -9299,9 +9468,44 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
         ));
     }
     if cpus.is_none() {
-        eprintln!(
-            "PERF WARNING: zcnblk-shm-target is not CPU-pinned; pass a cpu-list before treating benchmark numbers as representative"
-        );
+        zc_topology_issue(
+            "zcnblk-shm-target",
+            "target workers are not CPU-pinned; pass a cpu-list before treating benchmark numbers as representative",
+        )?;
+    }
+    if direct_ofi {
+        let cq_sleep_ns = env::var("URING_PLAY_OFI_CQ_SLEEP_NS")
+            .ok()
+            .map(|value| value.parse::<usize>())
+            .transpose()
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+            .unwrap_or(50_000);
+        if cq_sleep_ns != 0 {
+            zc_topology_issue(
+                "zcnblk-shm-target",
+                format!(
+                    "direct OFI completion polling sleeps for {cq_sleep_ns} ns; set URING_PLAY_OFI_CQ_SLEEP_NS=0 for low-latency fabric results"
+                ),
+            )?;
+        }
+        if remote_transport == "efa"
+            || env::var("URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER")
+                .map(|provider| provider == "efa")
+                .unwrap_or(true)
+        {
+            if !env_enabled_or("FI_EFA_USE_DEVICE_RDMA", false) {
+                zc_topology_issue(
+                    "zcnblk-shm-target",
+                    "EFA device RDMA is not explicitly enabled; set FI_EFA_USE_DEVICE_RDMA=1 and verify the provider before trusting latency results",
+                )?;
+            }
+        }
+        if !env_enabled_or("URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED", false) {
+            zc_topology_issue(
+                "zcnblk-shm-target",
+                "OFI hugetlb topology is not confirmed; reserve huge pages and set URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED=1 only after verifying the registered-buffer policy",
+            )?;
+        }
     }
     unsafe {
         libc::signal(
@@ -9322,6 +9526,33 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
         busy_hysteresis_us,
         lease_release_batch,
     )?;
+    if direct_ofi {
+        let message_bytes = env::var("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES")
+            .ok()
+            .map(|value| value.parse::<usize>())
+            .transpose()
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+            .unwrap_or(1024 * 1024);
+        let estimated_registered_bytes = (target.header.channels as usize)
+            .checked_mul(message_bytes)
+            .and_then(|bytes| bytes.checked_mul(2))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "OFI message pool size overflow",
+                )
+            })?;
+        if let Some(limit) = memlock_rlimit_bytes()? {
+            if limit < estimated_registered_bytes as u64 {
+                zc_topology_issue(
+                    "zcnblk-shm-target",
+                    format!(
+                        "RLIMIT_MEMLOCK={limit} bytes is below the approximately {estimated_registered_bytes} bytes of per-lane OFI receive/transmit buffers; raise memlock before representative runs"
+                    ),
+                )?;
+            }
+        }
+    }
     let wal_lane_batch = backend == BackendMode::WalTcp
         && env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH", false)
         && !env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_OWNER_DISPATCH", false);
@@ -9458,7 +9689,7 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
         }
     }
     eprintln!(
-        "zcnblk-shm-target: device={} backend={backend:?} channels={} ring_entries={} payload_entries={} slot_bytes={} region_bytes={} capacity_bytes={} kick_batch={} lease_release_batch={} writeback_batch={} read_batch={} read_batch_fill_us={} read_batch_fill_min={} write_batch_fill_us={} write_batch_fill_min={} remote_leaf={} cpu_list={} owner_dispatch={} owner_count={} owner_extent_records={} owner_max_tx_iovecs={} split_transport={} transport_cpu_list={} transport_wait={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} wait_policy={} ordering={} sync_contract={} shared_payload_slots=true payload_ownership={} placement_owner=downstream-userspace-stage block_client_placement=no representative={} ",
+        "zcnblk-shm-target: device={} backend={backend:?} remote_transport={remote_transport} channels={} ring_entries={} payload_entries={} slot_bytes={} region_bytes={} capacity_bytes={} kick_batch={} lease_release_batch={} writeback_batch={} read_batch={} read_batch_fill_us={} read_batch_fill_min={} write_batch_fill_us={} write_batch_fill_min={} remote_leaf={} cpu_list={} owner_dispatch={} owner_count={} owner_extent_records={} owner_max_tx_iovecs={} split_transport={} transport_cpu_list={} transport_wait={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} wait_policy={} ordering={} sync_contract={} shared_payload_slots=true payload_ownership={} placement_owner=downstream-userspace-stage block_client_placement=no representative={} ",
         device,
         target.header.channels,
         target.header.ring_entries,
