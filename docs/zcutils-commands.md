@@ -62,6 +62,8 @@ URING_PLAY_OFI_CQ_SLEEP_NS=0 \
 URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED=1 \
 URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT=ofi \
 URING_PLAY_ZCNBLK_WAL_LEAF_OFI_PROVIDER=efa \
+URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS=1 \
+URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_HUGETLB=1 \
 URING_PLAY_PIN_CPU_LIST=LEAF_NIC_LOCAL_CPUS \
 zcnblk-wal-leaf zcmem:16G LEAF_PRIVATE_IP 29000 32 1 4K 32 true blocking
 
@@ -72,6 +74,7 @@ URING_PLAY_OFI_CQ_SLEEP_NS=0 \
 URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED=1 \
 URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT=ofi \
 URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER=efa \
+URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS=1 \
 URING_PLAY_ZCNBLK_SHM_LEAF_ADDR=LEAF_PRIVATE_IP:29000 \
 URING_PLAY_ZCNBLK_SHM_TARGET_CPU_LIST=CLIENT_NIC_LOCAL_CPUS \
 zcnblk-shm-target /dev/zcnblk-shmctl wal-tcp 64
@@ -86,6 +89,17 @@ huge pages, pin client kthreads and userspace workers, set hctx/NAPI affinity,
 and use `URING_PLAY_TOPOLOGY_STRICT=1`; the strict preflight rejects sleeping
 OFI completions or an incomplete declared topology before benchmark numbers
 are printed.
+
+When both RMA-read switches are enabled, HELLO negotiation advertises the
+userspace memory leaf's remote-read window. Each client lane registers one
+fixed 4 KiB bounce buffer, completes `fi_read` into that buffer, and copies the
+result into the shared block slot. The full shared mapping is deliberately not
+registered: EFA provider behavior must be measured for MR size and subrange
+access, and the kernel client still owns no placement decision. Startup and
+summary logs state whether RMA was negotiated, the lane-local registration
+size, local-CQ completion semantics, and bounce-copy time. Reads from a leaf
+that does not advertise the feature retain the framed result-payload path;
+sync/FUA continues to use the explicit message/HWM drain contract.
 
 ## Command Idiom
 

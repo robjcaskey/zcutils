@@ -10211,9 +10211,22 @@ unsafe extern "C" {
         addr: *mut u64,
         key: *mut u64,
     ) -> c_int;
+    fn zc_ofi_rma_register_read_buffer(
+        ep: *mut ZcOfiRawEndpoint,
+        buf: *mut c_void,
+        len: usize,
+    ) -> c_int;
     fn zc_ofi_rma_write(
         ep: *mut ZcOfiRawEndpoint,
         buf: *const c_void,
+        len: usize,
+        remote_addr: u64,
+        remote_key: u64,
+        timeout_ms: c_int,
+    ) -> c_int;
+    fn zc_ofi_rma_read(
+        ep: *mut ZcOfiRawEndpoint,
+        buf: *mut c_void,
         len: usize,
         remote_addr: u64,
         remote_key: u64,
@@ -10681,16 +10694,18 @@ impl ZcOfiEndpoint {
     }
 
     fn rma_register_target(&mut self, buf: &mut [u8]) -> io::Result<(u64, u64)> {
+        unsafe { self.rma_register_target_raw(buf.as_mut_ptr(), buf.len()) }
+    }
+
+    unsafe fn rma_register_target_raw(
+        &mut self,
+        buf: *mut u8,
+        len: usize,
+    ) -> io::Result<(u64, u64)> {
         let mut addr = 0u64;
         let mut key = 0u64;
         let rc = unsafe {
-            zc_ofi_rma_register_target(
-                self.raw,
-                buf.as_mut_ptr().cast::<c_void>(),
-                buf.len(),
-                &mut addr,
-                &mut key,
-            )
+            zc_ofi_rma_register_target(self.raw, buf.cast::<c_void>(), len, &mut addr, &mut key)
         };
         if rc != 0 {
             return Err(zcofi_error_from_endpoint(
@@ -10700,6 +10715,20 @@ impl ZcOfiEndpoint {
             ));
         }
         Ok((addr, key))
+    }
+
+    fn rma_register_read_buffer(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        let rc = unsafe {
+            zc_ofi_rma_register_read_buffer(self.raw, buf.as_mut_ptr().cast::<c_void>(), buf.len())
+        };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(
+                self,
+                rc,
+                "zc_ofi_rma_register_read_buffer",
+            ));
+        }
+        Ok(())
     }
 
     fn rma_write(&mut self, buf: &[u8], remote_addr: u64, remote_key: u64) -> io::Result<()> {
@@ -10715,6 +10744,23 @@ impl ZcOfiEndpoint {
         };
         if rc != 0 {
             return Err(zcofi_error_from_endpoint(self, rc, "zc_ofi_rma_write"));
+        }
+        Ok(())
+    }
+
+    fn rma_read(&mut self, buf: &mut [u8], remote_addr: u64, remote_key: u64) -> io::Result<()> {
+        let rc = unsafe {
+            zc_ofi_rma_read(
+                self.raw,
+                buf.as_mut_ptr().cast::<c_void>(),
+                buf.len(),
+                remote_addr,
+                remote_key,
+                zcofi_timeout_ms(),
+            )
+        };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(self, rc, "zc_ofi_rma_read"));
         }
         Ok(())
     }
@@ -10894,7 +10940,32 @@ impl ZcOfiEndpoint {
         ))
     }
 
+    unsafe fn rma_register_target_raw(
+        &mut self,
+        _buf: *mut u8,
+        _len: usize,
+    ) -> io::Result<(u64, u64)> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
     fn rma_write(&mut self, _buf: &[u8], _remote_addr: u64, _remote_key: u64) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    fn rma_register_read_buffer(&mut self, _buf: &mut [u8]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    fn rma_read(&mut self, _buf: &mut [u8], _remote_addr: u64, _remote_key: u64) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "zcutils was built without libfabric headers",
@@ -11062,9 +11133,14 @@ impl ZcOfiMessageStream {
         node: &str,
         service: u16,
         server: bool,
+        rma_capable: bool,
     ) -> io::Result<Self> {
         let service = service.to_string();
-        let mut endpoint = ZcOfiEndpoint::open(provider, endpoint_name, node, &service, server)?;
+        let mut endpoint = if rma_capable {
+            ZcOfiEndpoint::open_rma(provider, endpoint_name, node, &service, server)?
+        } else {
+            ZcOfiEndpoint::open(provider, endpoint_name, node, &service, server)?
+        };
         let provider_limit = endpoint.max_msg_size();
         let requested = env_usize_or("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", 1024 * 1024);
         if requested < ZCNBLK_FAN_WAL_HEADER_LEN {
@@ -11104,6 +11180,26 @@ impl ZcOfiMessageStream {
 
     fn message_bytes(&self) -> usize {
         self.message_bytes
+    }
+
+    fn register_rma_target(&mut self, target: &mut [u8]) -> io::Result<(u64, u64)> {
+        self.endpoint.rma_register_target(target)
+    }
+
+    unsafe fn register_rma_target_raw(
+        &mut self,
+        target: *mut u8,
+        len: usize,
+    ) -> io::Result<(u64, u64)> {
+        unsafe { self.endpoint.rma_register_target_raw(target, len) }
+    }
+
+    fn register_rma_read_buffer(&mut self, target: &mut [u8]) -> io::Result<()> {
+        self.endpoint.rma_register_read_buffer(target)
+    }
+
+    fn rma_read(&mut self, target: &mut [u8], remote_addr: u64, remote_key: u64) -> io::Result<()> {
+        self.endpoint.rma_read(target, remote_addr, remote_key)
     }
 
     fn refill(&mut self) -> io::Result<()> {
@@ -11207,7 +11303,7 @@ mod zcnblk_ofi_message_stream_tests {
         let service = 39_000u16 + u16::try_from(std::process::id() % 500).unwrap();
         let server = thread::spawn(move || -> io::Result<()> {
             let mut stream =
-                ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, true)?;
+                ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, true, false)?;
             let mut request = vec![0u8; ZCNBLK_FAN_WAL_HEADER_LEN + 4096];
             stream.read_exact(&mut request)?;
             if request[..ZCNBLK_FAN_WAL_HEADER_LEN] != [0x5au8; ZCNBLK_FAN_WAL_HEADER_LEN]
@@ -11222,7 +11318,8 @@ mod zcnblk_ofi_message_stream_tests {
         });
         thread::sleep(Duration::from_millis(25));
         let mut client =
-            ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, false).unwrap();
+            ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, false, false)
+                .unwrap();
         let header = [0x5au8; ZCNBLK_FAN_WAL_HEADER_LEN];
         let payload = [0xa5u8; 4096];
         let mut parts = [IoSlice::new(&header), IoSlice::new(&payload)];
@@ -11230,6 +11327,53 @@ mod zcnblk_ofi_message_stream_tests {
         let mut reply = [0u8; 10];
         client.read_exact(&mut reply).unwrap();
         assert_eq!(&reply, b"remote-ack");
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a local libfabric sockets provider with FI_RMA"]
+    fn rma_read_moves_registered_data_without_a_leaf_response_payload() {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        unsafe {
+            env::set_var("URING_PLAY_OFI_CQ_SLEEP_NS", "0");
+            env::set_var("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", "65536");
+        }
+        let service = 39_600u16 + u16::try_from(std::process::id() % 300).unwrap();
+        let server = thread::spawn(move || -> io::Result<()> {
+            let mut stream =
+                ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, true, true)?;
+            let mut source = vec![0xabu8; 4096];
+            let (addr, key) = stream.register_rma_target(&mut source)?;
+            let mut metadata = [0u8; 24];
+            metadata[0..8].copy_from_slice(&addr.to_le_bytes());
+            metadata[8..16].copy_from_slice(&key.to_le_bytes());
+            metadata[16..24].copy_from_slice(&(source.len() as u64).to_le_bytes());
+            stream.write_all(&metadata)?;
+            let mut done = [0u8; 1];
+            stream.read_exact(&mut done)?;
+            if done != [1] {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "OFI RMA reader returned an invalid completion marker",
+                ));
+            }
+            Ok(())
+        });
+        thread::sleep(Duration::from_millis(25));
+        let mut client =
+            ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, false, true)
+                .unwrap();
+        let mut metadata = [0u8; 24];
+        client.read_exact(&mut metadata).unwrap();
+        let addr = u64::from_le_bytes(metadata[0..8].try_into().unwrap());
+        let key = u64::from_le_bytes(metadata[8..16].try_into().unwrap());
+        let len = u64::from_le_bytes(metadata[16..24].try_into().unwrap()) as usize;
+        let mut target = vec![0u8; len];
+        client.register_rma_read_buffer(&mut target).unwrap();
+        client.rma_read(&mut target, addr, key).unwrap();
+        assert_eq!(target, vec![0xabu8; 4096]);
+        client.write_all(&[1]).unwrap();
         server.join().unwrap().unwrap();
     }
 }
@@ -11763,6 +11907,172 @@ fn zcofi_rma_write_worker(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn zcofi_rma_read_worker(
+    worker: usize,
+    provider: Arc<String>,
+    endpoint: Arc<String>,
+    addr: Arc<String>,
+    specs: Vec<ZcOfiWalLaneSpec>,
+    lane_count: usize,
+    bytes_per_lane: usize,
+    extent_bytes: usize,
+    full_local_window: bool,
+) -> io::Result<ZcWalExtentStats> {
+    let affinity = maybe_pin_current_thread("zcofi-rma-read-worker", worker);
+    let tid = current_tid();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_cpu = current_cpu();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
+    let stream_count = specs.len();
+    let mut endpoints = Vec::with_capacity(specs.len());
+    let mut meta_buf = [0u8; ZCOFI_RMA_CONTROL_LEN];
+    for spec in specs {
+        let mut ep = ZcOfiEndpoint::open_rma(
+            provider.as_str(),
+            endpoint.as_str(),
+            addr.as_str(),
+            &spec.service,
+            false,
+        )?;
+        let control_port = zcofi_control_port(&spec.service)?;
+        zcofi_client_exchange_peer(addr.as_str(), control_port, &mut ep)?;
+        let got = ep.recv(&mut meta_buf)?;
+        if got != ZCOFI_RMA_CONTROL_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "OFI RMA metadata length mismatch lane={} got={} expected={}",
+                    spec.lane, got, ZCOFI_RMA_CONTROL_LEN
+                ),
+            ));
+        }
+        let meta = ZcOfiRmaMeta::decode(&meta_buf)?;
+        zcofi_rma_validate_meta(meta, spec.lane, lane_count, bytes_per_lane, extent_bytes)?;
+        println!(
+            "zcofi-rma-read-lane: worker={worker} lane={} provider={} endpoint={} addr={} service={} control_port={} remote_addr=0x{:016x} remote_key=0x{:016x} extent_bytes={} max_msg_size={} inject_size={} completion=initiator-local-cq-data-visible local_registration_scope={}",
+            spec.lane,
+            provider.as_str(),
+            endpoint.as_str(),
+            addr.as_str(),
+            spec.service,
+            control_port,
+            meta.remote_addr,
+            meta.remote_key,
+            extent_bytes,
+            ep.max_msg_size(),
+            ep.inject_size(),
+            if full_local_window {
+                "full-window-changing-offset"
+            } else {
+                "fixed-extent-reused"
+            },
+        );
+        endpoints.push((spec, ep, meta));
+    }
+
+    let local_buffer_bytes = if full_local_window {
+        bytes_per_lane
+    } else {
+        extent_bytes
+    };
+    let mut payload = vec![0xa5u8; local_buffer_bytes];
+    let extents_per_lane = bytes_per_lane / extent_bytes;
+    let records_per_extent = extent_bytes / ZC_WAL_RECORD_SIZE;
+    let mut payload_bytes = 0usize;
+    let mut wire_bytes = 0usize;
+    let mut extents = 0usize;
+    let mut records = 0usize;
+    let mut acks = 0usize;
+    for (_, ep, _) in &mut endpoints {
+        ep.rma_register_read_buffer(&mut payload)?;
+    }
+    let started = Instant::now();
+    for (spec, mut ep, meta) in endpoints {
+        for seq in 0..extents_per_lane {
+            let remote_offset = seq.checked_mul(extent_bytes).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA lane offset overflow")
+            })?;
+            let remote_offset = u64::try_from(remote_offset).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA offset overflow")
+            })?;
+            let local_offset = if full_local_window {
+                seq.checked_mul(extent_bytes).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA local offset overflow")
+                })?
+            } else {
+                0
+            };
+            ep.rma_read(
+                &mut payload[local_offset..local_offset + extent_bytes],
+                meta.remote_addr + remote_offset,
+                meta.remote_key,
+            )?;
+            payload_bytes += extent_bytes;
+            wire_bytes += extent_bytes;
+            extents += 1;
+            records += records_per_extent;
+        }
+        if payload.iter().any(|byte| *byte != 0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("OFI RMA read verification failed lane={}", spec.lane),
+            ));
+        }
+        let done = ZcOfiRmaDone {
+            lane_id: u32::try_from(spec.lane).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA lane id overflow")
+            })?,
+            lane_count: u32::try_from(lane_count).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA lane count overflow")
+            })?,
+            payload_bytes: u64::try_from(bytes_per_lane).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA bytes overflow")
+            })?,
+            extents: u64::try_from(extents_per_lane).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA extent count overflow")
+            })?,
+            records: u64::try_from(bytes_per_lane / ZC_WAL_RECORD_SIZE).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA record count overflow")
+            })?,
+            status: 0,
+        };
+        ep.send(&done.encode())?;
+        wire_bytes += ZCOFI_RMA_CONTROL_LEN;
+        acks += 1;
+    }
+
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_cpu = current_cpu();
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    Ok(ZcWalExtentStats {
+        worker,
+        streams: stream_count,
+        payload_bytes,
+        wire_bytes,
+        extents,
+        records,
+        acks,
+        wall: started.elapsed(),
+        cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+        start_cpu,
+        end_cpu,
+        voluntary_switches: end_switches
+            .voluntary
+            .saturating_sub(start_switches.voluntary),
+        involuntary_switches: end_switches
+            .involuntary
+            .saturating_sub(start_switches.involuntary),
+        migrations: end_switches
+            .migrations
+            .saturating_sub(start_switches.migrations),
+        ack_latency: LatencyHistogram::new(),
+        uring_recv: UringRecvStats::default(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn zcofi_rma_target(
     provider: &str,
     endpoint: &str,
@@ -11914,6 +12224,130 @@ fn zcofi_rma_write(
         total.acks,
         total.payload_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
         total.records as f64 / secs,
+        total.voluntary_switches,
+        total.involuntary_switches,
+        total.migrations
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcofi_rma_read(
+    provider: &str,
+    endpoint: &str,
+    addr: &str,
+    base_service: u16,
+    lanes: usize,
+    bytes_per_lane: usize,
+    extent_bytes: usize,
+    workers: usize,
+) -> io::Result<()> {
+    let endpoint = libfabric_endpoint_pingpong(endpoint)?;
+    zcwal_validate_extent_shape(bytes_per_lane, extent_bytes)?;
+    let specs = zcofi_wal_lane_specs(base_service, lanes)?;
+    let workers = tcp_bench_auto_workers(workers, lanes);
+    let full_local_window = env_enabled_or("URING_PLAY_OFI_RMA_READ_FULL_LOCAL_WINDOW", false);
+    zcwal_extent_perf_warnings("zcofi-rma-read", lanes, 1, workers)?;
+    println!(
+        "zcofi-rma-read: provider={provider} endpoint={endpoint} addr={addr} \
+         base_service={base_service} lanes={lanes} workers={workers} \
+         per_worker_qd=1 aggregate_outstanding_depth={workers} \
+         bytes_per_lane={bytes_per_lane} extent_bytes={extent_bytes} \
+         direct_rma_read=yes completion=initiator-local-cq-data-visible \
+         local_registration_scope={} local_registered_bytes_per_worker={} \
+         target_payload_pattern=fill:0x00 records_per_extent={} \
+         timeout_ms={} busy_poll_iters={} cq_sleep_ns={} ofi_domain={} ofi_fabric={}",
+        if full_local_window {
+            "full-window-changing-offset"
+        } else {
+            "fixed-extent-reused"
+        },
+        if full_local_window {
+            bytes_per_lane
+        } else {
+            extent_bytes
+        },
+        extent_bytes / ZC_WAL_RECORD_SIZE,
+        zcofi_timeout_ms(),
+        env_usize_or("URING_PLAY_OFI_BUSY_POLL_ITERS", 0),
+        env_usize_or("URING_PLAY_OFI_CQ_SLEEP_NS", 50_000),
+        env::var("URING_PLAY_OFI_DOMAIN").unwrap_or_else(|_| "auto".to_string()),
+        env::var("URING_PLAY_OFI_EFA_FABRIC").unwrap_or_else(|_| "auto".to_string()),
+    );
+    let shards = zcofi_wal_partition_specs(specs, workers);
+    let provider = Arc::new(provider.to_string());
+    let endpoint = Arc::new(endpoint.to_string());
+    let addr = Arc::new(addr.to_string());
+    let mut handles = Vec::new();
+    for (worker, shard) in shards.into_iter().enumerate() {
+        if shard.is_empty() {
+            continue;
+        }
+        let provider = Arc::clone(&provider);
+        let endpoint = Arc::clone(&endpoint);
+        let addr = Arc::clone(&addr);
+        handles.push(thread::spawn(move || {
+            zcofi_rma_read_worker(
+                worker,
+                provider,
+                endpoint,
+                addr,
+                shard,
+                lanes,
+                bytes_per_lane,
+                extent_bytes,
+                full_local_window,
+            )
+        }));
+    }
+    let mut results = Vec::with_capacity(handles.len());
+    for handle in handles {
+        let stats = handle
+            .join()
+            .map_err(|_| io::Error::other("zcofi RMA read worker panicked"))??;
+        zcwal_extent_print_worker("zcofi-rma-read", &stats);
+        results.push(stats);
+    }
+    let total_operation_seconds = results
+        .iter()
+        .map(|stats| stats.wall.as_secs_f64())
+        .sum::<f64>();
+    let total = zcwal_extent_sum(&results);
+    let secs = total.wall.as_secs_f64().max(f64::MIN_POSITIVE);
+    let operation_iops = total.extents as f64 / secs;
+    let average_local_cq_completion_us = if total.extents == 0 {
+        0.0
+    } else {
+        total_operation_seconds * 1_000_000.0 / total.extents as f64
+    };
+    let matching_theoretical_iops = if average_local_cq_completion_us == 0.0 {
+        0.0
+    } else {
+        workers as f64 * 1_000_000.0 / average_local_cq_completion_us
+    };
+    let efficiency_pct = if matching_theoretical_iops == 0.0 {
+        0.0
+    } else {
+        operation_iops * 100.0 / matching_theoretical_iops
+    };
+    println!(
+        "zcofi-rma-read-summary: payload_bytes={} wire_bytes={} extents={} logical_records={} doorbells={} seconds={secs:.6} payload_Gbitps={:.3} operation_iops={operation_iops:.0} avg_local_cq_completion_us={average_local_cq_completion_us:.3} matching_theoretical_iops={matching_theoretical_iops:.0} actual_theoretical_efficiency_pct={efficiency_pct:.2} completion=initiator-local-cq-data-visible per_worker_qd=1 workers={workers} lanes={lanes} aggregate_outstanding_depth={workers} local_registration_scope={} local_registered_bytes_per_worker={} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
+        total.payload_bytes,
+        total.wire_bytes,
+        total.extents,
+        total.records,
+        total.acks,
+        total.payload_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+        if full_local_window {
+            "full-window-changing-offset"
+        } else {
+            "fixed-extent-reused"
+        },
+        if full_local_window {
+            bytes_per_lane
+        } else {
+            extent_bytes
+        },
         total.voluntary_switches,
         total.involuntary_switches,
         total.migrations
@@ -28575,6 +29009,7 @@ const ZCNBLK_FAN_WAL_STATUS_OK: u32 = 0;
 const ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH: u16 = 1 << 0;
 const ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT: u16 = 1 << 1;
 const ZCNBLK_FAN_WAL_FLAG_IO_CONTRACT_NEGOTIATION: u16 = 1 << 2;
+const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW: u16 = 1 << 3;
 const ZCNBLK_FAN_WAL_COMPACT_WRITE_EXTENT_LEN: usize = 48;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44955,6 +45390,15 @@ enum ZcnblkWalLeafBackend {
     },
 }
 
+impl ZcnblkWalLeafBackend {
+    fn ofi_rma_read_window(&self) -> Option<(*mut u8, usize)> {
+        match self {
+            Self::Memory { arena, .. } => Some((arena.ptr, arena.device_bytes)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ZcnblkWalLeafDurability {
     Volatile,
@@ -46447,6 +46891,16 @@ impl From<TcpBenchAcceptedStream> for ZcnblkWalLeafAccepted {
 impl ZcnblkWalLeafStream {
     fn is_tcp(&self) -> bool {
         matches!(self, Self::Tcp(_))
+    }
+
+    unsafe fn register_rma_target(&mut self, ptr: *mut u8, len: usize) -> io::Result<(u64, u64)> {
+        match self {
+            Self::Ofi(stream) => unsafe { stream.register_rma_target_raw(ptr, len) },
+            Self::Tcp(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "OFI RMA registration requested for a TCP WAL stream",
+            )),
+        }
     }
 
     fn read_frame(
@@ -48695,7 +49149,7 @@ fn zcnblk_wal_leaf_process_stream(
                         allow_volatile_sync,
                     );
                     negotiated_features = requested_features & supported_features;
-                    let hello_ack = ZcnblkFanWalFrame {
+                    let mut hello_ack = ZcnblkFanWalFrame {
                         op: ZCNBLK_FAN_WAL_OP_HELLO_ACK,
                         lane_id: frame.lane_id,
                         lane_count: frame.lane_count,
@@ -48706,6 +49160,32 @@ fn zcnblk_wal_leaf_process_stream(
                         ..ZcnblkFanWalFrame::default()
                     }
                     .with_hello_features(negotiated_features)?;
+                    let rma_requested = frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW != 0;
+                    if rma_requested
+                        && env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false)
+                    {
+                        if let Some((window_ptr, window_len)) = backend.ofi_rma_read_window() {
+                            // The backend Arc keeps this arena mapped until the stream is
+                            // dropped. Per-record ordering gates protect CPU writes while
+                            // libfabric holds the registration; no Rust reference spanning
+                            // those concurrent raw-memory operations is created here.
+                            let (window_addr, window_key) =
+                                unsafe { stream.register_rma_target(window_ptr, window_len)? };
+                            hello_ack.flags |= ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW;
+                            hello_ack.logical_offset = window_addr;
+                            hello_ack.leaf_offset = window_key;
+                            hello_ack.sync_epoch = u64::try_from(window_len).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "OFI RMA leaf window length exceeds u64",
+                                )
+                            })?;
+                            println!(
+                                "zcnblk-wal-leaf-ofi-rma-read-window: worker={worker} slot={stream_slot} lane={} bytes={window_len} addr={window_addr:#x} key={window_key:#x} completion=initiator-local-cq-data-visible durability=not-applicable",
+                                meta.lane,
+                            );
+                        }
+                    }
                     zcnblk_fan_wal_write_frame(&mut stream, hello_ack, &[])?;
                     println!(
                         "zcnblk-wal-leaf-contract: worker={worker} slot={stream_slot} lane={} requested={requested_features:#x} supported={supported_features:#x} negotiated={negotiated_features:#x}",
@@ -49271,7 +49751,7 @@ fn zcnblk_wal_leaf(
             )?;
         }
         let message_bytes = env_usize_or("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", 1024 * 1024);
-        let estimated_registered_bytes = ports
+        let mut estimated_registered_bytes = ports
             .checked_mul(message_bytes)
             .and_then(|bytes| bytes.checked_mul(2))
             .ok_or_else(|| {
@@ -49280,6 +49760,29 @@ fn zcnblk_wal_leaf(
                     "OFI message pool size overflow",
                 )
             })?;
+        if env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false) {
+            let rma_registered_bytes = usize::try_from(backend.device_bytes())
+                .ok()
+                .and_then(|bytes| bytes.checked_mul(total_connections))
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "OFI RMA leaf-window registration size overflow",
+                    )
+                })?;
+            estimated_registered_bytes = estimated_registered_bytes
+                .checked_add(rma_registered_bytes)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "OFI total registration size overflow",
+                    )
+                })?;
+            println!(
+                "zcnblk-wal-leaf-ofi-rma-preflight: connections={total_connections} window_bytes={} estimated_per_endpoint_domain_registered_bytes={rma_registered_bytes} memlock_accounting=conservative-full-window-per-connection",
+                backend.device_bytes(),
+            );
+        }
         if let Some(limit) = memlock_rlimit_bytes()? {
             if limit < estimated_registered_bytes as u64 {
                 zc_topology_issue(
@@ -49413,6 +49916,8 @@ fn zcnblk_wal_leaf(
                 env::var("URING_PLAY_OFI_CQ_SLEEP_NS").unwrap_or_else(|_| "50000".to_string()),
                 env_usize_or("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", 1024 * 1024),
             );
+            let rma_reads_enabled =
+                env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false);
             handles.reserve(ports);
             for lane in 0..ports {
                 let backend = Arc::clone(&backend);
@@ -49421,8 +49926,14 @@ fn zcnblk_wal_leaf(
                 let bind = bind.to_string();
                 let port = tcp_bench_port(base_port, lane)?;
                 handles.push(thread::spawn(move || {
-                    let stream =
-                        ZcOfiMessageStream::connect(&provider, &endpoint, &bind, port, true)?;
+                    let stream = ZcOfiMessageStream::connect(
+                        &provider,
+                        &endpoint,
+                        &bind,
+                        port,
+                        true,
+                        rma_reads_enabled,
+                    )?;
                     let accepted = ZcnblkWalLeafAccepted {
                         meta: TcpBenchStreamMeta {
                             lane,
@@ -90261,8 +90772,9 @@ fn print_zcutils_help() {
 		         zcwal-ofi-send          lane-local WAL extent sender over libfabric RDM\n\
 		         zcwal-ofi-recv          lane-local WAL extent receiver over libfabric RDM\n\
 		         zcwal-ofi-relay         head node libfabric WAL relay with tail-gated ACKs\n\
-		         zcwal-ofi-rma-target    register lane-local memory for libfabric RMA writes\n\
+		         zcwal-ofi-rma-target    register lane-local memory for libfabric RMA reads/writes\n\
 		         zcwal-ofi-rma-write     write lane-local extents directly into remote memory\n\
+		         zcwal-ofi-rma-read      read lane-local extents directly from remote memory\n\
 		         zcraid-mirror-send      branch_topology mirror-commit benchmark sender\n\
 		         zcraid-mirror-recv      branch_topology mirror-commit benchmark receiver\n\
 	         \n\
@@ -90324,6 +90836,7 @@ fn zc_argv0_command(argv0: &str) -> Option<&'static str> {
         "zcwal-ofi-relay" | "zcofi-wal-relay" => Some("zcwal-ofi-relay"),
         "zcwal-ofi-rma-target" | "zcofi-rma-target" => Some("zcwal-ofi-rma-target"),
         "zcwal-ofi-rma-write" | "zcofi-rma-write" => Some("zcwal-ofi-rma-write"),
+        "zcwal-ofi-rma-read" | "zcofi-rma-read" => Some("zcwal-ofi-rma-read"),
         "zcraid-mirror-send" | "zcraid1-send" => Some("zcraid-mirror-send"),
         "zcraid-mirror-recv" | "zcraid1-recv" => Some("zcraid-mirror-recv"),
         _ => None,
@@ -91168,6 +91681,56 @@ pub fn main_entry() -> io::Result<()> {
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
                 .unwrap_or(0);
             zcofi_rma_write(
+                &provider,
+                &endpoint,
+                &addr,
+                base_service,
+                lanes,
+                bytes_per_lane,
+                extent_bytes,
+                workers,
+            )
+        }
+        Some("zcwal-ofi-rma-read") => {
+            let usage = "usage: zcwal-ofi-rma-read <provider> <endpoint:rdm> <addr> [base-service] [lanes] [bytes-per-lane] [extent-bytes] [workers]";
+            let provider = args
+                .next()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+            let endpoint = args
+                .next()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+            let addr = args
+                .next()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+            let base_service = args
+                .next()
+                .map(|value| value.parse::<u16>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(31600);
+            let lanes = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(1);
+            let bytes_per_lane = args
+                .next()
+                .map(|value| parse_size_arg(&value, "bytes-per-lane"))
+                .transpose()?
+                .unwrap_or(64 * 1024 * 1024);
+            let extent_bytes = args
+                .next()
+                .map(|value| parse_size_arg(&value, "extent-bytes"))
+                .transpose()?
+                .unwrap_or(4096);
+            let workers = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(0);
+            zcofi_rma_read(
                 &provider,
                 &endpoint,
                 &addr,

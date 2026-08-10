@@ -42,6 +42,7 @@ struct zc_ofi_endpoint {
     size_t inject_size;
     struct zc_ofi_mr_cache send_mr;
     struct zc_ofi_mr_cache recv_mr;
+    struct zc_ofi_mr_cache read_mr;
     struct zc_ofi_mr_cache write_mr;
     struct fid_mr *rma_target_mr;
     struct fi_context2 async_send_context;
@@ -86,8 +87,8 @@ static void zc_ofi_cpu_relax(void) {
 }
 
 static void zc_ofi_wait_after_eagain(struct zc_ofi_endpoint *ep, uint64_t *spins) {
-    if (ep && *spins < ep->busy_poll_iters) {
-        (*spins)++;
+    (*spins)++;
+    if (ep && *spins <= ep->busy_poll_iters) {
         zc_ofi_cpu_relax();
         return;
     }
@@ -97,6 +98,20 @@ static void zc_ofi_wait_after_eagain(struct zc_ofi_endpoint *ep, uint64_t *spins
     }
     struct timespec ts = {.tv_sec = 0, .tv_nsec = sleep_ns};
     nanosleep(&ts, NULL);
+}
+
+static int zc_ofi_poll_timed_out(const struct zc_ofi_endpoint *ep, uint64_t spins,
+                                 uint64_t start_ms, int timeout_ms) {
+    if (timeout_ms <= 0) {
+        return 0;
+    }
+    /* A sleeping poll is already expensive enough to sample every pass. A
+     * dedicated busy poll samples only once per 1024 misses so clock_gettime
+     * does not dominate sub-20us completions. */
+    if (ep && ep->cq_sleep_ns == 0 && (spins & 1023U) != 0) {
+        return 0;
+    }
+    return zc_ofi_now_ms() - start_ms >= (uint64_t)timeout_ms;
 }
 
 static const char *zc_ofi_errstr(int rc) {
@@ -143,6 +158,7 @@ void zc_ofi_close(struct zc_ofi_endpoint *ep) {
     }
     zc_ofi_close_mr_cache(&ep->send_mr);
     zc_ofi_close_mr_cache(&ep->recv_mr);
+    zc_ofi_close_mr_cache(&ep->read_mr);
     zc_ofi_close_mr_cache(&ep->write_mr);
     zc_ofi_close_fid(ep->rma_target_mr ? &ep->rma_target_mr->fid : NULL);
     zc_ofi_close_fid(ep->ep ? &ep->ep->fid : NULL);
@@ -457,7 +473,7 @@ static int zc_ofi_wait_cq(struct zc_ofi_endpoint *ep, struct fid_cq *cq, const c
             return 0;
         }
         if (rc == -FI_EAGAIN) {
-            if (timeout_ms > 0 && zc_ofi_now_ms() - start >= (uint64_t)timeout_ms) {
+            if (zc_ofi_poll_timed_out(ep, spins, start, timeout_ms)) {
                 snprintf(ep->err, sizeof(ep->err), "OFI CQ wait timed out after %d ms", timeout_ms);
                 return -ETIMEDOUT;
             }
@@ -493,9 +509,16 @@ static int zc_ofi_register_cached(struct zc_ofi_endpoint *ep, const void *buf, s
     if (!ep->mr_local) {
         return 0;
     }
-    if (cache->mr && cache->buf == buf && cache->len >= len && cache->access == access) {
-        *desc = cache->desc;
-        return 0;
+    if (cache->mr && cache->access == access) {
+        uintptr_t cached_start = (uintptr_t)cache->buf;
+        uintptr_t cached_end = cached_start + cache->len;
+        uintptr_t requested_start = (uintptr_t)buf;
+        uintptr_t requested_end = requested_start + len;
+        if (cached_end >= cached_start && requested_end >= requested_start &&
+            requested_start >= cached_start && requested_end <= cached_end) {
+            *desc = cache->desc;
+            return 0;
+        }
     }
     zc_ofi_close_mr_cache(cache);
     struct fid_mr *mr = NULL;
@@ -512,6 +535,14 @@ static int zc_ofi_register_cached(struct zc_ofi_endpoint *ep, const void *buf, s
     return 0;
 }
 
+int zc_ofi_rma_register_read_buffer(struct zc_ofi_endpoint *ep, void *buf, size_t len) {
+    if (!ep || !buf || len == 0) {
+        return -FI_EINVAL;
+    }
+    void *desc = NULL;
+    return zc_ofi_register_cached(ep, buf, len, FI_READ, &ep->read_mr, &desc);
+}
+
 int zc_ofi_rma_register_target(struct zc_ofi_endpoint *ep, void *buf, size_t len,
                                uint64_t *addr, uint64_t *key) {
     if (!ep || !buf || len == 0 || !addr || !key) {
@@ -520,7 +551,8 @@ int zc_ofi_rma_register_target(struct zc_ofi_endpoint *ep, void *buf, size_t len
     zc_ofi_close_fid(ep->rma_target_mr ? &ep->rma_target_mr->fid : NULL);
     ep->rma_target_mr = NULL;
     struct fid_mr *mr = NULL;
-    int rc = fi_mr_reg(ep->domain, buf, len, FI_REMOTE_WRITE, 0, 0, 0, &mr, NULL);
+    int rc = fi_mr_reg(ep->domain, buf, len, FI_REMOTE_READ | FI_REMOTE_WRITE,
+                       0, 0, 0, &mr, NULL);
     if (rc) {
         return zc_ofi_fail(ep, rc, "fi_mr_reg(rma_target)");
     }
@@ -564,6 +596,43 @@ int zc_ofi_rma_write(struct zc_ofi_endpoint *ep, const void *buf, size_t len,
         return zc_ofi_fail(ep, rc, "fi_write");
     }
     return zc_ofi_wait_cq(ep, ep->tx_cq, "tx fi_write cq", &context, 0, NULL, NULL,
+                          timeout_ms);
+}
+
+int zc_ofi_rma_read(struct zc_ofi_endpoint *ep, void *buf, size_t len,
+                    uint64_t remote_addr, uint64_t remote_key, int timeout_ms) {
+    if (!ep || !buf || len == 0) {
+        return -FI_EINVAL;
+    }
+    if (ep->peer_addr == FI_ADDR_UNSPEC) {
+        snprintf(ep->err, sizeof(ep->err), "OFI peer address is not set");
+        return -FI_EINVAL;
+    }
+    void *desc = NULL;
+    int rc = zc_ofi_register_cached(ep, buf, len, FI_READ, &ep->read_mr, &desc);
+    if (rc) {
+        return rc;
+    }
+    struct fi_context2 context;
+    memset(&context, 0, sizeof(context));
+    uint64_t post_start = zc_ofi_now_ms();
+    uint64_t post_spins = 0;
+    do {
+        rc = (int)fi_read(ep->ep, buf, len, desc, ep->peer_addr, remote_addr,
+                          remote_key, &context);
+        if (rc == -FI_EAGAIN) {
+            if (zc_ofi_poll_timed_out(ep, post_spins, post_start, timeout_ms)) {
+                snprintf(ep->err, sizeof(ep->err),
+                         "OFI fi_read post timed out after %d ms", timeout_ms);
+                return -ETIMEDOUT;
+            }
+            zc_ofi_wait_after_eagain(ep, &post_spins);
+        }
+    } while (rc == -FI_EAGAIN);
+    if (rc) {
+        return zc_ofi_fail(ep, rc, "fi_read");
+    }
+    return zc_ofi_wait_cq(ep, ep->tx_cq, "tx fi_read cq", &context, 0, NULL, NULL,
                           timeout_ms);
 }
 

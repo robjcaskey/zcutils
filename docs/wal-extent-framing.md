@@ -347,13 +347,14 @@ scheduler handoff while a lane is hot. The command header prints
 
 ### OFI RMA Direct Memory Prototype
 
-`zcwal-ofi-rma-target` and `zcwal-ofi-rma-write` are the first direct remote
-memory write smoke for the WAL/fabric path. The target opens one libfabric RDM
-endpoint per lane, registers a lane-local arena with `FI_REMOTE_WRITE`, and
-sends a 64-byte metadata message containing lane id, lane count, arena size,
-extent size, remote address, and remote key. The writer receives that metadata
-and issues `fi_write` calls directly into the remote arena, then sends one
-64-byte commit doorbell message for the lane.
+`zcwal-ofi-rma-target`, `zcwal-ofi-rma-write`, and `zcwal-ofi-rma-read` are the
+direct remote-memory smokes for the WAL/fabric path. The target opens one
+libfabric RDM endpoint per lane, registers a lane-local arena for remote reads
+and writes, and sends a 64-byte metadata message containing lane id, lane count,
+arena size, extent size, remote address, and remote key. The writer issues
+`fi_write` calls into that arena. The reader issues `fi_read` calls and verifies
+the target's zero-filled data. Both send one 64-byte done message per lane after
+the measured operations.
 
 This is a transport primitive, not RAID placement. Userspace RAID still owns
 mirror, stripe, spill, placement, lane selection, locality, and backpressure.
@@ -381,6 +382,26 @@ URING_PLAY_PIN_CPUS=1 \
 URING_PLAY_PIN_CPU_LIST=4-7 \
 target/release/zcutils zcwal-ofi-rma-write tcp rdm 127.0.0.1 31700 4 64M 1M 4
 ```
+
+Local functional smoke, reader:
+
+```bash
+URING_PLAY_OFI_TIMEOUT_MS=20000 \
+URING_PLAY_OFI_CQ_SLEEP_NS=0 \
+URING_PLAY_OFI_BUSY_POLL_ITERS=100000 \
+URING_PLAY_PIN_CPUS=1 \
+URING_PLAY_PIN_CPU_LIST=4-7 \
+target/release/zcutils zcwal-ofi-rma-read tcp rdm 127.0.0.1 31700 4 64M 4K 4
+```
+
+The read smoke registers one fixed, extent-sized local result buffer per worker
+by default and reuses it for successive remote offsets. Its completion contract
+is initiator-local CQ completion with the result bytes visible locally; it is
+not a remote write acknowledgement or a sync/FUA drain. Set
+`URING_PLAY_OFI_RMA_READ_FULL_LOCAL_WINDOW=1` only to diagnose provider behavior
+with a bytes-per-lane local MR and changing local offsets. The command prints
+the registration scope, per-worker QD, worker/lane count, aggregate outstanding
+depth, operation IOPS, and average operation latency.
 
 On June 5, 2026, local release-mode loopback with libfabric `tcp` RDM showed:
 
