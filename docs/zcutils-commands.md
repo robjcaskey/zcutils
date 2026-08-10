@@ -22,6 +22,32 @@ before/after evidence. Only after every endpoint succeeds should the client
 harness receive `URING_PLAY_EXTERNAL_NIC_LOW_LATENCY_CONFIRMED=1`. The helper
 refuses shared hosts, and the benchmark harness does not silently mutate NICs.
 
+`zcwal-ofi-pipe` is an experimental bidirectional libfabric `FI_EP_RDM` bridge
+for carrying the existing userspace WAL TCP byte stream between hosts without
+changing its request, ordering, acknowledgment, or placement protocol. The
+client role accepts a local TCP connection from the shared-memory target; the
+server role connects to a local userspace WAL leaf. Two persistent RDM
+endpoints carry request and response directions independently:
+
+```bash
+# Leaf host: 32 local leaf lanes listen on ports 29000 through 29031.
+URING_PLAY_OFI_DOMAIN=efa_0-rdm \
+zcwal-ofi-pipe server 127.0.0.1:29000 LEAF_PRIVATE_IP 37000 efa rdm 32
+
+# Client host: point 32 target lanes at ports 28900 through 28931.
+URING_PLAY_OFI_DOMAIN=efa_0-rdm \
+zcwal-ofi-pipe client 127.0.0.1:28900 LEAF_PRIVATE_IP 37000 efa rdm 32
+```
+
+The RDM pipe owns transport only. It makes no placement, mirror, stripe, tier,
+or spill decision, and `/dev/zcnblk0` remains the client block edge. Each lane
+consumes two consecutive services (request then response), so the
+32-lane example uses services 37000 through 37063. Set
+`URING_PLAY_PIN_CPU_LIST` to NIC-local CPUs; lane N uses affinity indexes 2N
+and 2N+1 for its request/response workers, and startup logs record that mapping.
+`URING_PLAY_OFI_PIPE_FRAME_BYTES` controls the bounded RDM message size
+(default 64 KiB); it must not exceed the provider's maximum.
+
 ## Command Idiom
 
 The descriptor-native model is:

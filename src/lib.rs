@@ -27,6 +27,7 @@ pub mod dirty_pool;
 pub mod enterprise_workload;
 pub mod fanout;
 mod io_slots;
+pub mod ofi_pipe;
 pub mod readcache_bench;
 pub(crate) mod wal_contract;
 pub mod window;
