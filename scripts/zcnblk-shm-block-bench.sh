@@ -40,7 +40,10 @@ BLOCK_CQE_ADAPTIVE_WAIT_NS="${URING_PLAY_BLOCKBENCH_CQE_ADAPTIVE_WAIT_NS:-50000}
 BLOCK_CQE_HOT_POLL="${URING_PLAY_BLOCKBENCH_CQE_HOT_POLL:-0}"
 if [ -n "${URING_PLAY_BLOCKBENCH_CQE_HOT_POLL_PROGRESS_SPINS+x}" ]; then
 	BLOCK_CQE_HOT_POLL_PROGRESS_SPINS="$URING_PLAY_BLOCKBENCH_CQE_HOT_POLL_PROGRESS_SPINS"
-elif [ "$IODEPTH" -le 4 ]; then
+# A short progress window wins through the latency/efficiency curve.  A 4,096
+# spin window at QD8/QD16 delayed io_uring re-entry enough to create a large,
+# transport-independent throughput notch; reserve it for saturation depths.
+elif [ "$IODEPTH" -le 16 ]; then
 	BLOCK_CQE_HOT_POLL_PROGRESS_SPINS=256
 else
 	BLOCK_CQE_HOT_POLL_PROGRESS_SPINS=4096
