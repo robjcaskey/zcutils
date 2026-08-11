@@ -27,6 +27,13 @@ struct zc_ofi_mr_cache {
     void *desc;
 };
 
+struct zc_ofi_rma_read_op {
+    /* The provider returns this exact address in fi_cq_msg_entry::op_context. */
+    struct fi_context2 context;
+    uint64_t user_data;
+    int active;
+};
+
 struct zc_ofi_endpoint {
     struct fi_info *info;
     struct fid_fabric *fabric;
@@ -45,6 +52,10 @@ struct zc_ofi_endpoint {
     struct zc_ofi_mr_cache read_mr;
     struct zc_ofi_mr_cache write_mr;
     struct fid_mr *rma_target_mr;
+    struct zc_ofi_rma_read_op *rma_read_ops;
+    struct fi_cq_msg_entry *rma_read_cq_entries;
+    size_t rma_read_queue_depth;
+    size_t rma_read_inflight;
     struct fi_context2 async_send_context;
     struct fi_context2 async_recv_context;
     struct fi_context2 *async_send_contexts;
@@ -168,6 +179,8 @@ void zc_ofi_close(struct zc_ofi_endpoint *ep) {
     zc_ofi_close_fid(ep->domain ? &ep->domain->fid : NULL);
     zc_ofi_close_fid(ep->fabric ? &ep->fabric->fid : NULL);
     free(ep->async_send_contexts);
+    free(ep->rma_read_cq_entries);
+    free(ep->rma_read_ops);
     if (ep->info) {
         fi_freeinfo(ep->info);
     }
@@ -543,6 +556,170 @@ int zc_ofi_rma_register_read_buffer(struct zc_ofi_endpoint *ep, void *buf, size_
     return zc_ofi_register_cached(ep, buf, len, FI_READ, &ep->read_mr, &desc);
 }
 
+int zc_ofi_rma_read_queue_init(struct zc_ofi_endpoint *ep, size_t depth) {
+    if (!ep || depth == 0 || depth > 1024) {
+        return -FI_EINVAL;
+    }
+    if (ep->rma_read_inflight != 0 || ep->async_send_pending ||
+        ep->async_send_context_count != 0) {
+        if (ep) {
+            snprintf(ep->err, sizeof(ep->err),
+                     "cannot configure OFI RMA read queue with TX operations in flight");
+        }
+        return -FI_EBUSY;
+    }
+    struct zc_ofi_rma_read_op *ops = calloc(depth, sizeof(*ops));
+    struct fi_cq_msg_entry *entries = calloc(depth, sizeof(*entries));
+    if (!ops || !entries) {
+        free(entries);
+        free(ops);
+        snprintf(ep->err, sizeof(ep->err),
+                 "calloc(OFI RMA read queue depth=%zu) failed", depth);
+        return -FI_ENOMEM;
+    }
+    free(ep->rma_read_cq_entries);
+    free(ep->rma_read_ops);
+    ep->rma_read_ops = ops;
+    ep->rma_read_cq_entries = entries;
+    ep->rma_read_queue_depth = depth;
+    ep->rma_read_inflight = 0;
+    return 0;
+}
+
+int zc_ofi_rma_read_post(struct zc_ofi_endpoint *ep, void *buf, size_t len,
+                         uint64_t remote_addr, uint64_t remote_key, size_t slot,
+                         uint64_t user_data) {
+    if (!ep || !buf || len == 0 || !ep->rma_read_ops ||
+        slot >= ep->rma_read_queue_depth) {
+        return -FI_EINVAL;
+    }
+    if (ep->peer_addr == FI_ADDR_UNSPEC) {
+        snprintf(ep->err, sizeof(ep->err), "OFI peer address is not set");
+        return -FI_EINVAL;
+    }
+    if (ep->async_send_pending || ep->async_send_context_count != 0) {
+        snprintf(ep->err, sizeof(ep->err),
+                 "cannot post OFI RMA read while message sends are in flight");
+        return -FI_EBUSY;
+    }
+    struct zc_ofi_rma_read_op *op = &ep->rma_read_ops[slot];
+    if (op->active) {
+        snprintf(ep->err, sizeof(ep->err),
+                 "OFI RMA read slot=%zu is already active", slot);
+        return -FI_EBUSY;
+    }
+    void *desc = NULL;
+    int rc = zc_ofi_register_cached(ep, buf, len, FI_READ, &ep->read_mr, &desc);
+    if (rc) {
+        return rc;
+    }
+    memset(&op->context, 0, sizeof(op->context));
+    op->user_data = user_data;
+    op->active = 1;
+    rc = (int)fi_read(ep->ep, buf, len, desc, ep->peer_addr, remote_addr,
+                      remote_key, &op->context);
+    if (rc) {
+        op->active = 0;
+        op->user_data = 0;
+        if (rc == -FI_EAGAIN) {
+            return rc;
+        }
+        return zc_ofi_fail(ep, rc, "fi_read(async)");
+    }
+    ep->rma_read_inflight++;
+    return 0;
+}
+
+static int zc_ofi_rma_read_complete_entries(struct zc_ofi_endpoint *ep,
+                                             size_t entry_count,
+                                             size_t *out_slots,
+                                             uint64_t *out_user_data) {
+    uintptr_t ops_start = (uintptr_t)ep->rma_read_ops;
+    uintptr_t ops_end = ops_start +
+                        ep->rma_read_queue_depth * sizeof(*ep->rma_read_ops);
+    if (ops_end < ops_start) {
+        snprintf(ep->err, sizeof(ep->err), "OFI RMA read context range overflow");
+        return -FI_EPROTO;
+    }
+    for (size_t i = 0; i < entry_count; i++) {
+        uintptr_t context = (uintptr_t)ep->rma_read_cq_entries[i].op_context;
+        if (context < ops_start || context >= ops_end ||
+            (context - ops_start) % sizeof(*ep->rma_read_ops) != 0) {
+            snprintf(ep->err, sizeof(ep->err),
+                     "unexpected OFI RMA CQ context got=%p queue=[%p,%p)",
+                     ep->rma_read_cq_entries[i].op_context,
+                     (void *)ops_start, (void *)ops_end);
+            return -FI_EPROTO;
+        }
+        size_t slot = (context - ops_start) / sizeof(*ep->rma_read_ops);
+        struct zc_ofi_rma_read_op *op = &ep->rma_read_ops[slot];
+        if (!op->active || ep->rma_read_inflight == 0) {
+            snprintf(ep->err, sizeof(ep->err),
+                     "inactive or underflowed OFI RMA CQ slot=%zu", slot);
+            return -FI_EPROTO;
+        }
+        out_slots[i] = slot;
+        out_user_data[i] = op->user_data;
+        op->active = 0;
+        op->user_data = 0;
+        ep->rma_read_inflight--;
+    }
+    return 0;
+}
+
+int zc_ofi_rma_read_poll(struct zc_ofi_endpoint *ep, size_t *out_slots,
+                         uint64_t *out_user_data, size_t capacity,
+                         size_t *out_count, int wait, int timeout_ms) {
+    if (!ep || !out_slots || !out_user_data || !out_count || capacity == 0 ||
+        !ep->rma_read_ops || capacity > ep->rma_read_queue_depth) {
+        return -FI_EINVAL;
+    }
+    *out_count = 0;
+    if (ep->rma_read_inflight == 0) {
+        return 0;
+    }
+    uint64_t start = zc_ofi_now_ms();
+    uint64_t spins = 0;
+    for (;;) {
+        memset(ep->rma_read_cq_entries, 0,
+               capacity * sizeof(*ep->rma_read_cq_entries));
+        ssize_t rc = fi_cq_read(ep->tx_cq, ep->rma_read_cq_entries, capacity);
+        if (rc > 0) {
+            int complete_rc = zc_ofi_rma_read_complete_entries(
+                ep, (size_t)rc, out_slots, out_user_data);
+            if (complete_rc) {
+                return complete_rc;
+            }
+            *out_count = (size_t)rc;
+            return 0;
+        }
+        if (rc == -FI_EAGAIN) {
+            if (!wait) {
+                return 0;
+            }
+            if (zc_ofi_poll_timed_out(ep, spins, start, timeout_ms)) {
+                snprintf(ep->err, sizeof(ep->err),
+                         "OFI RMA CQ wait timed out after %d ms", timeout_ms);
+                return -ETIMEDOUT;
+            }
+            zc_ofi_wait_after_eagain(ep, &spins);
+            continue;
+        }
+        if (rc == -FI_EAVAIL) {
+            struct fi_cq_err_entry err_entry;
+            memset(&err_entry, 0, sizeof(err_entry));
+            ssize_t erc = fi_cq_readerr(ep->tx_cq, &err_entry, 0);
+            if (erc >= 0) {
+                snprintf(ep->err, sizeof(ep->err),
+                         "OFI RMA CQ error err=%d prov_errno=%d len=%zu",
+                         err_entry.err, err_entry.prov_errno, err_entry.len);
+                return err_entry.err ? -err_entry.err : -FI_EIO;
+            }
+        }
+        return zc_ofi_fail(ep, (int)rc, "tx fi_read async cq");
+    }
+}
+
 int zc_ofi_rma_register_target(struct zc_ofi_endpoint *ep, void *buf, size_t len,
                                uint64_t *addr, uint64_t *key) {
     if (!ep || !buf || len == 0 || !addr || !key) {
@@ -562,10 +739,25 @@ int zc_ofi_rma_register_target(struct zc_ofi_endpoint *ep, void *buf, size_t len
     return 0;
 }
 
+static int zc_ofi_require_no_rma_reads(struct zc_ofi_endpoint *ep,
+                                       const char *operation) {
+    if (ep && ep->rma_read_inflight != 0) {
+        snprintf(ep->err, sizeof(ep->err),
+                 "%s cannot share the TX CQ with %zu OFI RMA reads in flight",
+                 operation, ep->rma_read_inflight);
+        return -FI_EBUSY;
+    }
+    return 0;
+}
+
 int zc_ofi_rma_write(struct zc_ofi_endpoint *ep, const void *buf, size_t len,
                      uint64_t remote_addr, uint64_t remote_key, int timeout_ms) {
     if (!ep || !buf || len == 0) {
         return -FI_EINVAL;
+    }
+    int guard_rc = zc_ofi_require_no_rma_reads(ep, "fi_write");
+    if (guard_rc) {
+        return guard_rc;
     }
     if (ep->peer_addr == FI_ADDR_UNSPEC) {
         snprintf(ep->err, sizeof(ep->err), "OFI peer address is not set");
@@ -604,6 +796,10 @@ int zc_ofi_rma_read(struct zc_ofi_endpoint *ep, void *buf, size_t len,
     if (!ep || !buf || len == 0) {
         return -FI_EINVAL;
     }
+    int guard_rc = zc_ofi_require_no_rma_reads(ep, "synchronous fi_read");
+    if (guard_rc) {
+        return guard_rc;
+    }
     if (ep->peer_addr == FI_ADDR_UNSPEC) {
         snprintf(ep->err, sizeof(ep->err), "OFI peer address is not set");
         return -FI_EINVAL;
@@ -639,6 +835,10 @@ int zc_ofi_rma_read(struct zc_ofi_endpoint *ep, void *buf, size_t len,
 int zc_ofi_send(struct zc_ofi_endpoint *ep, const void *buf, size_t len, int timeout_ms) {
     if (!ep || !buf) {
         return -FI_EINVAL;
+    }
+    int guard_rc = zc_ofi_require_no_rma_reads(ep, "fi_send");
+    if (guard_rc) {
+        return guard_rc;
     }
     if (ep->peer_addr == FI_ADDR_UNSPEC) {
         snprintf(ep->err, sizeof(ep->err), "OFI peer address is not set");
@@ -679,6 +879,10 @@ int zc_ofi_send_many(struct zc_ofi_endpoint *ep, const void *base, size_t stride
                      size_t len, size_t count, int timeout_ms) {
     if (!ep || !base || len == 0) {
         return -FI_EINVAL;
+    }
+    int guard_rc = zc_ofi_require_no_rma_reads(ep, "fi_send_many");
+    if (guard_rc) {
+        return guard_rc;
     }
     if (count == 0) {
         return 0;
@@ -757,6 +961,10 @@ int zc_ofi_send_many_nowait(struct zc_ofi_endpoint *ep, const void *base, size_t
     if (!ep || !base || len == 0) {
         return -FI_EINVAL;
     }
+    int guard_rc = zc_ofi_require_no_rma_reads(ep, "fi_send_many_nowait");
+    if (guard_rc) {
+        return guard_rc;
+    }
     if (count == 0) {
         return 0;
     }
@@ -825,6 +1033,10 @@ int zc_ofi_send_many_nowait(struct zc_ofi_endpoint *ep, const void *base, size_t
 int zc_ofi_drain_send(struct zc_ofi_endpoint *ep, int timeout_ms) {
     if (!ep) {
         return -FI_EINVAL;
+    }
+    int guard_rc = zc_ofi_require_no_rma_reads(ep, "zc_ofi_drain_send");
+    if (guard_rc) {
+        return guard_rc;
     }
     if (ep->async_send_context_count != 0) {
         for (size_t i = 0; i < ep->async_send_context_count; i++) {
@@ -912,6 +1124,10 @@ int zc_ofi_send_to_last(struct zc_ofi_endpoint *ep, const void *buf, size_t len,
 int zc_ofi_inject(struct zc_ofi_endpoint *ep, const void *buf, size_t len) {
     if (!ep || !buf) {
         return -FI_EINVAL;
+    }
+    int guard_rc = zc_ofi_require_no_rma_reads(ep, "fi_inject");
+    if (guard_rc) {
+        return guard_rc;
     }
     if (ep->peer_addr == FI_ADDR_UNSPEC) {
         snprintf(ep->err, sizeof(ep->err), "OFI peer address is not set");

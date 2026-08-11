@@ -445,6 +445,52 @@ impl RemoteWalStream {
         }
     }
 
+    fn configure_rma_read_queue(&mut self, depth: usize) -> io::Result<()> {
+        match self {
+            Self::Ofi(stream) => stream.configure_rma_read_queue(depth),
+            Self::Tcp(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "OFI RMA read queue requested for TCP",
+            )),
+        }
+    }
+
+    /// `target` remains owned by `slot` until `poll_rma_reads` returns it.
+    unsafe fn post_rma_read_raw(
+        &mut self,
+        target: *mut u8,
+        len: usize,
+        remote_addr: u64,
+        remote_key: u64,
+        slot: usize,
+        user_data: u64,
+    ) -> io::Result<bool> {
+        match self {
+            Self::Ofi(stream) => unsafe {
+                stream.post_rma_read_raw(target, len, remote_addr, remote_key, slot, user_data)
+            },
+            Self::Tcp(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "OFI RMA read post requested for TCP",
+            )),
+        }
+    }
+
+    fn poll_rma_reads(
+        &mut self,
+        out_slots: &mut [usize],
+        out_user_data: &mut [u64],
+        wait: bool,
+    ) -> io::Result<usize> {
+        match self {
+            Self::Ofi(stream) => stream.poll_rma_reads(out_slots, out_user_data, wait),
+            Self::Tcp(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "OFI RMA read poll requested for TCP",
+            )),
+        }
+    }
+
     fn rma_read(&mut self, target: &mut [u8], remote_addr: u64, remote_key: u64) -> io::Result<()> {
         match self {
             Self::Ofi(stream) => stream.rma_read(target, remote_addr, remote_key),
@@ -496,7 +542,7 @@ struct RemoteWalLeaf {
     lane_count: u32,
     negotiated_features: u32,
     rma_read_window: Option<RemoteWalRmaReadWindow>,
-    rma_read_buffer: Option<Vec<u8>>,
+    rma_read_queue: Option<RemoteWalRmaReadQueue>,
     target_cpu: Option<usize>,
     write_batches: u64,
     write_records: u64,
@@ -539,6 +585,364 @@ struct RemoteWalRmaReadWindow {
     addr: u64,
     key: u64,
     len: u64,
+}
+
+#[derive(Clone, Copy)]
+struct RemoteWalRmaQueuedRead {
+    batch_id: u64,
+    request: PendingRemoteRead,
+    token: u64,
+}
+
+struct RemoteWalRmaActiveRead {
+    queued: RemoteWalRmaQueuedRead,
+    posted_at: Instant,
+}
+
+struct RemoteWalRmaBatch {
+    remaining: usize,
+    records: usize,
+    bytes: u64,
+    complete: bool,
+}
+
+struct RemoteWalRmaReadQueue {
+    buffer: Vec<u8>,
+    slot_bytes: usize,
+    depth: usize,
+    free_slots: Vec<usize>,
+    pending: VecDeque<RemoteWalRmaQueuedRead>,
+    active: Vec<Option<RemoteWalRmaActiveRead>>,
+    batches: HashMap<u64, RemoteWalRmaBatch>,
+    completion_slots: Vec<usize>,
+    completion_tokens: Vec<u64>,
+    next_batch_id: u64,
+    next_token: u64,
+    in_flight: usize,
+    peak_in_flight: usize,
+    cq_polls: u64,
+    cq_batches: u64,
+    cq_completions: u64,
+    post_eagain: u64,
+}
+
+#[derive(Default)]
+struct RemoteWalRmaProgress {
+    completions: usize,
+    completion_time: Duration,
+    copy_time: Duration,
+}
+
+impl RemoteWalRmaReadQueue {
+    fn new(buffer: Vec<u8>, slot_bytes: usize, depth: usize) -> io::Result<Self> {
+        if slot_bytes == 0 || depth == 0 || buffer.len() != slot_bytes.saturating_mul(depth) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid OFI RMA lane-local buffer ring shape",
+            ));
+        }
+        Ok(Self {
+            buffer,
+            slot_bytes,
+            depth,
+            free_slots: (0..depth).rev().collect(),
+            pending: VecDeque::new(),
+            active: (0..depth).map(|_| None).collect(),
+            batches: HashMap::new(),
+            completion_slots: vec![0; depth],
+            completion_tokens: vec![0; depth],
+            next_batch_id: 1,
+            next_token: 1,
+            in_flight: 0,
+            peak_in_flight: 0,
+            cq_polls: 0,
+            cq_batches: 0,
+            cq_completions: 0,
+            post_eagain: 0,
+        })
+    }
+
+    fn submit_batch(
+        &mut self,
+        window: RemoteWalRmaReadWindow,
+        requests: &[PendingRemoteRead],
+    ) -> io::Result<u64> {
+        if requests.is_empty()
+            || requests
+                .iter()
+                .any(|request| request.request.op != ZCNBLK_SHM_OP_READ)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OFI RMA batch must contain at least one read and no other operations",
+            ));
+        }
+        let mut bytes = 0u64;
+        for request in requests {
+            let len = usize::try_from(request.request.len).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "OFI RMA read length overflow")
+            })?;
+            if len == 0 || len > self.slot_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "OFI RMA read bytes={len} exceed fixed slot bytes={}",
+                        self.slot_bytes
+                    ),
+                ));
+            }
+            let remote_end = request
+                .request
+                .offset
+                .checked_add(request.request.len.into())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "OFI RMA remote read range overflow",
+                    )
+                })?;
+            if remote_end > window.len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "OFI RMA read range offset={} len={} exceeds negotiated window bytes={}",
+                        request.request.offset, request.request.len, window.len
+                    ),
+                ));
+            }
+            window
+                .addr
+                .checked_add(request.request.offset)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "OFI RMA remote address overflow",
+                    )
+                })?;
+            bytes = bytes.saturating_add(request.request.len.into());
+        }
+        let batch_id = self.next_batch_id;
+        self.next_batch_id = self.next_batch_id.wrapping_add(1).max(1);
+        if self.batches.contains_key(&batch_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "OFI RMA batch identifier space exhausted",
+            ));
+        }
+        self.batches.insert(
+            batch_id,
+            RemoteWalRmaBatch {
+                remaining: requests.len(),
+                records: requests.len(),
+                bytes,
+                complete: false,
+            },
+        );
+        for &request in requests {
+            let token = self.next_token;
+            self.next_token = self.next_token.wrapping_add(1).max(1);
+            self.pending.push_back(RemoteWalRmaQueuedRead {
+                batch_id,
+                request,
+                token,
+            });
+        }
+        Ok(batch_id)
+    }
+
+    fn post_available(
+        &mut self,
+        stream: &mut RemoteWalStream,
+        window: RemoteWalRmaReadWindow,
+    ) -> io::Result<()> {
+        while let Some((slot, queued)) = self.take_postable() {
+            if self.active[slot].is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("OFI RMA free-list returned active slot={slot}"),
+                ));
+            }
+            let len = queued.request.request.len as usize;
+            let local_offset = slot.checked_mul(self.slot_bytes).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "OFI RMA local slot overflow")
+            })?;
+            let remote_addr = window
+                .addr
+                .checked_add(queued.request.request.offset)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "OFI RMA remote address overflow",
+                    )
+                })?;
+            // `buffer` is allocated once and never resized. The slot is removed
+            // from the free list until its CQ entry is retired below.
+            let target = unsafe { self.buffer.as_mut_ptr().add(local_offset) };
+            let posted_at = Instant::now();
+            let posted = unsafe {
+                stream.post_rma_read_raw(
+                    target,
+                    len,
+                    remote_addr,
+                    window.key,
+                    slot,
+                    queued.token,
+                )?
+            };
+            if !posted {
+                self.post_eagain = self.post_eagain.saturating_add(1);
+                self.pending.push_front(queued);
+                self.free_slots.push(slot);
+                break;
+            }
+            self.active[slot] = Some(RemoteWalRmaActiveRead { queued, posted_at });
+            self.in_flight += 1;
+            self.peak_in_flight = self.peak_in_flight.max(self.in_flight);
+        }
+        Ok(())
+    }
+
+    fn take_postable(&mut self) -> Option<(usize, RemoteWalRmaQueuedRead)> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        let slot = self.free_slots.pop()?;
+        let queued = self
+            .pending
+            .pop_front()
+            .expect("non-empty OFI RMA pending queue became empty");
+        Some((slot, queued))
+    }
+
+    fn progress(
+        &mut self,
+        stream: &mut RemoteWalStream,
+        mapping: &Mapping,
+        window: RemoteWalRmaReadWindow,
+        wait: bool,
+    ) -> io::Result<RemoteWalRmaProgress> {
+        self.post_available(stream, window)?;
+        if self.in_flight == 0 {
+            return Ok(RemoteWalRmaProgress::default());
+        }
+        self.cq_polls = self.cq_polls.saturating_add(1);
+        let completed = stream.poll_rma_reads(
+            &mut self.completion_slots,
+            &mut self.completion_tokens,
+            wait,
+        )?;
+        if completed != 0 {
+            self.cq_batches = self.cq_batches.saturating_add(1);
+        }
+        let mut progress = RemoteWalRmaProgress {
+            completions: completed,
+            ..RemoteWalRmaProgress::default()
+        };
+        for index in 0..completed {
+            let slot = self.completion_slots[index];
+            let token = self.completion_tokens[index];
+            let active = self
+                .active
+                .get_mut(slot)
+                .and_then(Option::take)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("OFI RMA completion returned inactive slot={slot}"),
+                    )
+                })?;
+            if active.queued.token != token {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "OFI RMA completion token mismatch slot={slot} expected={} actual={token}",
+                        active.queued.token
+                    ),
+                ));
+            }
+            let len = active.queued.request.request.len as usize;
+            let local_offset = slot.checked_mul(self.slot_bytes).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "OFI RMA local slot overflow")
+            })?;
+            progress.completion_time = progress
+                .completion_time
+                .saturating_add(active.posted_at.elapsed());
+            let copy_started = Instant::now();
+            // The block-edge request owns this shared payload slot until its
+            // completion is published. Lane routing prevents concurrent writers.
+            unsafe { mapping.slice_mut(active.queued.request.payload_offset, len)? }
+                .copy_from_slice(&self.buffer[local_offset..local_offset + len]);
+            progress.copy_time = progress.copy_time.saturating_add(copy_started.elapsed());
+            let batch = self
+                .batches
+                .get_mut(&active.queued.batch_id)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "OFI RMA completion referenced an unknown batch",
+                    )
+                })?;
+            batch.remaining = batch.remaining.checked_sub(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "OFI RMA batch underflow")
+            })?;
+            batch.complete = batch.remaining == 0;
+            self.free_slots.push(slot);
+            self.in_flight = self.in_flight.checked_sub(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "OFI RMA in-flight underflow")
+            })?;
+        }
+        self.cq_completions = self.cq_completions.saturating_add(completed as u64);
+        self.post_available(stream, window)?;
+        Ok(progress)
+    }
+
+    fn batch_complete(&self, batch_id: u64) -> io::Result<bool> {
+        self.batches
+            .get(&batch_id)
+            .map(|batch| batch.complete)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown OFI RMA batch id={batch_id}"),
+                )
+            })
+    }
+
+    fn finish_batch(&mut self, batch_id: u64) -> io::Result<RemoteWalRmaBatch> {
+        let complete = self
+            .batches
+            .get(&batch_id)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown OFI RMA batch id={batch_id}"),
+                )
+            })?
+            .complete;
+        if !complete {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("OFI RMA batch id={batch_id} is incomplete"),
+            ));
+        }
+        self.batches.remove(&batch_id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("OFI RMA batch id={batch_id} disappeared before retirement"),
+            )
+        })
+    }
+
+    fn has_work(&self) -> bool {
+        self.in_flight != 0 || !self.pending.is_empty()
+    }
+
+    fn incomplete_batch_count(&self) -> usize {
+        self.batches
+            .values()
+            .filter(|batch| !batch.complete)
+            .count()
+    }
 }
 
 struct SharedPayloadPlan {
@@ -1364,18 +1768,54 @@ impl RemoteWalLeaf {
                 "direct OFI WAL transport requires blocking send mode; io_uring send-zc is TCP-only",
             ));
         }
-        let mut rma_read_buffer = rma_read_window.map(|_| vec![0u8; rma_read_buffer_bytes]);
-        if let Some(buffer) = rma_read_buffer.as_mut() {
-            if buffer.is_empty() {
+        let rma_read_qd = env::var("URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD")
+            .unwrap_or_else(|_| "1".to_string())
+            .parse::<usize>()
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD: {error}"),
+                )
+            })?;
+        if !(1..=1024).contains(&rma_read_qd) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD must be in 1..=1024, got {rma_read_qd}"
+                ),
+            ));
+        }
+        let mut rma_read_queue = if rma_read_window.is_some() {
+            let ring_bytes = rma_read_buffer_bytes
+                .checked_mul(rma_read_qd)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "OFI RMA read buffer ring size overflow",
+                    )
+                })?;
+            if ring_bytes == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "OFI RMA read buffer must be non-empty",
+                    "OFI RMA read buffer ring must be non-empty",
                 ));
             }
-            stream.register_rma_read_buffer(buffer)?;
+            Some(RemoteWalRmaReadQueue::new(
+                vec![0u8; ring_bytes],
+                rma_read_buffer_bytes,
+                rma_read_qd,
+            )?)
+        } else {
+            None
+        };
+        if let Some(queue) = rma_read_queue.as_mut() {
+            stream.register_rma_read_buffer(&mut queue.buffer)?;
+            stream.configure_rma_read_queue(queue.depth)?;
             eprintln!(
-                "zcnblk-shm-target-ofi-rma-local-buffer: lane={lane_id} bytes={} registration_scope=lane-local-fixed-bounce destination=shared-slot-copy",
-                buffer.len(),
+                "zcnblk-shm-target-ofi-rma-local-buffer: lane={lane_id} qd={} slot_bytes={} ring_bytes={} registration_scope=lane-local-fixed-buffer-ring destination=shared-slot-copy cq_processing=batched",
+                queue.depth,
+                queue.slot_bytes,
+                queue.buffer.len(),
             );
         }
         Ok(Self {
@@ -1386,7 +1826,7 @@ impl RemoteWalLeaf {
             lane_count,
             negotiated_features,
             rma_read_window,
-            rma_read_buffer,
+            rma_read_queue,
             target_cpu: None,
             write_batches: 0,
             write_records: 0,
@@ -1430,84 +1870,145 @@ impl RemoteWalLeaf {
         Ok(())
     }
 
-    fn try_rma_read_batch(
+    fn try_submit_rma_read_batch(
         &mut self,
-        mapping: &Mapping,
         requests: &[PendingRemoteRead],
-    ) -> io::Result<bool> {
+    ) -> io::Result<Option<u64>> {
         let Some(window) = self.rma_read_window else {
-            return Ok(false);
+            return Ok(None);
         };
         if requests.is_empty()
             || requests
                 .iter()
                 .any(|request| request.request.op != ZCNBLK_SHM_OP_READ)
         {
-            return Ok(false);
+            return Ok(None);
         }
-        let started = Instant::now();
-        let mut bytes = 0u64;
-        for request in requests {
-            let len = u64::from(request.request.len);
-            let remote_end = request.request.offset.checked_add(len).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "OFI RMA remote read range overflow",
-                )
-            })?;
-            if remote_end > window.len {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "OFI RMA read range offset={} len={} exceeds negotiated window bytes={}",
-                        request.request.offset, len, window.len
-                    ),
-                ));
-            }
-            let remote_addr = window
-                .addr
-                .checked_add(request.request.offset)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "OFI RMA remote address overflow",
-                    )
-                })?;
-            let buffer = self.rma_read_buffer.as_mut().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "OFI RMA read window has no registered lane-local buffer",
-                )
-            })?;
-            let len = len as usize;
-            if len > buffer.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "OFI RMA read bytes={len} exceed lane-local registered buffer bytes={}",
-                        buffer.len()
-                    ),
-                ));
-            }
-            self.stream
-                .rma_read(&mut buffer[..len], remote_addr, window.key)?;
-            let copy_started = Instant::now();
-            // The block-edge request owns this payload slot until its completion is
-            // published, and lane routing guarantees that no other transport worker
-            // writes the slot concurrently.
-            unsafe { mapping.slice_mut(request.payload_offset, len)? }
-                .copy_from_slice(&buffer[..len]);
-            self.rma_read_copy_time = self
-                .rma_read_copy_time
-                .saturating_add(copy_started.elapsed());
-            bytes = bytes.saturating_add(len as u64);
-        }
-        self.rma_read_calls = self.rma_read_calls.saturating_add(requests.len() as u64);
-        self.rma_read_time = self.rma_read_time.saturating_add(started.elapsed());
+        let queue = self.rma_read_queue.as_mut().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI RMA read window has no registered lane-local buffer ring",
+            )
+        })?;
+        let batch_id = queue.submit_batch(window, requests)?;
+        queue.post_available(&mut self.stream, window)?;
+        Ok(Some(batch_id))
+    }
+
+    fn progress_rma_reads(&mut self, mapping: &Mapping, wait: bool) -> io::Result<usize> {
+        let Some(window) = self.rma_read_window else {
+            return Ok(0);
+        };
+        let queue = self.rma_read_queue.as_mut().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI RMA read window has no registered lane-local buffer ring",
+            )
+        })?;
+        let progress = queue.progress(&mut self.stream, mapping, window, wait)?;
+        self.rma_read_calls = self
+            .rma_read_calls
+            .saturating_add(progress.completions as u64);
+        self.rma_read_time = self.rma_read_time.saturating_add(progress.completion_time);
+        self.rma_read_copy_time = self.rma_read_copy_time.saturating_add(progress.copy_time);
+        Ok(progress.completions)
+    }
+
+    fn progress_rma_reads_attached(&mut self, wait: bool) -> io::Result<usize> {
+        let mapping = Arc::clone(self.mapping.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI RMA read queue has no attached shared mapping",
+            )
+        })?);
+        self.progress_rma_reads(mapping.as_ref(), wait)
+    }
+
+    fn rma_read_batch_complete(&self, batch_id: u64) -> io::Result<bool> {
+        self.rma_read_queue
+            .as_ref()
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "OFI RMA read queue is absent")
+            })?
+            .batch_complete(batch_id)
+    }
+
+    fn finish_rma_read_batch(&mut self, batch_id: u64) -> io::Result<()> {
+        let batch = self
+            .rma_read_queue
+            .as_mut()
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "OFI RMA read queue is absent")
+            })?
+            .finish_batch(batch_id)?;
         self.read_batches = self.read_batches.saturating_add(1);
-        self.read_records = self.read_records.saturating_add(requests.len() as u64);
-        self.read_bytes = self.read_bytes.saturating_add(bytes);
-        Ok(true)
+        self.read_records = self.read_records.saturating_add(batch.records as u64);
+        self.read_bytes = self.read_bytes.saturating_add(batch.bytes);
+        Ok(())
+    }
+
+    fn drain_rma_reads(&mut self, mapping: &Mapping) -> io::Result<()> {
+        let started = Instant::now();
+        let timeout = Duration::from_millis(
+            env::var("URING_PLAY_OFI_TIMEOUT_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(30_000)
+                .max(1),
+        );
+        loop {
+            let has_work = self
+                .rma_read_queue
+                .as_ref()
+                .is_some_and(RemoteWalRmaReadQueue::has_work);
+            if !has_work {
+                let incomplete_batches = self
+                    .rma_read_queue
+                    .as_ref()
+                    .map_or(0, RemoteWalRmaReadQueue::incomplete_batch_count);
+                if incomplete_batches != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "OFI RMA queue has no pending or active reads but retains {incomplete_batches} incomplete batch(es)"
+                        ),
+                    ));
+                }
+                return Ok(());
+            }
+            let completed = self.progress_rma_reads(mapping, true)?;
+            if completed == 0 {
+                if started.elapsed() >= timeout {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "OFI RMA read queue made no progress before timeout",
+                    ));
+                }
+                thread::yield_now();
+            }
+        }
+    }
+
+    fn report_rma_read_queue(&self) {
+        let Some(queue) = self.rma_read_queue.as_ref() else {
+            return;
+        };
+        eprintln!(
+            "zcnblk-shm-target-ofi-rma-queue: lane={} per_lane_qd={} slot_bytes={} registered_ring_bytes={} peak_in_flight={} final_in_flight={} final_queued={} final_batches={} cq_poll_calls={} cq_batches={} cq_completions={} avg_cq_completions_per_batch={:.2} post_eagain={} completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy",
+            self.lane_id,
+            queue.depth,
+            queue.slot_bytes,
+            queue.buffer.len(),
+            queue.peak_in_flight,
+            queue.in_flight,
+            queue.pending.len(),
+            queue.batches.len(),
+            queue.cq_polls,
+            queue.cq_batches,
+            queue.cq_completions,
+            queue.cq_completions as f64 / queue.cq_batches.max(1) as f64,
+            queue.post_eagain,
+        );
     }
 
     fn send_batch_payload(
@@ -2616,6 +3117,17 @@ enum WalLaneTransportResult {
     Failed(io::Error),
 }
 
+#[derive(Clone, Copy)]
+enum WalLanePendingBatchKind {
+    Framed,
+    Rma(u64),
+}
+
+struct WalLanePendingBatch {
+    requests: Vec<PendingRemoteRead>,
+    kind: WalLanePendingBatchKind,
+}
+
 struct WalLaneTransportWorker {
     lane_id: u32,
     commands: Arc<WalSpscRing<WalLaneTransportCommand>>,
@@ -2626,6 +3138,30 @@ struct WalLaneTransportWorker {
 }
 
 impl WalLaneTransportWorker {
+    fn complete_pending(
+        remote: &mut RemoteWalLeaf,
+        tx: &mut RemoteWalTxContext,
+        mapping: &Mapping,
+        pending: WalLanePendingBatch,
+    ) -> io::Result<Vec<PendingRemoteRead>> {
+        match pending.kind {
+            WalLanePendingBatchKind::Framed => {
+                remote.recv_request_batch_into(tx, mapping, &pending.requests)?;
+            }
+            WalLanePendingBatchKind::Rma(batch_id) => {
+                remote.drain_rma_reads(mapping)?;
+                if !remote.rma_read_batch_complete(batch_id)? {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        format!("OFI RMA batch id={batch_id} did not complete while draining"),
+                    ));
+                }
+                remote.finish_rma_read_batch(batch_id)?;
+            }
+        }
+        Ok(pending.requests)
+    }
+
     fn start(
         mut remote: RemoteWalLeaf,
         mapping: Arc<Mapping>,
@@ -2666,7 +3202,7 @@ impl WalLaneTransportWorker {
                     )
                 })?;
                 let mut pending_batches =
-                    VecDeque::<(Vec<PendingRemoteRead>, bool)>::with_capacity(queue_depth.max(1));
+                    VecDeque::<WalLanePendingBatch>::with_capacity(queue_depth.max(1));
                 let publish_error = |error: &io::Error| {
                     worker_results.push_wait(
                         WalLaneTransportResult::Failed(io::Error::new(
@@ -2688,36 +3224,53 @@ impl WalLaneTransportWorker {
                     };
                     match command {
                         Some(WalLaneTransportCommand::Batch(batch)) => {
-                            let rma_complete =
-                                match remote.try_rma_read_batch(mapping.as_ref(), &batch) {
-                                    Ok(complete) => complete,
+                            let framed_in_flight = pending_batches.iter().any(|pending| {
+                                matches!(pending.kind, WalLanePendingBatchKind::Framed)
+                            });
+                            let rma_batch_id = if framed_in_flight {
+                                None
+                            } else {
+                                match remote.try_submit_rma_read_batch(&batch) {
+                                    Ok(batch_id) => batch_id,
+                                    Err(error) => {
+                                        publish_error(&error);
+                                        return Err(error);
+                                    }
+                                }
+                            };
+                            let kind = if let Some(batch_id) = rma_batch_id {
+                                WalLanePendingBatchKind::Rma(batch_id)
+                            } else {
+                                if let Err(error) =
+                                    remote.drain_rma_reads(mapping.as_ref()).and_then(|()| {
+                                        remote.send_request_batch(&mut tx, mapping.as_ref(), &batch)
+                                    })
+                                {
+                                    publish_error(&error);
+                                    return Err(error);
+                                }
+                                WalLanePendingBatchKind::Framed
+                            };
+                            pending_batches.push_back(WalLanePendingBatch {
+                                requests: batch,
+                                kind,
+                            });
+                            continue;
+                        }
+                        Some(WalLaneTransportCommand::Sync(sequence)) => {
+                            while let Some(pending) = pending_batches.pop_front() {
+                                let batch = match Self::complete_pending(
+                                    &mut remote,
+                                    &mut tx,
+                                    mapping.as_ref(),
+                                    pending,
+                                ) {
+                                    Ok(batch) => batch,
                                     Err(error) => {
                                         publish_error(&error);
                                         return Err(error);
                                     }
                                 };
-                            if !rma_complete
-                                && let Err(error) =
-                                    remote.send_request_batch(&mut tx, mapping.as_ref(), &batch)
-                            {
-                                publish_error(&error);
-                                return Err(error);
-                            }
-                            pending_batches.push_back((batch, rma_complete));
-                            continue;
-                        }
-                        Some(WalLaneTransportCommand::Sync(sequence)) => {
-                            while let Some((batch, rma_complete)) = pending_batches.pop_front() {
-                                if !rma_complete
-                                    && let Err(error) = remote.recv_request_batch_into(
-                                        &mut tx,
-                                        mapping.as_ref(),
-                                        &batch,
-                                    )
-                                {
-                                    publish_error(&error);
-                                    return Err(error);
-                                }
                                 worker_results.push_wait(
                                     WalLaneTransportResult::Batch(batch),
                                     &foreground_thread,
@@ -2733,17 +3286,19 @@ impl WalLaneTransportWorker {
                             );
                         }
                         Some(WalLaneTransportCommand::Eof) => {
-                            while let Some((batch, rma_complete)) = pending_batches.pop_front() {
-                                if !rma_complete
-                                    && let Err(error) = remote.recv_request_batch_into(
-                                        &mut tx,
-                                        mapping.as_ref(),
-                                        &batch,
-                                    )
-                                {
-                                    publish_error(&error);
-                                    return Err(error);
-                                }
+                            while let Some(pending) = pending_batches.pop_front() {
+                                let batch = match Self::complete_pending(
+                                    &mut remote,
+                                    &mut tx,
+                                    mapping.as_ref(),
+                                    pending,
+                                ) {
+                                    Ok(batch) => batch,
+                                    Err(error) => {
+                                        publish_error(&error);
+                                        return Err(error);
+                                    }
+                                };
                                 worker_results.push_wait(
                                     WalLaneTransportResult::Batch(batch),
                                     &foreground_thread,
@@ -2756,19 +3311,21 @@ impl WalLaneTransportWorker {
                             return Ok(remote);
                         }
                         None => {
-                            let (batch, rma_complete) = pending_batches
+                            let pending = pending_batches
                                 .pop_front()
                                 .expect("full or command-idle transport has a pending batch");
-                            if !rma_complete
-                                && let Err(error) = remote.recv_request_batch_into(
-                                    &mut tx,
-                                    mapping.as_ref(),
-                                    &batch,
-                                )
-                            {
-                                publish_error(&error);
-                                return Err(error);
-                            }
+                            let batch = match Self::complete_pending(
+                                &mut remote,
+                                &mut tx,
+                                mapping.as_ref(),
+                                pending,
+                            ) {
+                                Ok(batch) => batch,
+                                Err(error) => {
+                                    publish_error(&error);
+                                    return Err(error);
+                                }
+                            };
                             worker_results.push_wait(
                                 WalLaneTransportResult::Batch(batch),
                                 &foreground_thread,
@@ -3609,7 +4166,7 @@ enum WalLaneTransport {
     Inline {
         remote: RemoteWalLeaf,
         tx: RemoteWalTxContext,
-        batches: VecDeque<(Vec<PendingRemoteRead>, bool)>,
+        batches: VecDeque<WalLanePendingBatch>,
     },
     Split {
         worker: WalLaneTransportWorker,
@@ -3835,11 +4392,25 @@ impl WalLaneTransport {
                 tx,
                 batches,
             } => {
-                let rma_complete = remote.try_rma_read_batch(mapping, &batch)?;
-                if !rma_complete {
+                let framed_in_flight = batches
+                    .iter()
+                    .any(|pending| matches!(pending.kind, WalLanePendingBatchKind::Framed));
+                let rma_batch_id = if framed_in_flight {
+                    None
+                } else {
+                    remote.try_submit_rma_read_batch(&batch)?
+                };
+                let kind = if let Some(batch_id) = rma_batch_id {
+                    WalLanePendingBatchKind::Rma(batch_id)
+                } else {
+                    remote.drain_rma_reads(mapping)?;
                     remote.send_request_batch(tx, mapping, &batch)?;
-                }
-                batches.push_back((batch, rma_complete));
+                    WalLanePendingBatchKind::Framed
+                };
+                batches.push_back(WalLanePendingBatch {
+                    requests: batch,
+                    kind,
+                });
             }
             Self::Split { worker, in_flight } => {
                 worker.send(WalLaneTransportCommand::Batch(batch))?;
@@ -3928,13 +4499,27 @@ impl WalLaneTransport {
                 tx,
                 batches,
             } => {
-                let (batch, rma_complete) = batches
+                let pending = batches
                     .pop_front()
                     .ok_or_else(|| io::Error::other("inline WAL receive queue is empty"))?;
-                if !rma_complete {
-                    remote.recv_request_batch_into(tx, mapping, &batch)?;
+                match pending.kind {
+                    WalLanePendingBatchKind::Framed => {
+                        remote.recv_request_batch_into(tx, mapping, &pending.requests)?;
+                    }
+                    WalLanePendingBatchKind::Rma(batch_id) => {
+                        remote.drain_rma_reads(mapping)?;
+                        if !remote.rma_read_batch_complete(batch_id)? {
+                            return Err(io::Error::new(
+                                io::ErrorKind::WouldBlock,
+                                format!(
+                                    "OFI RMA batch id={batch_id} did not complete while draining"
+                                ),
+                            ));
+                        }
+                        remote.finish_rma_read_batch(batch_id)?;
+                    }
                 }
-                Ok(batch)
+                Ok(pending.requests)
             }
             Self::Split { worker, in_flight } => {
                 let result = worker.recv()?;
@@ -3989,12 +4574,21 @@ impl WalLaneTransport {
 
     fn try_recv(&mut self) -> io::Result<Option<Vec<PendingRemoteRead>>> {
         match self {
-            Self::Inline { batches, .. } => {
-                if batches
-                    .front()
-                    .is_some_and(|(_, rma_complete)| *rma_complete)
-                {
-                    return Ok(batches.pop_front().map(|(batch, _)| batch));
+            Self::Inline {
+                remote, batches, ..
+            } => {
+                let Some(kind) = batches.front().map(|pending| pending.kind) else {
+                    return Ok(None);
+                };
+                if let WalLanePendingBatchKind::Rma(batch_id) = kind {
+                    remote.progress_rma_reads_attached(false)?;
+                    if remote.rma_read_batch_complete(batch_id)? {
+                        let pending = batches.pop_front().ok_or_else(|| {
+                            io::Error::other("inline WAL receive queue became empty")
+                        })?;
+                        remote.finish_rma_read_batch(batch_id)?;
+                        return Ok(Some(pending.requests));
+                    }
                 }
                 Ok(None)
             }
@@ -8815,6 +9409,7 @@ impl SharedTarget {
                 rma_completion,
             );
             for remote in &self.remote_leaves {
+                remote.report_rma_read_queue();
                 let (incoming_cpu, incoming_napi_id) = remote.stream.locality();
                 eprintln!(
                     "zcnblk-shm-target-remote-timing: lane={} target_cpu={} incoming_cpu={} incoming_napi_id={} tcp_nodelay={} quickack={} recv_policy={} recv_spin_budget={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} rma_read_calls={} rma_read_seconds={:.6} avg_rma_read_us={:.3} rma_read_copy_seconds={:.6} avg_rma_read_copy_us={:.3} sync_calls={} sync_seconds={:.6} avg_sync_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
@@ -9579,6 +10174,7 @@ impl SharedTarget {
                 rma_completion,
             );
             for remote in &self.remote_leaves {
+                remote.report_rma_read_queue();
                 let (incoming_cpu, incoming_napi_id) = remote.stream.locality();
                 eprintln!(
                     "zcnblk-shm-target-remote-lane: lane={} lane_count={} target_cpu={} incoming_cpu={} incoming_napi_id={} send_mode={} recv_policy={} recv_spin_budget={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} write_batches={} write_records={} write_bytes={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} rma_read_calls={} rma_read_seconds={:.6} avg_rma_read_us={:.3} rma_read_copy_seconds={:.6} avg_rma_read_copy_us={:.3} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} tcp_nodelay={} quickack={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
@@ -10199,6 +10795,45 @@ mod tests {
         }
         assert!(wal_transport_owner(1, owners, extent_records).is_err());
         assert!(wal_transport_owner(0, 0, extent_records).is_err());
+    }
+
+    #[test]
+    fn rma_read_queue_keeps_pending_request_when_ring_is_full() {
+        let read = |offset: u64| PendingRemoteRead {
+            request: ZcnblkShmRequest {
+                op: ZCNBLK_SHM_OP_READ,
+                len: 4096,
+                offset,
+                ..ZcnblkShmRequest::default()
+            },
+            io_contract: ZcnblkWalIoContract::default(),
+            request_sequence: offset / 4096,
+            payload_offset: offset as usize,
+            dirty_ref: None,
+        };
+        let mut queue = RemoteWalRmaReadQueue::new(vec![0; 4096], 4096, 1).unwrap();
+        queue
+            .submit_batch(
+                RemoteWalRmaReadWindow {
+                    addr: 0,
+                    key: 0,
+                    len: 8192,
+                },
+                &[read(0), read(4096)],
+            )
+            .unwrap();
+
+        let (slot, first) = queue.take_postable().unwrap();
+        assert_eq!(slot, 0);
+        assert_eq!(first.request.request.offset, 0);
+        assert_eq!(queue.pending.len(), 1);
+        assert!(queue.take_postable().is_none());
+        assert_eq!(queue.pending.len(), 1);
+
+        queue.free_slots.push(slot);
+        let (_, second) = queue.take_postable().unwrap();
+        assert_eq!(second.request.request.offset, 4096);
+        assert!(queue.pending.is_empty());
     }
 
     impl ZcnblkFanWalSharedLeaseSource for TestSharedLease {

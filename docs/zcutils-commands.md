@@ -75,6 +75,7 @@ URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED=1 \
 URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT=ofi \
 URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER=efa \
 URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS=1 \
+URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD=8 \
 URING_PLAY_ZCNBLK_SHM_LEAF_ADDR=LEAF_PRIVATE_IP:29000 \
 URING_PLAY_ZCNBLK_SHM_TARGET_CPU_LIST=CLIENT_NIC_LOCAL_CPUS \
 zcnblk-shm-target /dev/zcnblk-shmctl wal-tcp 64
@@ -91,15 +92,29 @@ OFI completions or an incomplete declared topology before benchmark numbers
 are printed.
 
 When both RMA-read switches are enabled, HELLO negotiation advertises the
-userspace memory leaf's remote-read window. Each client lane registers one
-fixed 4 KiB bounce buffer, completes `fi_read` into that buffer, and copies the
-result into the shared block slot. The full shared mapping is deliberately not
-registered: EFA provider behavior must be measured for MR size and subrange
-access, and the kernel client still owns no placement decision. Startup and
-summary logs state whether RMA was negotiated, the lane-local registration
-size, local-CQ completion semantics, and bounce-copy time. Reads from a leaf
-that does not advertise the feature retain the framed result-payload path;
-sync/FUA continues to use the explicit message/HWM drain contract.
+userspace memory leaf's remote-read window. Each client lane registers a ring
+of fixed 4 KiB buffers, one stable buffer per outstanding operation. Set
+`URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD` to the per-lane ring depth (1 by
+default, maximum 1024). Reads are posted independently, CQ entries are drained
+in batches, and out-of-order slot completions are copied into their owned
+shared block slots before request batches retire in FIFO order. The full shared
+mapping is deliberately not registered: EFA provider behavior must be measured
+for MR size and subrange access, and the kernel client still owns no placement
+decision. Startup and summary logs state the lane QD, registered ring bytes,
+peak in-flight reads, batched-CQ yield, local-CQ completion semantics, and copy
+time. Reads from a leaf that does not advertise the feature retain the framed
+result-payload path; sync/FUA and RMA-to-framed transitions drain outstanding
+reads before using the explicit message/HWM contract.
+
+`scripts/zcnblk-shm-rma-qd-ladder.sh` drives QD1/2/4/8/16 with at least three
+repeats per point. A representative run requires an executable
+`RMA_QD_RAW_RUNNER` for matched raw RMA RTT samples and either
+`RMA_QD_BEFORE_BLOCK_HOOK` to start a fresh external leaf for each point or an
+explicit `RMA_QD_EXTERNAL_LEAF_SUPERVISED=1`. The consolidated report includes
+per-worker QD, worker/lane count, aggregate outstanding depth, raw transport
+RTT, the matching ceiling, actual/theoretical efficiency, topology artifacts,
+and spread. The hooks own external process lifecycle; the block edge remains
+only `/dev/zcnblk0` and placement remains in userspace.
 
 ## Command Idiom
 

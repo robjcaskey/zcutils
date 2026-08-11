@@ -1,0 +1,109 @@
+PERF NOTE: external WAL uses lane-inline transport (mode=read); stable-owner is the measured high-IOPS write path
+scope=dedicated-adhoc honored=true manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+[01:34:18] loading placement-free shared-memory client edge
+classification=dedicated-adhoc-control
+coordination_scope=dedicated-adhoc
+bootstrap_manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+lane_count=16
+block_per_worker_qd=16 block_workers=16 block_aggregate_outstanding_depth=256
+topology_cpu_list=0-63
+coordinator_cpu=none
+lane=0 client_cpu=0 target_cpu=1 transport_cpu=inline kernel_cpu=2 leaf_cpu=none hctx_cpus=0, 1, 2, 3
+lane=1 client_cpu=4 target_cpu=5 transport_cpu=inline kernel_cpu=6 leaf_cpu=none hctx_cpus=4, 5, 6, 7
+lane=2 client_cpu=8 target_cpu=9 transport_cpu=inline kernel_cpu=10 leaf_cpu=none hctx_cpus=8, 9, 10, 11
+lane=3 client_cpu=12 target_cpu=13 transport_cpu=inline kernel_cpu=14 leaf_cpu=none hctx_cpus=12, 13, 14, 15
+lane=4 client_cpu=16 target_cpu=17 transport_cpu=inline kernel_cpu=18 leaf_cpu=none hctx_cpus=16, 17, 18, 19
+lane=5 client_cpu=20 target_cpu=21 transport_cpu=inline kernel_cpu=22 leaf_cpu=none hctx_cpus=20, 21, 22, 23
+lane=6 client_cpu=24 target_cpu=25 transport_cpu=inline kernel_cpu=26 leaf_cpu=none hctx_cpus=24, 25, 26, 27
+lane=7 client_cpu=28 target_cpu=29 transport_cpu=inline kernel_cpu=30 leaf_cpu=none hctx_cpus=28, 29, 30, 31
+lane=8 client_cpu=32 target_cpu=33 transport_cpu=inline kernel_cpu=34 leaf_cpu=none hctx_cpus=32, 33, 34, 35
+lane=9 client_cpu=36 target_cpu=37 transport_cpu=inline kernel_cpu=38 leaf_cpu=none hctx_cpus=36, 37, 38, 39
+lane=10 client_cpu=40 target_cpu=41 transport_cpu=inline kernel_cpu=42 leaf_cpu=none hctx_cpus=40, 41, 42, 43
+lane=11 client_cpu=44 target_cpu=45 transport_cpu=inline kernel_cpu=46 leaf_cpu=none hctx_cpus=44, 45, 46, 47
+lane=12 client_cpu=48 target_cpu=49 transport_cpu=inline kernel_cpu=50 leaf_cpu=none hctx_cpus=48, 49, 50, 51
+lane=13 client_cpu=52 target_cpu=53 transport_cpu=inline kernel_cpu=54 leaf_cpu=none hctx_cpus=52, 53, 54, 55
+lane=14 client_cpu=56 target_cpu=57 transport_cpu=inline kernel_cpu=58 leaf_cpu=none hctx_cpus=56, 57, 58, 59
+lane=15 client_cpu=60 target_cpu=61 transport_cpu=inline kernel_cpu=62 leaf_cpu=none hctx_cpus=60, 61, 62, 63
+hugepages_total=7041
+hugepages_free=7041
+hugepage_size_kib=2048
+memlock_kib=unlimited
+loadavg=28.75 9.05 3.62 1/840 20349
+coordination_honored=true
+external_nic_low_latency_confirmed=1 scope=client-and-leaf
+target_poll_us=50
+target_busy_poll_us=1000
+target_busy_hysteresis_us=10000
+target_poll_clock_check_spins=64
+kernel_completion_poll_us=50
+kernel_state_interval_ms=0
+block_ring_mode=sqpoll-no-sqarray sqpoll_cpu_list=3,7,11,15,19,23,27,31,35,39,43,47,51,55,59,63 sqpoll_idle_ms=10000
+block_engine=uring-fixed
+block_latency_sample_rate=1
+block_ring_stats=1 block_wait_min_completions=1 block_cqe_spin=0 block_cqe_adaptive_spin=0 block_cqe_adaptive_spin_min=0 block_cqe_adaptive_spin_max=4096 block_cqe_adaptive_wait_ns=50000 block_cqe_hot_poll=1 block_cqe_hot_poll_progress_spins=4096
+shm_descriptor_entries_per_channel=64
+kernel_queues=16 kernel_queue_depth=16 kernel_pipeline_depth=16
+shm_sector_order_slots=65536
+shm_payload_entries_per_channel=512
+writeback_batch_requested=32768 writeback_batch_effective=7168
+request_batch=1 request_batch_fill_us=0 request_batch_fill_min=1
+wal_lane_batch=1 representative_eligible=true
+wal_owner_dispatch=0 wal_owner_extent_records=256 wal_owner_worker_spins=65536 wal_owner_worker_adaptive_spin=1 wal_owner_worker_spin_min=4096 wal_owner_worker_adaptive_wait_ns=50000
+wal_owner_ingress=0 wal_owner_ingress_source=explicit wal_owner_count=16 wal_owner_cpu_list=none
+wal_owner_write_fill_us=0 wal_owner_write_fill_min=256 wal_owner_pipeline_batches=16 wal_owner_pipeline_refill_spins=256 wal_owner_mixed_hysteresis_us=10000
+wal_owner_debounce_us=2 wal_owner_backlog_low_records=16 wal_owner_backlog_high_records=256
+wal_owner_batch_records=2048 wal_owner_fragment_records=16 wal_owner_fragment_fill_us=500 wal_owner_queue_depth=128
+wal_owner_foreground_immediate_limit=1
+wal_owner_max_tx_iovecs=960
+wal_lane_window=16
+wal_split_transport=0 wal_transport_cpu_list=inline
+wal_transport_wait_policy=greedy
+transfer_payload_slots_requested=1 transfer_payload_slots_effective=1
+wal_extent_records=64 wal_extent_fill_us=20 wal_split_min_batch_records=64
+wal_compact_writes=1
+dirty_pressure_reserve=0
+remote_recv_spins=0 leaf_spin_reads=0 leaf_spin_policy=adaptive leaf_spin_budget=adaptive leaf_adaptive_spin_min=256 leaf_adaptive_spin_max=65536 leaf_adaptive_wait_ns=50000 leaf_adaptive_hysteresis_ns=10000000
+remote_recv_policy=adaptive remote_recv_adaptive_spin_min=0 remote_recv_adaptive_spin_max=65536 remote_recv_adaptive_wait_ns=50000 remote_recv_adaptive_hysteresis_ns=10000000
+remote_send_mode=blocking remote_send_ring_entries=256 remote_send_zc_required=1 allow_unsafe_send_zc=0
+remote_transport=ofi remote_ofi_provider=efa remote_ofi_endpoint=rdm ofi_domain=efa_0-rdm ofi_cq_sleep_ns=0 wal_ofi_message_bytes=1048576 wal_ofi_hugetlb_confirmed=1 efa_use_device_rdma=1 shm_ofi_rma_reads=1 shm_ofi_rma_read_qd=16 rma_aggregate_outstanding_depth=256 leaf_ofi_rma_reads=1
+order_smoke_pairs=0
+shm_payload_slot_bytes=4096
+shm_lease_release_batch=1
+backend=wal-tcp local_leaf=0 leaf_target=zcmem:1G leaf_addr=172.31.44.118 leaf_port=29360 leaf_submit_mode=blocking leaf_allow_volatile_sync=1
+leaf_source_addr=kernel-route
+leaf_addrs=single-address leaf_source_addrs=single-source
+hugetlb_preflight: free_pages=7041 required_pages=256 reason=one-hugepage-per-registered-slot
+PERF WARNING: CPU governor is unchanged; record it before interpreting spread
+[01:34:19] starting userspace shared target/fan; no placement decision exists in the kernel edge
+[01:34:19] running 3 repeated read controls on the shared host
+repeat=1 target_context_switches=250879 target_per_1k_logical_io=78.400 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=131812 kernel_per_1k_logical_io=41.191
+repeat=1 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=read workers=16 ops_per_worker=200000 total_ops=3200000 reads=3200000 writes=0 read_percent=100 chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=16 total_pipeline=256 wait_min_completions=1 ring_entries=64 ring_mode=sqpoll-no-sqarray cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=1.374791 io_seconds=1.371776 slowest_worker_seconds=1.371776 total_cpu_seconds=21.526855 aggregate_cpu_percent=1569.27 cpu_ns_per_op=6727.1 MiBps=9112.28 ops_per_sec=2332743
+repeat=1 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=1 all_count=3200000 all_avg_ns=107526 all_min_ns=23265 all_p50_ns=103000 all_p95_ns=148000 all_p99_ns=173000 all_p999_ns=212000 all_max_ns=34239124 read_count=3200000 read_avg_ns=107526 read_min_ns=23265 read_p50_ns=103000 read_p95_ns=148000 read_p99_ns=173000 read_p999_ns=212000 read_max_ns=34239124 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=1 zcblockbench-ring: workers=16 submit_syscalls=16 wait_cqe_calls=2135524 wait_syscalls=170337 cqes_popped=3200000 try_pop_empty=4339435 cqe_spin_loops=1586512585 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=2 target_context_switches=250363 target_per_1k_logical_io=78.238 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=132110 kernel_per_1k_logical_io=41.284
+repeat=2 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=read workers=16 ops_per_worker=200000 total_ops=3200000 reads=3200000 writes=0 read_percent=100 chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=16 total_pipeline=256 wait_min_completions=1 ring_entries=64 ring_mode=sqpoll-no-sqarray cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=1.345012 io_seconds=1.341761 slowest_worker_seconds=1.341761 total_cpu_seconds=21.011503 aggregate_cpu_percent=1565.96 cpu_ns_per_op=6566.1 MiBps=9316.11 ops_per_sec=2384925
+repeat=2 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=1 all_count=3200000 all_avg_ns=104950 all_min_ns=21648 all_p50_ns=103000 all_p95_ns=148000 all_p99_ns=173000 all_p999_ns=208000 all_max_ns=1415467 read_count=3200000 read_avg_ns=104950 read_min_ns=21648 read_p50_ns=103000 read_p95_ns=148000 read_p99_ns=173000 read_p999_ns=208000 read_max_ns=1415467 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=2 zcblockbench-ring: workers=16 submit_syscalls=15 wait_cqe_calls=2134228 wait_syscalls=160791 cqes_popped=3200000 try_pop_empty=4338861 cqe_spin_loops=1548415752 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=3 target_context_switches=250954 target_per_1k_logical_io=78.423 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=131844 kernel_per_1k_logical_io=41.201
+repeat=3 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=read workers=16 ops_per_worker=200000 total_ops=3200000 reads=3200000 writes=0 read_percent=100 chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=16 total_pipeline=256 wait_min_completions=1 ring_entries=64 ring_mode=sqpoll-no-sqarray cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=1.341894 io_seconds=1.338512 slowest_worker_seconds=1.338512 total_cpu_seconds=21.008841 aggregate_cpu_percent=1569.57 cpu_ns_per_op=6565.3 MiBps=9338.73 ops_per_sec=2390714
+repeat=3 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=1 all_count=3200000 all_avg_ns=104939 all_min_ns=22194 all_p50_ns=103000 all_p95_ns=149000 all_p99_ns=173000 all_p999_ns=210000 all_max_ns=1583563 read_count=3200000 read_avg_ns=104939 read_min_ns=22194 read_p50_ns=103000 read_p95_ns=149000 read_p99_ns=173000 read_p999_ns=210000 read_max_ns=1583563 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=3 zcblockbench-ring: workers=16 submit_syscalls=15 wait_cqe_calls=2128269 wait_syscalls=160875 cqes_popped=3200000 try_pop_empty=4323258 cqe_spin_loops=1547067532 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+runs=3 min_iops=2332743 mean_iops=2369461 max_iops=2390714 spread_pct=2.45
+zcnblk-shm-target-summary: backend=WalTcpLaneExtent remote_transport=ofi channels=16 requests=9600000 writes=0 reads=9600000 syncs=0 write_bytes=0 read_bytes=39321600000 wall_seconds=4.592879 active_seconds=4.052180 active_descriptor_iops=2369095 active_4k_equivalent_iops=2369095 active_payload_Gibitps=72.30 kicks=396746 idle_polls=260 lease_releases=9600000 early_write_acks=0 fua_requests=0 polled_requests=0 ioprio_requests=9600000 registered_lease_requests=9600000 atomic_write_requests=0 write_lifetime_requests=0 dirty_read_hits=0 dirty_read_refs=0 dirty_pressure_events=0 dirty_pressure_evictions=0 max_payload_slots_outstanding=16 remote_read_misses=9600000 completion_window_stalls=0 remote_batches=1902742 avg_remote_batch_records=5.05 payload_ownership=submit-sequence-token-transfer payload_slots_free=8192/8192 completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order=hashed-sector-predecessor+lock-free-dirty-directory sync_boundary=remote-global-publication-hwm+all-lane-marker dirty_retention=transferred-page-reference-until-remote-sync-or-targeted-pressure-retire placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination=dirty-shared-slot-reference-or-lane-local-rma-bounce+shared-slot-copy kernel_payload_copies=one-per-direction writeback_materialization_copies=one-userspace-ofi-message-gather;ofi-provider-copy representative=true
+zcnblk-shm-target-ofi-rma-queue: lane=0 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=273150 cq_batches=185844 cq_completions=600000 avg_cq_completions_per_batch=3.23 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=1 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=270075 cq_batches=178992 cq_completions=600000 avg_cq_completions_per_batch=3.35 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=2 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=275223 cq_batches=180696 cq_completions=600000 avg_cq_completions_per_batch=3.32 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=3 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=274966 cq_batches=182976 cq_completions=600000 avg_cq_completions_per_batch=3.28 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=4 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=269430 cq_batches=179166 cq_completions=600000 avg_cq_completions_per_batch=3.35 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=5 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=279856 cq_batches=183063 cq_completions=600000 avg_cq_completions_per_batch=3.28 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=6 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=277225 cq_batches=186873 cq_completions=600000 avg_cq_completions_per_batch=3.21 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=7 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=269178 cq_batches=178860 cq_completions=600000 avg_cq_completions_per_batch=3.35 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=8 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=274583 cq_batches=180549 cq_completions=600000 avg_cq_completions_per_batch=3.32 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=9 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=273957 cq_batches=184970 cq_completions=600000 avg_cq_completions_per_batch=3.24 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=10 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=273698 cq_batches=183659 cq_completions=600000 avg_cq_completions_per_batch=3.27 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=11 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=272088 cq_batches=179223 cq_completions=600000 avg_cq_completions_per_batch=3.35 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=12 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=270353 cq_batches=181728 cq_completions=600000 avg_cq_completions_per_batch=3.30 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=13 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=273845 cq_batches=185537 cq_completions=600000 avg_cq_completions_per_batch=3.23 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=14 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=267751 cq_batches=176422 cq_completions=600000 avg_cq_completions_per_batch=3.40 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=15 per_lane_qd=16 slot_bytes=4096 registered_ring_bytes=65536 peak_in_flight=16 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=265152 cq_batches=176418 cq_completions=600000 avg_cq_completions_per_batch=3.40 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+artifact=/tmp/zcutils-rmaasync-ladder/block-qd16

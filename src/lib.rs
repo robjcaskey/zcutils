@@ -10216,6 +10216,25 @@ unsafe extern "C" {
         buf: *mut c_void,
         len: usize,
     ) -> c_int;
+    fn zc_ofi_rma_read_queue_init(ep: *mut ZcOfiRawEndpoint, depth: usize) -> c_int;
+    fn zc_ofi_rma_read_post(
+        ep: *mut ZcOfiRawEndpoint,
+        buf: *mut c_void,
+        len: usize,
+        remote_addr: u64,
+        remote_key: u64,
+        slot: usize,
+        user_data: u64,
+    ) -> c_int;
+    fn zc_ofi_rma_read_poll(
+        ep: *mut ZcOfiRawEndpoint,
+        out_slots: *mut usize,
+        out_user_data: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        wait: c_int,
+        timeout_ms: c_int,
+    ) -> c_int;
     fn zc_ofi_rma_write(
         ep: *mut ZcOfiRawEndpoint,
         buf: *const c_void,
@@ -10731,6 +10750,85 @@ impl ZcOfiEndpoint {
         Ok(())
     }
 
+    fn rma_read_queue_init(&mut self, depth: usize) -> io::Result<()> {
+        let rc = unsafe { zc_ofi_rma_read_queue_init(self.raw, depth) };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(
+                self,
+                rc,
+                "zc_ofi_rma_read_queue_init",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The pointed-to bytes must remain allocated, registered, and exclusively
+    /// owned by `slot` until that slot is returned by `rma_read_poll`.
+    unsafe fn rma_read_post_raw(
+        &mut self,
+        buf: *mut u8,
+        len: usize,
+        remote_addr: u64,
+        remote_key: u64,
+        slot: usize,
+        user_data: u64,
+    ) -> io::Result<bool> {
+        let rc = unsafe {
+            zc_ofi_rma_read_post(
+                self.raw,
+                buf.cast::<c_void>(),
+                len,
+                remote_addr,
+                remote_key,
+                slot,
+                user_data,
+            )
+        };
+        if rc == -libc::EAGAIN {
+            return Ok(false);
+        }
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(self, rc, "zc_ofi_rma_read_post"));
+        }
+        Ok(true)
+    }
+
+    fn rma_read_poll(
+        &mut self,
+        out_slots: &mut [usize],
+        out_user_data: &mut [u64],
+        wait: bool,
+    ) -> io::Result<usize> {
+        if out_slots.is_empty() || out_slots.len() != out_user_data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OFI RMA completion arrays must be non-empty and equally sized",
+            ));
+        }
+        let mut out_count = 0usize;
+        let rc = unsafe {
+            zc_ofi_rma_read_poll(
+                self.raw,
+                out_slots.as_mut_ptr(),
+                out_user_data.as_mut_ptr(),
+                out_slots.len(),
+                &mut out_count,
+                c_int::from(wait),
+                zcofi_timeout_ms(),
+            )
+        };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(self, rc, "zc_ofi_rma_read_poll"));
+        }
+        if out_count > out_slots.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI RMA poll returned more completions than requested",
+            ));
+        }
+        Ok(out_count)
+    }
+
     fn rma_write(&mut self, buf: &[u8], remote_addr: u64, remote_key: u64) -> io::Result<()> {
         let rc = unsafe {
             zc_ofi_rma_write(
@@ -10959,6 +11057,40 @@ impl ZcOfiEndpoint {
     }
 
     fn rma_register_read_buffer(&mut self, _buf: &mut [u8]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    fn rma_read_queue_init(&mut self, _depth: usize) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    unsafe fn rma_read_post_raw(
+        &mut self,
+        _buf: *mut u8,
+        _len: usize,
+        _remote_addr: u64,
+        _remote_key: u64,
+        _slot: usize,
+        _user_data: u64,
+    ) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    fn rma_read_poll(
+        &mut self,
+        _out_slots: &mut [usize],
+        _out_user_data: &mut [u64],
+        _wait: bool,
+    ) -> io::Result<usize> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "zcutils was built without libfabric headers",
@@ -11198,6 +11330,36 @@ impl ZcOfiMessageStream {
         self.endpoint.rma_register_read_buffer(target)
     }
 
+    fn configure_rma_read_queue(&mut self, depth: usize) -> io::Result<()> {
+        self.endpoint.rma_read_queue_init(depth)
+    }
+
+    /// `target` must remain valid and exclusively assigned to `slot` until
+    /// `poll_rma_reads` returns that slot.
+    unsafe fn post_rma_read_raw(
+        &mut self,
+        target: *mut u8,
+        len: usize,
+        remote_addr: u64,
+        remote_key: u64,
+        slot: usize,
+        user_data: u64,
+    ) -> io::Result<bool> {
+        unsafe {
+            self.endpoint
+                .rma_read_post_raw(target, len, remote_addr, remote_key, slot, user_data)
+        }
+    }
+
+    fn poll_rma_reads(
+        &mut self,
+        out_slots: &mut [usize],
+        out_user_data: &mut [u64],
+        wait: bool,
+    ) -> io::Result<usize> {
+        self.endpoint.rma_read_poll(out_slots, out_user_data, wait)
+    }
+
     fn rma_read(&mut self, target: &mut [u8], remote_addr: u64, remote_key: u64) -> io::Result<()> {
         self.endpoint.rma_read(target, remote_addr, remote_key)
     }
@@ -11373,6 +11535,92 @@ mod zcnblk_ofi_message_stream_tests {
         client.register_rma_read_buffer(&mut target).unwrap();
         client.rma_read(&mut target, addr, key).unwrap();
         assert_eq!(target, vec![0xabu8; 4096]);
+        client.write_all(&[1]).unwrap();
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a local libfabric sockets provider with FI_RMA"]
+    fn queued_rma_reads_batch_local_cq_completions_by_stable_slot() {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        unsafe {
+            env::set_var("URING_PLAY_OFI_CQ_SLEEP_NS", "0");
+            env::set_var("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", "65536");
+        }
+        const QD: usize = 4;
+        const EXTENT: usize = 4096;
+        let service = 39_900u16 + u16::try_from(std::process::id() % 300).unwrap();
+        let server = thread::spawn(move || -> io::Result<()> {
+            let mut stream =
+                ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, true, true)?;
+            let mut source = vec![0u8; QD * EXTENT];
+            for slot in 0..QD {
+                source[slot * EXTENT..(slot + 1) * EXTENT].fill(0x30 + slot as u8);
+            }
+            let (addr, key) = stream.register_rma_target(&mut source)?;
+            let mut metadata = [0u8; 24];
+            metadata[0..8].copy_from_slice(&addr.to_le_bytes());
+            metadata[8..16].copy_from_slice(&key.to_le_bytes());
+            metadata[16..24].copy_from_slice(&(source.len() as u64).to_le_bytes());
+            stream.write_all(&metadata)?;
+            let mut done = [0u8; 1];
+            stream.read_exact(&mut done)?;
+            if done != [1] {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "queued OFI RMA reader returned an invalid completion marker",
+                ));
+            }
+            Ok(())
+        });
+        thread::sleep(Duration::from_millis(25));
+        let mut client =
+            ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, false, true)
+                .unwrap();
+        let mut metadata = [0u8; 24];
+        client.read_exact(&mut metadata).unwrap();
+        let addr = u64::from_le_bytes(metadata[0..8].try_into().unwrap());
+        let key = u64::from_le_bytes(metadata[8..16].try_into().unwrap());
+        let mut target = vec![0u8; QD * EXTENT];
+        client.register_rma_read_buffer(&mut target).unwrap();
+        client.configure_rma_read_queue(QD).unwrap();
+        for slot in 0..QD {
+            let posted = unsafe {
+                client.post_rma_read_raw(
+                    target.as_mut_ptr().add(slot * EXTENT),
+                    EXTENT,
+                    addr + (slot * EXTENT) as u64,
+                    key,
+                    slot,
+                    100 + slot as u64,
+                )
+            }
+            .unwrap();
+            assert!(posted);
+        }
+        let mut completion_slots = [0usize; QD];
+        let mut completion_tokens = [0u64; QD];
+        let mut seen = [false; QD];
+        let mut completed = 0usize;
+        while completed < QD {
+            let count = client
+                .poll_rma_reads(&mut completion_slots, &mut completion_tokens, true)
+                .unwrap();
+            assert!(count > 0);
+            for index in 0..count {
+                let slot = completion_slots[index];
+                assert!(slot < QD);
+                assert_eq!(completion_tokens[index], 100 + slot as u64);
+                assert!(!seen[slot]);
+                assert_eq!(
+                    target[slot * EXTENT..(slot + 1) * EXTENT],
+                    vec![0x30 + slot as u8; EXTENT]
+                );
+                seen[slot] = true;
+                completed += 1;
+            }
+        }
         client.write_all(&[1]).unwrap();
         server.join().unwrap().unwrap();
     }
@@ -11906,6 +12154,183 @@ fn zcofi_rma_write_worker(
     })
 }
 
+struct ZcOfiRmaReadLane {
+    spec: ZcOfiWalLaneSpec,
+    endpoint: ZcOfiEndpoint,
+    meta: ZcOfiRmaMeta,
+    buffer: Vec<u8>,
+    next_extent: usize,
+    completed_extents: usize,
+    free_slots: Vec<usize>,
+    active: Vec<Option<(usize, u64, Instant)>>,
+    completion_slots: Vec<usize>,
+    completion_tokens: Vec<u64>,
+    in_flight: usize,
+    peak_in_flight: usize,
+    cq_poll_calls: u64,
+    cq_batches: u64,
+    cq_completions: u64,
+    post_eagain: u64,
+}
+
+impl ZcOfiRmaReadLane {
+    fn local_offset(
+        &self,
+        extent: usize,
+        slot: usize,
+        extent_bytes: usize,
+        full_local_window: bool,
+    ) -> io::Result<usize> {
+        let index = if full_local_window { extent } else { slot };
+        index.checked_mul(extent_bytes).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA local offset overflow")
+        })
+    }
+
+    fn post_available(
+        &mut self,
+        extents_per_lane: usize,
+        extent_bytes: usize,
+        full_local_window: bool,
+    ) -> io::Result<()> {
+        while self.next_extent < extents_per_lane {
+            let Some(slot) = self.free_slots.pop() else {
+                break;
+            };
+            if self.active[slot].is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("OFI RMA raw free-list returned active slot={slot}"),
+                ));
+            }
+            let extent = self.next_extent;
+            let remote_offset =
+                u64::try_from(extent.checked_mul(extent_bytes).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA lane offset overflow")
+                })?)
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA offset overflow")
+                })?;
+            let remote_addr = self
+                .meta
+                .remote_addr
+                .checked_add(remote_offset)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "OFI RMA remote address overflow",
+                    )
+                })?;
+            let local_offset = self.local_offset(extent, slot, extent_bytes, full_local_window)?;
+            let token = u64::try_from(extent)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "extent token overflow"))?
+                .wrapping_add(1);
+            let posted_at = Instant::now();
+            // The backing Vec is never resized and this slot stays active until
+            // its exact CQ context and token are returned.
+            let target = unsafe { self.buffer.as_mut_ptr().add(local_offset) };
+            let posted = unsafe {
+                self.endpoint.rma_read_post_raw(
+                    target,
+                    extent_bytes,
+                    remote_addr,
+                    self.meta.remote_key,
+                    slot,
+                    token,
+                )?
+            };
+            if !posted {
+                self.post_eagain = self.post_eagain.saturating_add(1);
+                self.free_slots.push(slot);
+                break;
+            }
+            self.active[slot] = Some((extent, token, posted_at));
+            self.next_extent += 1;
+            self.in_flight += 1;
+            self.peak_in_flight = self.peak_in_flight.max(self.in_flight);
+        }
+        Ok(())
+    }
+
+    fn poll(
+        &mut self,
+        extent_bytes: usize,
+        full_local_window: bool,
+        wait: bool,
+        latency: &mut LatencyHistogram,
+    ) -> io::Result<usize> {
+        if self.in_flight == 0 {
+            return Ok(0);
+        }
+        self.cq_poll_calls = self.cq_poll_calls.saturating_add(1);
+        let completed = self.endpoint.rma_read_poll(
+            &mut self.completion_slots,
+            &mut self.completion_tokens,
+            wait,
+        )?;
+        if completed != 0 {
+            self.cq_batches = self.cq_batches.saturating_add(1);
+        }
+        self.cq_completions = self.cq_completions.saturating_add(completed as u64);
+        for index in 0..completed {
+            let slot = self.completion_slots[index];
+            let actual_token = self.completion_tokens[index];
+            let (extent, expected_token, posted_at) = self
+                .active
+                .get_mut(slot)
+                .and_then(Option::take)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("OFI RMA raw completion returned inactive slot={slot}"),
+                    )
+                })?;
+            if actual_token != expected_token {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "OFI RMA raw token mismatch lane={} slot={slot} expected={expected_token} actual={actual_token}",
+                        self.spec.lane
+                    ),
+                ));
+            }
+            latency.record_duration(posted_at.elapsed());
+            let local_offset = self.local_offset(extent, slot, extent_bytes, full_local_window)?;
+            if self.buffer[local_offset..local_offset + extent_bytes]
+                .iter()
+                .any(|byte| *byte != 0)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "OFI RMA read verification failed lane={} extent={extent}",
+                        self.spec.lane
+                    ),
+                ));
+            }
+            self.free_slots.push(slot);
+            self.in_flight = self.in_flight.checked_sub(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "OFI RMA raw in-flight underflow",
+                )
+            })?;
+            self.completed_extents += 1;
+        }
+        Ok(completed)
+    }
+}
+
+struct ZcOfiRmaReadWorkerStats {
+    base: ZcWalExtentStats,
+    completion_latency: LatencyHistogram,
+    cq_poll_calls: u64,
+    cq_batches: u64,
+    cq_completions: u64,
+    post_eagain: u64,
+    peak_outstanding: usize,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn zcofi_rma_read_worker(
     worker: usize,
@@ -11916,15 +12341,26 @@ fn zcofi_rma_read_worker(
     lane_count: usize,
     bytes_per_lane: usize,
     extent_bytes: usize,
+    queue_depth: usize,
     full_local_window: bool,
-) -> io::Result<ZcWalExtentStats> {
+) -> io::Result<ZcOfiRmaReadWorkerStats> {
     let affinity = maybe_pin_current_thread("zcofi-rma-read-worker", worker);
     let tid = current_tid();
     let start_thread_cpu = thread_cpu_time().unwrap_or_default();
     let start_cpu = current_cpu();
     let start_switches = read_thread_context_switches(tid).unwrap_or_default();
     let stream_count = specs.len();
-    let mut endpoints = Vec::with_capacity(specs.len());
+    let local_buffer_bytes = if full_local_window {
+        bytes_per_lane
+    } else {
+        queue_depth.checked_mul(extent_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OFI RMA fixed buffer ring size overflow",
+            )
+        })?
+    };
+    let mut lanes = Vec::with_capacity(specs.len());
     let mut meta_buf = [0u8; ZCOFI_RMA_CONTROL_LEN];
     for spec in specs {
         let mut ep = ZcOfiEndpoint::open_rma(
@@ -11948,8 +12384,11 @@ fn zcofi_rma_read_worker(
         }
         let meta = ZcOfiRmaMeta::decode(&meta_buf)?;
         zcofi_rma_validate_meta(meta, spec.lane, lane_count, bytes_per_lane, extent_bytes)?;
+        let mut buffer = vec![0xa5u8; local_buffer_bytes];
+        ep.rma_register_read_buffer(&mut buffer)?;
+        ep.rma_read_queue_init(queue_depth)?;
         println!(
-            "zcofi-rma-read-lane: worker={worker} lane={} provider={} endpoint={} addr={} service={} control_port={} remote_addr=0x{:016x} remote_key=0x{:016x} extent_bytes={} max_msg_size={} inject_size={} completion=initiator-local-cq-data-visible local_registration_scope={}",
+            "zcofi-rma-read-lane: worker={worker} lane={} provider={} endpoint={} addr={} service={} control_port={} remote_addr=0x{:016x} remote_key=0x{:016x} extent_bytes={} queue_depth={} registered_buffer_bytes={} max_msg_size={} inject_size={} completion=initiator-local-cq-data-visible local_registration_scope={} cq_processing=batched",
             spec.lane,
             provider.as_str(),
             endpoint.as_str(),
@@ -11959,67 +12398,95 @@ fn zcofi_rma_read_worker(
             meta.remote_addr,
             meta.remote_key,
             extent_bytes,
+            queue_depth,
+            buffer.len(),
             ep.max_msg_size(),
             ep.inject_size(),
             if full_local_window {
                 "full-window-changing-offset"
             } else {
-                "fixed-extent-reused"
+                "fixed-buffer-per-outstanding-operation"
             },
         );
-        endpoints.push((spec, ep, meta));
+        lanes.push(ZcOfiRmaReadLane {
+            spec,
+            endpoint: ep,
+            meta,
+            buffer,
+            next_extent: 0,
+            completed_extents: 0,
+            free_slots: (0..queue_depth).rev().collect(),
+            active: (0..queue_depth).map(|_| None).collect(),
+            completion_slots: vec![0; queue_depth],
+            completion_tokens: vec![0; queue_depth],
+            in_flight: 0,
+            peak_in_flight: 0,
+            cq_poll_calls: 0,
+            cq_batches: 0,
+            cq_completions: 0,
+            post_eagain: 0,
+        });
     }
 
-    let local_buffer_bytes = if full_local_window {
-        bytes_per_lane
-    } else {
-        extent_bytes
-    };
-    let mut payload = vec![0xa5u8; local_buffer_bytes];
     let extents_per_lane = bytes_per_lane / extent_bytes;
     let records_per_extent = extent_bytes / ZC_WAL_RECORD_SIZE;
-    let mut payload_bytes = 0usize;
-    let mut wire_bytes = 0usize;
-    let mut extents = 0usize;
-    let mut records = 0usize;
-    let mut acks = 0usize;
-    for (_, ep, _) in &mut endpoints {
-        ep.rma_register_read_buffer(&mut payload)?;
-    }
+    let mut completion_latency = LatencyHistogram::new();
     let started = Instant::now();
-    for (spec, mut ep, meta) in endpoints {
-        for seq in 0..extents_per_lane {
-            let remote_offset = seq.checked_mul(extent_bytes).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA lane offset overflow")
-            })?;
-            let remote_offset = u64::try_from(remote_offset).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA offset overflow")
-            })?;
-            let local_offset = if full_local_window {
-                seq.checked_mul(extent_bytes).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA local offset overflow")
-                })?
-            } else {
-                0
-            };
-            ep.rma_read(
-                &mut payload[local_offset..local_offset + extent_bytes],
-                meta.remote_addr + remote_offset,
-                meta.remote_key,
+    for lane in &mut lanes {
+        lane.post_available(extents_per_lane, extent_bytes, full_local_window)?;
+    }
+    let mut peak_outstanding = lanes.iter().map(|lane| lane.in_flight).sum::<usize>();
+    let mut no_progress_since = Instant::now();
+    while lanes
+        .iter()
+        .any(|lane| lane.completed_extents < extents_per_lane)
+    {
+        let mut progress = 0usize;
+        for lane in &mut lanes {
+            lane.post_available(extents_per_lane, extent_bytes, full_local_window)?;
+            progress += lane.poll(
+                extent_bytes,
+                full_local_window,
+                false,
+                &mut completion_latency,
             )?;
-            payload_bytes += extent_bytes;
-            wire_bytes += extent_bytes;
-            extents += 1;
-            records += records_per_extent;
+            lane.post_available(extents_per_lane, extent_bytes, full_local_window)?;
         }
-        if payload.iter().any(|byte| *byte != 0) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("OFI RMA read verification failed lane={}", spec.lane),
-            ));
+        peak_outstanding =
+            peak_outstanding.max(lanes.iter().map(|lane| lane.in_flight).sum::<usize>());
+        if progress != 0 {
+            no_progress_since = Instant::now();
+            continue;
         }
+        if let Some(lane) = lanes.iter_mut().find(|lane| lane.in_flight != 0) {
+            let completed = lane.poll(
+                extent_bytes,
+                full_local_window,
+                true,
+                &mut completion_latency,
+            )?;
+            lane.post_available(extents_per_lane, extent_bytes, full_local_window)?;
+            if completed != 0 {
+                no_progress_since = Instant::now();
+            }
+        } else {
+            if no_progress_since.elapsed()
+                >= Duration::from_millis(u64::try_from(zcofi_timeout_ms()).unwrap_or(30_000))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "OFI RMA raw queue could not post work before timeout",
+                ));
+            }
+            thread::yield_now();
+        }
+        peak_outstanding =
+            peak_outstanding.max(lanes.iter().map(|lane| lane.in_flight).sum::<usize>());
+    }
+
+    for lane in &mut lanes {
         let done = ZcOfiRmaDone {
-            lane_id: u32::try_from(spec.lane).map_err(|_| {
+            lane_id: u32::try_from(lane.spec.lane).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA lane id overflow")
             })?,
             lane_count: u32::try_from(lane_count).map_err(|_| {
@@ -12036,39 +12503,48 @@ fn zcofi_rma_read_worker(
             })?,
             status: 0,
         };
-        ep.send(&done.encode())?;
-        wire_bytes += ZCOFI_RMA_CONTROL_LEN;
-        acks += 1;
+        lane.endpoint.send(&done.encode())?;
     }
 
     let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
     let end_cpu = current_cpu();
     let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
-    Ok(ZcWalExtentStats {
-        worker,
-        streams: stream_count,
-        payload_bytes,
-        wire_bytes,
-        extents,
-        records,
-        acks,
-        wall: started.elapsed(),
-        cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
-        target_cpu: affinity.target_cpu,
-        affinity_applied: affinity.applied,
-        start_cpu,
-        end_cpu,
-        voluntary_switches: end_switches
-            .voluntary
-            .saturating_sub(start_switches.voluntary),
-        involuntary_switches: end_switches
-            .involuntary
-            .saturating_sub(start_switches.involuntary),
-        migrations: end_switches
-            .migrations
-            .saturating_sub(start_switches.migrations),
-        ack_latency: LatencyHistogram::new(),
-        uring_recv: UringRecvStats::default(),
+    Ok(ZcOfiRmaReadWorkerStats {
+        base: ZcWalExtentStats {
+            worker,
+            streams: stream_count,
+            payload_bytes: stream_count.saturating_mul(bytes_per_lane),
+            wire_bytes: stream_count
+                .saturating_mul(bytes_per_lane.saturating_add(ZCOFI_RMA_CONTROL_LEN)),
+            extents: stream_count.saturating_mul(extents_per_lane),
+            records: stream_count
+                .saturating_mul(extents_per_lane)
+                .saturating_mul(records_per_extent),
+            acks: stream_count,
+            wall: started.elapsed(),
+            cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
+            target_cpu: affinity.target_cpu,
+            affinity_applied: affinity.applied,
+            start_cpu,
+            end_cpu,
+            voluntary_switches: end_switches
+                .voluntary
+                .saturating_sub(start_switches.voluntary),
+            involuntary_switches: end_switches
+                .involuntary
+                .saturating_sub(start_switches.involuntary),
+            migrations: end_switches
+                .migrations
+                .saturating_sub(start_switches.migrations),
+            ack_latency: LatencyHistogram::new(),
+            uring_recv: UringRecvStats::default(),
+        },
+        cq_poll_calls: lanes.iter().map(|lane| lane.cq_poll_calls).sum(),
+        cq_batches: lanes.iter().map(|lane| lane.cq_batches).sum(),
+        cq_completions: lanes.iter().map(|lane| lane.cq_completions).sum(),
+        post_eagain: lanes.iter().map(|lane| lane.post_eagain).sum(),
+        peak_outstanding,
+        completion_latency,
     })
 }
 
@@ -12247,25 +12723,75 @@ fn zcofi_rma_read(
     let specs = zcofi_wal_lane_specs(base_service, lanes)?;
     let workers = tcp_bench_auto_workers(workers, lanes);
     let full_local_window = env_enabled_or("URING_PLAY_OFI_RMA_READ_FULL_LOCAL_WINDOW", false);
+    let queue_depth = match env::var("URING_PLAY_OFI_RMA_READ_QD") {
+        Ok(value) => value.parse::<usize>().map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid URING_PLAY_OFI_RMA_READ_QD={value:?}: {error}"),
+            )
+        })?,
+        Err(env::VarError::NotPresent) => 1,
+        Err(error) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("could not read URING_PLAY_OFI_RMA_READ_QD: {error}"),
+            ));
+        }
+    };
+    if !(1..=1024).contains(&queue_depth) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("URING_PLAY_OFI_RMA_READ_QD must be in 1..=1024, got {queue_depth}"),
+        ));
+    }
+    let aggregate_outstanding_depth = lanes.checked_mul(queue_depth).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA aggregate QD overflow")
+    })?;
+    let shards = zcofi_wal_partition_specs(specs, workers);
+    let worker_lane_map = shards
+        .iter()
+        .enumerate()
+        .filter(|(_, shard)| !shard.is_empty())
+        .map(|(worker, shard)| {
+            format!(
+                "w{worker}:[{}]",
+                shard
+                    .iter()
+                    .map(|spec| spec.lane.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";");
+    let worker_outstanding = shards
+        .iter()
+        .filter(|shard| !shard.is_empty())
+        .map(|shard| shard.len().saturating_mul(queue_depth))
+        .collect::<Vec<_>>();
+    let per_worker_qd_min = worker_outstanding.iter().copied().min().unwrap_or(0);
+    let per_worker_qd_max = worker_outstanding.iter().copied().max().unwrap_or(0);
     zcwal_extent_perf_warnings("zcofi-rma-read", lanes, 1, workers)?;
     println!(
         "zcofi-rma-read: provider={provider} endpoint={endpoint} addr={addr} \
          base_service={base_service} lanes={lanes} workers={workers} \
-         per_worker_qd=1 aggregate_outstanding_depth={workers} \
+         per_lane_qd={queue_depth} per_worker_qd_min={per_worker_qd_min} \
+         per_worker_qd_max={per_worker_qd_max} aggregate_outstanding_depth={aggregate_outstanding_depth} \
+         lane_to_worker_mapping={worker_lane_map} \
          bytes_per_lane={bytes_per_lane} extent_bytes={extent_bytes} \
          direct_rma_read=yes completion=initiator-local-cq-data-visible \
-         local_registration_scope={} local_registered_bytes_per_worker={} \
+         local_registration_scope={} local_registered_bytes_per_lane={} \
          target_payload_pattern=fill:0x00 records_per_extent={} \
          timeout_ms={} busy_poll_iters={} cq_sleep_ns={} ofi_domain={} ofi_fabric={}",
         if full_local_window {
             "full-window-changing-offset"
         } else {
-            "fixed-extent-reused"
+            "fixed-buffer-per-outstanding-operation"
         },
         if full_local_window {
             bytes_per_lane
         } else {
-            extent_bytes
+            queue_depth.saturating_mul(extent_bytes)
         },
         extent_bytes / ZC_WAL_RECORD_SIZE,
         zcofi_timeout_ms(),
@@ -12274,7 +12800,6 @@ fn zcofi_rma_read(
         env::var("URING_PLAY_OFI_DOMAIN").unwrap_or_else(|_| "auto".to_string()),
         env::var("URING_PLAY_OFI_EFA_FABRIC").unwrap_or_else(|_| "auto".to_string()),
     );
-    let shards = zcofi_wal_partition_specs(specs, workers);
     let provider = Arc::new(provider.to_string());
     let endpoint = Arc::new(endpoint.to_string());
     let addr = Arc::new(addr.to_string());
@@ -12296,34 +12821,52 @@ fn zcofi_rma_read(
                 lanes,
                 bytes_per_lane,
                 extent_bytes,
+                queue_depth,
                 full_local_window,
             )
         }));
     }
     let mut results = Vec::with_capacity(handles.len());
+    let mut completion_latency = LatencyHistogram::new();
+    let mut cq_poll_calls = 0u64;
+    let mut cq_batches = 0u64;
+    let mut cq_completions = 0u64;
+    let mut post_eagain = 0u64;
+    let mut measured_peak_outstanding = 0usize;
     for handle in handles {
         let stats = handle
             .join()
             .map_err(|_| io::Error::other("zcofi RMA read worker panicked"))??;
-        zcwal_extent_print_worker("zcofi-rma-read", &stats);
-        results.push(stats);
+        zcwal_extent_print_worker("zcofi-rma-read", &stats.base);
+        println!(
+            "zcofi-rma-read-worker-cq: worker={} streams={} peak_outstanding={} cq_poll_calls={} cq_batches={} cq_completions={} avg_cq_completions_per_batch={:.2} post_eagain={} {}",
+            stats.base.worker,
+            stats.base.streams,
+            stats.peak_outstanding,
+            stats.cq_poll_calls,
+            stats.cq_batches,
+            stats.cq_completions,
+            stats.cq_completions as f64 / stats.cq_batches.max(1) as f64,
+            stats.post_eagain,
+            zcwal_extent_latency_fields("local_cq_completion", &stats.completion_latency),
+        );
+        completion_latency.merge(&stats.completion_latency);
+        cq_poll_calls = cq_poll_calls.saturating_add(stats.cq_poll_calls);
+        cq_batches = cq_batches.saturating_add(stats.cq_batches);
+        cq_completions = cq_completions.saturating_add(stats.cq_completions);
+        post_eagain = post_eagain.saturating_add(stats.post_eagain);
+        measured_peak_outstanding =
+            measured_peak_outstanding.saturating_add(stats.peak_outstanding);
+        results.push(stats.base);
     }
-    let total_operation_seconds = results
-        .iter()
-        .map(|stats| stats.wall.as_secs_f64())
-        .sum::<f64>();
     let total = zcwal_extent_sum(&results);
     let secs = total.wall.as_secs_f64().max(f64::MIN_POSITIVE);
     let operation_iops = total.extents as f64 / secs;
-    let average_local_cq_completion_us = if total.extents == 0 {
-        0.0
-    } else {
-        total_operation_seconds * 1_000_000.0 / total.extents as f64
-    };
+    let average_local_cq_completion_us = completion_latency.avg_ns() as f64 / 1_000.0;
     let matching_theoretical_iops = if average_local_cq_completion_us == 0.0 {
         0.0
     } else {
-        workers as f64 * 1_000_000.0 / average_local_cq_completion_us
+        aggregate_outstanding_depth as f64 * 1_000_000.0 / average_local_cq_completion_us
     };
     let efficiency_pct = if matching_theoretical_iops == 0.0 {
         0.0
@@ -12331,7 +12874,7 @@ fn zcofi_rma_read(
         operation_iops * 100.0 / matching_theoretical_iops
     };
     println!(
-        "zcofi-rma-read-summary: payload_bytes={} wire_bytes={} extents={} logical_records={} doorbells={} seconds={secs:.6} payload_Gbitps={:.3} operation_iops={operation_iops:.0} avg_local_cq_completion_us={average_local_cq_completion_us:.3} matching_theoretical_iops={matching_theoretical_iops:.0} actual_theoretical_efficiency_pct={efficiency_pct:.2} completion=initiator-local-cq-data-visible per_worker_qd=1 workers={workers} lanes={lanes} aggregate_outstanding_depth={workers} local_registration_scope={} local_registered_bytes_per_worker={} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
+        "zcofi-rma-read-summary: payload_bytes={} wire_bytes={} extents={} logical_records={} doorbells={} seconds={secs:.6} payload_Gbitps={:.3} operation_iops={operation_iops:.0} measured_raw_transport_rtt_us={average_local_cq_completion_us:.3} raw_rtt_semantics=rma-read-post-to-initiator-local-cq-data-visible matching_theoretical_iops={matching_theoretical_iops:.0} actual_theoretical_efficiency_pct={efficiency_pct:.2} completion=initiator-local-cq-data-visible per_lane_qd={queue_depth} per_worker_qd_min={per_worker_qd_min} per_worker_qd_max={per_worker_qd_max} workers={workers} lanes={lanes} aggregate_outstanding_depth={aggregate_outstanding_depth} measured_peak_outstanding={measured_peak_outstanding} local_registration_scope={} local_registered_bytes_per_lane={} cq_poll_calls={cq_poll_calls} cq_batches={cq_batches} cq_completions={cq_completions} avg_cq_completions_per_batch={:.2} post_eagain={post_eagain} {} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
         total.payload_bytes,
         total.wire_bytes,
         total.extents,
@@ -12341,13 +12884,15 @@ fn zcofi_rma_read(
         if full_local_window {
             "full-window-changing-offset"
         } else {
-            "fixed-extent-reused"
+            "fixed-buffer-per-outstanding-operation"
         },
         if full_local_window {
             bytes_per_lane
         } else {
-            extent_bytes
+            queue_depth.saturating_mul(extent_bytes)
         },
+        cq_completions as f64 / cq_batches.max(1) as f64,
+        zcwal_extent_latency_fields("local_cq_completion", &completion_latency),
         total.voluntary_switches,
         total.involuntary_switches,
         total.migrations

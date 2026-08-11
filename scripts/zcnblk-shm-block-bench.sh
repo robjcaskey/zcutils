@@ -108,6 +108,7 @@ WAL_OFI_MESSAGE_BYTES="${URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES:-1048576}"
 WAL_OFI_HUGETLB_CONFIRMED="${URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED:-0}"
 EFA_USE_DEVICE_RDMA="${FI_EFA_USE_DEVICE_RDMA:-0}"
 SHM_OFI_RMA_READS="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS:-0}"
+SHM_OFI_RMA_READ_QD="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD:-1}"
 LEAF_OFI_RMA_READS="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS:-$SHM_OFI_RMA_READS}"
 LEAF_SPIN_READS="${URING_PLAY_ZCNBLK_WAL_LEAF_SPIN_READS:-0}"
 if [ -n "${URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN+x}" ]; then
@@ -516,6 +517,22 @@ fi
 	die "WAL owner max tx iovecs must be in 1..=1022"
 [[ "$WAL_LANE_WINDOW" =~ ^[0-9]+$ ]] && [ "$WAL_LANE_WINDOW" -gt 0 ] || \
 	die "WAL lane window must be a positive integer"
+[[ "$SHM_OFI_RMA_READ_QD" =~ ^[0-9]+$ ]] && [ "$SHM_OFI_RMA_READ_QD" -gt 0 ] && \
+	[ "$SHM_OFI_RMA_READ_QD" -le 1024 ] || \
+	die "URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD must be in 1..=1024"
+if [ "$SHM_OFI_RMA_READS" = 1 ]; then
+	[ "$REMOTE_TRANSPORT" = ofi ] || [ "$REMOTE_TRANSPORT" = rdm ] || [ "$REMOTE_TRANSPORT" = efa ] || \
+		die "OFI RMA reads require URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT=ofi"
+	if [ "$WAL_OWNER_INGRESS" = 1 ]; then
+		printf 'PERF WARNING: stable-owner ingress does not use the lane-local OFI RMA read queue\n' >&2
+		[ "$REPRESENTATIVE" != 1 ] || die "representative OFI RMA read runs require WAL owner ingress disabled"
+	fi
+	if [ "$WAL_LANE_WINDOW" -lt "$SHM_OFI_RMA_READ_QD" ]; then
+		printf 'PERF WARNING: wal_lane_window=%s is below rma_read_qd=%s and caps lane overlap\n' \
+			"$WAL_LANE_WINDOW" "$SHM_OFI_RMA_READ_QD" >&2
+		[ "$REPRESENTATIVE" != 1 ] || die "representative OFI RMA runs require wal_lane_window >= rma_read_qd"
+	fi
+fi
 if [ "$START_LOCAL_LEAF" = 1 ] && [ "$LEAF_SPIN_READS" != 1 ] && [ "$LEAF_ADAPTIVE_SPIN" != 1 ]; then
 	printf 'PERF WARNING: WAL leaf receive spinning is disabled; blocking once or more per network batch adds avoidable context switches. Enable URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN=1 for high-IOPS controls\n' >&2
 	[ "$REPRESENTATIVE" != 1 ] || die "representative local WAL leaf runs require adaptive or fixed receive spinning"
@@ -818,6 +835,8 @@ fi
 	printf 'coordination_scope=%s\n' "$COORDINATION_SCOPE"
 	printf 'bootstrap_manifest=%s\n' "$BOOTSTRAP_MANIFEST"
 	printf 'lane_count=%s\n' "$LANES"
+	printf 'block_per_worker_qd=%s block_workers=%s block_aggregate_outstanding_depth=%s\n' \
+		"$IODEPTH" "$LANES" "$((LANES * IODEPTH))"
 	printf 'topology_cpu_list=%s\n' "${TOPOLOGY_CPU_LIST:-unrestricted}"
 	printf 'coordinator_cpu=%s\n' "$coordinator_cpu"
 	for ((lane = 0; lane < LANES; lane++)); do
@@ -917,11 +936,12 @@ fi
 	printf 'remote_send_mode=%s remote_send_ring_entries=%s remote_send_zc_required=%s allow_unsafe_send_zc=%s\n' \
 		"$REMOTE_SEND_MODE" "$REMOTE_SEND_RING_ENTRIES" "$REMOTE_SEND_ZC_REQUIRED" \
 		"$ALLOW_UNSAFE_SEND_ZC"
-	printf 'remote_transport=%s remote_ofi_provider=%s remote_ofi_endpoint=%s ofi_domain=%s ofi_cq_sleep_ns=%s wal_ofi_message_bytes=%s wal_ofi_hugetlb_confirmed=%s efa_use_device_rdma=%s shm_ofi_rma_reads=%s leaf_ofi_rma_reads=%s\n' \
+	printf 'remote_transport=%s remote_ofi_provider=%s remote_ofi_endpoint=%s ofi_domain=%s ofi_cq_sleep_ns=%s wal_ofi_message_bytes=%s wal_ofi_hugetlb_confirmed=%s efa_use_device_rdma=%s shm_ofi_rma_reads=%s shm_ofi_rma_read_qd=%s rma_aggregate_outstanding_depth=%s leaf_ofi_rma_reads=%s\n' \
 		"$REMOTE_TRANSPORT" "$REMOTE_OFI_PROVIDER" "$REMOTE_OFI_ENDPOINT" \
 		"${OFI_DOMAIN:-auto}" "$OFI_CQ_SLEEP_NS" "$WAL_OFI_MESSAGE_BYTES" \
 		"$WAL_OFI_HUGETLB_CONFIRMED" "$EFA_USE_DEVICE_RDMA" \
-		"$SHM_OFI_RMA_READS" "$LEAF_OFI_RMA_READS"
+		"$SHM_OFI_RMA_READS" "$SHM_OFI_RMA_READ_QD" "$((LANES * SHM_OFI_RMA_READ_QD))" \
+		"$LEAF_OFI_RMA_READS"
 	printf 'order_smoke_pairs=%s\n' "$ORDER_SMOKE_PAIRS"
 	printf 'shm_payload_slot_bytes=%s\n' "$MAX_FRAME_BYTES"
 	printf 'shm_lease_release_batch=%s\n' "$LEASE_RELEASE_BATCH"
@@ -1039,6 +1059,7 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
 	URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER="$REMOTE_OFI_PROVIDER" \
 	URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_ENDPOINT="$REMOTE_OFI_ENDPOINT" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS="$SHM_OFI_RMA_READS" \
+	URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD="$SHM_OFI_RMA_READ_QD" \
 	URING_PLAY_OFI_DOMAIN="$OFI_DOMAIN" \
 	URING_PLAY_OFI_CQ_SLEEP_NS="$OFI_CQ_SLEEP_NS" \
 	URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$WAL_OFI_MESSAGE_BYTES" \
@@ -1268,6 +1289,7 @@ awk '
   }
 ' "$OUTDIR/results.log" | tee "$OUTDIR/summary.log"
 grep 'zcnblk-shm-target-summary:' "$OUTDIR/target.log" | tee -a "$OUTDIR/summary.log"
+grep 'zcnblk-shm-target-ofi-rma-queue:' "$OUTDIR/target.log" | tee -a "$OUTDIR/summary.log" || true
 target_summary="$(grep 'zcnblk-shm-target-summary:' "$OUTDIR/target.log" | tail -n 1)"
 if [ "$ORDER_SMOKE_PAIRS" -gt 0 ]; then
 	grep -Eq 'syncs=[1-9][0-9]*' <<<"$target_summary" || \
