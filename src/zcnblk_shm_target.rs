@@ -725,6 +725,26 @@ struct RemoteWalRmaWriteQueue {
     cq_batches: u64,
     cq_completions: u64,
     post_eagain: u64,
+    completed_batches: u64,
+    completed_operations: u64,
+    multi_run_batches: u64,
+    concurrently_posted_batches: u64,
+    batches_exceeding_depth: u64,
+    post_rounds: u64,
+    max_batch_operations: usize,
+    depth_barriers: u64,
+    overlap_barriers: u64,
+}
+
+fn remote_wal_rma_write_overlaps_active(
+    active: &[Option<RemoteWalRmaActiveWrite>],
+    run: RemoteWalRmaWriteRun,
+) -> bool {
+    let remote_end = run.remote_offset + run.len as u64;
+    active
+        .iter()
+        .flatten()
+        .any(|active| run.remote_offset < active.remote_end && active.remote_offset < remote_end)
 }
 
 fn validate_remote_wal_rma_write_runs(
@@ -1109,6 +1129,15 @@ impl RemoteWalRmaWriteQueue {
             cq_batches: 0,
             cq_completions: 0,
             post_eagain: 0,
+            completed_batches: 0,
+            completed_operations: 0,
+            multi_run_batches: 0,
+            concurrently_posted_batches: 0,
+            batches_exceeding_depth: 0,
+            post_rounds: 0,
+            max_batch_operations: 0,
+            depth_barriers: 0,
+            overlap_barriers: 0,
         })
     }
 
@@ -1143,24 +1172,26 @@ impl RemoteWalRmaWriteQueue {
         let started = Instant::now();
         let mut next_run = 0usize;
         let mut in_flight = 0usize;
+        let mut batch_peak_in_flight = 0usize;
+        let mut batch_post_rounds = 0u64;
         while next_run < runs.len() || in_flight != 0 {
             let mut posted = 0usize;
             while next_run < runs.len() {
                 let run = runs[next_run];
                 let source = mapping.slice(run.source_offset, run.len)?;
-                let remote_end = run.remote_offset + run.len as u64;
                 // A delivery CQE is an ordering barrier for overlapping ranges.
                 // Preserve input order while still allowing disjoint payload runs
                 // to occupy the configured RMA queue concurrently.
-                if self.active.iter().flatten().any(|active| {
-                    run.remote_offset < active.remote_end && active.remote_offset < remote_end
-                }) {
+                if remote_wal_rma_write_overlaps_active(&self.active, run) {
+                    self.overlap_barriers = self.overlap_barriers.saturating_add(1);
                     break;
                 }
                 let Some(slot) = self.free_slots.pop() else {
+                    self.depth_barriers = self.depth_barriers.saturating_add(1);
                     break;
                 };
                 let remote_addr = window.addr + run.remote_offset;
+                let remote_end = run.remote_offset + run.len as u64;
                 let token = self.next_token;
                 self.next_token = self.next_token.wrapping_add(1).max(1);
                 let accepted = unsafe {
@@ -1185,8 +1216,12 @@ impl RemoteWalRmaWriteQueue {
                 });
                 in_flight += 1;
                 self.peak_in_flight = self.peak_in_flight.max(in_flight);
+                batch_peak_in_flight = batch_peak_in_flight.max(in_flight);
                 next_run += 1;
                 posted += 1;
+            }
+            if posted != 0 {
+                batch_post_rounds = batch_post_rounds.saturating_add(1);
             }
             if in_flight == 0 {
                 if started.elapsed() >= timeout {
@@ -1247,6 +1282,19 @@ impl RemoteWalRmaWriteQueue {
                 ));
             }
         }
+        self.completed_batches = self.completed_batches.saturating_add(1);
+        self.completed_operations = self.completed_operations.saturating_add(runs.len() as u64);
+        self.multi_run_batches = self
+            .multi_run_batches
+            .saturating_add(u64::from(runs.len() > 1));
+        self.concurrently_posted_batches = self
+            .concurrently_posted_batches
+            .saturating_add(u64::from(batch_peak_in_flight > 1));
+        self.batches_exceeding_depth = self
+            .batches_exceeding_depth
+            .saturating_add(u64::from(runs.len() > self.depth));
+        self.post_rounds = self.post_rounds.saturating_add(batch_post_rounds);
+        self.max_batch_operations = self.max_batch_operations.max(runs.len());
         Ok(())
     }
 }
@@ -2202,7 +2250,7 @@ impl RemoteWalLeaf {
         if let Some(queue) = rma_write_queue.as_mut() {
             stream.configure_rma_write_queue(queue.depth)?;
             eprintln!(
-                "zcnblk-shm-target-ofi-rma-write-queue: lane={lane_id} per_lane_qd={} source_registration=deferred-whole-shared-mapping completion=delivery-complete-before-doorbell pipeline=one-unacknowledged-doorbell-per-lane",
+                "zcnblk-shm-target-ofi-rma-write-queue: lane={lane_id} per_lane_qd={} qd_scope=payload-operations block_qd_coupled=no source_registration=deferred-whole-shared-mapping completion=delivery-complete-before-doorbell pipeline=one-unacknowledged-doorbell-per-lane",
                 queue.depth,
             );
         }
@@ -2435,14 +2483,23 @@ impl RemoteWalLeaf {
             return;
         };
         eprintln!(
-            "zcnblk-shm-target-ofi-rma-write-summary: lane={} per_lane_qd={} batches={} operations={} bytes={} seconds={:.6} avg_operation_us={:.3} peak_in_flight={} final_active={} cq_poll_calls={} cq_batches={} cq_completions={} avg_cq_completions_per_batch={:.2} post_eagain={} source=registered-shared-slot-lease destination=remote-leaf-memory-window local_completion=delivery-complete remote_completion=doorbell-result-hwm sync_fua=leaf-after-doorbell",
+            "zcnblk-shm-target-ofi-rma-write-summary: lane={} per_lane_qd={} qd_scope=payload-operations block_qd_coupled=no batches={} operations={} bytes={} seconds={:.6} avg_batch_us={:.3} batch_elapsed_div_operations_us={:.3} avg_operations_per_batch={:.2} multi_run_batches={} concurrently_posted_batches={} batches_exceeding_qd={} avg_post_rounds_per_batch={:.2} max_batch_operations={} depth_barriers={} overlap_barriers={} peak_in_flight={} final_active={} cq_poll_calls={} cq_batches={} cq_completions={} avg_cq_completions_per_batch={:.2} post_eagain={} source=registered-shared-slot-lease destination=remote-leaf-memory-window local_completion=delivery-complete remote_completion=doorbell-result-hwm sync_fua=leaf-after-doorbell",
             self.lane_id,
             queue.depth,
             self.rma_write_batches,
             self.rma_write_calls,
             self.rma_write_bytes,
             self.rma_write_time.as_secs_f64(),
+            self.rma_write_time.as_secs_f64() * 1_000_000.0 / self.rma_write_batches.max(1) as f64,
             self.rma_write_time.as_secs_f64() * 1_000_000.0 / self.rma_write_calls.max(1) as f64,
+            queue.completed_operations as f64 / queue.completed_batches.max(1) as f64,
+            queue.multi_run_batches,
+            queue.concurrently_posted_batches,
+            queue.batches_exceeding_depth,
+            queue.post_rounds as f64 / queue.completed_batches.max(1) as f64,
+            queue.max_batch_operations,
+            queue.depth_barriers,
+            queue.overlap_barriers,
             queue.peak_in_flight,
             queue.active.iter().filter(|entry| entry.is_some()).count(),
             queue.cq_polls,
@@ -11575,6 +11632,44 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn rma_write_overlap_barrier_allows_disjoint_payload_operations() {
+        let active = vec![
+            Some(RemoteWalRmaActiveWrite {
+                token: 1,
+                remote_offset: 4096,
+                remote_end: 8192,
+            }),
+            Some(RemoteWalRmaActiveWrite {
+                token: 2,
+                remote_offset: 16_384,
+                remote_end: 20_480,
+            }),
+        ];
+        let run = |remote_offset, len| RemoteWalRmaWriteRun {
+            source_offset: 0,
+            remote_offset,
+            len,
+        };
+
+        assert!(remote_wal_rma_write_overlaps_active(
+            &active,
+            run(6144, 4096)
+        ));
+        assert!(remote_wal_rma_write_overlaps_active(
+            &active,
+            run(12_288, 8192)
+        ));
+        assert!(!remote_wal_rma_write_overlaps_active(
+            &active,
+            run(8192, 4096)
+        ));
+        assert!(!remote_wal_rma_write_overlaps_active(
+            &active,
+            run(20_480, 4096)
+        ));
     }
 
     impl ZcnblkFanWalSharedLeaseSource for TestSharedLease {

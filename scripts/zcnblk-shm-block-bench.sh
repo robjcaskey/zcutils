@@ -114,7 +114,23 @@ SHM_OFI_RMA_READ_QD="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD:-1}"
 LEAF_OFI_RMA_READS="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS:-$SHM_OFI_RMA_READS}"
 SHM_OFI_RMA_WRITES="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES:-0}"
 SHM_OFI_RMA_WRITES_REQUIRED="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED:-$SHM_OFI_RMA_WRITES}"
-SHM_OFI_RMA_WRITE_QD="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD:-${URING_PLAY_OFI_RMA_WRITE_QD:-1}}"
+if [ -n "${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD+x}" ]; then
+	SHM_OFI_RMA_WRITE_QD="$URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD"
+	SHM_OFI_RMA_WRITE_QD_SOURCE=explicit-wal-payload
+elif [ -n "${URING_PLAY_OFI_RMA_WRITE_QD+x}" ]; then
+	SHM_OFI_RMA_WRITE_QD="$URING_PLAY_OFI_RMA_WRITE_QD"
+	SHM_OFI_RMA_WRITE_QD_SOURCE=generic-ofi-compat
+elif [ "$SHM_OFI_RMA_WRITES" = 1 ]; then
+	# This is a transport-operation window, not the block workload's per-worker
+	# QD. Random writes commonly produce several disjoint final-memory runs in
+	# one userspace batch even when the block edge has aggregate QD1.
+	SHM_OFI_RMA_WRITE_QD=16
+	SHM_OFI_RMA_WRITE_QD_SOURCE=independent-fast-path-default
+else
+	SHM_OFI_RMA_WRITE_QD=1
+	SHM_OFI_RMA_WRITE_QD_SOURCE=inactive-default
+fi
+SHM_OFI_RMA_WRITE_MIN_QD="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_MIN_QD:-16}"
 LEAF_OFI_RMA_WRITES="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES:-$SHM_OFI_RMA_WRITES}"
 OFI_ENDPOINT_RMA_READ_QD="$([ "$SHM_OFI_RMA_READS" = 1 ] && printf '%s' "$SHM_OFI_RMA_READ_QD" || printf 1)"
 OFI_ENDPOINT_RMA_WRITE_QD="$([ "$SHM_OFI_RMA_WRITES" = 1 ] && printf '%s' "$SHM_OFI_RMA_WRITE_QD" || printf 1)"
@@ -591,6 +607,9 @@ fi
 [[ "$SHM_OFI_RMA_WRITE_QD" =~ ^[0-9]+$ ]] && [ "$SHM_OFI_RMA_WRITE_QD" -gt 0 ] && \
 	[ "$SHM_OFI_RMA_WRITE_QD" -le 1024 ] || \
 	die "URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD must be in 1..=1024"
+[[ "$SHM_OFI_RMA_WRITE_MIN_QD" =~ ^[0-9]+$ ]] && [ "$SHM_OFI_RMA_WRITE_MIN_QD" -gt 0 ] && \
+	[ "$SHM_OFI_RMA_WRITE_MIN_QD" -le 1024 ] || \
+	die "URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_MIN_QD must be in 1..=1024"
 if [ "$SHM_OFI_RMA_WRITES" = 1 ]; then
 	[ "$REMOTE_TRANSPORT" = ofi ] || [ "$REMOTE_TRANSPORT" = rdm ] || [ "$REMOTE_TRANSPORT" = efa ] || \
 		die "OFI RMA writes require URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT=ofi"
@@ -599,6 +618,14 @@ if [ "$SHM_OFI_RMA_WRITES" = 1 ]; then
 		die "OFI RMA writes require URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES=1"
 	[ "$OFI_RMA_WRITE_DELIVERY_COMPLETE" = 1 ] || \
 		die "OFI RMA writes require URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1"
+	if [ "$SHM_OFI_RMA_WRITE_QD" -lt "$SHM_OFI_RMA_WRITE_MIN_QD" ]; then
+		printf 'PERF WARNING: rma_write_qd=%s is below the delivery-complete payload-operation floor=%s; random records in one userspace batch will require serial RMA completion waves even when block per-worker QD is one\n' \
+			"$SHM_OFI_RMA_WRITE_QD" "$SHM_OFI_RMA_WRITE_MIN_QD" >&2
+		if [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
+			[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; then
+			die "representative/strict RMA write runs require rma_write_qd >= $SHM_OFI_RMA_WRITE_MIN_QD"
+		fi
+	fi
 	if [ "$OFI_RMA_SOURCE_HUGETLB_CONFIRMED" != 1 ]; then
 		printf 'PERF WARNING: the registered RMA source is the vmalloc_user/remap_vmalloc_range shared arena, not an explicit HugeTLB mapping; this run cannot be classified as a HugeTLB-backed RMA source path\n' >&2
 		if [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
@@ -1051,6 +1078,8 @@ fi
 		"$LEAF_OFI_RMA_WRITES" "$OFI_RMA_WRITE_DELIVERY_COMPLETE"
 	printf 'rma_write_completion=delivery-cq-before-doorbell-result-hwm rma_write_pipeline_batches=%s rma_write_overlap_order=delivery-barrier end_to_end_zero_copy=no\n' \
 		"$WAL_OWNER_PIPELINE_BATCHES"
+	printf 'rma_write_qd_source=%s rma_write_representative_min_qd=%s rma_write_qd_scope=per-owner-payload-operations block_qd_coupled=no\n' \
+		"$SHM_OFI_RMA_WRITE_QD_SOURCE" "$SHM_OFI_RMA_WRITE_MIN_QD"
 	printf 'rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=%s\n' \
 		"$OFI_RMA_SOURCE_HUGETLB_CONFIRMED"
 	printf 'order_smoke_pairs=%s\n' "$ORDER_SMOKE_PAIRS"

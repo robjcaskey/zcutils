@@ -124,7 +124,12 @@ This mode has stricter ordering rules than framed payloads:
   expose a second direct-to-final-memory batch until the first doorbell result
   retires. Disjoint runs inside one batch may use
   `URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD`; overlapping runs are separated by a
-  delivery-completion barrier so input order is preserved.
+  delivery-completion barrier so input order is preserved. This queue depth is
+  independent of block per-worker QD: the block harness defaults it to 16 even
+  for an aggregate-QD1 workload because one userspace batch can contain several
+  random destination runs. Strict/representative harness runs reject values
+  below `URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_MIN_QD` (16 by default); lower the
+  floor explicitly only for diagnostic serialization A/B runs.
 - `URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1` is the default and is required
   by the WAL path. The shim posts `FI_DELIVERY_COMPLETE`; only after every CQE
   is reaped may it send the doorbell. The leaf validates metadata, performs any
