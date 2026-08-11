@@ -35,9 +35,10 @@ lane-inline results of about 1.81M read and 1.89M mixed IOPS. Set
 selection. Set the owner CPUs explicitly with
 `URING_PLAY_ZCNBLK_SHM_OWNER_CPU_LIST`; the
 benchmark harness records client, ingress, kthread, and owner CPU assignments
-per lane. At `IODEPTH >= 128`, the harness also defaults the stable-owner queue
-to the aggregate outstanding depth (`LANES * IODEPTH`) so a temporarily hot
-owner cannot head-block unrelated lanes behind the old 128-entry limit.
+per lane. Whenever aggregate outstanding depth exceeds 128, the harness
+defaults the stable-owner queue to that full depth (`LANES * IODEPTH`) so a
+multi-lane fan-in or temporarily hot owner cannot be capped by the old
+128-entry limit even when each worker's QD is lower than 128.
 
 For a single EFA domain and one terminal memory leaf, set
 `URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_OWNER_MODE=single-domain-fan-in`. The

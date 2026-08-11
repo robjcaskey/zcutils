@@ -245,13 +245,16 @@ WAL_OWNER_FRAGMENT_FILL_US="${URING_PLAY_ZCNBLK_SHM_OWNER_FRAGMENT_FILL_US:-500}
 WAL_OWNER_FOREGROUND_IMMEDIATE_LIMIT="${URING_PLAY_ZCNBLK_SHM_OWNER_FOREGROUND_IMMEDIATE_LIMIT:-1}"
 if [ -n "${URING_PLAY_ZCNBLK_SHM_OWNER_QUEUE_DEPTH+x}" ]; then
 	WAL_OWNER_QUEUE_DEPTH="$URING_PLAY_ZCNBLK_SHM_OWNER_QUEUE_DEPTH"
-elif [ "$WAL_OWNER_INGRESS" = 1 ] && [ "$IODEPTH" -ge 128 ]; then
+	WAL_OWNER_QUEUE_DEPTH_SOURCE=explicit
+elif [ "$WAL_OWNER_INGRESS" = 1 ] && [ $((LANES * IODEPTH)) -gt 128 ]; then
 	# Every ingress lane can feed every stable owner. A 128-entry owner queue
-	# lets a temporarily hot owner head-block otherwise independent lanes at
-	# aggregate depth, so cover the benchmark's full outstanding window.
+	# caps a multi-lane fan-in even when each worker's QD is below 128, so cover
+	# the benchmark's full aggregate outstanding window.
 	WAL_OWNER_QUEUE_DEPTH=$((LANES * IODEPTH))
+	WAL_OWNER_QUEUE_DEPTH_SOURCE=aggregate-outstanding-depth
 else
 	WAL_OWNER_QUEUE_DEPTH=128
+	WAL_OWNER_QUEUE_DEPTH_SOURCE=default-128
 fi
 WAL_OWNER_MAX_TX_IOVECS="${URING_PLAY_ZCNBLK_SHM_OWNER_MAX_TX_IOVECS:-960}"
 if [ -n "${URING_PLAY_ZCNBLK_SHM_WAL_LANE_WINDOW+x}" ]; then
@@ -1087,8 +1090,9 @@ fi
 		"$WAL_OWNER_PIPELINE_REFILL_SPINS" "$WAL_OWNER_MIXED_HYSTERESIS_US"
 	printf 'wal_owner_debounce_us=%s wal_owner_backlog_low_records=%s wal_owner_backlog_high_records=%s\n' \
 		"$WAL_OWNER_DEBOUNCE_US" "$WAL_OWNER_BACKLOG_LOW_RECORDS" "$WAL_OWNER_BACKLOG_HIGH_RECORDS"
-	printf 'wal_owner_batch_records=%s wal_owner_fragment_records=%s wal_owner_fragment_fill_us=%s wal_owner_queue_depth=%s\n' \
-		"$WAL_OWNER_BATCH_RECORDS" "$WAL_OWNER_FRAGMENT_RECORDS" "$WAL_OWNER_FRAGMENT_FILL_US" "$WAL_OWNER_QUEUE_DEPTH"
+	printf 'wal_owner_batch_records=%s wal_owner_fragment_records=%s wal_owner_fragment_fill_us=%s wal_owner_queue_depth=%s wal_owner_queue_depth_source=%s\n' \
+		"$WAL_OWNER_BATCH_RECORDS" "$WAL_OWNER_FRAGMENT_RECORDS" "$WAL_OWNER_FRAGMENT_FILL_US" \
+		"$WAL_OWNER_QUEUE_DEPTH" "$WAL_OWNER_QUEUE_DEPTH_SOURCE"
 	printf 'wal_owner_foreground_immediate_limit=%s\n' "$WAL_OWNER_FOREGROUND_IMMEDIATE_LIMIT"
 	printf 'wal_owner_max_tx_iovecs=%s\n' "$WAL_OWNER_MAX_TX_IOVECS"
 	printf 'wal_lane_window=%s\n' "$WAL_LANE_WINDOW"

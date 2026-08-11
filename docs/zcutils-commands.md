@@ -2080,9 +2080,9 @@ only the completion minimum from 1 to 16 raised four-lane random-write
 throughput from 2.07M to 2.72M IOPS and reduced kernel context switches from
 roughly 1.75-2.27 to 0.08-0.11 per 1K I/O. Disabling lane batching or using a
 deep-queue completion minimum below 8 prints a `PERF WARNING`; representative
-runs reject either configuration. For stable-owner controls at
-`IODEPTH >= 128`, the default owner queue depth is the aggregate outstanding
-depth (`LANES * IODEPTH`); an explicit
+runs reject either configuration. For stable-owner controls whose aggregate
+outstanding depth exceeds 128, the default owner queue depth is that aggregate
+(`LANES * IODEPTH`); an explicit
 `URING_PLAY_ZCNBLK_SHM_OWNER_QUEUE_DEPTH` still takes precedence.
 
 The benchmark harness enables the explicit volatile-sync option for its default
