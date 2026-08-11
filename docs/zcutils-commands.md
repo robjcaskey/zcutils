@@ -238,6 +238,13 @@ The main controls are:
   operation rings;
 - `URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1` to require remote-delivery
   CQ semantics for write operations that precede a WAL doorbell;
+- `URING_PLAY_OFI_RMA_WRITE_MORE=1` to mark every non-final write in a
+  software-admitted burst with `FI_MORE`. This is an opt-in doorbell-batching
+  A/B path; each final post omits `FI_MORE`, and CQ/buffer-lifetime semantics
+  are unchanged. `URING_PLAY_OFI_RMA_WRITE_MORE_BURST` (default 64) inserts a
+  non-`FI_MORE` flush at least once per configured number of accepted posts.
+  If provider backpressure rejects the immediate follow-up to an accepted
+  `FI_MORE` post, the next accepted post is forced to be a flush;
 - `URING_PLAY_OFI_CQ_SIZE` for both CQs, or
   `URING_PLAY_OFI_TX_CQ_SIZE`/`URING_PLAY_OFI_RX_CQ_SIZE` separately;
 - `URING_PLAY_OFI_CQ_BATCH` and `URING_PLAY_OFI_CQ_HEADROOM` for CQ progress
@@ -247,6 +254,14 @@ The main controls are:
   selective completion but still requests every completion needed for safe
   slot recycling. Periodic completion suppression is not implemented.
 
+Before `fi_getinfo`, the shim now requests a provider TX work-request capacity
+equal to the sum of the SEND, RMA READ, and RMA WRITE rings, and an RX capacity
+equal to the receive ring. Endpoint profiles print both requested and returned
+capacities. Strict topology mode rejects a provider result below the request.
+This is separate from CQ sizing: mlx5, for example, converts requested WR and
+SGE geometry into power-of-two hardware WQEBB rings, while CQ capacity controls
+how many generated completions can wait to be reaped.
+
 Every control-plane address exchange also exchanges the selected endpoint
 profile and a versioned wire contract. Provider class, endpoint type,
 `efa`/`efa-direct` selection, message shape, ACK window, compact/header mode,
@@ -255,10 +270,21 @@ the timed data phase begins.
 
 The raw RMA window contract initializes the remote arena with a nonzero
 sentinel. Reads verify every returned extent against that sentinel. Queued
-writes send an operation-tagged payload digest in the v3 done record, and the
-target verifies the complete remote arena after the initiator's timed local-CQ
-interval. That post-timing semantic check catches missing or mis-placed writes;
-it is validation evidence, not a remote-admission or durability latency.
+writes send an operation-tagged payload digest in the v4 done exchange, and
+the target verifies the complete remote arena after the initiator's timed
+local-CQ interval. Before metadata or timing, every v4 client synchronously
+sends a 16-byte lane-tagged connection-warmup record and the server receives
+and validates it. This moves RxM/verbs connection establishment out of the
+timed phase and rejects a mismatched lane before MR metadata is consumed. That
+post-timing arena check catches missing or mis-placed writes; it is validation
+evidence, not a remote-admission or durability latency.
+
+For `verbs;ofi_rxm`, set `FI_VERBS_DEVICE_NAME`, `FI_VERBS_IFACE`, and
+`FI_VERBS_GID_IDX` explicitly on both hosts. The control exchange rejects
+different returned fabric identities before the connection warmup. The
+underlying verbs MSG queues (`FI_OFI_RXM_MSG_TX_SIZE` and
+`FI_OFI_RXM_MSG_RX_SIZE`) are distinct from RxM's RDM queues and from the
+zcutils operation rings; record all three layers when tuning ConnectX.
 
 Use provider `efa` for the normal EFA RDM profile. Use provider `efa-direct`
 (or `URING_PLAY_OFI_EFA_FABRIC=efa-direct`) only after `fi_getinfo` returns the
@@ -292,6 +318,10 @@ RMA writes now default to `URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1`, so
 new write matrices label and derive their ceiling from post-to-delivery-CQ
 latency. Set it explicitly to `0` only for a source-reusable local-CQ transport
 control; the WAL RMA payload path rejects that weaker completion semantic.
+`ZCOFI_RMA_MATRIX_SATURATION_QDS=none` is accepted only for an explicitly
+nonrepresentative partial qualification, such as the bounded RXE write smoke;
+a representative matrix still requires read and write QD1/2/4/8/16 plus at
+least one saturation depth of 32 or greater.
 
 In `URING_PLAY_TOPOLOGY_STRICT=1` or `URING_PLAY_TOPOLOGY_FATAL=1`, sleeping
 CQ progress, insufficient rings/CQs, hot MR churn, missing worker/CPU or
@@ -300,6 +330,24 @@ representative summaries. `FI_EFA_IFACE`, `URING_PLAY_OFI_DOMAIN`,
 `URING_PLAY_PIN_CPUS=1`, and `URING_PLAY_PIN_CPU_LIST` are part of that
 contract. See the upstream [`fi_efa(7)` documentation](https://ofiwg.github.io/libfabric/main/man/fi_efa.7.html)
 for the provider-specific options and limits.
+
+For a local semantic rehearsal, run:
+
+```bash
+scripts/zcofi-softroce-local.sh
+```
+
+The wrapper creates a private veth/netns RXE pair, repeats native verbs RC
+ping-pong, records a bounded `verbs;ofi_rxm` runtime probe, and uses
+`verbs;ofi_rxd` only as an explicitly labelled RXE-UD emulated-RMA fallback.
+It fully repeats the stable one- and two-endpoint curves, then runs bounded
+four- and eight-endpoint capability probes. Endpoint/control/warmup/MR setup is
+admitted in lane order outside timing; a failure-aware all-owner gate starts
+traffic only after every client owner is ready and releases waiting workers if
+a later endpoint fails. The wrapper always tears down the named RXE topology.
+Local results are shared-system semantic evidence, never a ConnectX performance
+forecast. See
+`docs/connectx7-ofi-queue-design.md` for the hardware gate and provider split.
 
 ## Command Idiom
 

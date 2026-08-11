@@ -146,6 +146,8 @@ LEAF_OFI_RMA_WRITES="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES:-$SHM_OFI_RMA_W
 OFI_ENDPOINT_RMA_READ_QD="$([ "$SHM_OFI_RMA_READS" = 1 ] && printf '%s' "$SHM_OFI_RMA_READ_QD" || printf 1)"
 OFI_ENDPOINT_RMA_WRITE_QD="$([ "$SHM_OFI_RMA_WRITES" = 1 ] && printf '%s' "$SHM_OFI_RMA_WRITE_QD" || printf 1)"
 OFI_RMA_WRITE_DELIVERY_COMPLETE="${URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE:-1}"
+OFI_RMA_WRITE_MORE="${URING_PLAY_OFI_RMA_WRITE_MORE:-0}"
+OFI_RMA_WRITE_MORE_BURST="${URING_PLAY_OFI_RMA_WRITE_MORE_BURST:-64}"
 OFI_RMA_SOURCE_HUGETLB_CONFIRMED="${URING_PLAY_ZCNBLK_SHM_RMA_SOURCE_HUGETLB_CONFIRMED:-0}"
 OFI_CONTROL_PORT_OFFSET="${URING_PLAY_OFI_CONTROL_PORT_OFFSET:-1000}"
 LEAF_TRANSPORT="${URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT:-$REMOTE_TRANSPORT}"
@@ -650,6 +652,11 @@ fi
 [[ "$SHM_OFI_RMA_WRITE_MIN_QD" =~ ^[0-9]+$ ]] && [ "$SHM_OFI_RMA_WRITE_MIN_QD" -gt 0 ] && \
 	[ "$SHM_OFI_RMA_WRITE_MIN_QD" -le 1024 ] || \
 	die "URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_MIN_QD must be in 1..=1024"
+[[ "$OFI_RMA_WRITE_MORE" =~ ^[01]$ ]] || \
+	die "URING_PLAY_OFI_RMA_WRITE_MORE must be zero or one"
+[[ "$OFI_RMA_WRITE_MORE_BURST" =~ ^[0-9]+$ ]] && \
+	[ "$OFI_RMA_WRITE_MORE_BURST" -ge 1 ] && [ "$OFI_RMA_WRITE_MORE_BURST" -le 65536 ] || \
+	die "URING_PLAY_OFI_RMA_WRITE_MORE_BURST must be in 1..=65536"
 if [ "$SHM_OFI_RMA_WRITES" = 1 ]; then
 	[ "$REMOTE_TRANSPORT" = ofi ] || [ "$REMOTE_TRANSPORT" = rdm ] || [ "$REMOTE_TRANSPORT" = efa ] || \
 		die "OFI RMA writes require URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT=ofi"
@@ -1124,14 +1131,15 @@ fi
 	printf 'remote_send_mode=%s remote_send_ring_entries=%s remote_send_zc_required=%s allow_unsafe_send_zc=%s\n' \
 		"$REMOTE_SEND_MODE" "$REMOTE_SEND_RING_ENTRIES" "$REMOTE_SEND_ZC_REQUIRED" \
 		"$ALLOW_UNSAFE_SEND_ZC"
-	printf 'remote_transport=%s remote_ofi_provider=%s remote_ofi_endpoint=%s ofi_domain=%s ofi_cq_sleep_ns=%s wal_ofi_message_bytes=%s wal_ofi_hugetlb_confirmed=%s efa_use_device_rdma=%s shm_ofi_rma_reads=%s shm_ofi_rma_read_qd=%s rma_read_aggregate_outstanding_depth=%s leaf_ofi_rma_reads=%s shm_ofi_rma_writes=%s shm_ofi_rma_writes_required=%s shm_ofi_rma_write_qd=%s rma_write_aggregate_outstanding_depth=%s leaf_ofi_rma_writes=%s rma_write_delivery_complete=%s\n' \
+	printf 'remote_transport=%s remote_ofi_provider=%s remote_ofi_endpoint=%s ofi_domain=%s ofi_cq_sleep_ns=%s wal_ofi_message_bytes=%s wal_ofi_hugetlb_confirmed=%s efa_use_device_rdma=%s shm_ofi_rma_reads=%s shm_ofi_rma_read_qd=%s rma_read_aggregate_outstanding_depth=%s leaf_ofi_rma_reads=%s shm_ofi_rma_writes=%s shm_ofi_rma_writes_required=%s shm_ofi_rma_write_qd=%s rma_write_aggregate_outstanding_depth=%s leaf_ofi_rma_writes=%s rma_write_delivery_complete=%s rma_write_more=%s rma_write_more_burst=%s\n' \
 		"$REMOTE_TRANSPORT" "$REMOTE_OFI_PROVIDER" "$REMOTE_OFI_ENDPOINT" \
 		"${OFI_DOMAIN:-auto}" "$OFI_CQ_SLEEP_NS" "$WAL_OFI_MESSAGE_BYTES" \
 		"$WAL_OFI_HUGETLB_CONFIRMED" "$EFA_USE_DEVICE_RDMA" \
 		"$SHM_OFI_RMA_READS" "$SHM_OFI_RMA_READ_QD" "$((LANES * SHM_OFI_RMA_READ_QD))" \
 		"$LEAF_OFI_RMA_READS" "$SHM_OFI_RMA_WRITES" "$SHM_OFI_RMA_WRITES_REQUIRED" \
 		"$SHM_OFI_RMA_WRITE_QD" "$((RMA_WRITE_ENDPOINT_COUNT * SHM_OFI_RMA_WRITE_QD))" \
-		"$LEAF_OFI_RMA_WRITES" "$OFI_RMA_WRITE_DELIVERY_COMPLETE"
+		"$LEAF_OFI_RMA_WRITES" "$OFI_RMA_WRITE_DELIVERY_COMPLETE" "$OFI_RMA_WRITE_MORE" \
+		"$OFI_RMA_WRITE_MORE_BURST"
 	printf 'rma_write_completion=delivery-cq-before-doorbell-result-hwm rma_write_pipeline_batches=%s rma_write_overlap_order=delivery-barrier end_to_end_zero_copy=no\n' \
 		"$WAL_OWNER_PIPELINE_BATCHES"
 	printf 'rma_write_qd_source=%s rma_write_representative_min_qd=%s rma_write_qd_scope=per-owner-payload-operations block_qd_coupled=no\n' \
@@ -1210,6 +1218,8 @@ if [ "$START_LOCAL_LEAF" = 1 ]; then
 		URING_PLAY_OFI_RMA_READ_QD="$OFI_ENDPOINT_RMA_READ_QD" \
 		URING_PLAY_OFI_RMA_WRITE_QD="$OFI_ENDPOINT_RMA_WRITE_QD" \
 		URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE="$OFI_RMA_WRITE_DELIVERY_COMPLETE" \
+		URING_PLAY_OFI_RMA_WRITE_MORE="$OFI_RMA_WRITE_MORE" \
+		URING_PLAY_OFI_RMA_WRITE_MORE_BURST="$OFI_RMA_WRITE_MORE_BURST" \
 		URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$WAL_OFI_MESSAGE_BYTES" \
 		URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED="$WAL_OFI_HUGETLB_CONFIRMED" \
 		FI_EFA_USE_DEVICE_RDMA="$EFA_USE_DEVICE_RDMA" \
@@ -1289,6 +1299,8 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
 	URING_PLAY_OFI_RMA_READ_QD="$OFI_ENDPOINT_RMA_READ_QD" \
 	URING_PLAY_OFI_RMA_WRITE_QD="$OFI_ENDPOINT_RMA_WRITE_QD" \
 	URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE="$OFI_RMA_WRITE_DELIVERY_COMPLETE" \
+	URING_PLAY_OFI_RMA_WRITE_MORE="$OFI_RMA_WRITE_MORE" \
+	URING_PLAY_OFI_RMA_WRITE_MORE_BURST="$OFI_RMA_WRITE_MORE_BURST" \
 	URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$WAL_OFI_MESSAGE_BYTES" \
 	URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED="$WAL_OFI_HUGETLB_CONFIRMED" \
 	FI_EFA_USE_DEVICE_RDMA="$EFA_USE_DEVICE_RDMA" \

@@ -138,6 +138,10 @@ struct zc_ofi_endpoint {
     size_t cq_headroom;
     size_t tx_cq_required;
     size_t rx_cq_required;
+    size_t provider_tx_queue_requested;
+    size_t provider_tx_queue_size;
+    size_t provider_rx_queue_requested;
+    size_t provider_rx_queue_size;
     uint32_t requested_api_version;
     uint32_t query_api_version;
     uint32_t returned_api_version;
@@ -156,6 +160,14 @@ struct zc_ofi_endpoint {
     int max_rma_size_query_rc;
     int selective_completion;
     int rma_write_delivery_complete;
+    int rma_write_more_enabled;
+    int rma_write_force_flush;
+    size_t rma_write_more_burst;
+    size_t rma_write_more_streak;
+    uint64_t rma_write_more_posts;
+    uint64_t rma_write_flush_posts;
+    uint64_t rma_write_forced_flush_posts;
+    uint64_t rma_write_more_followup_eagain;
     int fatal_rc;
     int mr_local;
     int mr_virt_addr;
@@ -486,10 +498,12 @@ int zc_ofi_format_profile(struct zc_ofi_endpoint *ep, char *buf,
         "efa_write_high_pps_available=%d "
         "efa_write_high_pps_requested=%d efa_write_high_pps_effective=%d "
         "efa_write_high_pps_verified=%d "
+        "provider_tx_queue_requested=%zu provider_tx_queue_size=%zu "
+        "provider_rx_queue_requested=%zu provider_rx_queue_size=%zu "
         "tx_cq_size=%zu tx_cq_required=%zu "
         "rx_cq_size=%zu rx_cq_required=%zu tx_cq_batch=%zu rx_cq_batch=%zu "
         "cq_headroom=%zu cq_sleep_ns=%ld strict_topology=%d selective_completion=%d "
-        "rma_write_delivery_complete=%d",
+        "rma_write_delivery_complete=%d rma_write_more=%d rma_write_more_burst=%zu",
         provider, fabric, domain, device,
         ep->info->ep_attr ? ep->info->ep_attr->type : FI_EP_UNSPEC,
         FI_MAJOR(ep->requested_api_version), FI_MINOR(ep->requested_api_version),
@@ -507,12 +521,15 @@ int zc_ofi_format_profile(struct zc_ofi_endpoint *ep, char *buf,
         ep->efa_write_high_pps_requested,
         ep->efa_write_high_pps_effective,
         ep->efa_write_high_pps_verified,
+        ep->provider_tx_queue_requested, ep->provider_tx_queue_size,
+        ep->provider_rx_queue_requested, ep->provider_rx_queue_size,
         ep->tx_cq_state.configured_size, ep->tx_cq_required,
         ep->rx_cq_state.configured_size, ep->rx_cq_required,
         ep->tx_cq_state.batch_capacity, ep->rx_cq_state.batch_capacity,
         ep->cq_headroom, ep->cq_sleep_ns,
         ep->strict_topology, ep->selective_completion,
-        ep->rma_write_delivery_complete);
+        ep->rma_write_delivery_complete, ep->rma_write_more_enabled,
+        ep->rma_write_more_burst);
     return zc_ofi_finish_format(ep, buf, capacity, written,
                                 "zc_ofi_format_profile");
 }
@@ -542,7 +559,10 @@ int zc_ofi_format_stats(struct zc_ofi_endpoint *ep, char *buf,
         "inject_posts=%llu fatal_rc=%d efa_write_high_pps_available=%d "
         "efa_write_high_pps_effective=%d "
         "efa_write_high_pps_verified=%d efa_write_high_pps_fallbacks=%llu "
-        "rma_write_delivery_complete=%d "
+        "rma_write_delivery_complete=%d rma_write_more=%d "
+        "rma_write_more_burst=%zu rma_write_more_posts=%llu "
+        "rma_write_flush_posts=%llu rma_write_forced_flush_posts=%llu "
+        "rma_write_more_followup_eagain=%llu rma_write_force_flush=%d "
         "tx_cq_avg_cqes_per_nonempty=%.2f rx_cq_avg_cqes_per_nonempty=%.2f",
         ep->send_ring.depth, ep->send_ring.active,
         ep->send_ring.provider_inflight, ep->send_ring.peak_active,
@@ -609,7 +629,13 @@ int zc_ofi_format_stats(struct zc_ofi_endpoint *ep, char *buf,
         ep->efa_write_high_pps_effective,
         ep->efa_write_high_pps_verified,
         (unsigned long long)ep->efa_write_high_pps_fallbacks,
-        ep->rma_write_delivery_complete,
+        ep->rma_write_delivery_complete, ep->rma_write_more_enabled,
+        ep->rma_write_more_burst,
+        (unsigned long long)ep->rma_write_more_posts,
+        (unsigned long long)ep->rma_write_flush_posts,
+        (unsigned long long)ep->rma_write_forced_flush_posts,
+        (unsigned long long)ep->rma_write_more_followup_eagain,
+        ep->rma_write_force_flush,
         ep->tx_cq_state.nonempty_polls
             ? (double)ep->tx_cq_state.entries_read /
                   (double)ep->tx_cq_state.nonempty_polls
@@ -670,6 +696,19 @@ static int zc_ofi_is_efa_provider(const char *provider) {
            (strcmp(provider, "efa") == 0 || strcmp(provider, "efa-direct") == 0);
 }
 
+static int zc_ofi_uses_verbs_rc_mr(const char *provider) {
+    static const char rxm_provider[] = "verbs;ofi_rxm";
+    size_t rxm_len = sizeof(rxm_provider) - 1;
+    return provider &&
+           (strcmp(provider, "verbs") == 0 ||
+            (strncmp(provider, rxm_provider, rxm_len) == 0 &&
+             (provider[rxm_len] == '\0' || provider[rxm_len] == ';')));
+}
+
+static int zc_ofi_uses_ib_ud_addr(const char *provider) {
+    return provider && strstr(provider, "ofi_rxd") != NULL;
+}
+
 static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint,
                                        const char *node, const char *service, int server,
                                        const char *domain_name, uint64_t caps,
@@ -696,13 +735,70 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
         zc_ofi_write_err(err, err_len, "fi_allocinfo failed");
         return -FI_ENOMEM;
     }
+    size_t send_depth = 0;
+    size_t recv_depth = 0;
+    size_t read_depth = 0;
+    size_t write_depth = 0;
+    size_t mr_capacity = 0;
+    size_t cq_headroom = 0;
+    int rc = zc_ofi_env_size("URING_PLAY_OFI_TX_QUEUE_DEPTH", 64, 1, 65536,
+                             &send_depth, err, err_len);
+    if (!rc) {
+        rc = zc_ofi_env_size("URING_PLAY_OFI_RX_QUEUE_DEPTH", 64, 1, 65536,
+                             &recv_depth, err, err_len);
+    }
+    if (!rc) {
+        rc = zc_ofi_env_size("URING_PLAY_OFI_RMA_READ_QD", 1, 1, 65536,
+                             &read_depth, err, err_len);
+    }
+    if (!rc) {
+        rc = zc_ofi_env_size("URING_PLAY_OFI_RMA_WRITE_QD", 1, 1, 65536,
+                             &write_depth, err, err_len);
+    }
+    if (!rc) {
+        rc = zc_ofi_env_size("URING_PLAY_OFI_MR_ARENA_COUNT", 64, 1, 65536,
+                             &mr_capacity, err, err_len);
+    }
+    if (!rc) {
+        rc = zc_ofi_env_size("URING_PLAY_OFI_CQ_HEADROOM", 64, 1, 65536,
+                             &cq_headroom, err, err_len);
+    }
+    if (rc) {
+        fi_freeinfo(hints);
+        return rc;
+    }
+    if (send_depth > SIZE_MAX - read_depth ||
+        send_depth + read_depth > SIZE_MAX - write_depth ||
+        send_depth + read_depth + write_depth > SIZE_MAX - cq_headroom ||
+        recv_depth > SIZE_MAX - cq_headroom) {
+        fi_freeinfo(hints);
+        zc_ofi_write_err(err, err_len, "OFI queue/CQ size arithmetic overflow");
+        return -FI_EINVAL;
+    }
+    size_t provider_tx_queue_requested = send_depth + read_depth + write_depth;
+    size_t provider_rx_queue_requested = recv_depth;
+    /* fi_info queue sizes are provider work-request capacities, distinct from
+     * CQ capacity.  Advertise the aggregate concurrently usable operation
+     * rings before endpoint creation so verbs providers can allocate an SQ/RQ
+     * large enough for the application contract. */
+    hints->tx_attr->size = provider_tx_queue_requested;
+    hints->rx_attr->size = provider_rx_queue_requested;
     int efa_provider = zc_ofi_is_efa_provider(provider);
+    int verbs_rc_mr = zc_ofi_uses_verbs_rc_mr(provider);
     const char *efa_fabric = efa_provider ? getenv("URING_PLAY_OFI_EFA_FABRIC") : NULL;
     int efa_direct = (provider && strcmp(provider, "efa-direct") == 0) ||
                      (efa_fabric && strcmp(efa_fabric, "efa-direct") == 0);
-    hints->caps = caps | (server && !efa_provider ? FI_SOURCE : 0);
+    /* FI_SOURCE is a fi_getinfo input flag, not an endpoint capability.
+     * Advertising it in hints->caps happens to be tolerated by the sockets
+     * provider but makes verbs/RxM reject an otherwise valid RDM+RMA source
+     * query with FI_ENODATA. */
+    hints->caps = caps;
     hints->mode = efa_direct ? FI_CONTEXT2 : (efa_provider ? 0 : FI_CONTEXT);
-    hints->addr_format = efa_provider ? FI_ADDR_EFA : FI_SOCKADDR;
+    hints->addr_format = efa_provider
+                             ? FI_ADDR_EFA
+                             : (zc_ofi_uses_ib_ud_addr(provider)
+                                    ? FI_FORMAT_UNSPEC
+                                    : FI_SOCKADDR);
     hints->ep_attr->type = ep_type;
     if (provider && provider[0] != '\0') {
         const char *query_provider = efa_direct ? "efa" : provider;
@@ -724,18 +820,18 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
             zc_ofi_write_err(err, err_len, "strdup(efa fabric) failed");
             return -FI_ENOMEM;
         }
-        if (efa_direct) {
-            /*
-             * efa-direct exposes the device MR contract verbatim.  In
-             * addition to requiring local descriptors it requires virtual
-             * addresses, provider-allocated keys, and allocated-region
-             * registration semantics.  Supplying only FI_MR_LOCAL causes
-             * recent EFA providers to reject the otherwise valid direct
-             * profile with FI_ENODATA.
-             */
-            hints->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_VIRT_ADDR |
-                                          FI_MR_ALLOCATED | FI_MR_PROV_KEY;
-        }
+    }
+    if (efa_direct || verbs_rc_mr) {
+        /*
+         * efa-direct and the verbs core below RxM expose the device MR
+         * contract verbatim.  In addition to requiring local descriptors
+         * they require virtual addresses, provider-allocated keys, and
+         * allocated-region registration semantics.  Supplying only
+         * FI_MR_LOCAL causes both providers to reject an otherwise valid
+         * RDM+RMA profile with FI_ENODATA.
+         */
+        hints->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_VIRT_ADDR |
+                                      FI_MR_ALLOCATED | FI_MR_PROV_KEY;
     }
     const char *domain = (domain_name && domain_name[0] != '\0')
                              ? domain_name
@@ -755,7 +851,7 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
     uint64_t flags = (server && !efa_provider) ? FI_SOURCE : 0;
     uint32_t requested_api_version = FI_VERSION(2, 0);
     uint32_t query_api_version = requested_api_version;
-    int rc = fi_getinfo(query_api_version, query_node, query_service, flags, hints, &info);
+    rc = fi_getinfo(query_api_version, query_node, query_service, flags, hints, &info);
     if (rc) {
         if (info) {
             fi_freeinfo(info);
@@ -788,6 +884,10 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
     ep->legacy_recv_slot = SIZE_MAX;
     ep->max_msg_size = info->ep_attr ? info->ep_attr->max_msg_size : 0;
     ep->inject_size = info->tx_attr ? info->tx_attr->inject_size : 0;
+    ep->provider_tx_queue_requested = provider_tx_queue_requested;
+    ep->provider_tx_queue_size = info->tx_attr ? info->tx_attr->size : 0;
+    ep->provider_rx_queue_requested = provider_rx_queue_requested;
+    ep->provider_rx_queue_size = info->rx_attr ? info->rx_attr->size : 0;
     ep->requested_api_version = requested_api_version;
     ep->query_api_version = query_api_version;
     ep->returned_api_version = info->fabric_attr ? info->fabric_attr->api_version
@@ -826,6 +926,14 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
         zc_ofi_env_enabled("URING_PLAY_OFI_SELECTIVE_COMPLETION");
     ep->rma_write_delivery_complete =
         zc_ofi_env_u64("URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE", 1) != 0;
+    ep->rma_write_more_enabled =
+        zc_ofi_env_enabled("URING_PLAY_OFI_RMA_WRITE_MORE");
+    rc = zc_ofi_env_size("URING_PLAY_OFI_RMA_WRITE_MORE_BURST", 64, 1,
+                         65536, &ep->rma_write_more_burst, err, err_len);
+    if (rc) {
+        zc_ofi_close(ep);
+        return rc;
+    }
     if (ep->efa_write_high_pps_requested &&
         !ZC_OFI_HAVE_EFA_WR_HIGH_PPS) {
         if (ep->strict_topology) {
@@ -844,48 +952,18 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
         zc_ofi_close(ep);
         return -FI_EINVAL;
     }
-
-    size_t send_depth = 0;
-    size_t recv_depth = 0;
-    size_t read_depth = 0;
-    size_t write_depth = 0;
-    size_t mr_capacity = 0;
-    size_t cq_headroom = 0;
-    rc = zc_ofi_env_size("URING_PLAY_OFI_TX_QUEUE_DEPTH", 64, 1, 65536,
-                         &send_depth, err, err_len);
-    if (!rc) {
-        rc = zc_ofi_env_size("URING_PLAY_OFI_RX_QUEUE_DEPTH", 64, 1, 65536,
-                             &recv_depth, err, err_len);
-    }
-    if (!rc) {
-        rc = zc_ofi_env_size("URING_PLAY_OFI_RMA_READ_QD", 1, 1, 65536,
-                             &read_depth, err, err_len);
-    }
-    if (!rc) {
-        rc = zc_ofi_env_size("URING_PLAY_OFI_RMA_WRITE_QD", 1, 1, 65536,
-                             &write_depth, err, err_len);
-    }
-    if (!rc) {
-        rc = zc_ofi_env_size("URING_PLAY_OFI_MR_ARENA_COUNT", 64, 1, 65536,
-                             &mr_capacity, err, err_len);
-    }
-    if (!rc) {
-        rc = zc_ofi_env_size("URING_PLAY_OFI_CQ_HEADROOM", 64, 1, 65536,
-                             &cq_headroom, err, err_len);
-    }
-    if (rc) {
+    if (ep->strict_topology &&
+        (ep->provider_tx_queue_size < ep->provider_tx_queue_requested ||
+         ep->provider_rx_queue_size < ep->provider_rx_queue_requested)) {
+        zc_ofi_write_err(
+            err, err_len,
+            "strict OFI provider queue capacity below request tx=%zu requested=%zu rx=%zu requested=%zu",
+            ep->provider_tx_queue_size, ep->provider_tx_queue_requested,
+            ep->provider_rx_queue_size, ep->provider_rx_queue_requested);
         zc_ofi_close(ep);
-        return rc;
+        return -FI_ENOSPC;
     }
     ep->cq_headroom = cq_headroom;
-    if (send_depth > SIZE_MAX - read_depth ||
-        send_depth + read_depth > SIZE_MAX - write_depth ||
-        send_depth + read_depth + write_depth > SIZE_MAX - cq_headroom ||
-        recv_depth > SIZE_MAX - cq_headroom) {
-        zc_ofi_write_err(err, err_len, "OFI queue/CQ size arithmetic overflow");
-        zc_ofi_close(ep);
-        return -FI_EINVAL;
-    }
     size_t tx_cq_required = send_depth + read_depth + write_depth + cq_headroom;
     size_t rx_cq_required = recv_depth + cq_headroom;
     ep->tx_cq_required = tx_cq_required;
@@ -1942,9 +2020,9 @@ int zc_ofi_rma_write_queue_init(struct zc_ofi_endpoint *ep, size_t depth) {
 static int zc_ofi_write_post_call(struct zc_ofi_endpoint *ep,
                                   const void *buf, size_t len, void *desc,
                                   uint64_t remote_addr, uint64_t remote_key,
-                                  void *context) {
+                                  void *context, int use_more) {
     if (!ep->efa_write_high_pps_effective && !ep->selective_completion &&
-        !ep->rma_write_delivery_complete) {
+        !ep->rma_write_delivery_complete && !use_more) {
         return (int)fi_write(ep->ep, buf, len, desc, ep->peer_addr,
                              remote_addr, remote_key, context);
     }
@@ -1969,6 +2047,9 @@ static int zc_ofi_write_post_call(struct zc_ofi_endpoint *ep,
         .data = 0,
     };
     uint64_t flags = 0;
+    if (use_more) {
+        flags |= FI_MORE;
+    }
 #if ZC_OFI_HAVE_EFA_WR_HIGH_PPS
     if (ep->efa_write_high_pps_effective) {
         flags |= FI_EFA_WR_HIGH_PPS;
@@ -2006,17 +2087,17 @@ static int zc_ofi_write_post_call(struct zc_ofi_endpoint *ep,
         return (int)fi_write(ep->ep, buf, len, desc, ep->peer_addr,
                              remote_addr, remote_key, context);
     }
-    uint64_t fallback_flags = FI_COMPLETION;
+    uint64_t fallback_flags = FI_COMPLETION | (use_more ? FI_MORE : 0);
     if (ep->rma_write_delivery_complete) {
         fallback_flags |= FI_DELIVERY_COMPLETE;
     }
     return (int)fi_writemsg(ep->ep, &message, fallback_flags);
 }
 
-int zc_ofi_rma_write_post(struct zc_ofi_endpoint *ep, const void *buf,
-                          size_t len, uint64_t remote_addr,
-                          uint64_t remote_key, size_t slot,
-                          uint64_t user_data) {
+int zc_ofi_rma_write_post_more(struct zc_ofi_endpoint *ep, const void *buf,
+                               size_t len, uint64_t remote_addr,
+                               uint64_t remote_key, size_t slot,
+                               uint64_t user_data, int more) {
     if (!ep || !buf || len == 0 || !ep->write_ring.ops ||
         slot >= ep->write_ring.depth) {
         return -FI_EINVAL;
@@ -2042,11 +2123,22 @@ int zc_ofi_rma_write_post(struct zc_ofi_endpoint *ep, const void *buf,
     if (!op) {
         return ep->fatal_rc ? ep->fatal_rc : -FI_EBUSY;
     }
+    int use_more = more && ep->rma_write_more_enabled &&
+                   !ep->rma_write_force_flush &&
+                   ep->rma_write_more_streak + 1 < ep->rma_write_more_burst;
     rc = zc_ofi_write_post_call(ep, buf, len, desc, remote_addr, remote_key,
-                                &op->context);
+                                &op->context, use_more);
     if (rc) {
         zc_ofi_release_slot(&ep->write_ring, slot);
         if (rc == -FI_EAGAIN) {
+            if (ep->rma_write_more_streak != 0) {
+                /* A successful FI_MORE post promises a prompt follow-up. If
+                 * provider backpressure rejects that follow-up, make the next
+                 * accepted post a non-FI_MORE boundary. This prevents an
+                 * arbitrarily long deferred-doorbell streak across retries. */
+                ep->rma_write_force_flush = 1;
+                ep->rma_write_more_followup_eagain++;
+            }
             ep->write_ring.post_eagain++;
             ep->write_ring.post_retries++;
             return rc;
@@ -2056,7 +2148,24 @@ int zc_ofi_rma_write_post(struct zc_ofi_endpoint *ep, const void *buf,
     ep->write_mrs.posts_started = 1;
     ep->write_ring.provider_inflight++;
     ep->write_ring.posts++;
+    if (use_more) {
+        ep->rma_write_more_posts++;
+        ep->rma_write_more_streak++;
+    } else if (ep->rma_write_more_enabled) {
+        ep->rma_write_flush_posts++;
+        ep->rma_write_forced_flush_posts += more ? 1 : 0;
+        ep->rma_write_more_streak = 0;
+        ep->rma_write_force_flush = 0;
+    }
     return 0;
+}
+
+int zc_ofi_rma_write_post(struct zc_ofi_endpoint *ep, const void *buf,
+                          size_t len, uint64_t remote_addr,
+                          uint64_t remote_key, size_t slot,
+                          uint64_t user_data) {
+    return zc_ofi_rma_write_post_more(ep, buf, len, remote_addr, remote_key,
+                                      slot, user_data, 0);
 }
 
 int zc_ofi_rma_write_poll(struct zc_ofi_endpoint *ep, size_t *out_slots,

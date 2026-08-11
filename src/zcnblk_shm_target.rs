@@ -493,10 +493,19 @@ impl RemoteWalStream {
         remote_key: u64,
         slot: usize,
         user_data: u64,
+        more: bool,
     ) -> io::Result<bool> {
         match self {
             Self::Ofi(stream) => unsafe {
-                stream.post_rma_write_raw(source, len, remote_addr, remote_key, slot, user_data)
+                stream.post_rma_write_more_raw(
+                    source,
+                    len,
+                    remote_addr,
+                    remote_key,
+                    slot,
+                    user_data,
+                    more,
+                )
             },
             Self::Tcp(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -734,6 +743,19 @@ struct RemoteWalRmaWriteQueue {
     max_batch_operations: usize,
     depth_barriers: u64,
     overlap_barriers: u64,
+    write_more: bool,
+    more_posts: u64,
+    flush_posts: u64,
+    more_followup_eagain: u64,
+}
+
+fn remote_wal_rma_write_runs_overlap(
+    left: RemoteWalRmaWriteRun,
+    right: RemoteWalRmaWriteRun,
+) -> bool {
+    let left_end = left.remote_offset + left.len as u64;
+    let right_end = right.remote_offset + right.len as u64;
+    left.remote_offset < right_end && right.remote_offset < left_end
 }
 
 fn remote_wal_rma_write_overlaps_active(
@@ -1138,6 +1160,10 @@ impl RemoteWalRmaWriteQueue {
             max_batch_operations: 0,
             depth_barriers: 0,
             overlap_barriers: 0,
+            write_more: env_enabled_or("URING_PLAY_OFI_RMA_WRITE_MORE", false),
+            more_posts: 0,
+            flush_posts: 0,
+            more_followup_eagain: 0,
         })
     }
 
@@ -1176,6 +1202,7 @@ impl RemoteWalRmaWriteQueue {
         let mut batch_post_rounds = 0u64;
         while next_run < runs.len() || in_flight != 0 {
             let mut posted = 0usize;
+            let mut previous_post_used_more = false;
             while next_run < runs.len() {
                 let run = runs[next_run];
                 let source = mapping.slice(run.source_offset, run.len)?;
@@ -1194,6 +1221,12 @@ impl RemoteWalRmaWriteQueue {
                 let remote_end = run.remote_offset + run.len as u64;
                 let token = self.next_token;
                 self.next_token = self.next_token.wrapping_add(1).max(1);
+                let more = self.write_more
+                    && !self.free_slots.is_empty()
+                    && runs.get(next_run + 1).is_some_and(|next| {
+                        !remote_wal_rma_write_overlaps_active(&self.active, *next)
+                            && !remote_wal_rma_write_runs_overlap(run, *next)
+                    });
                 let accepted = unsafe {
                     stream.post_rma_write_raw(
                         source.as_ptr(),
@@ -1202,13 +1235,23 @@ impl RemoteWalRmaWriteQueue {
                         window.key,
                         slot,
                         token,
+                        more,
                     )?
                 };
                 if !accepted {
                     self.post_eagain = self.post_eagain.saturating_add(1);
+                    self.more_followup_eagain = self
+                        .more_followup_eagain
+                        .saturating_add(u64::from(previous_post_used_more));
                     self.free_slots.push(slot);
                     break;
                 }
+                if more {
+                    self.more_posts = self.more_posts.saturating_add(1);
+                } else if self.write_more {
+                    self.flush_posts = self.flush_posts.saturating_add(1);
+                }
+                previous_post_used_more = more;
                 self.active[slot] = Some(RemoteWalRmaActiveWrite {
                     token,
                     remote_offset: run.remote_offset,
@@ -2483,7 +2526,7 @@ impl RemoteWalLeaf {
             return;
         };
         eprintln!(
-            "zcnblk-shm-target-ofi-rma-write-summary: lane={} per_lane_qd={} qd_scope=payload-operations block_qd_coupled=no batches={} operations={} bytes={} seconds={:.6} avg_batch_us={:.3} batch_elapsed_div_operations_us={:.3} avg_operations_per_batch={:.2} multi_run_batches={} concurrently_posted_batches={} batches_exceeding_qd={} avg_post_rounds_per_batch={:.2} max_batch_operations={} depth_barriers={} overlap_barriers={} peak_in_flight={} final_active={} cq_poll_calls={} cq_batches={} cq_completions={} avg_cq_completions_per_batch={:.2} post_eagain={} source=registered-shared-slot-lease destination=remote-leaf-memory-window local_completion=delivery-complete remote_completion=doorbell-result-hwm sync_fua=leaf-after-doorbell",
+            "zcnblk-shm-target-ofi-rma-write-summary: lane={} per_lane_qd={} qd_scope=payload-operations block_qd_coupled=no batches={} operations={} bytes={} seconds={:.6} avg_batch_us={:.3} batch_elapsed_div_operations_us={:.3} avg_operations_per_batch={:.2} multi_run_batches={} concurrently_posted_batches={} batches_exceeding_qd={} avg_post_rounds_per_batch={:.2} max_batch_operations={} depth_barriers={} overlap_barriers={} peak_in_flight={} final_active={} cq_poll_calls={} cq_batches={} cq_completions={} avg_cq_completions_per_batch={:.2} post_eagain={} fi_more={} fi_more_candidates={} fi_more_flush_candidates={} fi_more_followup_eagain={} source=registered-shared-slot-lease destination=remote-leaf-memory-window local_completion=delivery-complete remote_completion=doorbell-result-hwm sync_fua=leaf-after-doorbell",
             self.lane_id,
             queue.depth,
             self.rma_write_batches,
@@ -2507,6 +2550,10 @@ impl RemoteWalLeaf {
             queue.cq_completions,
             queue.cq_completions as f64 / queue.cq_batches.max(1) as f64,
             queue.post_eagain,
+            queue.write_more,
+            queue.more_posts,
+            queue.flush_posts,
+            queue.more_followup_eagain,
         );
     }
 

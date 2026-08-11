@@ -8,7 +8,11 @@ LOW_QDS="${ZCOFI_RMA_MATRIX_LOW_QDS:-1,2,4,8,16}"
 SATURATION_QDS="${ZCOFI_RMA_MATRIX_SATURATION_QDS:-32,64,128,256}"
 REPEATS="${ZCOFI_RMA_MATRIX_REPEATS:-3}"
 REPRESENTATIVE="${ZCOFI_RMA_MATRIX_REPRESENTATIVE:-1}"
+PROVIDER="${ZCOFI_RMA_MATRIX_PROVIDER:-efa}"
+NIC_DEVICE="${ZCOFI_RMA_MATRIX_NIC_DEVICE:-${FI_EFA_IFACE:-}}"
 WRITE_DELIVERY_COMPLETE="${URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE:-1}"
+WRITE_MORE="${URING_PLAY_OFI_RMA_WRITE_MORE:-0}"
+WRITE_MORE_BURST="${URING_PLAY_OFI_RMA_WRITE_MORE_BURST:-64}"
 TOPOLOGY_ARTIFACT="${ZCOFI_RMA_MATRIX_TOPOLOGY_ARTIFACT:-}"
 OUTROOT="${OUTROOT:-$ROOT/bench-results/zcofi-rma-queue-matrix-$(date -u +%Y%m%dT%H%M%SZ)}"
 
@@ -25,13 +29,21 @@ die() {
 	die "ZCOFI_RMA_MATRIX_REPRESENTATIVE must be zero or one"
 [[ "$WRITE_DELIVERY_COMPLETE" =~ ^[01]$ ]] || \
 	die "URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE must be zero or one"
+[[ "$WRITE_MORE" =~ ^[01]$ ]] || \
+	die "URING_PLAY_OFI_RMA_WRITE_MORE must be zero or one"
+[[ "$WRITE_MORE_BURST" =~ ^[0-9]+$ ]] && [ "$WRITE_MORE_BURST" -ge 1 ] && \
+	[ "$WRITE_MORE_BURST" -le 65536 ] || \
+	die "URING_PLAY_OFI_RMA_WRITE_MORE_BURST must be in 1..=65536"
 
 IFS=',' read -r -a modes <<<"$MODES"
 IFS=',' read -r -a low_qds <<<"$LOW_QDS"
-IFS=',' read -r -a saturation_qds <<<"$SATURATION_QDS"
+if [ "$SATURATION_QDS" = none ]; then
+	saturation_qds=()
+else
+	IFS=',' read -r -a saturation_qds <<<"$SATURATION_QDS"
+fi
 [ "${#modes[@]}" -gt 0 ] || die "mode list is empty"
 [ "${#low_qds[@]}" -gt 0 ] || die "low-QD list is empty"
-[ "${#saturation_qds[@]}" -gt 0 ] || die "saturation-QD list is empty"
 
 declare -A mode_seen=()
 for mode in "${modes[@]}"; do
@@ -62,6 +74,7 @@ for qd in "${saturation_qds[@]}"; do
 done
 
 if [ "$REPRESENTATIVE" = 1 ]; then
+	[ "$SATURATION_QDS" != none ] || die "representative matrix cannot omit the saturation curve"
 	[ -n "${mode_seen[read]:-}" ] || die "representative matrix is missing read mode"
 	[ -n "${mode_seen[write]:-}" ] || die "representative matrix is missing write mode"
 	for required in 1 2 4 8 16; do
@@ -72,7 +85,8 @@ if [ "$REPRESENTATIVE" = 1 ]; then
 	[ -n "${URING_PLAY_PIN_CPU_LIST:-}" ] || die "representative matrix requires URING_PLAY_PIN_CPU_LIST"
 	[ "${URING_PLAY_OFI_CQ_SLEEP_NS:-50000}" = 0 ] || die "representative matrix requires URING_PLAY_OFI_CQ_SLEEP_NS=0"
 	[ -n "${URING_PLAY_OFI_DOMAIN:-}" ] || die "representative matrix requires URING_PLAY_OFI_DOMAIN"
-	[ -n "${FI_EFA_IFACE:-}" ] || die "representative matrix requires FI_EFA_IFACE"
+	[ -n "$PROVIDER" ] || die "representative matrix requires ZCOFI_RMA_MATRIX_PROVIDER"
+	[ -n "$NIC_DEVICE" ] || die "representative matrix requires ZCOFI_RMA_MATRIX_NIC_DEVICE (FI_EFA_IFACE is accepted for EFA)"
 	[ -s "$TOPOLOGY_ARTIFACT" ] || die "representative matrix requires a non-empty ZCOFI_RMA_MATRIX_TOPOLOGY_ARTIFACT"
 fi
 
@@ -83,10 +97,11 @@ fi
 printf 'modes=%s low_qds=%s saturation_qds=%s repeats=%s representative=%s\n' \
 	"$MODES" "$LOW_QDS" "$SATURATION_QDS" "$REPEATS" "$REPRESENTATIVE" \
 	| tee "$OUTROOT/matrix-topology.log"
-printf 'lane_to_worker_cpu=%s ofi_domain=%s efa_iface=%s cq_sleep_ns=%s rma_write_delivery_complete=%s completion_semantics=read:data-visible-local-cq,write:%s remote_admission=separate durability=separate\n' \
-	"${URING_PLAY_PIN_CPU_LIST:-unreported}" "${URING_PLAY_OFI_DOMAIN:-unreported}" \
-	"${FI_EFA_IFACE:-unreported}" "${URING_PLAY_OFI_CQ_SLEEP_NS:-50000}" \
-	"$WRITE_DELIVERY_COMPLETE" \
+printf 'lane_to_worker_cpu=%s ofi_provider=%s ofi_domain=%s nic_device=%s cq_sleep_ns=%s rma_write_delivery_complete=%s rma_write_more=%s rma_write_more_burst=%s completion_semantics=read:data-visible-local-cq,write:%s remote_admission=separate durability=separate\n' \
+	"${URING_PLAY_PIN_CPU_LIST:-unreported}" "$PROVIDER" \
+	"${URING_PLAY_OFI_DOMAIN:-unreported}" \
+	"${NIC_DEVICE:-unreported}" "${URING_PLAY_OFI_CQ_SLEEP_NS:-50000}" \
+	"$WRITE_DELIVERY_COMPLETE" "$WRITE_MORE" "$WRITE_MORE_BURST" \
 	"$([ "$WRITE_DELIVERY_COMPLETE" = 1 ] && printf delivery-cq-remote-visible || printf source-reusable-local-cq)" \
 	| tee -a "$OUTROOT/matrix-topology.log"
 : >"$OUTROOT/matrix-summary.log"
@@ -139,6 +154,8 @@ run_point() {
 			URING_PLAY_OFI_RMA_READ_QD="$qd" \
 			URING_PLAY_OFI_RMA_WRITE_QD="$qd" \
 			URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE="$WRITE_DELIVERY_COMPLETE" \
+			URING_PLAY_OFI_RMA_WRITE_MORE="$WRITE_MORE" \
+			URING_PLAY_OFI_RMA_WRITE_MORE_BURST="$WRITE_MORE_BURST" \
 			URING_PLAY_OFI_EFA_WRITE_HIGH_PPS="$high_pps" \
 			"$RUNNER" "$mode" "$qd" "$rep" "$point_dir" 2>&1 | tee "$log"
 		local summary
@@ -159,17 +176,26 @@ run_point() {
 				die "$mode $class QD$qd repeat $rep summary has the wrong completion semantic"
 			grep -Eq "(^| )raw_rtt_semantics=$expected_rtt_semantics( |$)" <<<"$summary" || \
 				die "$mode $class QD$qd repeat $rep summary has the wrong theoretical-ceiling denominator"
-			for field in per_worker_qd_min per_worker_qd_max workers lanes aggregate_outstanding_depth peak_outstanding measured_raw_transport_rtt_us raw_rtt_semantics matching_theoretical_iops actual_theoretical_efficiency_pct completion cq_poll_calls cq_batches cq_completions post_eagain local_cq_completion_count; do
+			for field in per_worker_qd_min per_worker_qd_max workers lanes endpoint_count cq_owner_count endpoint_to_owner_map aggregate_outstanding_depth peak_outstanding measured_raw_transport_rtt_us raw_rtt_semantics matching_theoretical_iops actual_theoretical_efficiency_pct completion cq_poll_calls cq_batches cq_completions post_eagain local_cq_completion_count; do
 				grep -q "${field}=" <<<"$summary" || \
 					die "$mode $class QD$qd repeat $rep summary is missing $field"
 			done
-			for field in send_depth send_peak recv_depth recv_peak read_depth read_peak write_depth write_peak tx_cq_polls tx_cq_entries rx_cq_polls rx_cq_entries send_eagain recv_eagain read_eagain write_eagain send_mr_hot recv_mr_hot read_mr_hot write_mr_hot target_mr_hot fatal_rc; do
+			for field in send_depth send_peak recv_depth recv_peak read_depth read_peak write_depth write_peak tx_cq_polls tx_cq_entries rx_cq_polls rx_cq_entries send_eagain recv_eagain read_eagain write_eagain send_mr_hot recv_mr_hot read_mr_hot write_mr_hot target_mr_hot rma_write_more rma_write_more_posts rma_write_flush_posts rma_write_forced_flush_posts rma_write_more_followup_eagain rma_write_force_flush fatal_rc; do
 				grep -Eq "^zcofi-endpoint-stats: .*${field}=" "$log" || \
 					die "$mode $class QD$qd repeat $rep endpoint statistics are missing $field"
 			done
 			if grep -Eq '(send_errors|recv_errors|read_errors|write_errors|tx_cq_errors|rx_cq_errors|send_mr_hot|recv_mr_hot|read_mr_hot|write_mr_hot|target_mr_hot|fatal_rc)=(-?[1-9][0-9]*)' "$log"; then
 				die "$mode $class QD$qd repeat $rep reported a CQ/provider/MR fatal error"
 			fi
+			if grep -Eq '^zcofi-endpoint-stats: .*rma_write_force_flush=[1-9][0-9]*' "$log"; then
+				die "$mode $class QD$qd repeat $rep ended with an unflushed FI_MORE boundary"
+			fi
+			grep -Eq 'zcofi-endpoint-profile: .*provider_tx_queue_requested=[1-9][0-9]* provider_tx_queue_size=[1-9][0-9]* provider_rx_queue_requested=[1-9][0-9]* provider_rx_queue_size=[1-9][0-9]*' "$log" || \
+				die "$mode $class QD$qd repeat $rep did not report provider queue capacities"
+			grep -Eq 'zcofi-rma-setup-admission: .*order=lane-ascending parallelism=1 .*status=complete' "$log" || \
+				die "$mode $class QD$qd repeat $rep did not prove ordered endpoint/CM/MR setup"
+			grep -Eq 'zcofi-rma-start-barrier: .*failure_aware=yes status=ready' "$log" || \
+				die "$mode $class QD$qd repeat $rep did not prove the failure-aware all-owner start gate"
 		fi
 		if [ "$mode" = write-high-pps ]; then
 			grep -Eq 'zcofi-endpoint-stats: .*efa_write_high_pps_verified=1' "$log" || \
