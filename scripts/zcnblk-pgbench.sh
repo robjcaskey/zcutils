@@ -33,6 +33,8 @@ OFI_RMA_READS="${OFI_RMA_READS:-0}"
 OFI_RMA_WRITE_QD="${OFI_RMA_WRITE_QD:-16}"
 OFI_RMA_WRITE_MIN_QD="${OFI_RMA_WRITE_MIN_QD:-16}"
 OFI_RMA_DELIVERY_COMPLETE="${OFI_RMA_DELIVERY_COMPLETE:-1}"
+OFI_RMA_WRITE_OWNER_MODE="${OFI_RMA_WRITE_OWNER_MODE:-placement}"
+OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED="${OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED:-0}"
 OFI_HUGETLB_CONFIRMED="${OFI_HUGETLB_CONFIRMED:-0}"
 OFI_RMA_SOURCE_HUGETLB_CONFIRMED="${OFI_RMA_SOURCE_HUGETLB_CONFIRMED:-0}"
 LEAF_ZCMEM_HUGETLB="${LEAF_ZCMEM_HUGETLB:-0}"
@@ -104,6 +106,10 @@ fi
 	[ "$OFI_RMA_WRITE_QD" -le 1024 ] || die 'OFI_RMA_WRITE_QD must be in 1..=1024'
 [[ "$OFI_RMA_WRITE_MIN_QD" =~ ^[0-9]+$ ]] && [ "$OFI_RMA_WRITE_MIN_QD" -gt 0 ] && \
 	[ "$OFI_RMA_WRITE_MIN_QD" -le 1024 ] || die 'OFI_RMA_WRITE_MIN_QD must be in 1..=1024'
+[ "$OFI_RMA_WRITE_OWNER_MODE" = placement ] || \
+	die 'this matched two-owner PostgreSQL harness supports OFI_RMA_WRITE_OWNER_MODE=placement only'
+[[ "$OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED" =~ ^[01]$ ]] || \
+	die 'OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED must be zero or one'
 [ "$KERNEL_QUEUES" -eq 2 ] || die 'this matched harness currently requires KERNEL_QUEUES=2'
 [ "$OWNER_COUNT" -eq 2 ] || die 'this matched harness currently requires OWNER_COUNT=2'
 [ "$REPEATS" -ge 3 ] || die 'representative PostgreSQL transport comparisons require REPEATS>=3'
@@ -289,6 +295,10 @@ fi
 if env_true "$OFI_RMA_WRITES" && [ "$OFI_RMA_WRITE_QD" -lt "$OFI_RMA_WRITE_MIN_QD" ]; then
 	warn_preflight "RMA payload-operation QD $OFI_RMA_WRITE_QD is below the delivery-complete floor $OFI_RMA_WRITE_MIN_QD; random records in one PostgreSQL writeback batch will serialize completion waves."
 fi
+if env_true "$OFI_RMA_WRITES" && [ "$OFI_PROVIDER" = efa ] && [ "$OWNER_COUNT" -gt 1 ] && \
+	[ "$OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED" != 1 ]; then
+	warn_preflight "EFA RMA writes use $OWNER_COUNT stable-owner endpoints on one configured OFI domain; explicitly set OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED=1 only when this matched multi-endpoint placement topology is intentional."
+fi
 if [ "$preflight_warnings" -ne 0 ] &&
 	(env_true "${URING_PLAY_TOPOLOGY_STRICT:-0}" || env_true "${URING_PLAY_TOPOLOGY_FATAL:-0}"); then
 	die 'strict topology preflight rejected this benchmark before representative numbers were printed'
@@ -391,6 +401,8 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$OUTDIR/target.pid" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES="$OFI_RMA_WRITES" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED="$OFI_RMA_WRITES_REQUIRED" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD="$OFI_RMA_WRITE_QD" \
+	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_OWNER_MODE="$OFI_RMA_WRITE_OWNER_MODE" \
+	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED="$OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED" \
 	URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED="$OFI_HUGETLB_CONFIRMED" \
 	URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$OFI_MESSAGE_BYTES" \
 	URING_PLAY_OFI_DOMAIN="$OFI_DOMAIN" \
@@ -466,8 +478,9 @@ fi
 		"$LEAF_HOST" "$LEAF_PORT" "${LEAF_SOURCE_ADDR:-kernel-route}" "$START_LOCAL_LEAF"
 	printf 'wal_transport=%s ofi_provider=%s ofi_endpoint=%s ofi_domain=%s ofi_cq_sleep_ns=%s ofi_message_bytes=%s\n' \
 		"$WAL_TRANSPORT" "$OFI_PROVIDER" "$OFI_ENDPOINT" "${OFI_DOMAIN:-implicit}" "$OFI_CQ_SLEEP_NS" "$OFI_MESSAGE_BYTES"
-	printf 'rma_writes=%s rma_writes_required=%s rma_write_qd_per_owner=%s rma_write_min_qd=%s rma_write_qd_scope=per-owner-payload-operations block_qd_coupled=no rma_delivery_complete=%s rma_reads=%s\n' \
-		"$OFI_RMA_WRITES" "$OFI_RMA_WRITES_REQUIRED" "$OFI_RMA_WRITE_QD" "$OFI_RMA_WRITE_MIN_QD" "$OFI_RMA_DELIVERY_COMPLETE" "$OFI_RMA_READS"
+	printf 'rma_writes=%s rma_writes_required=%s rma_write_qd_per_owner=%s rma_write_min_qd=%s rma_write_qd_scope=per-owner-payload-operations block_qd_coupled=no rma_delivery_complete=%s rma_reads=%s rma_write_owner_mode=%s multi_endpoint_confirmed=%s\n' \
+		"$OFI_RMA_WRITES" "$OFI_RMA_WRITES_REQUIRED" "$OFI_RMA_WRITE_QD" "$OFI_RMA_WRITE_MIN_QD" "$OFI_RMA_DELIVERY_COMPLETE" "$OFI_RMA_READS" \
+		"$OFI_RMA_WRITE_OWNER_MODE" "$OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED"
 	printf 'rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=%s\n' \
 		"$OFI_RMA_SOURCE_HUGETLB_CONFIRMED"
 	printf 'topology_representative=%s preflight_warnings=%s\n' "$topology_representative" "$preflight_warnings"

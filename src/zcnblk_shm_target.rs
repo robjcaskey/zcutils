@@ -11022,6 +11022,23 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
     }
     let rma_writes_requested =
         direct_ofi && env_enabled_or("URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES", false);
+    let rma_write_owner_mode = env::var("URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_OWNER_MODE")
+        .unwrap_or_else(|_| "placement".to_string());
+    if !matches!(
+        rma_write_owner_mode.as_str(),
+        "placement" | "single-domain-fan-in"
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_OWNER_MODE must be placement or single-domain-fan-in, got {rma_write_owner_mode:?}"
+            ),
+        ));
+    }
+    let rma_write_multi_endpoint_confirmed = env_enabled_or(
+        "URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED",
+        false,
+    );
     if rma_writes_requested {
         if !env_enabled_or("URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE", true) {
             return Err(io::Error::new(
@@ -11150,6 +11167,40 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
         busy_hysteresis_us,
         lease_release_batch,
     )?;
+    if rma_writes_requested {
+        let endpoint_count = target.remote_leaves.len();
+        if rma_write_owner_mode == "single-domain-fan-in" && endpoint_count != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "single-domain-fan-in requires exactly one stable userspace owner/OFI endpoint, got {endpoint_count}"
+                ),
+            ));
+        }
+        let provider = env::var("URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER")
+            .unwrap_or_else(|_| "efa".to_string());
+        if rma_write_owner_mode == "placement"
+            && provider == "efa"
+            && endpoint_count > 1
+            && !rma_write_multi_endpoint_confirmed
+        {
+            zc_topology_issue(
+                "zcnblk-shm-target",
+                format!(
+                    "EFA RMA writes use {endpoint_count} stable-owner endpoints on one configured OFI domain; use single-domain-fan-in for one terminal leaf/rail or explicitly confirm the multi-endpoint placement topology"
+                ),
+            )?;
+        }
+        eprintln!(
+            "zcnblk-shm-target-rma-write-owner-topology: mode={rma_write_owner_mode} block_ingress_lanes={} owner_endpoints={endpoint_count} ingress_lane_fan_in={} multi_endpoint_confirmed={rma_write_multi_endpoint_confirmed} placement_owner=separate-userspace-stable-owner block_client_placement=no",
+            target.header.channels,
+            if endpoint_count < target.header.channels as usize {
+                format!("{}-to-{endpoint_count}", target.header.channels)
+            } else {
+                "none".to_string()
+            },
+        );
+    }
     if direct_ofi {
         let message_bytes = env::var("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES")
             .ok()

@@ -114,12 +114,20 @@ SHM_OFI_RMA_READ_QD="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD:-1}"
 LEAF_OFI_RMA_READS="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS:-$SHM_OFI_RMA_READS}"
 SHM_OFI_RMA_WRITES="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES:-0}"
 SHM_OFI_RMA_WRITES_REQUIRED="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED:-$SHM_OFI_RMA_WRITES}"
+SHM_OFI_RMA_WRITE_OWNER_MODE="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_OWNER_MODE:-placement}"
+SHM_OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED:-0}"
 if [ -n "${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD+x}" ]; then
 	SHM_OFI_RMA_WRITE_QD="$URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD"
 	SHM_OFI_RMA_WRITE_QD_SOURCE=explicit-wal-payload
 elif [ -n "${URING_PLAY_OFI_RMA_WRITE_QD+x}" ]; then
 	SHM_OFI_RMA_WRITE_QD="$URING_PLAY_OFI_RMA_WRITE_QD"
 	SHM_OFI_RMA_WRITE_QD_SOURCE=generic-ofi-compat
+elif [ "$SHM_OFI_RMA_WRITES" = 1 ] && \
+	[ "$SHM_OFI_RMA_WRITE_OWNER_MODE" = single-domain-fan-in ]; then
+	# A single EFA endpoint needs enough delivery-complete operations in flight
+	# to expose the device's high-PPS path. This remains independent of block QD.
+	SHM_OFI_RMA_WRITE_QD=64
+	SHM_OFI_RMA_WRITE_QD_SOURCE=single-domain-fan-in-default
 elif [ "$SHM_OFI_RMA_WRITES" = 1 ]; then
 	# This is a transport-operation window, not the block workload's per-worker
 	# QD. Random writes commonly produce several disjoint final-memory runs in
@@ -193,8 +201,25 @@ elif [ "$WAL_OWNER_INGRESS" = 1 ]; then
 else
 	SECTOR_ORDER_SLOTS=65536
 fi
-WAL_OWNER_COUNT="${URING_PLAY_ZCNBLK_SHM_OWNER_COUNT:-$LANES}"
+if [ -n "${URING_PLAY_ZCNBLK_SHM_OWNER_COUNT+x}" ]; then
+	WAL_OWNER_COUNT="$URING_PLAY_ZCNBLK_SHM_OWNER_COUNT"
+	WAL_OWNER_COUNT_SOURCE=explicit
+elif [ "$SHM_OFI_RMA_WRITES" = 1 ] && \
+	[ "$SHM_OFI_RMA_WRITE_OWNER_MODE" = single-domain-fan-in ]; then
+	WAL_OWNER_COUNT=1
+	WAL_OWNER_COUNT_SOURCE=single-domain-fan-in
+else
+	WAL_OWNER_COUNT="$LANES"
+	WAL_OWNER_COUNT_SOURCE=placement-lanes-default
+fi
 WAL_OWNER_CPU_LIST="${URING_PLAY_ZCNBLK_SHM_OWNER_CPU_LIST:-}"
+if [ "$WAL_OWNER_INGRESS" = 1 ]; then
+	RMA_WRITE_ENDPOINT_COUNT="$WAL_OWNER_COUNT"
+	REMOTE_STREAM_COUNT="$WAL_OWNER_COUNT"
+else
+	RMA_WRITE_ENDPOINT_COUNT="$LANES"
+	REMOTE_STREAM_COUNT="$LANES"
+fi
 WAL_OWNER_EXTENT_RECORDS="${URING_PLAY_ZCNBLK_SHM_OWNER_EXTENT_RECORDS:-256}"
 WAL_OWNER_WORKER_SPINS="${URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_SPINS:-65536}"
 WAL_OWNER_WORKER_ADAPTIVE_SPIN="${URING_PLAY_ZCNBLK_SHM_OWNER_WORKER_ADAPTIVE_SPIN:-1}"
@@ -537,6 +562,15 @@ if [ "$WAL_OWNER_INGRESS" = 1 ]; then
 	[ "$WAL_SPLIT_TRANSPORT" != 1 ] || die "stable owner ingress owns separate transport workers"
 	[ "$START_LOCAL_LEAF" != 1 ] || die "stable owner ingress currently requires an external userspace leaf"
 fi
+case "$SHM_OFI_RMA_WRITE_OWNER_MODE" in
+placement|single-domain-fan-in) ;;
+*) die "URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_OWNER_MODE must be placement or single-domain-fan-in" ;;
+esac
+[ "$SHM_OFI_RMA_WRITE_OWNER_MODE" != single-domain-fan-in ] || \
+	[ "$SHM_OFI_RMA_WRITES" = 1 ] || \
+	die "single-domain-fan-in owner mode requires OFI RMA writes"
+[[ "$SHM_OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED" =~ ^[01]$ ]] || \
+	die "URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED must be zero or one"
 [[ "$WAL_OWNER_COUNT" =~ ^[0-9]+$ ]] && [ "$WAL_OWNER_COUNT" -gt 0 ] || \
 	die "WAL owner count must be a positive integer"
 [ "$WAL_OWNER_COUNT" -le "$LANES" ] || \
@@ -618,6 +652,20 @@ if [ "$SHM_OFI_RMA_WRITES" = 1 ]; then
 		die "OFI RMA writes require URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES=1"
 	[ "$OFI_RMA_WRITE_DELIVERY_COMPLETE" = 1 ] || \
 		die "OFI RMA writes require URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1"
+	if [ "$SHM_OFI_RMA_WRITE_OWNER_MODE" = single-domain-fan-in ]; then
+		[ "$WAL_OWNER_COUNT" -eq 1 ] || \
+			die "single-domain-fan-in requires exactly one stable WAL owner"
+	else
+		if [ "$REMOTE_OFI_PROVIDER" = efa ] && [ "$WAL_OWNER_COUNT" -gt 1 ] && \
+			[ "$SHM_OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED" != 1 ]; then
+			printf 'PERF WARNING: EFA RMA writes use %s stable-owner endpoints on one configured OFI domain; measured same-domain endpoint contention can erase scaling. Use URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_OWNER_MODE=single-domain-fan-in for a single-leaf/single-rail capability run, or explicitly confirm this multi-endpoint placement topology.\n' \
+				"$WAL_OWNER_COUNT" >&2
+			if [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
+				[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; then
+				die "representative/strict same-domain EFA RMA writes require fan-in or explicit multi-endpoint confirmation"
+			fi
+		fi
+	fi
 	if [ "$SHM_OFI_RMA_WRITE_QD" -lt "$SHM_OFI_RMA_WRITE_MIN_QD" ]; then
 		printf 'PERF WARNING: rma_write_qd=%s is below the delivery-complete payload-operation floor=%s; random records in one userspace batch will require serial RMA completion waves even when block per-worker QD is one\n' \
 			"$SHM_OFI_RMA_WRITE_QD" "$SHM_OFI_RMA_WRITE_MIN_QD" >&2
@@ -1030,8 +1078,9 @@ fi
 		"$WAL_OWNER_DISPATCH" "$WAL_OWNER_EXTENT_RECORDS" "$WAL_OWNER_WORKER_SPINS" \
 		"$WAL_OWNER_WORKER_ADAPTIVE_SPIN" "$WAL_OWNER_WORKER_SPIN_MIN" \
 		"$WAL_OWNER_WORKER_ADAPTIVE_WAIT_NS"
-	printf 'wal_owner_ingress=%s wal_owner_ingress_source=%s wal_owner_count=%s wal_owner_cpu_list=%s\n' \
+	printf 'wal_owner_ingress=%s wal_owner_ingress_source=%s wal_owner_count=%s wal_owner_count_source=%s wal_owner_cpu_list=%s\n' \
 		"$WAL_OWNER_INGRESS" "$WAL_OWNER_INGRESS_SOURCE" "$WAL_OWNER_COUNT" \
+		"$WAL_OWNER_COUNT_SOURCE" \
 		"$([ "$WAL_OWNER_INGRESS" = 1 ] && join_comma "${owner_cpus[@]}" || printf none)"
 	printf 'wal_owner_write_fill_us=%s wal_owner_write_fill_min=%s wal_owner_pipeline_batches=%s wal_owner_pipeline_refill_spins=%s wal_owner_mixed_hysteresis_us=%s\n' \
 		"$WAL_OWNER_WRITE_FILL_US" "$WAL_OWNER_WRITE_FILL_MIN" "$WAL_OWNER_PIPELINE_BATCHES" \
@@ -1074,12 +1123,19 @@ fi
 		"$WAL_OFI_HUGETLB_CONFIRMED" "$EFA_USE_DEVICE_RDMA" \
 		"$SHM_OFI_RMA_READS" "$SHM_OFI_RMA_READ_QD" "$((LANES * SHM_OFI_RMA_READ_QD))" \
 		"$LEAF_OFI_RMA_READS" "$SHM_OFI_RMA_WRITES" "$SHM_OFI_RMA_WRITES_REQUIRED" \
-		"$SHM_OFI_RMA_WRITE_QD" "$((LANES * SHM_OFI_RMA_WRITE_QD))" \
+		"$SHM_OFI_RMA_WRITE_QD" "$((RMA_WRITE_ENDPOINT_COUNT * SHM_OFI_RMA_WRITE_QD))" \
 		"$LEAF_OFI_RMA_WRITES" "$OFI_RMA_WRITE_DELIVERY_COMPLETE"
 	printf 'rma_write_completion=delivery-cq-before-doorbell-result-hwm rma_write_pipeline_batches=%s rma_write_overlap_order=delivery-barrier end_to_end_zero_copy=no\n' \
 		"$WAL_OWNER_PIPELINE_BATCHES"
 	printf 'rma_write_qd_source=%s rma_write_representative_min_qd=%s rma_write_qd_scope=per-owner-payload-operations block_qd_coupled=no\n' \
 		"$SHM_OFI_RMA_WRITE_QD_SOURCE" "$SHM_OFI_RMA_WRITE_MIN_QD"
+	printf 'rma_write_owner_mode=%s rma_write_endpoint_count=%s multi_endpoint_confirmed=%s ingress_lane_fan_in=%s\n' \
+		"$SHM_OFI_RMA_WRITE_OWNER_MODE" "$RMA_WRITE_ENDPOINT_COUNT" \
+		"$SHM_OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED" \
+		"$([ "$WAL_OWNER_INGRESS" = 1 ] && [ "$WAL_OWNER_COUNT" -lt "$LANES" ] && printf '%s-to-%s' "$LANES" "$WAL_OWNER_COUNT" || printf none)"
+	printf 'remote_stream_count=%s remote_stream_scope=%s\n' \
+		"$REMOTE_STREAM_COUNT" \
+		"$([ "$WAL_OWNER_INGRESS" = 1 ] && printf stable-userspace-owners || printf ingress-lanes)"
 	printf 'rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=%s\n' \
 		"$OFI_RMA_SOURCE_HUGETLB_CONFIRMED"
 	printf 'order_smoke_pairs=%s\n' "$ORDER_SMOKE_PAIRS"
@@ -1219,6 +1275,8 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES="$SHM_OFI_RMA_WRITES" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED="$SHM_OFI_RMA_WRITES_REQUIRED" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD="$SHM_OFI_RMA_WRITE_QD" \
+	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_OWNER_MODE="$SHM_OFI_RMA_WRITE_OWNER_MODE" \
+	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED="$SHM_OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED" \
 	URING_PLAY_OFI_DOMAIN="$OFI_DOMAIN" \
 	URING_PLAY_OFI_CQ_SLEEP_NS="$OFI_CQ_SLEEP_NS" \
 	URING_PLAY_OFI_RMA_READ_QD="$OFI_ENDPOINT_RMA_READ_QD" \

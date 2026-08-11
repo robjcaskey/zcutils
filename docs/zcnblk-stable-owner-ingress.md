@@ -16,6 +16,9 @@ writer after userspace placement.
 - One ingress worker owns each block hctx lane, dirty-cache admission, and
   completion ordering.
 - One stable owner owns each long-lived remote stream and coalesces fragments.
+- The owner count may be smaller than the block-ingress lane count. Every
+  placement decision still occurs in this userspace stage; with one owner,
+  every ingress lane feeds the same stable remote stream.
 - The ingress-to-owner queue copies descriptors, not 4K payloads.
 - A transferred payload slot is released only after remote completion or safe
   dirty-cache retirement.
@@ -35,6 +38,16 @@ benchmark harness records client, ingress, kthread, and owner CPU assignments
 per lane. At `IODEPTH >= 128`, the harness also defaults the stable-owner queue
 to the aggregate outstanding depth (`LANES * IODEPTH`) so a temporarily hot
 owner cannot head-block unrelated lanes behind the old 128-entry limit.
+
+For a single EFA domain and one terminal memory leaf, set
+`URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_OWNER_MODE=single-domain-fan-in`. The
+block harness then defaults to one stable owner/OFI endpoint and a per-endpoint
+RMA payload-operation QD of 64 while retaining all configured block hctx lanes.
+This is a many-ingress-to-one-userspace-owner topology, not kernel striping or
+mirroring. Keep `placement` mode for multiple actual leaf/rail owners. Because
+multiple delivery-complete write endpoints on one configured EFA domain can
+contend instead of scale, strict multi-endpoint runs require the explicit
+`URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED=1` acknowledgement.
 
 ## x48 Dual-NIC Result
 

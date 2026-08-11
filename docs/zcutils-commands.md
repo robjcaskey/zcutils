@@ -138,6 +138,22 @@ This mode has stricter ordering rules than framed payloads:
 - Set `URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED=1` for attributable
   benchmarks. Otherwise an unnegotiated window or a busy lane may retain the
   compatible framed-message fallback.
+- `URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_OWNER_MODE=single-domain-fan-in`
+  routes every block-ingress lane through one stable userspace owner and one
+  long-lived OFI endpoint. This is the single-leaf/single-rail capability
+  topology: the kernel still owns no placement decision, and the userspace
+  owner count defaults to one. Its payload-operation QD defaults to 64 because
+  the endpoint must expose enough delivery-complete operations to reach the
+  EFA high-PPS path. The harness records the block-lane-to-owner fan-in,
+  endpoint count, per-endpoint QD, and aggregate RMA depth separately.
+- The default owner mode is `placement`, where every stable owner remains a
+  distinct placement/transport stream. Same-domain EFA RMA-write runs with
+  more than one such endpoint warn because endpoint contention can erase
+  scaling. Representative or strict runs must either use the explicit fan-in
+  topology or set
+  `URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED=1` to confirm
+  that the multi-endpoint placement topology is intentional. Confirmation
+  records the topology; it does not assert that the endpoints scale.
 
 Startup preflight accounts for the full shared mapping once per initiator OFI
 domain and the full leaf window once per leaf endpoint. Logs report RMA bytes,
@@ -148,7 +164,11 @@ still copies into the shared slot. `scripts/zcnblk-shm-block-bench.sh` exposes
 the same variables for correctness and QD curves. `scripts/zcnblk-pgbench.sh`
 uses `WAL_TRANSPORT=tcp|ofi`; keep owner count, owner/ingress/leaf CPU maps,
 pipeline depth, database settings, and workload parameters identical for a
-matched TCP-versus-EFA comparison.
+matched TCP-versus-EFA comparison. That harness remains a fixed two-owner
+placement comparison. Set `OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED=1` only to
+record that its same-domain EFA topology is intentional; without that explicit
+confirmation the run is non-representative, and strict mode stops before
+printing benchmark results.
 
 The current client shared arena is still allocated with `vmalloc_user()` and
 mapped with `remap_vmalloc_range()`. Reserving HugeTLB pages does not change
