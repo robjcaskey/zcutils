@@ -9826,6 +9826,196 @@ fn zcwal_extent_perf_warnings(
     Ok(())
 }
 
+fn zcofi_rma_perf_warnings(label: &str, lanes: usize, workers: usize) -> io::Result<()> {
+    if !env_truthy("URING_PLAY_PIN_CPUS") {
+        zc_topology_issue(
+            label,
+            "running without URING_PLAY_PIN_CPUS=1; lane/CPU topology is not pinned",
+        )?;
+    }
+    if env::var("URING_PLAY_PIN_CPU_LIST")
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        zc_topology_issue(
+            label,
+            "running without URING_PLAY_PIN_CPU_LIST; state the lane-to-CPU map for real IOPS numbers",
+        )?;
+    }
+    if workers < lanes {
+        println!(
+            "{label}-topology: workers={workers} lanes={lanes} multi_lane_workers=yes scheduling=event-driven-interleave representative_eligible=yes"
+        );
+    }
+    Ok(())
+}
+
+fn zcofi_estimated_registered_bytes(
+    lane_count: usize,
+    endpoints_per_lane: usize,
+    message_bytes: usize,
+) -> io::Result<usize> {
+    let tx_depth = env_usize_or("URING_PLAY_OFI_TX_QUEUE_DEPTH", 64).max(1);
+    let rx_depth = env_usize_or("URING_PLAY_OFI_RX_QUEUE_DEPTH", 64).max(1);
+    let read_depth = env_usize_or("URING_PLAY_OFI_RMA_READ_QD", 1).max(1);
+    let write_depth = env_usize_or("URING_PLAY_OFI_RMA_WRITE_QD", 1).max(1);
+    let slots = tx_depth
+        .checked_add(rx_depth)
+        .and_then(|depth| depth.checked_add(read_depth))
+        .and_then(|depth| depth.checked_add(write_depth))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "OFI queue depth overflow"))?;
+    lane_count
+        .checked_mul(endpoints_per_lane.max(1))
+        .and_then(|count| count.checked_mul(slots))
+        .and_then(|count| count.checked_mul(message_bytes.max(ZC_WAL_ACK_HEADER_LEN)))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OFI registered-memory estimate overflow",
+            )
+        })
+}
+
+fn zcofi_registered_working_set(
+    label: &str,
+    lane_count: usize,
+    bytes_per_lane: usize,
+) -> io::Result<usize> {
+    lane_count.checked_mul(bytes_per_lane).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{label} registered working-set size overflow"),
+        )
+    })
+}
+
+fn zcofi_perf_contract_warnings(
+    label: &str,
+    provider: &str,
+    lane_count: usize,
+    endpoints_per_lane: usize,
+    message_bytes: usize,
+    minimum_registered_bytes: usize,
+    domain_mapping_explicit: bool,
+) -> io::Result<()> {
+    let cq_sleep_ns = env_usize_or("URING_PLAY_OFI_CQ_SLEEP_NS", 50_000);
+    if cq_sleep_ns != 0 {
+        zc_topology_issue(
+            label,
+            format!(
+                "URING_PLAY_OFI_CQ_SLEEP_NS={cq_sleep_ns}; representative low-latency OFI runs require a non-sleeping CQ progress loop"
+            ),
+        )?;
+    }
+    let efa = provider == "efa" || provider == "efa-direct";
+    if !efa {
+        return Ok(());
+    }
+    if !domain_mapping_explicit {
+        zc_topology_issue(
+            label,
+            "EFA lane-to-NIC/domain mapping is implicit; set URING_PLAY_OFI_DOMAIN or provide every branch fabric_domain in the zcplan topology",
+        )?;
+    }
+    if env::var("FI_EFA_IFACE")
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        zc_topology_issue(
+            label,
+            "FI_EFA_IFACE is unset; explicitly name the EFA NIC(s) before treating lane/domain locality as representative",
+        )?;
+    }
+    if env::var("FI_EFA_USE_HUGE_PAGE")
+        .map(|value| matches!(value.trim(), "0" | "false" | "no" | "off"))
+        .unwrap_or(false)
+    {
+        zc_topology_issue(
+            label,
+            "FI_EFA_USE_HUGE_PAGE disables the provider huge-page path",
+        )?;
+    }
+    let queue_estimate =
+        zcofi_estimated_registered_bytes(lane_count, endpoints_per_lane, message_bytes)?;
+    let estimated = queue_estimate.max(minimum_registered_bytes);
+    let (huge_total, huge_free, huge_size) = hugepage_meminfo()?;
+    let needed_pages = estimated.div_ceil(huge_size.max(1));
+    let memlock_limit = memlock_rlimit_bytes()?;
+    println!(
+        "{label}-memory-preflight: queue_registered_estimate_bytes={queue_estimate} minimum_working_set_registered_bytes={minimum_registered_bytes} conservative_registered_bytes={estimated} hugepages_total={huge_total} hugepages_free={huge_free} hugepage_size_bytes={huge_size} needed_hugepages={needed_pages} memlock_bytes={}",
+        memlock_limit
+            .map(|limit| limit.to_string())
+            .unwrap_or_else(|| "unlimited".to_string()),
+    );
+    if huge_total == 0 || huge_free < needed_pages {
+        zc_topology_issue(
+            label,
+            format!(
+                "hugetlb headroom is insufficient for the conservative registered-arena estimate: estimated={} needed_pages={needed_pages} HugePages_Free={huge_free} HugePages_Total={huge_total} Hugepagesize={}",
+                format_mib(estimated),
+                format_mib(huge_size),
+            ),
+        )?;
+    }
+    if let Some(limit) = memlock_limit
+        && limit < estimated as u64
+    {
+        zc_topology_issue(
+            label,
+            format!(
+                "RLIMIT_MEMLOCK={} is below the conservative registered-arena estimate={}",
+                format_mib(limit as usize),
+                format_mib(estimated),
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+fn zcofi_print_lane_worker_cpu_map(label: &str, lanes: &[usize], workers: usize, domain: &str) {
+    let workers = workers.max(1);
+    for &lane in lanes {
+        let worker = lane % workers;
+        let cpu = affinity_target_cpu(worker)
+            .map(|cpu| cpu.to_string())
+            .unwrap_or_else(|| "unpinned".to_string());
+        println!(
+            "{label}-lane-map: lane={lane} worker={worker} cpu={cpu} domain={domain} scheduling={} aggregate_mapping_declared=yes",
+            if workers < lanes.len() {
+                "multi-lane-worker"
+            } else {
+                "one-worker-per-lane"
+            },
+        );
+    }
+}
+
+fn zcofi_queue_depth_preflight(
+    label: &str,
+    required_tx: usize,
+    required_rx: usize,
+) -> io::Result<()> {
+    let tx_depth = env_usize_or("URING_PLAY_OFI_TX_QUEUE_DEPTH", 64).max(1);
+    let rx_depth = env_usize_or("URING_PLAY_OFI_RX_QUEUE_DEPTH", 64).max(1);
+    if tx_depth < required_tx {
+        zc_topology_issue(
+            label,
+            format!(
+                "OFI TX ring depth={tx_depth} is below the protocol window={required_tx}; completions will force early credit recycling"
+            ),
+        )?;
+    }
+    if rx_depth < required_rx {
+        zc_topology_issue(
+            label,
+            format!(
+                "OFI RX ring depth={rx_depth} is below the required preposted window={required_rx}"
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn zcwal_extent_send(
     addr: &str,
@@ -10146,9 +10336,23 @@ unsafe extern "C" {
     fn zc_ofi_close(ep: *mut ZcOfiRawEndpoint);
     fn zc_ofi_last_error(ep: *const ZcOfiRawEndpoint) -> *const c_char;
     fn zc_ofi_max_msg_size(ep: *const ZcOfiRawEndpoint) -> usize;
+    fn zc_ofi_max_rma_size(ep: *const ZcOfiRawEndpoint) -> usize;
     fn zc_ofi_inject_size(ep: *const ZcOfiRawEndpoint) -> usize;
+    fn zc_ofi_format_profile(ep: *mut ZcOfiRawEndpoint, buf: *mut c_char, capacity: usize)
+    -> c_int;
+    fn zc_ofi_format_stats(ep: *mut ZcOfiRawEndpoint, buf: *mut c_char, capacity: usize) -> c_int;
     fn zc_ofi_get_name(ep: *mut ZcOfiRawEndpoint, buf: *mut c_void, len: *mut usize) -> c_int;
     fn zc_ofi_set_peer(ep: *mut ZcOfiRawEndpoint, addr: *const c_void, len: usize) -> c_int;
+    fn zc_ofi_register_send_buffer(
+        ep: *mut ZcOfiRawEndpoint,
+        buf: *const c_void,
+        len: usize,
+    ) -> c_int;
+    fn zc_ofi_register_recv_buffer(
+        ep: *mut ZcOfiRawEndpoint,
+        buf: *mut c_void,
+        len: usize,
+    ) -> c_int;
     fn zc_ofi_send(
         ep: *mut ZcOfiRawEndpoint,
         buf: *const c_void,
@@ -10185,6 +10389,13 @@ unsafe extern "C" {
         timeout_ms: c_int,
     ) -> c_int;
     fn zc_ofi_drain_send(ep: *mut ZcOfiRawEndpoint, timeout_ms: c_int) -> c_int;
+    fn zc_ofi_send_pending(ep: *const ZcOfiRawEndpoint) -> usize;
+    fn zc_ofi_send_poll(
+        ep: *mut ZcOfiRawEndpoint,
+        out_count: *mut usize,
+        wait: c_int,
+        timeout_ms: c_int,
+    ) -> c_int;
     fn zc_ofi_inject_to_last(ep: *mut ZcOfiRawEndpoint, buf: *const c_void, len: usize) -> c_int;
     fn zc_ofi_recv(
         ep: *mut ZcOfiRawEndpoint,
@@ -10204,6 +10415,25 @@ unsafe extern "C" {
         out_len: *mut usize,
         timeout_ms: c_int,
     ) -> c_int;
+    fn zc_ofi_recv_queue_init(ep: *mut ZcOfiRawEndpoint, depth: usize) -> c_int;
+    fn zc_ofi_recv_post(
+        ep: *mut ZcOfiRawEndpoint,
+        buf: *mut c_void,
+        cap: usize,
+        slot: usize,
+        user_data: u64,
+    ) -> c_int;
+    fn zc_ofi_recv_poll(
+        ep: *mut ZcOfiRawEndpoint,
+        out_slots: *mut usize,
+        out_user_data: *mut u64,
+        out_lengths: *mut usize,
+        out_sources: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        wait: c_int,
+        timeout_ms: c_int,
+    ) -> c_int;
     fn zc_ofi_rma_register_target(
         ep: *mut ZcOfiRawEndpoint,
         buf: *mut c_void,
@@ -10214,6 +10444,11 @@ unsafe extern "C" {
     fn zc_ofi_rma_register_read_buffer(
         ep: *mut ZcOfiRawEndpoint,
         buf: *mut c_void,
+        len: usize,
+    ) -> c_int;
+    fn zc_ofi_rma_register_write_buffer(
+        ep: *mut ZcOfiRawEndpoint,
+        buf: *const c_void,
         len: usize,
     ) -> c_int;
     fn zc_ofi_rma_read_queue_init(ep: *mut ZcOfiRawEndpoint, depth: usize) -> c_int;
@@ -10243,6 +10478,25 @@ unsafe extern "C" {
         remote_key: u64,
         timeout_ms: c_int,
     ) -> c_int;
+    fn zc_ofi_rma_write_queue_init(ep: *mut ZcOfiRawEndpoint, depth: usize) -> c_int;
+    fn zc_ofi_rma_write_post(
+        ep: *mut ZcOfiRawEndpoint,
+        buf: *const c_void,
+        len: usize,
+        remote_addr: u64,
+        remote_key: u64,
+        slot: usize,
+        user_data: u64,
+    ) -> c_int;
+    fn zc_ofi_rma_write_poll(
+        ep: *mut ZcOfiRawEndpoint,
+        out_slots: *mut usize,
+        out_user_data: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        wait: c_int,
+        timeout_ms: c_int,
+    ) -> c_int;
     fn zc_ofi_rma_read(
         ep: *mut ZcOfiRawEndpoint,
         buf: *mut c_void,
@@ -10269,6 +10523,11 @@ struct ZcOfiEndpoint;
 #[cfg(zc_has_libfabric)]
 impl Drop for ZcOfiEndpoint {
     fn drop(&mut self) {
+        if !self.raw.is_null() {
+            if let Ok(stats) = self.stats() {
+                let _ = writeln!(io::stderr().lock(), "zcofi-endpoint-stats: {stats}");
+            }
+        }
         unsafe {
             zc_ofi_close(self.raw);
         }
@@ -10459,15 +10718,44 @@ impl ZcOfiEndpoint {
                 detail
             )));
         }
-        Ok(Self { raw })
+        let mut endpoint = Self { raw };
+        let profile = endpoint.profile()?;
+        println!("zcofi-endpoint-profile: {profile}");
+        Ok(endpoint)
     }
 
     fn max_msg_size(&self) -> usize {
         unsafe { zc_ofi_max_msg_size(self.raw) }
     }
 
+    fn max_rma_size(&self) -> usize {
+        unsafe { zc_ofi_max_rma_size(self.raw) }
+    }
+
     fn inject_size(&self) -> usize {
         unsafe { zc_ofi_inject_size(self.raw) }
+    }
+
+    fn profile(&mut self) -> io::Result<String> {
+        let mut output = vec![0 as c_char; 4096];
+        let rc = unsafe { zc_ofi_format_profile(self.raw, output.as_mut_ptr(), output.len()) };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(self, rc, "zc_ofi_format_profile"));
+        }
+        Ok(unsafe { CStr::from_ptr(output.as_ptr()) }
+            .to_string_lossy()
+            .into_owned())
+    }
+
+    fn stats(&mut self) -> io::Result<String> {
+        let mut output = vec![0 as c_char; 4096];
+        let rc = unsafe { zc_ofi_format_stats(self.raw, output.as_mut_ptr(), output.len()) };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(self, rc, "zc_ofi_format_stats"));
+        }
+        Ok(unsafe { CStr::from_ptr(output.as_ptr()) }
+            .to_string_lossy()
+            .into_owned())
     }
 
     fn local_name(&mut self) -> io::Result<Vec<u8>> {
@@ -10494,6 +10782,38 @@ impl ZcOfiEndpoint {
         let rc = unsafe { zc_ofi_set_peer(self.raw, addr.as_ptr().cast::<c_void>(), addr.len()) };
         if rc != 0 {
             return Err(zcofi_error_from_endpoint(self, rc, "zc_ofi_set_peer"));
+        }
+        Ok(())
+    }
+
+    fn register_send_buffer(&mut self, buf: &[u8]) -> io::Result<()> {
+        unsafe { self.register_send_buffer_raw(buf.as_ptr(), buf.len()) }
+    }
+
+    unsafe fn register_send_buffer_raw(&mut self, buf: *const u8, len: usize) -> io::Result<()> {
+        let rc = unsafe { zc_ofi_register_send_buffer(self.raw, buf.cast::<c_void>(), len) };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(
+                self,
+                rc,
+                "zc_ofi_register_send_buffer",
+            ));
+        }
+        Ok(())
+    }
+
+    fn register_recv_buffer(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        unsafe { self.register_recv_buffer_raw(buf.as_mut_ptr(), buf.len()) }
+    }
+
+    unsafe fn register_recv_buffer_raw(&mut self, buf: *mut u8, len: usize) -> io::Result<()> {
+        let rc = unsafe { zc_ofi_register_recv_buffer(self.raw, buf.cast::<c_void>(), len) };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(
+                self,
+                rc,
+                "zc_ofi_register_recv_buffer",
+            ));
         }
         Ok(())
     }
@@ -10662,6 +10982,26 @@ impl ZcOfiEndpoint {
         Ok(())
     }
 
+    fn send_pending(&self) -> usize {
+        unsafe { zc_ofi_send_pending(self.raw) }
+    }
+
+    fn send_poll(&mut self, wait: bool) -> io::Result<usize> {
+        let mut completed = 0usize;
+        let rc = unsafe {
+            zc_ofi_send_poll(
+                self.raw,
+                &mut completed,
+                c_int::from(wait),
+                zcofi_timeout_ms(),
+            )
+        };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(self, rc, "zc_ofi_send_poll"));
+        }
+        Ok(completed)
+    }
+
     fn inject_to_last(&mut self, buf: &[u8]) -> io::Result<()> {
         let rc =
             unsafe { zc_ofi_inject_to_last(self.raw, buf.as_ptr().cast::<c_void>(), buf.len()) };
@@ -10712,6 +11052,82 @@ impl ZcOfiEndpoint {
         Ok(out_len)
     }
 
+    fn recv_queue_init(&mut self, depth: usize) -> io::Result<()> {
+        let rc = unsafe { zc_ofi_recv_queue_init(self.raw, depth) };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(
+                self,
+                rc,
+                "zc_ofi_recv_queue_init",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The pointed-to bytes must remain allocated, registered, and exclusively
+    /// owned by `slot` until that slot is returned by `recv_poll`.
+    unsafe fn recv_post_raw(
+        &mut self,
+        buf: *mut u8,
+        cap: usize,
+        slot: usize,
+        user_data: u64,
+    ) -> io::Result<bool> {
+        let rc = unsafe { zc_ofi_recv_post(self.raw, buf.cast::<c_void>(), cap, slot, user_data) };
+        if rc == -libc::EAGAIN {
+            return Ok(false);
+        }
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(self, rc, "zc_ofi_recv_post"));
+        }
+        Ok(true)
+    }
+
+    fn recv_poll(
+        &mut self,
+        out_slots: &mut [usize],
+        out_user_data: &mut [u64],
+        out_lengths: &mut [usize],
+        out_sources: &mut [u64],
+        wait: bool,
+    ) -> io::Result<usize> {
+        let capacity = out_slots.len();
+        if capacity == 0
+            || out_user_data.len() != capacity
+            || out_lengths.len() != capacity
+            || out_sources.len() != capacity
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OFI receive completion arrays must be non-empty and equally sized",
+            ));
+        }
+        let mut out_count = 0usize;
+        let rc = unsafe {
+            zc_ofi_recv_poll(
+                self.raw,
+                out_slots.as_mut_ptr(),
+                out_user_data.as_mut_ptr(),
+                out_lengths.as_mut_ptr(),
+                out_sources.as_mut_ptr(),
+                capacity,
+                &mut out_count,
+                c_int::from(wait),
+                zcofi_timeout_ms(),
+            )
+        };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(self, rc, "zc_ofi_recv_poll"));
+        }
+        if out_count > capacity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI receive poll returned more completions than requested",
+            ));
+        }
+        Ok(out_count)
+    }
+
     fn rma_register_target(&mut self, buf: &mut [u8]) -> io::Result<(u64, u64)> {
         unsafe { self.rma_register_target_raw(buf.as_mut_ptr(), buf.len()) }
     }
@@ -10745,6 +11161,20 @@ impl ZcOfiEndpoint {
                 self,
                 rc,
                 "zc_ofi_rma_register_read_buffer",
+            ));
+        }
+        Ok(())
+    }
+
+    fn rma_register_write_buffer(&mut self, buf: &[u8]) -> io::Result<()> {
+        let rc = unsafe {
+            zc_ofi_rma_register_write_buffer(self.raw, buf.as_ptr().cast::<c_void>(), buf.len())
+        };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(
+                self,
+                rc,
+                "zc_ofi_rma_register_write_buffer",
             ));
         }
         Ok(())
@@ -10846,6 +11276,85 @@ impl ZcOfiEndpoint {
         Ok(())
     }
 
+    fn rma_write_queue_init(&mut self, depth: usize) -> io::Result<()> {
+        let rc = unsafe { zc_ofi_rma_write_queue_init(self.raw, depth) };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(
+                self,
+                rc,
+                "zc_ofi_rma_write_queue_init",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The pointed-to bytes must remain allocated and registered until `slot`
+    /// is returned by `rma_write_poll`.
+    unsafe fn rma_write_post_raw(
+        &mut self,
+        buf: *const u8,
+        len: usize,
+        remote_addr: u64,
+        remote_key: u64,
+        slot: usize,
+        user_data: u64,
+    ) -> io::Result<bool> {
+        let rc = unsafe {
+            zc_ofi_rma_write_post(
+                self.raw,
+                buf.cast::<c_void>(),
+                len,
+                remote_addr,
+                remote_key,
+                slot,
+                user_data,
+            )
+        };
+        if rc == -libc::EAGAIN {
+            return Ok(false);
+        }
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(self, rc, "zc_ofi_rma_write_post"));
+        }
+        Ok(true)
+    }
+
+    fn rma_write_poll(
+        &mut self,
+        out_slots: &mut [usize],
+        out_user_data: &mut [u64],
+        wait: bool,
+    ) -> io::Result<usize> {
+        if out_slots.is_empty() || out_slots.len() != out_user_data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OFI RMA write completion arrays must be non-empty and equally sized",
+            ));
+        }
+        let mut out_count = 0usize;
+        let rc = unsafe {
+            zc_ofi_rma_write_poll(
+                self.raw,
+                out_slots.as_mut_ptr(),
+                out_user_data.as_mut_ptr(),
+                out_slots.len(),
+                &mut out_count,
+                c_int::from(wait),
+                zcofi_timeout_ms(),
+            )
+        };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(self, rc, "zc_ofi_rma_write_poll"));
+        }
+        if out_count > out_slots.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI RMA write poll returned more completions than requested",
+            ));
+        }
+        Ok(out_count)
+    }
+
     fn rma_read(&mut self, buf: &mut [u8], remote_addr: u64, remote_key: u64) -> io::Result<()> {
         let rc = unsafe {
             zc_ofi_rma_read(
@@ -10924,8 +11433,26 @@ impl ZcOfiEndpoint {
         0
     }
 
+    fn max_rma_size(&self) -> usize {
+        0
+    }
+
     fn inject_size(&self) -> usize {
         0
+    }
+
+    fn profile(&mut self) -> io::Result<String> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    fn stats(&mut self) -> io::Result<String> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
     }
 
     fn local_name(&mut self) -> io::Result<Vec<u8>> {
@@ -10936,6 +11463,34 @@ impl ZcOfiEndpoint {
     }
 
     fn set_peer(&mut self, _addr: &[u8]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    fn register_send_buffer(&mut self, _buf: &[u8]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    unsafe fn register_send_buffer_raw(&mut self, _buf: *const u8, _len: usize) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    fn register_recv_buffer(&mut self, _buf: &mut [u8]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    unsafe fn register_recv_buffer_raw(&mut self, _buf: *mut u8, _len: usize) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "zcutils was built without libfabric headers",
@@ -11003,6 +11558,17 @@ impl ZcOfiEndpoint {
         ))
     }
 
+    fn send_pending(&self) -> usize {
+        0
+    }
+
+    fn send_poll(&mut self, _wait: bool) -> io::Result<usize> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
     fn inject_to_last(&mut self, _buf: &[u8]) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -11031,6 +11597,40 @@ impl ZcOfiEndpoint {
         ))
     }
 
+    fn recv_queue_init(&mut self, _depth: usize) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    unsafe fn recv_post_raw(
+        &mut self,
+        _buf: *mut u8,
+        _cap: usize,
+        _slot: usize,
+        _user_data: u64,
+    ) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    fn recv_poll(
+        &mut self,
+        _out_slots: &mut [usize],
+        _out_user_data: &mut [u64],
+        _out_lengths: &mut [usize],
+        _out_sources: &mut [u64],
+        _wait: bool,
+    ) -> io::Result<usize> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
     fn rma_register_target(&mut self, _buf: &mut [u8]) -> io::Result<(u64, u64)> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -11050,6 +11650,47 @@ impl ZcOfiEndpoint {
     }
 
     fn rma_write(&mut self, _buf: &[u8], _remote_addr: u64, _remote_key: u64) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    fn rma_register_write_buffer(&mut self, _buf: &[u8]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    fn rma_write_queue_init(&mut self, _depth: usize) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    unsafe fn rma_write_post_raw(
+        &mut self,
+        _buf: *const u8,
+        _len: usize,
+        _remote_addr: u64,
+        _remote_key: u64,
+        _slot: usize,
+        _user_data: u64,
+    ) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    fn rma_write_poll(
+        &mut self,
+        _out_slots: &mut [usize],
+        _out_user_data: &mut [u64],
+        _wait: bool,
+    ) -> io::Result<usize> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "zcutils was built without libfabric headers",
@@ -11193,24 +11834,187 @@ fn zcofi_read_addr(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     Ok(addr)
 }
 
+fn zcofi_write_control_text(stream: &mut TcpStream, label: &str, value: &str) -> io::Result<()> {
+    let max = env_usize_or("URING_PLAY_OFI_MAX_CONTROL_TEXT_BYTES", 16 * 1024);
+    if value.is_empty() || value.len() > max {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("OFI {label} length {} is outside 1..={max}", value.len()),
+        ));
+    }
+    let len = u32::try_from(value.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("OFI {label} is too large: {} bytes", value.len()),
+        )
+    })?;
+    stream.write_all(&len.to_le_bytes())?;
+    stream.write_all(value.as_bytes())
+}
+
+fn zcofi_read_control_text(stream: &mut TcpStream, label: &str) -> io::Result<String> {
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf)?;
+    let len = u32::from_le_bytes(len_buf) as usize;
+    let max = env_usize_or("URING_PLAY_OFI_MAX_CONTROL_TEXT_BYTES", 16 * 1024);
+    if len == 0 || len > max {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid OFI {label} length {len}; maximum is {max}"),
+        ));
+    }
+    let mut bytes = vec![0u8; len];
+    stream.read_exact(&mut bytes)?;
+    String::from_utf8(bytes).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("OFI {label} is not UTF-8: {err}"),
+        )
+    })
+}
+
+fn zcofi_profile_field<'a>(profile: &'a str, key: &str) -> Option<&'a str> {
+    profile
+        .split_ascii_whitespace()
+        .find_map(|field| field.strip_prefix(key)?.strip_prefix('='))
+}
+
+fn zcofi_validate_peer_profile(
+    local_profile: &str,
+    remote_profile: &str,
+    local_contract: &str,
+    remote_contract: &str,
+) -> io::Result<()> {
+    if local_contract != remote_contract {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "OFI peer wire contract mismatch local={local_contract:?} remote={remote_contract:?}"
+            ),
+        ));
+    }
+    for key in ["provider", "endpoint_type", "efa", "efa_direct"] {
+        let local = zcofi_profile_field(local_profile, key).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("local OFI profile is missing {key}"),
+            )
+        })?;
+        let remote = zcofi_profile_field(remote_profile, key).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("remote OFI profile is missing {key}"),
+            )
+        })?;
+        if local != remote {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("OFI peer profile mismatch field={key} local={local} remote={remote}"),
+            ));
+        }
+    }
+    if zcofi_profile_field(local_profile, "efa_direct") == Some("1") {
+        let local = zcofi_profile_field(local_profile, "fabric").unwrap_or("missing");
+        let remote = zcofi_profile_field(remote_profile, "fabric").unwrap_or("missing");
+        if local != remote {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("efa-direct peer fabric mismatch local={local:?} remote={remote:?}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn zcofi_wal_peer_contract(
+    provider: &str,
+    lane_count: usize,
+    extent_bytes: usize,
+    ack_enabled: bool,
+    ack_window: usize,
+) -> String {
+    let message_bytes = zcofi_wal_message_bytes(provider, extent_bytes, ack_enabled);
+    format!(
+        "zcofi-wal-v2;lanes={lane_count};extent={extent_bytes};message={message_bytes};ack={};ack_window={};compact={};sequence_header={}",
+        u8::from(ack_enabled),
+        if ack_enabled { ack_window.max(1) } else { 0 },
+        u8::from(zcofi_compact_4k_enabled(
+            provider,
+            extent_bytes,
+            ack_enabled
+        )),
+        u8::from(!zcofi_compact_4k_enabled(
+            provider,
+            extent_bytes,
+            ack_enabled
+        )),
+    )
+}
+
+fn zcofi_rma_peer_contract(
+    lane_count: usize,
+    bytes_per_lane: usize,
+    extent_bytes: usize,
+) -> String {
+    format!(
+        "zcofi-rma-window-v3;lanes={lane_count};bytes_per_lane={bytes_per_lane};extent={extent_bytes};done=operation-plus-payload-digest"
+    )
+}
+
+fn zcraid_mirror_ofi_peer_contract(
+    provider: &str,
+    branch: usize,
+    lane_count: usize,
+    extent_bytes: usize,
+    ack_enabled: bool,
+    ack_window: usize,
+    coord_mode: ZcRaidZlaneCoordMode,
+) -> String {
+    format!(
+        "zcraid-mirror-ofi-v2;branch={branch};lanes={lane_count};extent={extent_bytes};message={};ack={};ack_window={};compact={};sequence_header={};zlane={}",
+        zcofi_wal_message_bytes(provider, extent_bytes, ack_enabled),
+        u8::from(ack_enabled),
+        if ack_enabled { ack_window.max(1) } else { 0 },
+        u8::from(zcofi_compact_4k_enabled(
+            provider,
+            extent_bytes,
+            ack_enabled
+        )),
+        u8::from(!zcofi_compact_4k_enabled(
+            provider,
+            extent_bytes,
+            ack_enabled
+        )),
+        coord_mode.label(),
+    )
+}
+
 fn zcofi_server_exchange_peer(
     bind: &str,
     control_port: u16,
     ep: &mut ZcOfiEndpoint,
+    contract: &str,
 ) -> io::Result<()> {
     let listen = zcofi_control_bind_addr(bind);
     let listener = tcp_listener_reuseaddr(listen, control_port)?;
     let (mut stream, peer) = listener.accept()?;
     set_tcp_nodelay_from_env(&stream)?;
     let local = ep.local_name()?;
+    let local_profile = ep.profile()?;
     zcofi_write_addr(&mut stream, &local)?;
+    zcofi_write_control_text(&mut stream, "peer profile", &local_profile)?;
+    zcofi_write_control_text(&mut stream, "wire contract", contract)?;
     let remote = zcofi_read_addr(&mut stream)?;
+    let remote_profile = zcofi_read_control_text(&mut stream, "peer profile")?;
+    let remote_contract = zcofi_read_control_text(&mut stream, "wire contract")?;
+    zcofi_validate_peer_profile(&local_profile, &remote_profile, contract, &remote_contract)?;
     ep.set_peer(&remote)?;
     println!(
-        "zcofi-control-server: listen={listen}:{control_port} peer={peer} local_addr_bytes={} remote_addr_bytes={}",
+        "zcofi-control-server: listen={listen}:{control_port} peer={peer} local_addr_bytes={} remote_addr_bytes={} peer_profile_validated=yes wire_contract={contract}",
         local.len(),
         remote.len()
     );
+    println!("zcofi-control-server-peer-profile: {remote_profile}");
     Ok(())
 }
 
@@ -11218,6 +12022,7 @@ fn zcofi_client_exchange_peer(
     addr: &str,
     control_port: u16,
     ep: &mut ZcOfiEndpoint,
+    contract: &str,
 ) -> io::Result<()> {
     let started = Instant::now();
     let timeout = Duration::from_millis(zcofi_timeout_ms() as u64);
@@ -11238,14 +12043,21 @@ fn zcofi_client_exchange_peer(
     };
     set_tcp_nodelay_from_env(&stream)?;
     let remote = zcofi_read_addr(&mut stream)?;
+    let remote_profile = zcofi_read_control_text(&mut stream, "peer profile")?;
+    let remote_contract = zcofi_read_control_text(&mut stream, "wire contract")?;
     let local = ep.local_name()?;
+    let local_profile = ep.profile()?;
     zcofi_write_addr(&mut stream, &local)?;
+    zcofi_write_control_text(&mut stream, "peer profile", &local_profile)?;
+    zcofi_write_control_text(&mut stream, "wire contract", contract)?;
+    zcofi_validate_peer_profile(&local_profile, &remote_profile, contract, &remote_contract)?;
     ep.set_peer(&remote)?;
     println!(
-        "zcofi-control-client: addr={addr}:{control_port} local_addr_bytes={} remote_addr_bytes={}",
+        "zcofi-control-client: addr={addr}:{control_port} local_addr_bytes={} remote_addr_bytes={} peer_profile_validated=yes wire_contract={contract}",
         local.len(),
         remote.len()
     );
+    println!("zcofi-control-client-peer-profile: {remote_profile}");
     Ok(())
 }
 
@@ -11295,18 +12107,28 @@ impl ZcOfiMessageStream {
             ));
         }
         let control_port = zcofi_control_port(&service)?;
+        let contract = format!(
+            "zcofi-message-stream-v2;rma={};message={message_bytes}",
+            u8::from(rma_capable)
+        );
         if server {
-            zcofi_server_exchange_peer(node, control_port, &mut endpoint)?;
+            zcofi_server_exchange_peer(node, control_port, &mut endpoint, &contract)?;
         } else {
-            zcofi_client_exchange_peer(node, control_port, &mut endpoint)?;
+            zcofi_client_exchange_peer(node, control_port, &mut endpoint, &contract)?;
+        }
+        let mut receive = vec![0u8; message_bytes];
+        let transmit = Vec::with_capacity(message_bytes);
+        endpoint.register_recv_buffer(&mut receive)?;
+        unsafe {
+            endpoint.register_send_buffer_raw(transmit.as_ptr(), transmit.capacity())?;
         }
         Ok(Self {
             endpoint,
             message_bytes,
-            receive: vec![0u8; message_bytes],
+            receive,
             receive_start: 0,
             receive_end: 0,
-            transmit: Vec::with_capacity(message_bytes),
+            transmit,
         })
     }
 
@@ -11411,7 +12233,9 @@ impl Write for ZcOfiMessageStream {
                 ),
             ));
         }
-        self.endpoint.send(input)?;
+        self.transmit.clear();
+        self.transmit.extend_from_slice(input);
+        self.endpoint.send(&self.transmit)?;
         Ok(input.len())
     }
 
@@ -11453,16 +12277,53 @@ impl Write for ZcOfiMessageStream {
 mod zcnblk_ofi_message_stream_tests {
     use super::*;
 
+    static OFI_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    static OFI_TEST_NEXT_SERVICE: AtomicUsize = AtomicUsize::new(0);
+
+    fn ofi_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        OFI_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn ofi_test_service() -> u16 {
+        const BASE: usize = 20_000;
+        const SPAN: usize = 8_000;
+        let process_offset = std::process::id() as usize % SPAN;
+        for _ in 0..SPAN {
+            let sequence = OFI_TEST_NEXT_SERVICE.fetch_add(1, Ordering::Relaxed);
+            let candidate = BASE + (process_offset + sequence) % SPAN;
+            let control = candidate + 1_000;
+            let Ok(data_tcp) = TcpListener::bind(("127.0.0.1", candidate as u16)) else {
+                continue;
+            };
+            let Ok(control_tcp) = TcpListener::bind(("127.0.0.1", control as u16)) else {
+                continue;
+            };
+            let Ok(data_udp) = UdpSocket::bind(("127.0.0.1", candidate as u16)) else {
+                continue;
+            };
+            let Ok(control_udp) = UdpSocket::bind(("127.0.0.1", control as u16)) else {
+                continue;
+            };
+            drop((data_tcp, control_tcp, data_udp, control_udp));
+            return candidate as u16;
+        }
+        panic!(
+            "could not reserve a local OFI test service/control-port pair below the ephemeral range"
+        );
+    }
+
     #[test]
     #[ignore = "requires a local libfabric sockets provider"]
     fn vectored_wal_message_round_trips_without_tcp_bridge() {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _guard = ofi_test_guard();
         unsafe {
             env::set_var("URING_PLAY_OFI_CQ_SLEEP_NS", "0");
             env::set_var("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", "65536");
         }
-        let service = 39_000u16 + u16::try_from(std::process::id() % 500).unwrap();
+        let service = ofi_test_service();
         let server = thread::spawn(move || -> io::Result<()> {
             let mut stream =
                 ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, true, false)?;
@@ -11495,13 +12356,12 @@ mod zcnblk_ofi_message_stream_tests {
     #[test]
     #[ignore = "requires a local libfabric sockets provider with FI_RMA"]
     fn rma_read_moves_registered_data_without_a_leaf_response_payload() {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _guard = ofi_test_guard();
         unsafe {
             env::set_var("URING_PLAY_OFI_CQ_SLEEP_NS", "0");
             env::set_var("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", "65536");
         }
-        let service = 39_600u16 + u16::try_from(std::process::id() % 300).unwrap();
+        let service = ofi_test_service();
         let server = thread::spawn(move || -> io::Result<()> {
             let mut stream =
                 ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, true, true)?;
@@ -11542,15 +12402,14 @@ mod zcnblk_ofi_message_stream_tests {
     #[test]
     #[ignore = "requires a local libfabric sockets provider with FI_RMA"]
     fn queued_rma_reads_batch_local_cq_completions_by_stable_slot() {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _guard = ofi_test_guard();
         unsafe {
             env::set_var("URING_PLAY_OFI_CQ_SLEEP_NS", "0");
             env::set_var("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", "65536");
         }
         const QD: usize = 4;
         const EXTENT: usize = 4096;
-        let service = 39_900u16 + u16::try_from(std::process::id() % 300).unwrap();
+        let service = ofi_test_service();
         let server = thread::spawn(move || -> io::Result<()> {
             let mut stream =
                 ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, true, true)?;
@@ -11624,6 +12483,402 @@ mod zcnblk_ofi_message_stream_tests {
         client.write_all(&[1]).unwrap();
         server.join().unwrap().unwrap();
     }
+
+    #[test]
+    #[ignore = "requires a local libfabric sockets provider with FI_RMA"]
+    fn queued_rma_writes_retire_out_of_order_by_stable_slot() {
+        let _guard = ofi_test_guard();
+        unsafe {
+            env::set_var("URING_PLAY_OFI_CQ_SLEEP_NS", "0");
+            env::set_var("URING_PLAY_OFI_RMA_WRITE_QD", "4");
+            env::set_var("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", "65536");
+        }
+        const QD: usize = 4;
+        const EXTENT: usize = 4096;
+        let service = ofi_test_service();
+        let server = thread::spawn(move || -> io::Result<()> {
+            let mut stream =
+                ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, true, true)?;
+            let mut target = vec![0u8; QD * EXTENT];
+            let (addr, key) = stream.register_rma_target(&mut target)?;
+            let mut metadata = [0u8; 16];
+            metadata[0..8].copy_from_slice(&addr.to_le_bytes());
+            metadata[8..16].copy_from_slice(&key.to_le_bytes());
+            stream.write_all(&metadata)?;
+            let mut done = [0u8; 1];
+            stream.read_exact(&mut done)?;
+            if done != [1] {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "queued OFI RMA writer returned an invalid completion marker",
+                ));
+            }
+            for slot in 0..QD {
+                if target[slot * EXTENT..(slot + 1) * EXTENT] != vec![0x50 + slot as u8; EXTENT] {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("queued OFI RMA write payload mismatch in slot {slot}"),
+                    ));
+                }
+            }
+            Ok(())
+        });
+        thread::sleep(Duration::from_millis(25));
+        let mut client =
+            ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, false, true)
+                .unwrap();
+        let mut metadata = [0u8; 16];
+        client.read_exact(&mut metadata).unwrap();
+        let addr = u64::from_le_bytes(metadata[0..8].try_into().unwrap());
+        let key = u64::from_le_bytes(metadata[8..16].try_into().unwrap());
+        let mut source = vec![0u8; QD * EXTENT];
+        for slot in 0..QD {
+            source[slot * EXTENT..(slot + 1) * EXTENT].fill(0x50 + slot as u8);
+        }
+        client.endpoint.rma_register_write_buffer(&source).unwrap();
+        client.endpoint.rma_write_queue_init(QD).unwrap();
+        for slot in 0..QD {
+            let posted = unsafe {
+                client.endpoint.rma_write_post_raw(
+                    source.as_ptr().add(slot * EXTENT),
+                    EXTENT,
+                    addr + (slot * EXTENT) as u64,
+                    key,
+                    slot,
+                    200 + slot as u64,
+                )
+            }
+            .unwrap();
+            assert!(posted);
+        }
+        let mut completion_slots = [0usize; QD];
+        let mut completion_tokens = [0u64; QD];
+        let mut seen = [false; QD];
+        let mut completed = 0usize;
+        while completed < QD {
+            let count = client
+                .endpoint
+                .rma_write_poll(&mut completion_slots, &mut completion_tokens, true)
+                .unwrap();
+            assert!(count > 0);
+            for index in 0..count {
+                let slot = completion_slots[index];
+                assert!(slot < QD);
+                assert_eq!(completion_tokens[index], 200 + slot as u64);
+                assert!(!seen[slot]);
+                seen[slot] = true;
+                completed += 1;
+            }
+        }
+        client.write_all(&[1]).unwrap();
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a local libfabric sockets provider with FI_RMA"]
+    fn mixed_send_read_and_write_share_one_tx_cq_without_completion_theft() {
+        let _guard = ofi_test_guard();
+        unsafe {
+            env::set_var("URING_PLAY_OFI_CQ_SLEEP_NS", "0");
+            env::set_var("URING_PLAY_OFI_RMA_READ_QD", "2");
+            env::set_var("URING_PLAY_OFI_RMA_WRITE_QD", "2");
+            env::set_var("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", "65536");
+        }
+        const EXTENT: usize = 4096;
+        let service = ofi_test_service();
+        let server = thread::spawn(move || -> io::Result<()> {
+            let mut stream =
+                ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, true, true)?;
+            let mut target = vec![0u8; 2 * EXTENT];
+            target[..EXTENT].fill(0xa5);
+            let (addr, key) = stream.register_rma_target(&mut target)?;
+            let mut metadata = [0u8; 16];
+            metadata[0..8].copy_from_slice(&addr.to_le_bytes());
+            metadata[8..16].copy_from_slice(&key.to_le_bytes());
+            stream.write_all(&metadata)?;
+            let mut mixed = [0u8; 5];
+            stream.read_exact(&mut mixed)?;
+            let mut done = [0u8; 4];
+            stream.read_exact(&mut done)?;
+            if &mixed != b"mixed" || &done != b"done" || target[EXTENT..] != [0x5a; EXTENT] {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "mixed OFI TX CQ test observed bad message or RMA payload",
+                ));
+            }
+            stream.write_all(b"ok")
+        });
+        thread::sleep(Duration::from_millis(25));
+        let mut client =
+            ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, false, true)
+                .unwrap();
+        let mut metadata = [0u8; 16];
+        client.read_exact(&mut metadata).unwrap();
+        let addr = u64::from_le_bytes(metadata[0..8].try_into().unwrap());
+        let key = u64::from_le_bytes(metadata[8..16].try_into().unwrap());
+        let mut read_target = vec![0u8; EXTENT];
+        let write_source = vec![0x5au8; EXTENT];
+        client
+            .endpoint
+            .rma_register_read_buffer(&mut read_target)
+            .unwrap();
+        client
+            .endpoint
+            .rma_register_write_buffer(&write_source)
+            .unwrap();
+        client.endpoint.register_send_buffer(b"mixed").unwrap();
+        client.endpoint.rma_read_queue_init(2).unwrap();
+        client.endpoint.rma_write_queue_init(2).unwrap();
+        assert!(
+            unsafe {
+                client.endpoint.rma_read_post_raw(
+                    read_target.as_mut_ptr(),
+                    EXTENT,
+                    addr,
+                    key,
+                    0,
+                    301,
+                )
+            }
+            .unwrap()
+        );
+        assert!(
+            unsafe {
+                client.endpoint.rma_write_post_raw(
+                    write_source.as_ptr(),
+                    EXTENT,
+                    addr + EXTENT as u64,
+                    key,
+                    0,
+                    302,
+                )
+            }
+            .unwrap()
+        );
+        client.endpoint.send_nowait(b"mixed").unwrap();
+        client.endpoint.drain_send().unwrap();
+        let mut slots = [usize::MAX; 2];
+        let mut tokens = [0u64; 2];
+        let writes = client
+            .endpoint
+            .rma_write_poll(&mut slots, &mut tokens, true)
+            .unwrap();
+        assert_eq!(writes, 1);
+        assert_eq!((slots[0], tokens[0]), (0, 302));
+        let reads = client
+            .endpoint
+            .rma_read_poll(&mut slots, &mut tokens, true)
+            .unwrap();
+        assert_eq!(reads, 1);
+        assert_eq!((slots[0], tokens[0]), (0, 301));
+        assert_eq!(read_target, vec![0xa5; EXTENT]);
+        client.write_all(b"done").unwrap();
+        let mut ack = [0u8; 2];
+        client.read_exact(&mut ack).unwrap();
+        assert_eq!(&ack, b"ok");
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a local libfabric sockets provider"]
+    fn preposted_receive_ring_batches_and_recycles_stable_slots() {
+        let _guard = ofi_test_guard();
+        unsafe {
+            env::set_var("URING_PLAY_OFI_CQ_SLEEP_NS", "0");
+            env::set_var("URING_PLAY_OFI_RX_QUEUE_DEPTH", "4");
+            env::set_var("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", "65536");
+        }
+        const QD: usize = 4;
+        const MESSAGE: usize = 32;
+        let service = ofi_test_service();
+        let server = thread::spawn(move || -> io::Result<()> {
+            let mut stream =
+                ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, true, false)?;
+            let mut receive = vec![0u8; QD * MESSAGE];
+            stream.endpoint.register_recv_buffer(&mut receive)?;
+            stream.endpoint.recv_queue_init(QD)?;
+            for slot in 0..QD {
+                let posted = unsafe {
+                    stream.endpoint.recv_post_raw(
+                        receive.as_mut_ptr().add(slot * MESSAGE),
+                        MESSAGE,
+                        slot,
+                        400 + slot as u64,
+                    )
+                }?;
+                if !posted {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "OFI provider rejected a preposted receive slot",
+                    ));
+                }
+            }
+            let mut slots = [usize::MAX; QD];
+            let mut tokens = [0u64; QD];
+            let mut lengths = [0usize; QD];
+            let mut sources = [0u64; QD];
+            let mut seen = [false; QD];
+            let mut completed = 0usize;
+            while completed < QD {
+                let count = stream.endpoint.recv_poll(
+                    &mut slots,
+                    &mut tokens,
+                    &mut lengths,
+                    &mut sources,
+                    true,
+                )?;
+                for index in 0..count {
+                    let slot = slots[index];
+                    if slot >= QD
+                        || tokens[index] != 400 + slot as u64
+                        || lengths[index] != MESSAGE
+                        || seen[slot]
+                        || receive[slot * MESSAGE..(slot + 1) * MESSAGE]
+                            != [0x60 + slot as u8; MESSAGE]
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "OFI preposted receive completion mismatch",
+                        ));
+                    }
+                    seen[slot] = true;
+                    completed += 1;
+                }
+            }
+            stream.write_all(b"ok")
+        });
+        thread::sleep(Duration::from_millis(25));
+        let mut client =
+            ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, false, false)
+                .unwrap();
+        let mut messages = vec![0u8; QD * MESSAGE];
+        for slot in 0..QD {
+            messages[slot * MESSAGE..(slot + 1) * MESSAGE].fill(0x60 + slot as u8);
+        }
+        client.endpoint.register_send_buffer(&messages).unwrap();
+        client
+            .endpoint
+            .send_many_nowait_fixed(&messages, MESSAGE, MESSAGE, QD)
+            .unwrap();
+        client.endpoint.drain_send().unwrap();
+        let mut ack = [0u8; 2];
+        client.read_exact(&mut ack).unwrap();
+        assert_eq!(&ack, b"ok");
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a local libfabric sockets provider"]
+    fn timed_out_receive_keeps_the_inflight_slot_owned() {
+        let _guard = ofi_test_guard();
+        unsafe {
+            env::set_var("URING_PLAY_OFI_CQ_SLEEP_NS", "0");
+            env::set_var("URING_PLAY_OFI_TIMEOUT_MS", "30000");
+            env::set_var("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", "65536");
+        }
+        let service = ofi_test_service();
+        let server = thread::spawn(move || -> io::Result<()> {
+            let mut stream =
+                ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, true, false)?;
+            let mut slot = [0u8; 32];
+            stream.endpoint.register_recv_buffer(&mut slot)?;
+            stream.endpoint.recv_queue_init(1)?;
+            assert!(unsafe {
+                stream
+                    .endpoint
+                    .recv_post_raw(slot.as_mut_ptr(), slot.len(), 0, 900)?
+            });
+            let mut slots = [usize::MAX; 1];
+            let mut tokens = [0u64; 1];
+            let mut lengths = [0usize; 1];
+            let mut sources = [0u64; 1];
+            unsafe {
+                env::set_var("URING_PLAY_OFI_TIMEOUT_MS", "40");
+            }
+            assert!(
+                stream
+                    .endpoint
+                    .recv_poll(&mut slots, &mut tokens, &mut lengths, &mut sources, true,)
+                    .is_err()
+            );
+            assert!(
+                unsafe {
+                    stream
+                        .endpoint
+                        .recv_post_raw(slot.as_mut_ptr(), slot.len(), 0, 901)
+                }
+                .is_err()
+            );
+            Ok(())
+        });
+        thread::sleep(Duration::from_millis(5));
+        let client =
+            ZcOfiMessageStream::connect("sockets", "rdm", "127.0.0.1", service, false, false)
+                .unwrap();
+        thread::sleep(Duration::from_millis(100));
+        drop(client);
+        server.join().unwrap().unwrap();
+        unsafe {
+            env::set_var("URING_PLAY_OFI_TIMEOUT_MS", "30000");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a local libfabric sockets provider"]
+    fn truncated_receive_cq_error_poisons_endpoint_without_reusing_slot() {
+        let _guard = ofi_test_guard();
+        unsafe {
+            env::set_var("URING_PLAY_OFI_CQ_SLEEP_NS", "0");
+            env::set_var("URING_PLAY_OFI_TIMEOUT_MS", "30000");
+        }
+        let service = ofi_test_service();
+        let contract = "zcofi-cq-error-test-v1";
+        let server = thread::spawn(move || -> io::Result<()> {
+            let service_text = service.to_string();
+            let mut endpoint =
+                ZcOfiEndpoint::open("sockets", "rdm", "127.0.0.1", &service_text, true)?;
+            zcofi_server_exchange_peer(
+                "127.0.0.1",
+                zcofi_control_port(&service_text)?,
+                &mut endpoint,
+                contract,
+            )?;
+            let mut short = [0u8; 8];
+            endpoint.register_recv_buffer(&mut short)?;
+            let first_error = endpoint
+                .recv(&mut short)
+                .expect_err("a message larger than the posted receive must produce a CQ error");
+            assert!(first_error.to_string().contains("CQ error"));
+            let before_retry = endpoint.stats()?;
+            assert_eq!(zcofi_profile_field(&before_retry, "recv_active"), Some("1"));
+            assert_eq!(
+                zcofi_profile_field(&before_retry, "recv_inflight"),
+                Some("0")
+            );
+            assert_eq!(zcofi_profile_field(&before_retry, "recv_errors"), Some("1"));
+            assert_ne!(zcofi_profile_field(&before_retry, "fatal_rc"), Some("0"));
+            endpoint
+                .recv(&mut short)
+                .expect_err("a poisoned endpoint must reject another receive");
+            let after_retry = endpoint.stats()?;
+            assert_eq!(zcofi_profile_field(&after_retry, "recv_active"), Some("1"));
+            assert_eq!(zcofi_profile_field(&after_retry, "recv_posts"), Some("1"));
+            Ok(())
+        });
+        thread::sleep(Duration::from_millis(25));
+        let service_text = service.to_string();
+        let mut client =
+            ZcOfiEndpoint::open("sockets", "rdm", "127.0.0.1", &service_text, false).unwrap();
+        zcofi_client_exchange_peer(
+            "127.0.0.1",
+            zcofi_control_port(&service_text).unwrap(),
+            &mut client,
+            contract,
+        )
+        .unwrap();
+        client.send(&[0xabu8; 64]).unwrap();
+        server.join().unwrap().unwrap();
+    }
 }
 
 fn zcofi_wal_check_endpoint_shape(
@@ -11686,9 +12941,21 @@ fn zcofi_validate_ack_covering_seq(
             ),
         ));
     }
-    let expected_first = (next_seq * records_per_extent) as u64;
-    let expected_last = ((ack_last_seq + 1) * records_per_extent - 1) as u64;
-    let expected_durable = (ack_last_seq * extent_bytes) as u64;
+    let expected_first =
+        u64::try_from(next_seq.checked_mul(records_per_extent).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI WAL ack first logical index overflow",
+            )
+        })?)
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI WAL ack first logical index does not fit in u64",
+            )
+        })?;
+    let (expected_last, expected_durable) =
+        zcofi_expected_ack_hwm(ack_last_seq, records_per_extent, extent_bytes)?;
     if ack.first_logical_index != expected_first
         || ack.last_logical_index != expected_last
         || ack.durable_wal_offset != expected_durable
@@ -11702,6 +12969,176 @@ fn zcofi_validate_ack_covering_seq(
         ));
     }
     Ok(ack_last_seq - next_seq + 1)
+}
+
+fn zcofi_expected_ack_hwm(
+    last_seq: usize,
+    records_per_extent: usize,
+    extent_bytes: usize,
+) -> io::Result<(u64, u64)> {
+    if records_per_extent == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "OFI WAL ack has zero records per extent",
+        ));
+    }
+    let last_logical = last_seq
+        .checked_add(1)
+        .and_then(|next| next.checked_mul(records_per_extent))
+        .and_then(|exclusive| exclusive.checked_sub(1))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI WAL ack last logical index overflow",
+            )
+        })?;
+    let durable = last_seq.checked_mul(extent_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "OFI WAL ack durable offset overflow",
+        )
+    })?;
+    Ok((
+        u64::try_from(last_logical).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI WAL ack last logical index does not fit in u64",
+            )
+        })?,
+        u64::try_from(durable).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI WAL ack durable offset does not fit in u64",
+            )
+        })?,
+    ))
+}
+
+fn zcofi_validate_ack_within_window(
+    ack: ZcWalAckHeader,
+    lane: usize,
+    seq_base: usize,
+    batch_end: usize,
+    records_per_extent: usize,
+    extent_bytes: usize,
+) -> io::Result<(usize, usize)> {
+    if ack.status != 0
+        || ack.lane_id as usize != lane
+        || ack.record_size as usize != ZC_WAL_RECORD_SIZE
+        || records_per_extent == 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "OFI WAL ack identity mismatch lane={lane} window={seq_base}..{batch_end} got lane={} status={} record_size={}",
+                ack.lane_id, ack.status, ack.record_size
+            ),
+        ));
+    }
+    let first_logical = usize::try_from(ack.first_logical_index).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "OFI WAL ack first logical index does not fit in usize",
+        )
+    })?;
+    if first_logical % records_per_extent != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "OFI WAL ack first logical index {} is not extent-aligned to {records_per_extent} records",
+                ack.first_logical_index
+            ),
+        ));
+    }
+    let first_seq = first_logical / records_per_extent;
+    let last_seq = usize::try_from(ack.extent_sequence).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "OFI WAL ack extent sequence does not fit in usize",
+        )
+    })?;
+    if first_seq < seq_base
+        || first_seq >= batch_end
+        || last_seq < first_seq
+        || last_seq >= batch_end
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "OFI WAL ack sequence range {first_seq}..={last_seq} is outside window {seq_base}..{batch_end}"
+            ),
+        ));
+    }
+    let (expected_last, expected_durable) =
+        zcofi_expected_ack_hwm(last_seq, records_per_extent, extent_bytes)?;
+    if ack.last_logical_index != expected_last || ack.durable_wal_offset != expected_durable {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "OFI WAL ack range mismatch lane={lane} seq={first_seq}..={last_seq} got last={} durable={} expected last={expected_last} durable={expected_durable}",
+                ack.last_logical_index, ack.durable_wal_offset
+            ),
+        ));
+    }
+    Ok((first_seq, last_seq - first_seq + 1))
+}
+
+fn zcofi_mark_ack_range(
+    masks: &mut [Vec<bool>],
+    tail_idx: usize,
+    seq_base: usize,
+    first_seq: usize,
+    covered: usize,
+) -> io::Result<std::ops::Range<usize>> {
+    if covered == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "OFI WAL ACK range covers zero extents",
+        ));
+    }
+    let first_slot = first_seq.checked_sub(seq_base).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "OFI WAL ACK range starts before the active window",
+        )
+    })?;
+    let end_slot = first_slot
+        .checked_add(covered)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "OFI WAL ACK range overflow"))?;
+    if end_slot > masks.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "OFI WAL ACK slots {first_slot}..{end_slot} exceed window depth {}",
+                masks.len()
+            ),
+        ));
+    }
+    for slot in first_slot..end_slot {
+        let branch_mask = &masks[slot];
+        if tail_idx >= branch_mask.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "OFI WAL ACK branch {tail_idx} exceeds branch-mask width {}",
+                    branch_mask.len()
+                ),
+            ));
+        }
+        if branch_mask[tail_idx] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "OFI WAL duplicate ACK branch={tail_idx} seq={}",
+                    seq_base + slot
+                ),
+            ));
+        }
+    }
+    for slot in first_slot..end_slot {
+        masks[slot][tail_idx] = true;
+    }
+    Ok(first_slot..end_slot)
 }
 
 fn zcofi_ack_from_extent_header(header: ZcWalExtentHeader) -> ZcWalAckHeader {
@@ -11719,23 +13156,108 @@ fn zcofi_ack_from_extent_header(header: ZcWalExtentHeader) -> ZcWalAckHeader {
     }
 }
 
-fn zcofi_compact_4k_enabled(extent_bytes: usize, ack_enabled: bool) -> bool {
-    ack_enabled
-        && extent_bytes == ZC_WAL_RECORD_SIZE
-        && env_enabled_or("URING_PLAY_OFI_COMPACT_4K", false)
+fn zcofi_efa_direct_requested(provider: &str) -> bool {
+    provider == "efa-direct"
+        || env::var("URING_PLAY_OFI_EFA_FABRIC")
+            .map(|fabric| fabric.trim() == "efa-direct")
+            .unwrap_or(false)
 }
 
-fn zcofi_wal_message_bytes(extent_bytes: usize, ack_enabled: bool) -> usize {
-    if zcofi_compact_4k_enabled(extent_bytes, ack_enabled) {
+fn zcofi_compact_4k_for_request(
+    provider: &str,
+    extent_bytes: usize,
+    ack_enabled: bool,
+    compact_requested: bool,
+) -> bool {
+    ack_enabled
+        && extent_bytes == ZC_WAL_RECORD_SIZE
+        && compact_requested
+        && !zcofi_efa_direct_requested(provider)
+}
+
+fn zcofi_compact_4k_enabled(provider: &str, extent_bytes: usize, ack_enabled: bool) -> bool {
+    zcofi_compact_4k_for_request(
+        provider,
+        extent_bytes,
+        ack_enabled,
+        env_enabled_or("URING_PLAY_OFI_COMPACT_4K", false),
+    )
+}
+
+fn zcofi_wal_message_bytes(provider: &str, extent_bytes: usize, ack_enabled: bool) -> usize {
+    if zcofi_compact_4k_enabled(provider, extent_bytes, ack_enabled) {
         extent_bytes
     } else {
         ZC_WAL_EXTENT_HEADER_LEN + extent_bytes
     }
 }
 
+fn zcofi_report_wire_profile(label: &str, provider: &str, extent_bytes: usize, ack_enabled: bool) {
+    let compact_requested = ack_enabled
+        && extent_bytes == ZC_WAL_RECORD_SIZE
+        && env_enabled_or("URING_PLAY_OFI_COMPACT_4K", false);
+    let compact_effective = zcofi_compact_4k_enabled(provider, extent_bytes, ack_enabled);
+    println!(
+        "{label}-wire-profile: provider={provider} efa_direct={} compact_4k_requested={} compact_4k_effective={} wire_sequence_header={} sas_dependency={}",
+        yes(zcofi_efa_direct_requested(provider)),
+        yes(compact_requested),
+        yes(compact_effective),
+        yes(!compact_effective),
+        if compact_effective {
+            "efa-message-order"
+        } else {
+            "none-application-sequence-validation"
+        },
+    );
+    if compact_requested && !compact_effective {
+        eprintln!(
+            "PERF NOTE: {label} retained the WAL sequence header because efa-direct does not provide SAS ordering; headerless compact 4K is disabled for this wire profile"
+        );
+    }
+}
+
 const ZCOFI_RMA_META_MAGIC: &[u8; 8] = b"ZCRMAM01";
-const ZCOFI_RMA_DONE_MAGIC: &[u8; 8] = b"ZCRMAD01";
+const ZCOFI_RMA_DONE_MAGIC: &[u8; 8] = b"ZCRMAD02";
 const ZCOFI_RMA_CONTROL_LEN: usize = 64;
+const ZCOFI_RMA_DONE_READ: u64 = 1;
+const ZCOFI_RMA_DONE_WRITE: u64 = 2;
+const ZCOFI_RMA_TARGET_INITIAL_BYTE: u8 = 0xa5;
+const ZCOFI_RMA_DIGEST_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const ZCOFI_RMA_DIGEST_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn zcofi_rma_digest_update(mut digest: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        digest ^= u64::from(byte);
+        digest = digest.wrapping_mul(ZCOFI_RMA_DIGEST_PRIME);
+    }
+    digest
+}
+
+#[cfg(test)]
+fn zcofi_rma_digest(bytes: &[u8]) -> u64 {
+    zcofi_rma_digest_update(ZCOFI_RMA_DIGEST_OFFSET, bytes)
+}
+
+fn zcofi_rma_digest_volatile(bytes: &[u8]) -> u64 {
+    let mut digest = ZCOFI_RMA_DIGEST_OFFSET;
+    for index in 0..bytes.len() {
+        // The provider, not a Rust reference, owns the write side of this MR.
+        // Volatile loads keep post-completion validation from being hoisted or
+        // cached across an efa-direct visibility retry.
+        let byte = unsafe { std::ptr::read_volatile(bytes.as_ptr().add(index)) };
+        digest ^= u64::from(byte);
+        digest = digest.wrapping_mul(ZCOFI_RMA_DIGEST_PRIME);
+    }
+    digest
+}
+
+fn zcofi_rma_repeated_extent_digest(extent: &[u8], count: usize) -> u64 {
+    let mut digest = ZCOFI_RMA_DIGEST_OFFSET;
+    for _ in 0..count {
+        digest = zcofi_rma_digest_update(digest, extent);
+    }
+    digest
+}
 
 #[derive(Clone, Copy)]
 struct ZcOfiRmaMeta {
@@ -11796,6 +13318,8 @@ struct ZcOfiRmaDone {
     extents: u64,
     records: u64,
     status: u64,
+    operation: u64,
+    validation_digest: u64,
 }
 
 impl ZcOfiRmaDone {
@@ -11808,6 +13332,8 @@ impl ZcOfiRmaDone {
         out[24..32].copy_from_slice(&self.extents.to_le_bytes());
         out[32..40].copy_from_slice(&self.records.to_le_bytes());
         out[40..48].copy_from_slice(&self.status.to_le_bytes());
+        out[48..56].copy_from_slice(&self.operation.to_le_bytes());
+        out[56..64].copy_from_slice(&self.validation_digest.to_le_bytes());
         out
     }
 
@@ -11835,6 +13361,8 @@ impl ZcOfiRmaDone {
             extents: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
             records: u64::from_le_bytes(buf[32..40].try_into().unwrap()),
             status: u64::from_le_bytes(buf[40..48].try_into().unwrap()),
+            operation: u64::from_le_bytes(buf[48..56].try_into().unwrap()),
+            validation_digest: u64::from_le_bytes(buf[56..64].try_into().unwrap()),
         })
     }
 }
@@ -11894,6 +13422,38 @@ fn zcofi_rma_validate_done(
     Ok(())
 }
 
+fn zcofi_rma_validate_remote_write(
+    lane: usize,
+    arena: &[u8],
+    expected_digest: u64,
+) -> io::Result<()> {
+    let started = Instant::now();
+    let timeout = Duration::from_millis(u64::try_from(zcofi_timeout_ms()).unwrap_or(30_000));
+    loop {
+        let actual_digest = zcofi_rma_digest_volatile(arena);
+        if actual_digest == expected_digest {
+            println!(
+                "zcofi-rma-target-validation: lane={lane} operation=write bytes={} expected_digest=0x{expected_digest:016x} actual_digest=0x{actual_digest:016x} status=ok",
+                arena.len(),
+            );
+            return Ok(());
+        }
+        if started.elapsed() >= timeout {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "OFI RMA remote write validation failed lane={lane} bytes={} expected_digest=0x{expected_digest:016x} actual_digest=0x{actual_digest:016x}",
+                    arena.len(),
+                ),
+            ));
+        }
+        // efa-direct does not provide the normal EFA SAS ordering contract.
+        // The timed result ends at the initiator local CQ; this post-timing
+        // semantic check waits for the separately signaled remote image.
+        thread::yield_now();
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn zcofi_rma_target_worker(
     worker: usize,
@@ -11912,6 +13472,7 @@ fn zcofi_rma_target_worker(
     let start_switches = read_thread_context_switches(tid).unwrap_or_default();
     let stream_count = specs.len();
     let mut endpoints = Vec::with_capacity(specs.len());
+    let contract = zcofi_rma_peer_contract(lane_count, bytes_per_lane, extent_bytes);
     for spec in specs {
         let mut ep = ZcOfiEndpoint::open_rma(
             provider.as_str(),
@@ -11921,8 +13482,10 @@ fn zcofi_rma_target_worker(
             true,
         )?;
         let control_port = zcofi_control_port(&spec.service)?;
-        zcofi_server_exchange_peer(bind.as_str(), control_port, &mut ep)?;
-        let mut arena = vec![0u8; bytes_per_lane];
+        zcofi_server_exchange_peer(bind.as_str(), control_port, &mut ep, &contract)?;
+        let mut arena = vec![ZCOFI_RMA_TARGET_INITIAL_BYTE; bytes_per_lane];
+        let initial_digest =
+            zcofi_rma_repeated_extent_digest(&[ZCOFI_RMA_TARGET_INITIAL_BYTE], bytes_per_lane);
         let (remote_addr, remote_key) = ep.rma_register_target(&mut arena)?;
         let meta = ZcOfiRmaMeta {
             lane_id: u32::try_from(spec.lane).map_err(|_| {
@@ -11942,7 +13505,7 @@ fn zcofi_rma_target_worker(
         };
         ep.send(&meta.encode())?;
         println!(
-            "zcofi-rma-target-lane: worker={worker} lane={} provider={} endpoint={} bind={} service={} control_port={} arena_bytes={} remote_addr=0x{:016x} remote_key=0x{:016x} max_msg_size={} inject_size={}",
+            "zcofi-rma-target-lane: worker={worker} lane={} provider={} endpoint={} bind={} service={} control_port={} arena_bytes={} remote_addr=0x{:016x} remote_key=0x{:016x} max_msg_size={} max_rma_size={} inject_size={}",
             spec.lane,
             provider.as_str(),
             endpoint.as_str(),
@@ -11953,9 +13516,10 @@ fn zcofi_rma_target_worker(
             remote_addr,
             remote_key,
             ep.max_msg_size(),
+            ep.max_rma_size(),
             ep.inject_size()
         );
-        endpoints.push((spec, ep, arena));
+        endpoints.push((spec, ep, arena, initial_digest));
     }
 
     let mut payload_bytes = 0usize;
@@ -11965,7 +13529,7 @@ fn zcofi_rma_target_worker(
     let mut acks = 0usize;
     let mut done_buf = [0u8; ZCOFI_RMA_CONTROL_LEN];
     let started = Instant::now();
-    for (spec, mut ep, arena) in endpoints {
+    for (spec, mut ep, arena, initial_digest) in endpoints {
         let got = ep.recv(&mut done_buf)?;
         if got != ZCOFI_RMA_CONTROL_LEN {
             return Err(io::Error::new(
@@ -11978,10 +13542,47 @@ fn zcofi_rma_target_worker(
         }
         let done = ZcOfiRmaDone::decode(&done_buf)?;
         zcofi_rma_validate_done(done, spec.lane, lane_count, bytes_per_lane, extent_bytes)?;
-        if !arena.is_empty() {
-            black_box(arena[0]);
-            black_box(arena[arena.len() - 1]);
+        match done.operation {
+            ZCOFI_RMA_DONE_READ => {
+                let actual_digest = zcofi_rma_digest_volatile(&arena);
+                if done.validation_digest != 0 || actual_digest != initial_digest {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "OFI RMA read changed the remote target lane={} validation_digest=0x{:016x} expected_target_digest=0x{initial_digest:016x} actual_target_digest=0x{actual_digest:016x}",
+                            spec.lane, done.validation_digest,
+                        ),
+                    ));
+                }
+                println!(
+                    "zcofi-rma-target-validation: lane={} operation=read bytes={} target_fill=0x{ZCOFI_RMA_TARGET_INITIAL_BYTE:02x} actual_digest=0x{actual_digest:016x} status=ok",
+                    spec.lane,
+                    arena.len(),
+                );
+            }
+            ZCOFI_RMA_DONE_WRITE => {
+                if done.validation_digest == initial_digest {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "OFI RMA write validation pattern is indistinguishable from the initial target lane={} digest=0x{initial_digest:016x}; choose a different URING_PLAY_SEND_PATTERN/fill byte",
+                            spec.lane,
+                        ),
+                    ));
+                }
+                zcofi_rma_validate_remote_write(spec.lane, &arena, done.validation_digest)?;
+            }
+            operation => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "OFI RMA done has unknown operation={operation} lane={}",
+                        spec.lane
+                    ),
+                ));
+            }
         }
+        black_box(&arena);
         payload_bytes += bytes_per_lane;
         wire_bytes += ZCOFI_RMA_CONTROL_LEN;
         extents += bytes_per_lane / extent_bytes;
@@ -12020,6 +13621,247 @@ fn zcofi_rma_target_worker(
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZcOfiRmaAccessMode {
+    Sequential,
+    Random,
+}
+
+impl ZcOfiRmaAccessMode {
+    fn from_env() -> io::Result<Self> {
+        match env::var("URING_PLAY_OFI_RMA_ACCESS_PATTERN")
+            .unwrap_or_else(|_| "sequential".to_string())
+            .trim()
+        {
+            "sequential" | "seq" => Ok(Self::Sequential),
+            "random" | "rand" | "random-permutation" => Ok(Self::Random),
+            value => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "URING_PLAY_OFI_RMA_ACCESS_PATTERN must be sequential or random, got {value:?}"
+                ),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Sequential => "sequential",
+            Self::Random => "random-permutation",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ZcOfiRmaAccessPlan {
+    mode: ZcOfiRmaAccessMode,
+    start: usize,
+    stride: usize,
+}
+
+fn zcofi_gcd(mut left: usize, mut right: usize) -> usize {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
+}
+
+impl ZcOfiRmaAccessPlan {
+    fn new(mode: ZcOfiRmaAccessMode, lane: usize, extent_count: usize) -> io::Result<Self> {
+        if extent_count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OFI RMA access plan requires at least one extent",
+            ));
+        }
+        if mode == ZcOfiRmaAccessMode::Sequential || extent_count == 1 {
+            return Ok(Self {
+                mode,
+                start: 0,
+                stride: 1,
+            });
+        }
+        let seed = match env::var("URING_PLAY_OFI_RMA_RANDOM_SEED") {
+            Ok(value) => value.parse::<u64>().map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid URING_PLAY_OFI_RMA_RANDOM_SEED={value:?}: {err}"),
+                )
+            })?,
+            Err(env::VarError::NotPresent) => 0x9e37_79b9_7f4a_7c15,
+            Err(err) => return Err(io::Error::new(io::ErrorKind::InvalidInput, err)),
+        };
+        let mixed = seed
+            ^ (lane as u64)
+                .wrapping_add(1)
+                .wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        let start = (mixed as usize) % extent_count;
+        let mut stride = (mixed.rotate_left(29) as usize) % extent_count;
+        if stride == 0 {
+            stride = 1;
+        }
+        while zcofi_gcd(stride, extent_count) != 1 {
+            stride += 1;
+            if stride == extent_count {
+                stride = 1;
+            }
+        }
+        Ok(Self {
+            mode,
+            start,
+            stride,
+        })
+    }
+
+    fn extent(self, ordinal: usize, extent_count: usize) -> usize {
+        match self.mode {
+            ZcOfiRmaAccessMode::Sequential => ordinal,
+            ZcOfiRmaAccessMode::Random => {
+                ((self.start as u128 + (ordinal as u128).saturating_mul(self.stride as u128))
+                    % extent_count as u128) as usize
+            }
+        }
+    }
+}
+
+struct ZcOfiRmaWriteLane {
+    spec: ZcOfiWalLaneSpec,
+    endpoint: ZcOfiEndpoint,
+    meta: ZcOfiRmaMeta,
+    buffer: Vec<u8>,
+    validation_digest: u64,
+    access: ZcOfiRmaAccessPlan,
+    next_extent: usize,
+    completed_extents: usize,
+    free_slots: Vec<usize>,
+    active: Vec<Option<(usize, u64, Instant)>>,
+    completion_slots: Vec<usize>,
+    completion_tokens: Vec<u64>,
+    in_flight: usize,
+    peak_in_flight: usize,
+    cq_poll_calls: u64,
+    cq_batches: u64,
+    cq_completions: u64,
+    post_eagain: u64,
+}
+
+impl ZcOfiRmaWriteLane {
+    fn post_available(&mut self, extents_per_lane: usize, extent_bytes: usize) -> io::Result<()> {
+        while self.next_extent < extents_per_lane {
+            let Some(slot) = self.free_slots.pop() else {
+                break;
+            };
+            if self.active[slot].is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("OFI RMA write free-list returned active slot={slot}"),
+                ));
+            }
+            let ordinal = self.next_extent;
+            let extent = self.access.extent(ordinal, extents_per_lane);
+            let remote_offset =
+                u64::try_from(extent.checked_mul(extent_bytes).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA write offset overflow")
+                })?)
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA write offset overflow")
+                })?;
+            let remote_addr = self
+                .meta
+                .remote_addr
+                .checked_add(remote_offset)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "OFI RMA write remote address overflow",
+                    )
+                })?;
+            let local_offset = slot.checked_mul(extent_bytes).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "OFI RMA write local offset overflow",
+                )
+            })?;
+            let token = u64::try_from(ordinal)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "extent token overflow"))?
+                .wrapping_add(1);
+            let posted_at = Instant::now();
+            let source = unsafe { self.buffer.as_ptr().add(local_offset) };
+            let posted = unsafe {
+                self.endpoint.rma_write_post_raw(
+                    source,
+                    extent_bytes,
+                    remote_addr,
+                    self.meta.remote_key,
+                    slot,
+                    token,
+                )?
+            };
+            if !posted {
+                self.post_eagain = self.post_eagain.saturating_add(1);
+                self.free_slots.push(slot);
+                break;
+            }
+            self.active[slot] = Some((extent, token, posted_at));
+            self.next_extent += 1;
+            self.in_flight += 1;
+            self.peak_in_flight = self.peak_in_flight.max(self.in_flight);
+        }
+        Ok(())
+    }
+
+    fn poll(&mut self, wait: bool, latency: &mut LatencyHistogram) -> io::Result<usize> {
+        if self.in_flight == 0 {
+            return Ok(0);
+        }
+        self.cq_poll_calls = self.cq_poll_calls.saturating_add(1);
+        let completed = self.endpoint.rma_write_poll(
+            &mut self.completion_slots,
+            &mut self.completion_tokens,
+            wait,
+        )?;
+        if completed != 0 {
+            self.cq_batches = self.cq_batches.saturating_add(1);
+        }
+        self.cq_completions = self.cq_completions.saturating_add(completed as u64);
+        for index in 0..completed {
+            let slot = self.completion_slots[index];
+            let actual_token = self.completion_tokens[index];
+            let (extent, expected_token, posted_at) = self
+                .active
+                .get_mut(slot)
+                .and_then(Option::take)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("OFI RMA write completion returned inactive slot={slot}"),
+                    )
+                })?;
+            if actual_token != expected_token {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "OFI RMA write token mismatch lane={} slot={slot} extent={extent} expected={expected_token} actual={actual_token}",
+                        self.spec.lane
+                    ),
+                ));
+            }
+            latency.record_duration(posted_at.elapsed());
+            self.free_slots.push(slot);
+            self.in_flight = self.in_flight.checked_sub(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "OFI RMA write in-flight underflow",
+                )
+            })?;
+            self.completed_extents += 1;
+        }
+        Ok(completed)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn zcofi_rma_write_worker(
     worker: usize,
@@ -12030,15 +13872,26 @@ fn zcofi_rma_write_worker(
     lane_count: usize,
     bytes_per_lane: usize,
     extent_bytes: usize,
-) -> io::Result<ZcWalExtentStats> {
+    queue_depth: usize,
+) -> io::Result<ZcOfiRmaReadWorkerStats> {
     let affinity = maybe_pin_current_thread("zcofi-rma-write-worker", worker);
     let tid = current_tid();
     let start_thread_cpu = thread_cpu_time().unwrap_or_default();
     let start_cpu = current_cpu();
     let start_switches = read_thread_context_switches(tid).unwrap_or_default();
     let stream_count = specs.len();
-    let mut endpoints = Vec::with_capacity(specs.len());
+    let pattern = SendPayloadPattern::from_env(extent_bytes)?;
+    let access_mode = ZcOfiRmaAccessMode::from_env()?;
+    let extents_per_lane = bytes_per_lane / extent_bytes;
+    let buffer_bytes = queue_depth.checked_mul(extent_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "OFI RMA write registered ring size overflow",
+        )
+    })?;
+    let mut lanes = Vec::with_capacity(specs.len());
     let mut meta_buf = [0u8; ZCOFI_RMA_CONTROL_LEN];
+    let contract = zcofi_rma_peer_contract(lane_count, bytes_per_lane, extent_bytes);
     for spec in specs {
         let mut ep = ZcOfiEndpoint::open_rma(
             provider.as_str(),
@@ -12048,7 +13901,7 @@ fn zcofi_rma_write_worker(
             false,
         )?;
         let control_port = zcofi_control_port(&spec.service)?;
-        zcofi_client_exchange_peer(addr.as_str(), control_port, &mut ep)?;
+        zcofi_client_exchange_peer(addr.as_str(), control_port, &mut ep, &contract)?;
         let got = ep.recv(&mut meta_buf)?;
         if got != ZCOFI_RMA_CONTROL_LEN {
             return Err(io::Error::new(
@@ -12061,8 +13914,17 @@ fn zcofi_rma_write_worker(
         }
         let meta = ZcOfiRmaMeta::decode(&meta_buf)?;
         zcofi_rma_validate_meta(meta, spec.lane, lane_count, bytes_per_lane, extent_bytes)?;
+        let access = ZcOfiRmaAccessPlan::new(access_mode, spec.lane, extents_per_lane)?;
+        let mut buffer = vec![0u8; buffer_bytes];
+        for chunk in buffer.chunks_exact_mut(extent_bytes) {
+            pattern.fill(chunk);
+        }
+        let validation_digest =
+            zcofi_rma_repeated_extent_digest(&buffer[..extent_bytes], extents_per_lane);
+        ep.rma_register_write_buffer(&buffer)?;
+        ep.rma_write_queue_init(queue_depth)?;
         println!(
-            "zcofi-rma-write-lane: worker={worker} lane={} provider={} endpoint={} addr={} service={} control_port={} remote_addr=0x{:016x} remote_key=0x{:016x} extent_bytes={} max_msg_size={} inject_size={}",
+            "zcofi-rma-write-lane: worker={worker} lane={} provider={} endpoint={} addr={} service={} control_port={} remote_addr=0x{:016x} remote_key=0x{:016x} extent_bytes={} queue_depth={} registered_buffer_bytes={} validation_digest=0x{validation_digest:016x} max_msg_size={} max_rma_size={} inject_size={} completion=initiator-local-cq-source-reusable cq_processing=batched access_pattern={} permutation_start={} permutation_stride={}",
             spec.lane,
             provider.as_str(),
             endpoint.as_str(),
@@ -12072,36 +13934,94 @@ fn zcofi_rma_write_worker(
             meta.remote_addr,
             meta.remote_key,
             extent_bytes,
+            queue_depth,
+            buffer.len(),
             ep.max_msg_size(),
-            ep.inject_size()
+            ep.max_rma_size(),
+            ep.inject_size(),
+            access.mode.label(),
+            access.start,
+            access.stride,
         );
-        endpoints.push((spec, ep, meta));
+        lanes.push(ZcOfiRmaWriteLane {
+            spec,
+            endpoint: ep,
+            meta,
+            buffer,
+            validation_digest,
+            access,
+            next_extent: 0,
+            completed_extents: 0,
+            free_slots: (0..queue_depth).rev().collect(),
+            active: (0..queue_depth).map(|_| None).collect(),
+            completion_slots: vec![0; queue_depth],
+            completion_tokens: vec![0; queue_depth],
+            in_flight: 0,
+            peak_in_flight: 0,
+            cq_poll_calls: 0,
+            cq_batches: 0,
+            cq_completions: 0,
+            post_eagain: 0,
+        });
     }
 
-    let mut payload = vec![0u8; extent_bytes];
-    SendPayloadPattern::from_env(extent_bytes)?.fill(&mut payload);
-    let extents_per_lane = bytes_per_lane / extent_bytes;
     let records_per_extent = extent_bytes / ZC_WAL_RECORD_SIZE;
-    let mut payload_bytes = 0usize;
-    let mut wire_bytes = 0usize;
-    let mut extents = 0usize;
-    let mut records = 0usize;
-    let mut acks = 0usize;
+    let mut completion_latency = LatencyHistogram::new();
     let started = Instant::now();
-    for (spec, mut ep, meta) in endpoints {
-        for seq in 0..extents_per_lane {
-            let offset = u64::try_from(seq.checked_mul(extent_bytes).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA lane offset overflow")
-            })?)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA offset overflow"))?;
-            ep.rma_write(&payload, meta.remote_addr + offset, meta.remote_key)?;
-            payload_bytes += extent_bytes;
-            wire_bytes += extent_bytes;
-            extents += 1;
-            records += records_per_extent;
+    for lane in &mut lanes {
+        lane.post_available(extents_per_lane, extent_bytes)?;
+    }
+    let mut peak_outstanding = lanes.iter().map(|lane| lane.in_flight).sum::<usize>();
+    let mut no_progress_since = Instant::now();
+    while lanes
+        .iter()
+        .any(|lane| lane.completed_extents < extents_per_lane)
+    {
+        let mut progress = 0usize;
+        for lane in &mut lanes {
+            lane.post_available(extents_per_lane, extent_bytes)?;
+            progress += lane.poll(false, &mut completion_latency)?;
+            lane.post_available(extents_per_lane, extent_bytes)?;
         }
+        peak_outstanding =
+            peak_outstanding.max(lanes.iter().map(|lane| lane.in_flight).sum::<usize>());
+        if progress != 0 {
+            no_progress_since = Instant::now();
+            continue;
+        }
+        if let Some(lane) = lanes.iter_mut().find(|lane| lane.in_flight != 0) {
+            let completed = lane.poll(true, &mut completion_latency)?;
+            lane.post_available(extents_per_lane, extent_bytes)?;
+            if completed != 0 {
+                no_progress_since = Instant::now();
+            }
+        } else {
+            if no_progress_since.elapsed()
+                >= Duration::from_millis(u64::try_from(zcofi_timeout_ms()).unwrap_or(30_000))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "OFI RMA write queue could not post work before timeout",
+                ));
+            }
+            thread::yield_now();
+        }
+        peak_outstanding =
+            peak_outstanding.max(lanes.iter().map(|lane| lane.in_flight).sum::<usize>());
+    }
+
+    // The reported operation interval ends when every RMA WRITE has reached
+    // its initiator-local CQ.  The done record below is a post-timing semantic
+    // validation doorbell; including its SEND completion would silently mix a
+    // remote control exchange into the local-CQ throughput denominator.
+    let timed_wall = started.elapsed();
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_cpu = current_cpu();
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+
+    for lane in &mut lanes {
         let done = ZcOfiRmaDone {
-            lane_id: u32::try_from(spec.lane).map_err(|_| {
+            lane_id: u32::try_from(lane.spec.lane).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA lane id overflow")
             })?,
             lane_count: u32::try_from(lane_count).map_err(|_| {
@@ -12117,40 +14037,47 @@ fn zcofi_rma_write_worker(
                 io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA record count overflow")
             })?,
             status: 0,
+            operation: ZCOFI_RMA_DONE_WRITE,
+            validation_digest: lane.validation_digest,
         };
-        ep.send(&done.encode())?;
-        wire_bytes += ZCOFI_RMA_CONTROL_LEN;
-        acks += 1;
+        lane.endpoint.send(&done.encode())?;
     }
-
-    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
-    let end_cpu = current_cpu();
-    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
-    Ok(ZcWalExtentStats {
-        worker,
-        streams: stream_count,
-        payload_bytes,
-        wire_bytes,
-        extents,
-        records,
-        acks,
-        wall: started.elapsed(),
-        cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
-        target_cpu: affinity.target_cpu,
-        affinity_applied: affinity.applied,
-        start_cpu,
-        end_cpu,
-        voluntary_switches: end_switches
-            .voluntary
-            .saturating_sub(start_switches.voluntary),
-        involuntary_switches: end_switches
-            .involuntary
-            .saturating_sub(start_switches.involuntary),
-        migrations: end_switches
-            .migrations
-            .saturating_sub(start_switches.migrations),
-        ack_latency: LatencyHistogram::new(),
-        uring_recv: UringRecvStats::default(),
+    Ok(ZcOfiRmaReadWorkerStats {
+        base: ZcWalExtentStats {
+            worker,
+            streams: stream_count,
+            payload_bytes: stream_count.saturating_mul(bytes_per_lane),
+            wire_bytes: stream_count
+                .saturating_mul(bytes_per_lane.saturating_add(ZCOFI_RMA_CONTROL_LEN)),
+            extents: stream_count.saturating_mul(extents_per_lane),
+            records: stream_count
+                .saturating_mul(extents_per_lane)
+                .saturating_mul(records_per_extent),
+            acks: stream_count,
+            wall: timed_wall,
+            cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
+            target_cpu: affinity.target_cpu,
+            affinity_applied: affinity.applied,
+            start_cpu,
+            end_cpu,
+            voluntary_switches: end_switches
+                .voluntary
+                .saturating_sub(start_switches.voluntary),
+            involuntary_switches: end_switches
+                .involuntary
+                .saturating_sub(start_switches.involuntary),
+            migrations: end_switches
+                .migrations
+                .saturating_sub(start_switches.migrations),
+            ack_latency: LatencyHistogram::new(),
+            uring_recv: UringRecvStats::default(),
+        },
+        cq_poll_calls: lanes.iter().map(|lane| lane.cq_poll_calls).sum(),
+        cq_batches: lanes.iter().map(|lane| lane.cq_batches).sum(),
+        cq_completions: lanes.iter().map(|lane| lane.cq_completions).sum(),
+        post_eagain: lanes.iter().map(|lane| lane.post_eagain).sum(),
+        peak_outstanding,
+        completion_latency,
     })
 }
 
@@ -12159,6 +14086,7 @@ struct ZcOfiRmaReadLane {
     endpoint: ZcOfiEndpoint,
     meta: ZcOfiRmaMeta,
     buffer: Vec<u8>,
+    access: ZcOfiRmaAccessPlan,
     next_extent: usize,
     completed_extents: usize,
     free_slots: Vec<usize>,
@@ -12203,7 +14131,8 @@ impl ZcOfiRmaReadLane {
                     format!("OFI RMA raw free-list returned active slot={slot}"),
                 ));
             }
-            let extent = self.next_extent;
+            let ordinal = self.next_extent;
+            let extent = self.access.extent(ordinal, extents_per_lane);
             let remote_offset =
                 u64::try_from(extent.checked_mul(extent_bytes).ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA lane offset overflow")
@@ -12222,7 +14151,7 @@ impl ZcOfiRmaReadLane {
                     )
                 })?;
             let local_offset = self.local_offset(extent, slot, extent_bytes, full_local_window)?;
-            let token = u64::try_from(extent)
+            let token = u64::try_from(ordinal)
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "extent token overflow"))?
                 .wrapping_add(1);
             let posted_at = Instant::now();
@@ -12298,7 +14227,7 @@ impl ZcOfiRmaReadLane {
             let local_offset = self.local_offset(extent, slot, extent_bytes, full_local_window)?;
             if self.buffer[local_offset..local_offset + extent_bytes]
                 .iter()
-                .any(|byte| *byte != 0)
+                .any(|byte| *byte != ZCOFI_RMA_TARGET_INITIAL_BYTE)
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -12350,6 +14279,8 @@ fn zcofi_rma_read_worker(
     let start_cpu = current_cpu();
     let start_switches = read_thread_context_switches(tid).unwrap_or_default();
     let stream_count = specs.len();
+    let access_mode = ZcOfiRmaAccessMode::from_env()?;
+    let extents_per_lane = bytes_per_lane / extent_bytes;
     let local_buffer_bytes = if full_local_window {
         bytes_per_lane
     } else {
@@ -12362,6 +14293,7 @@ fn zcofi_rma_read_worker(
     };
     let mut lanes = Vec::with_capacity(specs.len());
     let mut meta_buf = [0u8; ZCOFI_RMA_CONTROL_LEN];
+    let contract = zcofi_rma_peer_contract(lane_count, bytes_per_lane, extent_bytes);
     for spec in specs {
         let mut ep = ZcOfiEndpoint::open_rma(
             provider.as_str(),
@@ -12371,7 +14303,7 @@ fn zcofi_rma_read_worker(
             false,
         )?;
         let control_port = zcofi_control_port(&spec.service)?;
-        zcofi_client_exchange_peer(addr.as_str(), control_port, &mut ep)?;
+        zcofi_client_exchange_peer(addr.as_str(), control_port, &mut ep, &contract)?;
         let got = ep.recv(&mut meta_buf)?;
         if got != ZCOFI_RMA_CONTROL_LEN {
             return Err(io::Error::new(
@@ -12384,11 +14316,12 @@ fn zcofi_rma_read_worker(
         }
         let meta = ZcOfiRmaMeta::decode(&meta_buf)?;
         zcofi_rma_validate_meta(meta, spec.lane, lane_count, bytes_per_lane, extent_bytes)?;
-        let mut buffer = vec![0xa5u8; local_buffer_bytes];
+        let access = ZcOfiRmaAccessPlan::new(access_mode, spec.lane, extents_per_lane)?;
+        let mut buffer = vec![0x5au8; local_buffer_bytes];
         ep.rma_register_read_buffer(&mut buffer)?;
         ep.rma_read_queue_init(queue_depth)?;
         println!(
-            "zcofi-rma-read-lane: worker={worker} lane={} provider={} endpoint={} addr={} service={} control_port={} remote_addr=0x{:016x} remote_key=0x{:016x} extent_bytes={} queue_depth={} registered_buffer_bytes={} max_msg_size={} inject_size={} completion=initiator-local-cq-data-visible local_registration_scope={} cq_processing=batched",
+            "zcofi-rma-read-lane: worker={worker} lane={} provider={} endpoint={} addr={} service={} control_port={} remote_addr=0x{:016x} remote_key=0x{:016x} extent_bytes={} queue_depth={} registered_buffer_bytes={} max_msg_size={} max_rma_size={} inject_size={} completion=initiator-local-cq-data-visible local_registration_scope={} cq_processing=batched access_pattern={} permutation_start={} permutation_stride={}",
             spec.lane,
             provider.as_str(),
             endpoint.as_str(),
@@ -12401,18 +14334,23 @@ fn zcofi_rma_read_worker(
             queue_depth,
             buffer.len(),
             ep.max_msg_size(),
+            ep.max_rma_size(),
             ep.inject_size(),
             if full_local_window {
                 "full-window-changing-offset"
             } else {
                 "fixed-buffer-per-outstanding-operation"
             },
+            access.mode.label(),
+            access.start,
+            access.stride,
         );
         lanes.push(ZcOfiRmaReadLane {
             spec,
             endpoint: ep,
             meta,
             buffer,
+            access,
             next_extent: 0,
             completed_extents: 0,
             free_slots: (0..queue_depth).rev().collect(),
@@ -12428,7 +14366,6 @@ fn zcofi_rma_read_worker(
         });
     }
 
-    let extents_per_lane = bytes_per_lane / extent_bytes;
     let records_per_extent = extent_bytes / ZC_WAL_RECORD_SIZE;
     let mut completion_latency = LatencyHistogram::new();
     let started = Instant::now();
@@ -12484,6 +14421,14 @@ fn zcofi_rma_read_worker(
             peak_outstanding.max(lanes.iter().map(|lane| lane.in_flight).sum::<usize>());
     }
 
+    // Match the read result to data-visible local-CQ completion.  The done
+    // SEND tells the target to perform its post-timing sentinel validation and
+    // must succeed, but it is not part of the measured RMA READ interval.
+    let timed_wall = started.elapsed();
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_cpu = current_cpu();
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+
     for lane in &mut lanes {
         let done = ZcOfiRmaDone {
             lane_id: u32::try_from(lane.spec.lane).map_err(|_| {
@@ -12502,13 +14447,11 @@ fn zcofi_rma_read_worker(
                 io::Error::new(io::ErrorKind::InvalidInput, "OFI RMA record count overflow")
             })?,
             status: 0,
+            operation: ZCOFI_RMA_DONE_READ,
+            validation_digest: 0,
         };
         lane.endpoint.send(&done.encode())?;
     }
-
-    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
-    let end_cpu = current_cpu();
-    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
     Ok(ZcOfiRmaReadWorkerStats {
         base: ZcWalExtentStats {
             worker,
@@ -12521,7 +14464,7 @@ fn zcofi_rma_read_worker(
                 .saturating_mul(extents_per_lane)
                 .saturating_mul(records_per_extent),
             acks: stream_count,
-            wall: started.elapsed(),
+            wall: timed_wall,
             cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
             target_cpu: affinity.target_cpu,
             affinity_applied: affinity.applied,
@@ -12564,6 +14507,18 @@ fn zcofi_rma_target(
     let specs = zcofi_wal_lane_specs(base_service, lanes)?;
     let workers = tcp_bench_auto_workers(workers, lanes);
     zcwal_extent_perf_warnings("zcofi-rma-target", lanes, 1, workers)?;
+    zcofi_perf_contract_warnings(
+        "zcofi-rma-target",
+        provider,
+        lanes,
+        1,
+        extent_bytes,
+        zcofi_registered_working_set("zcofi-rma-target", lanes, bytes_per_lane)?,
+        env_first_nonempty(&["URING_PLAY_OFI_DOMAIN"]).is_some(),
+    )?;
+    let lane_ids = (0..lanes).collect::<Vec<_>>();
+    let domain = env::var("URING_PLAY_OFI_DOMAIN").unwrap_or_else(|_| "auto".to_string());
+    zcofi_print_lane_worker_cpu_map("zcofi-rma-target", &lane_ids, workers, &domain);
     println!(
         "zcofi-rma-target: provider={provider} endpoint={endpoint} bind={bind} \
          base_service={base_service} lanes={lanes} bytes_per_lane={bytes_per_lane} \
@@ -12640,15 +14595,92 @@ fn zcofi_rma_write(
 ) -> io::Result<()> {
     let endpoint = libfabric_endpoint_pingpong(endpoint)?;
     zcwal_validate_extent_shape(bytes_per_lane, extent_bytes)?;
+    let access_mode = ZcOfiRmaAccessMode::from_env()?;
+    let queue_depth = match env::var("URING_PLAY_OFI_RMA_WRITE_QD") {
+        Ok(value) => value.parse::<usize>().map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid URING_PLAY_OFI_RMA_WRITE_QD={value:?}: {error}"),
+            )
+        })?,
+        Err(env::VarError::NotPresent) => 1,
+        Err(error) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("could not read URING_PLAY_OFI_RMA_WRITE_QD: {error}"),
+            ));
+        }
+    };
+    if !(1..=1024).contains(&queue_depth) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("URING_PLAY_OFI_RMA_WRITE_QD must be in 1..=1024, got {queue_depth}"),
+        ));
+    }
     let specs = zcofi_wal_lane_specs(base_service, lanes)?;
     let workers = tcp_bench_auto_workers(workers, lanes);
-    zcwal_extent_perf_warnings("zcofi-rma-write", lanes, 1, workers)?;
+    let aggregate_outstanding_depth = lanes.checked_mul(queue_depth).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "OFI RMA write aggregate QD overflow",
+        )
+    })?;
+    let shards = zcofi_wal_partition_specs(specs, workers);
+    let worker_lane_map = shards
+        .iter()
+        .enumerate()
+        .filter(|(_, shard)| !shard.is_empty())
+        .map(|(worker, shard)| {
+            format!(
+                "w{worker}:[{}]",
+                shard
+                    .iter()
+                    .map(|spec| spec.lane.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";");
+    let worker_outstanding = shards
+        .iter()
+        .filter(|shard| !shard.is_empty())
+        .map(|shard| shard.len().saturating_mul(queue_depth))
+        .collect::<Vec<_>>();
+    let per_worker_qd_min = worker_outstanding.iter().copied().min().unwrap_or(0);
+    let per_worker_qd_max = worker_outstanding.iter().copied().max().unwrap_or(0);
+    zcofi_rma_perf_warnings("zcofi-rma-write", lanes, workers)?;
+    zcofi_perf_contract_warnings(
+        "zcofi-rma-write",
+        provider,
+        lanes,
+        1,
+        extent_bytes,
+        zcofi_registered_working_set(
+            "zcofi-rma-write",
+            lanes,
+            queue_depth.checked_mul(extent_bytes).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "zcofi-rma-write per-lane registered working-set size overflow",
+                )
+            })?,
+        )?,
+        env_first_nonempty(&["URING_PLAY_OFI_DOMAIN"]).is_some(),
+    )?;
+    let lane_ids = (0..lanes).collect::<Vec<_>>();
+    let domain = env::var("URING_PLAY_OFI_DOMAIN").unwrap_or_else(|_| "auto".to_string());
+    zcofi_print_lane_worker_cpu_map("zcofi-rma-write", &lane_ids, workers, &domain);
     println!(
         "zcofi-rma-write: provider={provider} endpoint={endpoint} addr={addr} \
          base_service={base_service} lanes={lanes} bytes_per_lane={bytes_per_lane} \
          extent_bytes={extent_bytes} workers={workers} direct_rma_write=yes \
+         per_lane_qd={queue_depth} aggregate_outstanding_depth={aggregate_outstanding_depth} \
+         per_worker_qd_min={per_worker_qd_min} per_worker_qd_max={per_worker_qd_max} \
+         worker_lane_map={worker_lane_map} worker_lane_scheduling=event-driven-interleave access_pattern={} \
          source_payload_pattern={} commit_doorbell=ofi-msg records_per_extent={} \
          timeout_ms={} busy_poll_iters={} cq_sleep_ns={} ofi_domain={}",
+        access_mode.label(),
         SendPayloadPattern::from_env(extent_bytes)?.label(),
         extent_bytes / ZC_WAL_RECORD_SIZE,
         zcofi_timeout_ms(),
@@ -12656,7 +14688,6 @@ fn zcofi_rma_write(
         env_usize_or("URING_PLAY_OFI_CQ_SLEEP_NS", 50_000),
         env::var("URING_PLAY_OFI_DOMAIN").unwrap_or_else(|_| "auto".to_string()),
     );
-    let shards = zcofi_wal_partition_specs(specs, workers);
     let provider = Arc::new(provider.to_string());
     let endpoint = Arc::new(endpoint.to_string());
     let addr = Arc::new(addr.to_string());
@@ -12678,6 +14709,7 @@ fn zcofi_rma_write(
                 lanes,
                 bytes_per_lane,
                 extent_bytes,
+                queue_depth,
             )
         }));
     }
@@ -12686,20 +14718,66 @@ fn zcofi_rma_write(
         let stats = handle
             .join()
             .map_err(|_| io::Error::other("zcofi RMA write worker panicked"))??;
-        zcwal_extent_print_worker("zcofi-rma-write", &stats);
+        zcwal_extent_print_worker("zcofi-rma-write", &stats.base);
+        println!(
+            "zcofi-rma-write-cq-worker: worker={} cq_poll_calls={} cq_batches={} cq_completions={} cq_batch_avg={:.3} post_eagain={} peak_outstanding={} {}",
+            stats.base.worker,
+            stats.cq_poll_calls,
+            stats.cq_batches,
+            stats.cq_completions,
+            stats.cq_completions as f64 / stats.cq_batches.max(1) as f64,
+            stats.post_eagain,
+            stats.peak_outstanding,
+            zcwal_extent_latency_fields("local_cq_completion", &stats.completion_latency),
+        );
         results.push(stats);
     }
-    let total = zcwal_extent_sum(&results);
+    let cq_poll_calls = results.iter().map(|stats| stats.cq_poll_calls).sum::<u64>();
+    let cq_batches = results.iter().map(|stats| stats.cq_batches).sum::<u64>();
+    let cq_completions = results
+        .iter()
+        .map(|stats| stats.cq_completions)
+        .sum::<u64>();
+    let post_eagain = results.iter().map(|stats| stats.post_eagain).sum::<u64>();
+    let peak_outstanding = results
+        .iter()
+        .map(|stats| stats.peak_outstanding)
+        .sum::<usize>();
+    let completion_latency = results
+        .iter()
+        .fold(LatencyHistogram::new(), |mut total, stats| {
+            total.merge(&stats.completion_latency);
+            total
+        });
+    let base_results = results
+        .into_iter()
+        .map(|stats| stats.base)
+        .collect::<Vec<_>>();
+    let total = zcwal_extent_sum(&base_results);
     let secs = total.wall.as_secs_f64().max(f64::MIN_POSITIVE);
+    let operation_iops = total.extents as f64 / secs;
+    let average_local_cq_completion_us = completion_latency.avg_ns() as f64 / 1_000.0;
+    let matching_theoretical_iops = if average_local_cq_completion_us == 0.0 {
+        0.0
+    } else {
+        aggregate_outstanding_depth as f64 * 1_000_000.0 / average_local_cq_completion_us
+    };
+    let efficiency_pct = if matching_theoretical_iops == 0.0 {
+        0.0
+    } else {
+        operation_iops * 100.0 / matching_theoretical_iops
+    };
     println!(
-        "zcofi-rma-write-summary: payload_bytes={} wire_bytes={} extents={} logical_records={} doorbells={} seconds={secs:.6} payload_Gbitps={:.3} logical_iops={:.0} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
+        "zcofi-rma-write-summary: payload_bytes={} wire_bytes={} extents={} logical_records={} doorbells={} seconds={secs:.6} payload_Gbitps={:.3} operation_iops={operation_iops:.0} measured_raw_transport_rtt_us={average_local_cq_completion_us:.3} raw_rtt_semantics=rma-write-post-to-initiator-local-cq-source-reusable matching_theoretical_iops={matching_theoretical_iops:.0} actual_theoretical_efficiency_pct={efficiency_pct:.2} completion=initiator-local-cq-source-reusable access_pattern={} per_lane_qd={queue_depth} per_worker_qd_min={per_worker_qd_min} per_worker_qd_max={per_worker_qd_max} workers={workers} lanes={lanes} aggregate_outstanding_depth={aggregate_outstanding_depth} cq_poll_calls={cq_poll_calls} cq_batches={cq_batches} cq_completions={cq_completions} cq_batch_avg={:.3} post_eagain={post_eagain} peak_outstanding={peak_outstanding} {} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
         total.payload_bytes,
         total.wire_bytes,
         total.extents,
         total.records,
         total.acks,
         total.payload_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
-        total.records as f64 / secs,
+        access_mode.label(),
+        cq_completions as f64 / cq_batches.max(1) as f64,
+        zcwal_extent_latency_fields("local_cq_completion", &completion_latency),
         total.voluntary_switches,
         total.involuntary_switches,
         total.migrations
@@ -12720,6 +14798,7 @@ fn zcofi_rma_read(
 ) -> io::Result<()> {
     let endpoint = libfabric_endpoint_pingpong(endpoint)?;
     zcwal_validate_extent_shape(bytes_per_lane, extent_bytes)?;
+    let access_mode = ZcOfiRmaAccessMode::from_env()?;
     let specs = zcofi_wal_lane_specs(base_service, lanes)?;
     let workers = tcp_bench_auto_workers(workers, lanes);
     let full_local_window = env_enabled_or("URING_PLAY_OFI_RMA_READ_FULL_LOCAL_WINDOW", false);
@@ -12771,7 +14850,32 @@ fn zcofi_rma_read(
         .collect::<Vec<_>>();
     let per_worker_qd_min = worker_outstanding.iter().copied().min().unwrap_or(0);
     let per_worker_qd_max = worker_outstanding.iter().copied().max().unwrap_or(0);
-    zcwal_extent_perf_warnings("zcofi-rma-read", lanes, 1, workers)?;
+    zcofi_rma_perf_warnings("zcofi-rma-read", lanes, workers)?;
+    zcofi_perf_contract_warnings(
+        "zcofi-rma-read",
+        provider,
+        lanes,
+        1,
+        extent_bytes,
+        zcofi_registered_working_set(
+            "zcofi-rma-read",
+            lanes,
+            if full_local_window {
+                bytes_per_lane
+            } else {
+                queue_depth.checked_mul(extent_bytes).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "zcofi-rma-read per-lane registered working-set size overflow",
+                    )
+                })?
+            },
+        )?,
+        env_first_nonempty(&["URING_PLAY_OFI_DOMAIN"]).is_some(),
+    )?;
+    let lane_ids = (0..lanes).collect::<Vec<_>>();
+    let domain = env::var("URING_PLAY_OFI_DOMAIN").unwrap_or_else(|_| "auto".to_string());
+    zcofi_print_lane_worker_cpu_map("zcofi-rma-read", &lane_ids, workers, &domain);
     println!(
         "zcofi-rma-read: provider={provider} endpoint={endpoint} addr={addr} \
          base_service={base_service} lanes={lanes} workers={workers} \
@@ -12779,10 +14883,11 @@ fn zcofi_rma_read(
          per_worker_qd_max={per_worker_qd_max} aggregate_outstanding_depth={aggregate_outstanding_depth} \
          lane_to_worker_mapping={worker_lane_map} \
          bytes_per_lane={bytes_per_lane} extent_bytes={extent_bytes} \
-         direct_rma_read=yes completion=initiator-local-cq-data-visible \
+         direct_rma_read=yes completion=initiator-local-cq-data-visible access_pattern={} \
          local_registration_scope={} local_registered_bytes_per_lane={} \
-         target_payload_pattern=fill:0x00 records_per_extent={} \
+         target_payload_pattern=fill:0xa5 records_per_extent={} \
          timeout_ms={} busy_poll_iters={} cq_sleep_ns={} ofi_domain={} ofi_fabric={}",
+        access_mode.label(),
         if full_local_window {
             "full-window-changing-offset"
         } else {
@@ -12874,13 +14979,14 @@ fn zcofi_rma_read(
         operation_iops * 100.0 / matching_theoretical_iops
     };
     println!(
-        "zcofi-rma-read-summary: payload_bytes={} wire_bytes={} extents={} logical_records={} doorbells={} seconds={secs:.6} payload_Gbitps={:.3} operation_iops={operation_iops:.0} measured_raw_transport_rtt_us={average_local_cq_completion_us:.3} raw_rtt_semantics=rma-read-post-to-initiator-local-cq-data-visible matching_theoretical_iops={matching_theoretical_iops:.0} actual_theoretical_efficiency_pct={efficiency_pct:.2} completion=initiator-local-cq-data-visible per_lane_qd={queue_depth} per_worker_qd_min={per_worker_qd_min} per_worker_qd_max={per_worker_qd_max} workers={workers} lanes={lanes} aggregate_outstanding_depth={aggregate_outstanding_depth} measured_peak_outstanding={measured_peak_outstanding} local_registration_scope={} local_registered_bytes_per_lane={} cq_poll_calls={cq_poll_calls} cq_batches={cq_batches} cq_completions={cq_completions} avg_cq_completions_per_batch={:.2} post_eagain={post_eagain} {} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
+        "zcofi-rma-read-summary: payload_bytes={} wire_bytes={} extents={} logical_records={} doorbells={} seconds={secs:.6} payload_Gbitps={:.3} operation_iops={operation_iops:.0} measured_raw_transport_rtt_us={average_local_cq_completion_us:.3} raw_rtt_semantics=rma-read-post-to-initiator-local-cq-data-visible matching_theoretical_iops={matching_theoretical_iops:.0} actual_theoretical_efficiency_pct={efficiency_pct:.2} completion=initiator-local-cq-data-visible access_pattern={} per_lane_qd={queue_depth} per_worker_qd_min={per_worker_qd_min} per_worker_qd_max={per_worker_qd_max} workers={workers} lanes={lanes} aggregate_outstanding_depth={aggregate_outstanding_depth} measured_peak_outstanding={measured_peak_outstanding} local_registration_scope={} local_registered_bytes_per_lane={} cq_poll_calls={cq_poll_calls} cq_batches={cq_batches} cq_completions={cq_completions} avg_cq_completions_per_batch={:.2} post_eagain={post_eagain} {} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
         total.payload_bytes,
         total.wire_bytes,
         total.extents,
         total.records,
         total.acks,
         total.payload_bytes as f64 * 8.0 / 1_000_000_000.0 / secs,
+        access_mode.label(),
         if full_local_window {
             "full-window-changing-offset"
         } else {
@@ -12918,9 +15024,16 @@ fn zcofi_wal_sender_worker(
     let start_switches = read_thread_context_switches(tid).unwrap_or_default();
     let stream_count = specs.len();
     let mut endpoints = Vec::with_capacity(specs.len());
-    let compact_4k = zcofi_compact_4k_enabled(extent_bytes, ack_enabled);
+    let compact_4k = zcofi_compact_4k_enabled(provider.as_str(), extent_bytes, ack_enabled);
     let payload_inject = env_enabled_or("URING_PLAY_OFI_PAYLOAD_INJECT", false);
-    let message_bytes = zcofi_wal_message_bytes(extent_bytes, ack_enabled);
+    let message_bytes = zcofi_wal_message_bytes(provider.as_str(), extent_bytes, ack_enabled);
+    let contract = zcofi_wal_peer_contract(
+        provider.as_str(),
+        lane_count,
+        extent_bytes,
+        ack_enabled,
+        zcofi_ack_window(),
+    );
     for spec in specs {
         let mut ep = ZcOfiEndpoint::open(
             provider.as_str(),
@@ -12931,7 +15044,7 @@ fn zcofi_wal_sender_worker(
         )?;
         zcofi_wal_check_endpoint_shape(&ep, message_bytes, provider.as_str(), spec.lane)?;
         let control_port = zcofi_control_port(&spec.service)?;
-        zcofi_client_exchange_peer(addr.as_str(), control_port, &mut ep)?;
+        zcofi_client_exchange_peer(addr.as_str(), control_port, &mut ep, &contract)?;
         println!(
             "zcofi-wal-send-lane: worker={worker} lane={} provider={} endpoint={} addr={} service={} control_port={} max_msg_size={} inject_size={}",
             spec.lane,
@@ -12961,11 +15074,39 @@ fn zcofi_wal_sender_worker(
     let extents_per_lane = bytes_per_lane / extent_bytes;
     let requested_ack_window = zcofi_ack_window();
     let windowed_acks = ack_enabled && requested_ack_window > 1;
+    let tx_window = if ack_enabled {
+        requested_ack_window
+    } else {
+        env_usize_or("URING_PLAY_OFI_TX_QUEUE_DEPTH", 64).max(1)
+    };
     let tx_nowait =
         ack_enabled && !windowed_acks && env_enabled_or("URING_PLAY_OFI_TX_NOWAIT", false);
     let prepost_ack =
         ack_enabled && !windowed_acks && env_enabled_or("URING_PLAY_OFI_PREPOST_ACK", false);
     let mut ack_buf = [0u8; ZC_WAL_ACK_HEADER_LEN];
+    let mut batch_messages = if tx_window > 1 {
+        vec![
+            0u8;
+            tx_window.checked_mul(message_bytes).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "OFI WAL TX arena size overflow",
+                )
+            })?
+        ]
+    } else {
+        Vec::new()
+    };
+    for (_, ep) in &mut endpoints {
+        if tx_window > 1 {
+            ep.register_send_buffer(&batch_messages)?;
+        } else {
+            ep.register_send_buffer(&message)?;
+        }
+        if ack_enabled {
+            ep.register_recv_buffer(&mut ack_buf)?;
+        }
+    }
 
     let started = Instant::now();
     let mut payload_bytes = 0usize;
@@ -12977,13 +15118,11 @@ fn zcofi_wal_sender_worker(
 
     for (spec, mut ep) in endpoints {
         let use_payload_inject = payload_inject && message.len() <= ep.inject_size();
-        let ack_window = if ack_enabled { requested_ack_window } else { 1 };
-        if ack_window > 1 {
-            let mut batch_messages = vec![0u8; ack_window * message_bytes];
-            let mut issued_slots = vec![Instant::now(); ack_window];
+        if tx_window > 1 {
+            let mut issued_slots = vec![Instant::now(); tx_window];
             let mut seq_base = 0usize;
             while seq_base < extents_per_lane {
-                let batch = ack_window.min(extents_per_lane - seq_base);
+                let batch = tx_window.min(extents_per_lane - seq_base);
                 for slot in 0..batch {
                     let seq = seq_base + slot;
                     let slot_start = slot * message_bytes;
@@ -13031,33 +15170,35 @@ fn zcofi_wal_sender_worker(
                         batch,
                     )?;
                 }
-                let mut next_ack_seq = seq_base;
-                while next_ack_seq < seq_base + batch {
-                    let got = ep.recv(&mut ack_buf)?;
-                    if got != ZC_WAL_ACK_HEADER_LEN {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "OFI WAL ack length mismatch lane={} seq={} got={} expected={}",
-                                spec.lane, next_ack_seq, got, ZC_WAL_ACK_HEADER_LEN
-                            ),
-                        ));
+                if ack_enabled {
+                    let mut next_ack_seq = seq_base;
+                    while next_ack_seq < seq_base + batch {
+                        let got = ep.recv(&mut ack_buf)?;
+                        if got != ZC_WAL_ACK_HEADER_LEN {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "OFI WAL ack length mismatch lane={} seq={} got={} expected={}",
+                                    spec.lane, next_ack_seq, got, ZC_WAL_ACK_HEADER_LEN
+                                ),
+                            ));
+                        }
+                        let ack = ZcWalAckHeader::decode(&ack_buf)?;
+                        let covered = zcofi_validate_ack_covering_seq(
+                            ack,
+                            spec.lane,
+                            next_ack_seq,
+                            seq_base + batch,
+                            record_count as usize,
+                            extent_bytes,
+                        )?;
+                        for covered_seq in next_ack_seq..next_ack_seq + covered {
+                            let slot = covered_seq - seq_base;
+                            ack_latency.record_duration(issued_slots[slot].elapsed());
+                        }
+                        acks += 1;
+                        next_ack_seq += covered;
                     }
-                    let ack = ZcWalAckHeader::decode(&ack_buf)?;
-                    let covered = zcofi_validate_ack_covering_seq(
-                        ack,
-                        spec.lane,
-                        next_ack_seq,
-                        seq_base + batch,
-                        record_count as usize,
-                        extent_bytes,
-                    )?;
-                    for covered_seq in next_ack_seq..next_ack_seq + covered {
-                        let slot = covered_seq - seq_base;
-                        ack_latency.record_duration(issued_slots[slot].elapsed());
-                    }
-                    acks += 1;
-                    next_ack_seq += covered;
                 }
                 seq_base += batch;
             }
@@ -13185,8 +15326,15 @@ fn zcofi_wal_recv_worker(
     let start_switches = read_thread_context_switches(tid).unwrap_or_default();
     let stream_count = specs.len();
     let mut endpoints = Vec::with_capacity(specs.len());
-    let compact_4k = zcofi_compact_4k_enabled(extent_bytes, ack_enabled);
-    let message_bytes = zcofi_wal_message_bytes(extent_bytes, ack_enabled);
+    let compact_4k = zcofi_compact_4k_enabled(provider.as_str(), extent_bytes, ack_enabled);
+    let message_bytes = zcofi_wal_message_bytes(provider.as_str(), extent_bytes, ack_enabled);
+    let contract = zcofi_wal_peer_contract(
+        provider.as_str(),
+        lane_count,
+        extent_bytes,
+        ack_enabled,
+        zcofi_ack_window(),
+    );
     for spec in specs {
         let mut ep = ZcOfiEndpoint::open(
             provider.as_str(),
@@ -13197,7 +15345,7 @@ fn zcofi_wal_recv_worker(
         )?;
         zcofi_wal_check_endpoint_shape(&ep, message_bytes, provider.as_str(), spec.lane)?;
         let control_port = zcofi_control_port(&spec.service)?;
-        zcofi_server_exchange_peer(bind.as_str(), control_port, &mut ep)?;
+        zcofi_server_exchange_peer(bind.as_str(), control_port, &mut ep, &contract)?;
         println!(
             "zcofi-wal-recv-lane: worker={worker} lane={} provider={} endpoint={} bind={} service={} control_port={} max_msg_size={} inject_size={}",
             spec.lane,
@@ -13217,6 +15365,13 @@ fn zcofi_wal_recv_worker(
     let ack_inject = ack_enabled && env_enabled_or("URING_PLAY_OFI_ACK_INJECT", false);
     let requested_ack_window = zcofi_ack_window();
     let ack_window = if ack_enabled { requested_ack_window } else { 1 };
+    let mut ack_buf = [0u8; ZC_WAL_ACK_HEADER_LEN];
+    for (_, ep) in &mut endpoints {
+        ep.register_recv_buffer(&mut message)?;
+        if ack_enabled {
+            ep.register_send_buffer(&ack_buf)?;
+        }
+    }
     let mut payload_bytes = 0usize;
     let mut wire_bytes = 0usize;
     let mut extents = 0usize;
@@ -13318,12 +15473,12 @@ fn zcofi_wal_recv_worker(
                     zcofi_relay_make_range_ack(first_ack, last_ack)?
                 } else {
                     first_ack
-                }
-                .encode();
-                if ack_inject && ack.len() <= ep.inject_size() {
-                    ep.inject_to_last(&ack)?;
+                };
+                ack_buf.copy_from_slice(&ack.encode());
+                if ack_inject && ack_buf.len() <= ep.inject_size() {
+                    ep.inject_to_last(&ack_buf)?;
                 } else {
-                    ep.send_to_last(&ack)?;
+                    ep.send_to_last(&ack_buf)?;
                 }
                 acks += 1;
             }
@@ -13378,28 +15533,63 @@ fn zcofi_wal_send(
     zcwal_validate_extent_shape(bytes_per_lane, extent_bytes)?;
     let specs = zcofi_wal_lane_specs(base_service, lanes)?;
     let workers = tcp_bench_auto_workers(workers, lanes);
-    let message_bytes = zcofi_wal_message_bytes(extent_bytes, ack_enabled);
-    let compact_4k = zcofi_compact_4k_enabled(extent_bytes, ack_enabled);
+    let message_bytes = zcofi_wal_message_bytes(provider, extent_bytes, ack_enabled);
+    let compact_4k = zcofi_compact_4k_enabled(provider, extent_bytes, ack_enabled);
     let requested_ack_window = zcofi_ack_window();
     let windowed_acks = ack_enabled && requested_ack_window > 1;
+    let no_ack_tx_window = env_usize_or("URING_PLAY_OFI_TX_QUEUE_DEPTH", 64).max(1);
     let tx_nowait_requested = ack_enabled && env_enabled_or("URING_PLAY_OFI_TX_NOWAIT", false);
     let prepost_ack_requested = ack_enabled && env_enabled_or("URING_PLAY_OFI_PREPOST_ACK", false);
+    zcofi_queue_depth_preflight(
+        "zcofi-wal-send",
+        if ack_enabled {
+            requested_ack_window.max(1)
+        } else {
+            no_ack_tx_window
+        },
+        1,
+    )?;
+    zcofi_report_wire_profile("zcofi-wal-send", provider, extent_bytes, ack_enabled);
     zcwal_extent_perf_warnings("zcofi-wal-send", lanes, 1, workers)?;
+    zcofi_perf_contract_warnings(
+        "zcofi-wal-send",
+        provider,
+        lanes,
+        1,
+        message_bytes,
+        0,
+        env_first_nonempty(&["URING_PLAY_OFI_DOMAIN"]).is_some(),
+    )?;
+    let lane_ids = (0..lanes).collect::<Vec<_>>();
+    let domain = env::var("URING_PLAY_OFI_DOMAIN").unwrap_or_else(|_| "auto".to_string());
+    zcofi_print_lane_worker_cpu_map("zcofi-wal-send", &lane_ids, workers, &domain);
+    let per_lane_qd = if ack_enabled {
+        requested_ack_window.max(1)
+    } else {
+        no_ack_tx_window
+    };
+    let aggregate_outstanding = lanes.saturating_mul(per_lane_qd);
     println!(
         "zcofi-wal-send: provider={provider} endpoint={endpoint} addr={addr} \
          base_service={base_service} lanes={lanes} bytes_per_lane={bytes_per_lane} \
          extent_bytes={extent_bytes} message_bytes={} workers={workers} \
-         ack_enabled={} tx_nowait_requested={} tx_nowait_effective={} \
+         ack_enabled={} completion_semantic={} per_lane_qd={per_lane_qd} aggregate_outstanding={aggregate_outstanding} tx_nowait_requested={} tx_nowait_effective={} \
          prepost_ack_requested={} prepost_ack_effective={} compact_4k={} \
-         payload_inject={} ack_window={} range_ack_receive=yes ofi_domain={} records_per_extent={} \
+         wire_sequence_header={} payload_inject={} ack_window={} range_ack_receive=yes ofi_domain={} records_per_extent={} \
          timeout_ms={} busy_poll_iters={} cq_sleep_ns={}",
         message_bytes,
         yes(ack_enabled),
+        if ack_enabled {
+            "remote-application-ack"
+        } else {
+            "local-send-completion-or-inject-admission"
+        },
         yes(tx_nowait_requested),
         yes(tx_nowait_requested && !windowed_acks),
         yes(prepost_ack_requested),
         yes(prepost_ack_requested && !windowed_acks),
         yes(compact_4k),
+        yes(!compact_4k),
         yes(env_enabled_or("URING_PLAY_OFI_PAYLOAD_INJECT", false)),
         requested_ack_window,
         env::var("URING_PLAY_OFI_DOMAIN").unwrap_or_else(|_| "auto".to_string()),
@@ -13485,20 +15675,42 @@ fn zcofi_wal_recv(
     zcwal_validate_extent_shape(bytes_per_lane, extent_bytes)?;
     let specs = zcofi_wal_lane_specs(base_service, lanes)?;
     let workers = tcp_bench_auto_workers(workers, lanes);
-    let message_bytes = zcofi_wal_message_bytes(extent_bytes, ack_enabled);
-    let compact_4k = zcofi_compact_4k_enabled(extent_bytes, ack_enabled);
+    let message_bytes = zcofi_wal_message_bytes(provider, extent_bytes, ack_enabled);
+    let compact_4k = zcofi_compact_4k_enabled(provider, extent_bytes, ack_enabled);
+    zcofi_queue_depth_preflight("zcofi-wal-recv", 1, 1)?;
+    zcofi_report_wire_profile("zcofi-wal-recv", provider, extent_bytes, ack_enabled);
     zcwal_extent_perf_warnings("zcofi-wal-recv", lanes, 1, workers)?;
+    zcofi_perf_contract_warnings(
+        "zcofi-wal-recv",
+        provider,
+        lanes,
+        1,
+        message_bytes,
+        0,
+        env_first_nonempty(&["URING_PLAY_OFI_DOMAIN"]).is_some(),
+    )?;
+    let lane_ids = (0..lanes).collect::<Vec<_>>();
+    let domain = env::var("URING_PLAY_OFI_DOMAIN").unwrap_or_else(|_| "auto".to_string());
+    zcofi_print_lane_worker_cpu_map("zcofi-wal-recv", &lane_ids, workers, &domain);
+    let per_lane_rx_qd = 1usize;
     println!(
         "zcofi-wal-recv: provider={provider} endpoint={endpoint} bind={bind} \
          base_service={base_service} lanes={lanes} bytes_per_lane={bytes_per_lane} \
          extent_bytes={extent_bytes} message_bytes={} workers={workers} \
-         ack_enabled={} ack_inject={} ack_window={} range_ack_send={} compact_4k={} ofi_domain={} records_per_extent={} timeout_ms={} busy_poll_iters={} cq_sleep_ns={}",
+         ack_enabled={} completion_semantic={} per_lane_rx_qd={per_lane_rx_qd} aggregate_rx_outstanding={} ack_inject={} ack_window={} range_ack_send={} compact_4k={} wire_sequence_header={} ofi_domain={} records_per_extent={} timeout_ms={} busy_poll_iters={} cq_sleep_ns={}",
         message_bytes,
         yes(ack_enabled),
+        if ack_enabled {
+            "remote-application-ack-source"
+        } else {
+            "receive-only-transport-ceiling"
+        },
+        lanes.saturating_mul(per_lane_rx_qd),
         yes(ack_enabled && env_enabled_or("URING_PLAY_OFI_ACK_INJECT", false)),
         zcofi_ack_window(),
         yes(ack_enabled && zcofi_ack_window() > 1),
         yes(compact_4k),
+        yes(!compact_4k),
         env::var("URING_PLAY_OFI_DOMAIN").unwrap_or_else(|_| "auto".to_string()),
         extent_bytes / ZC_WAL_RECORD_SIZE,
         zcofi_timeout_ms(),
@@ -13562,6 +15774,11 @@ fn zcofi_wal_recv(
 struct ZcOfiRelayTail {
     branch: usize,
     endpoint: ZcOfiEndpoint,
+    ack_slots: Vec<u8>,
+    completion_slots: Vec<usize>,
+    completion_tokens: Vec<u64>,
+    completion_lengths: Vec<usize>,
+    completion_sources: Vec<u64>,
 }
 
 struct ZcOfiRelayLane {
@@ -13693,6 +15910,7 @@ fn zcofi_relay_fast_rewrite_header(
     1
 }
 
+#[cfg(test)]
 fn zcofi_relay_verify_tail_ack(
     ack_buf: &[u8; ZC_WAL_ACK_HEADER_LEN],
     lane: usize,
@@ -13723,7 +15941,9 @@ fn zcofi_relay_send_to_tails(
     relay: &mut ZcOfiRelayLane,
     message: &[u8],
     tx_nowait: bool,
+    branch_post_skew: &mut LatencyHistogram,
 ) -> io::Result<()> {
+    let first_post = Instant::now();
     for tail in relay.downstreams.iter_mut() {
         if tx_nowait {
             tail.endpoint.send_nowait(message)?;
@@ -13731,6 +15951,7 @@ fn zcofi_relay_send_to_tails(
             tail.endpoint.send(message)?;
         }
     }
+    branch_post_skew.record_duration(first_post.elapsed());
     Ok(())
 }
 
@@ -13767,18 +15988,32 @@ fn zcofi_relay_send_batch_to_tails(
     batch: usize,
     tx_nowait: bool,
     branch_post_nowait: bool,
+    branch_post_skew: &mut LatencyHistogram,
 ) -> io::Result<()> {
     if batch == 0 {
         return Ok(());
     }
-    if batch == 1 || tx_nowait {
+    if tx_nowait {
         let message = slots.get(..message_bytes).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "OFI relay batch slot out of range",
             )
         })?;
-        return zcofi_relay_send_to_tails(relay, message, tx_nowait);
+        return zcofi_relay_send_to_tails(relay, message, tx_nowait, branch_post_skew);
+    }
+    if batch == 1 {
+        let message = slots.get(..message_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OFI relay batch slot out of range",
+            )
+        })?;
+        zcofi_relay_send_to_tails(relay, message, branch_post_nowait, branch_post_skew)?;
+        if branch_post_nowait {
+            zcofi_relay_drain_tails(relay)?;
+        }
+        return Ok(());
     }
     let batch_bytes = message_bytes.checked_mul(batch).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "OFI relay batch byte overflow")
@@ -13790,6 +16025,7 @@ fn zcofi_relay_send_batch_to_tails(
         )
     })?;
     if branch_post_nowait && relay.downstreams.len() > 1 {
+        let first_post = Instant::now();
         for tail in relay.downstreams.iter_mut() {
             tail.endpoint.send_many_nowait_fixed(
                 batch_slots,
@@ -13798,83 +16034,563 @@ fn zcofi_relay_send_batch_to_tails(
                 batch,
             )?;
         }
-        for tail in relay.downstreams.iter_mut() {
-            tail.endpoint.drain_send()?;
-        }
+        branch_post_skew.record_duration(first_post.elapsed());
+        zcofi_relay_drain_tails(relay)?;
         return Ok(());
     }
+    let first_post = Instant::now();
     for tail in relay.downstreams.iter_mut() {
         tail.endpoint
             .send_many_fixed(batch_slots, message_bytes, message_bytes, batch)?;
     }
+    branch_post_skew.record_duration(first_post.elapsed());
     Ok(())
 }
 
 fn zcofi_relay_drain_tails(relay: &mut ZcOfiRelayLane) -> io::Result<()> {
-    for tail in relay.downstreams.iter_mut() {
-        tail.endpoint.drain_send()?;
+    let timeout = Duration::from_millis(u64::try_from(zcofi_timeout_ms()).unwrap_or(30_000));
+    let mut last_progress = Instant::now();
+    loop {
+        let mut pending = 0usize;
+        let mut progress = 0usize;
+        for tail in relay.downstreams.iter_mut() {
+            if tail.endpoint.send_pending() == 0 {
+                continue;
+            }
+            pending += 1;
+            progress = progress.saturating_add(tail.endpoint.send_poll(false)?);
+        }
+        if pending == 0 {
+            return Ok(());
+        }
+        if progress != 0 {
+            last_progress = Instant::now();
+        } else if last_progress.elapsed() >= timeout {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "OFI relay fair TX CQ drain timed out lane={} pending_branches={pending}",
+                    relay.lane
+                ),
+            ));
+        } else {
+            thread::yield_now();
+        }
     }
-    Ok(())
 }
 
-fn zcofi_relay_recv_all_tail_acks(
-    relay: &mut ZcOfiRelayLane,
-    ack_bufs: &mut [[u8; ZC_WAL_ACK_HEADER_LEN]],
-    next_seq: usize,
-    batch_end: usize,
-    extent_bytes: usize,
-) -> io::Result<(ZcWalAckHeader, usize)> {
-    let mut hwm_ack: Option<(ZcWalAckHeader, usize)> = None;
-    for (tail_idx, tail) in relay.downstreams.iter_mut().enumerate() {
-        let Some(ack_buf) = ack_bufs.get_mut(tail_idx) else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "OFI relay ACK buffer count is below downstream tail count",
-            ));
+fn zcofi_relay_post_ack_slot(tail: &mut ZcOfiRelayTail, slot: usize) -> io::Result<()> {
+    let offset = slot.checked_mul(ZC_WAL_ACK_HEADER_LEN).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "OFI relay ACK slot overflow")
+    })?;
+    let end = offset.checked_add(ZC_WAL_ACK_HEADER_LEN).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "OFI relay ACK slot end overflow",
+        )
+    })?;
+    if end > tail.ack_slots.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "OFI relay ACK slot {slot} is outside branch={} arena_bytes={}",
+                tail.branch,
+                tail.ack_slots.len()
+            ),
+        ));
+    }
+    let ptr = unsafe { tail.ack_slots.as_mut_ptr().add(offset) };
+    let started = Instant::now();
+    loop {
+        let posted = unsafe {
+            tail.endpoint.recv_post_raw(
+                ptr,
+                ZC_WAL_ACK_HEADER_LEN,
+                slot,
+                u64::try_from(slot).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "OFI relay ACK token overflow")
+                })?,
+            )?
         };
-        let got = tail.endpoint.recv(ack_buf)?;
-        if got != ZC_WAL_ACK_HEADER_LEN {
+        if posted {
+            return Ok(());
+        }
+        if started.elapsed()
+            >= Duration::from_millis(u64::try_from(zcofi_timeout_ms()).unwrap_or(30_000))
+        {
             return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
+                io::ErrorKind::TimedOut,
                 format!(
-                    "OFI relay tail ack length mismatch branch={} lane={} next_seq={next_seq} got={got} expected={ZC_WAL_ACK_HEADER_LEN}",
-                    tail.branch, relay.lane
+                    "OFI relay ACK prepost timed out branch={} slot={slot}",
+                    tail.branch
                 ),
             ));
         }
-        let (ack, covered) =
-            zcofi_relay_verify_tail_ack(ack_buf, relay.lane, next_seq, batch_end, extent_bytes)?;
-        if let Some((first_ack, first_covered)) = hwm_ack {
-            if ack.first_logical_index != first_ack.first_logical_index
-                || ack.last_logical_index != first_ack.last_logical_index
-                || ack.extent_sequence != first_ack.extent_sequence
-                || ack.durable_wal_offset != first_ack.durable_wal_offset
-                || ack.record_size != first_ack.record_size
-                || ack.status != first_ack.status
-                || covered != first_covered
+        thread::yield_now();
+    }
+}
+
+fn zcofi_relay_post_payload_slot(
+    relay: &mut ZcOfiRelayLane,
+    slots: &mut [u8],
+    message_bytes: usize,
+    slot: usize,
+) -> io::Result<()> {
+    let message = zcofi_slot_mut(slots, message_bytes, slot)?;
+    let ptr = message.as_mut_ptr();
+    let started = Instant::now();
+    loop {
+        let posted = unsafe {
+            relay.upstream.recv_post_raw(
+                ptr,
+                message_bytes,
+                slot,
+                u64::try_from(slot).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "OFI relay payload token overflow",
+                    )
+                })?,
+            )?
+        };
+        if posted {
+            return Ok(());
+        }
+        if started.elapsed()
+            >= Duration::from_millis(u64::try_from(zcofi_timeout_ms()).unwrap_or(30_000))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "OFI relay payload prepost timed out lane={} slot={slot}",
+                    relay.lane
+                ),
+            ));
+        }
+        thread::yield_now();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcofi_relay_recv_preposted_batch(
+    relay: &mut ZcOfiRelayLane,
+    slots: &mut [u8],
+    message_bytes: usize,
+    compact_4k: bool,
+    seq_base: usize,
+    batch: usize,
+    seq_to_slot: &mut [usize],
+    slot_seen: &mut [bool],
+    completion_slots: &mut [usize],
+    completion_tokens: &mut [u64],
+    completion_lengths: &mut [usize],
+    completion_sources: &mut [u64],
+) -> io::Result<(u64, u64, u64)> {
+    if batch == 0
+        || batch > seq_to_slot.len()
+        || batch > slot_seen.len()
+        || batch > completion_slots.len()
+        || batch > completion_tokens.len()
+        || batch > completion_lengths.len()
+        || batch > completion_sources.len()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "OFI relay preposted receive batch has an invalid shape",
+        ));
+    }
+    seq_to_slot[..batch].fill(usize::MAX);
+    slot_seen[..batch].fill(false);
+    for slot in 0..batch {
+        zcofi_relay_post_payload_slot(relay, slots, message_bytes, slot)?;
+    }
+
+    let batch_end = seq_base.checked_add(batch).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "OFI relay receive window overflow",
+        )
+    })?;
+    let mut received = 0usize;
+    let mut poll_calls = 0u64;
+    let mut empty_polls = 0u64;
+    let mut out_of_order = 0u64;
+    let mut last_progress = Instant::now();
+    while received < batch {
+        poll_calls = poll_calls.saturating_add(1);
+        let completed = relay.upstream.recv_poll(
+            &mut completion_slots[..batch],
+            &mut completion_tokens[..batch],
+            &mut completion_lengths[..batch],
+            &mut completion_sources[..batch],
+            received == 0,
+        )?;
+        if completed == 0 {
+            empty_polls = empty_polls.saturating_add(1);
+            if last_progress.elapsed()
+                >= Duration::from_millis(u64::try_from(zcofi_timeout_ms()).unwrap_or(30_000))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "OFI relay upstream RX matrix timed out lane={} seq_base={seq_base} batch={batch} received={received}",
+                        relay.lane
+                    ),
+                ));
+            }
+            thread::yield_now();
+            continue;
+        }
+        last_progress = Instant::now();
+        for completion_idx in 0..completed {
+            let physical_slot = completion_slots[completion_idx];
+            if physical_slot >= batch
+                || completion_tokens[completion_idx] != physical_slot as u64
+                || completion_lengths[completion_idx] != message_bytes
+                || slot_seen[physical_slot]
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "OFI relay tail ACK disagreement branch={} lane={} next_seq={next_seq} first_tail_range={}..{} this_tail_range={}..{} first_covered={first_covered} this_covered={covered}",
-                        tail.branch,
+                        "OFI relay upstream completion mismatch lane={} slot={physical_slot} token={} len={} batch={batch} duplicate={}",
                         relay.lane,
-                        first_ack.first_logical_index,
-                        first_ack.last_logical_index,
-                        ack.first_logical_index,
-                        ack.last_logical_index
+                        completion_tokens[completion_idx],
+                        completion_lengths[completion_idx],
+                        physical_slot < batch && slot_seen[physical_slot],
                     ),
                 ));
             }
-        } else {
-            hwm_ack = Some((ack, covered));
+            slot_seen[physical_slot] = true;
+            let actual_seq = if compact_4k {
+                seq_base.checked_add(physical_slot).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "OFI relay compact sequence overflow",
+                    )
+                })?
+            } else {
+                let message = zcofi_slot_mut(slots, message_bytes, physical_slot)?;
+                let header = ZcWalExtentHeader::decode(
+                    message[..ZC_WAL_EXTENT_HEADER_LEN]
+                        .try_into()
+                        .map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "OFI relay header slot shape mismatch",
+                            )
+                        })?,
+                )?;
+                usize::try_from(header.extent_sequence).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "OFI relay extent sequence does not fit usize",
+                    )
+                })?
+            };
+            if actual_seq < seq_base || actual_seq >= batch_end {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "OFI relay upstream sequence {actual_seq} is outside window {seq_base}..{batch_end} lane={}",
+                        relay.lane
+                    ),
+                ));
+            }
+            let logical_slot = actual_seq - seq_base;
+            if seq_to_slot[logical_slot] != usize::MAX {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "OFI relay duplicate upstream sequence lane={} seq={actual_seq}",
+                        relay.lane
+                    ),
+                ));
+            }
+            if logical_slot != physical_slot {
+                out_of_order = out_of_order.saturating_add(1);
+            }
+            seq_to_slot[logical_slot] = physical_slot;
+            received += 1;
         }
     }
-    hwm_ack.ok_or_else(|| {
-        io::Error::new(
+    if seq_to_slot[..batch].contains(&usize::MAX) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "OFI relay upstream receive window has a sequence hole",
+        ));
+    }
+    Ok((poll_calls, empty_polls, out_of_order))
+}
+
+fn zcofi_relay_send_mapped_batch_to_tails(
+    relay: &mut ZcOfiRelayLane,
+    slots: &[u8],
+    message_bytes: usize,
+    seq_to_slot: &[usize],
+    batch: usize,
+    branch_post_nowait: bool,
+    branch_post_skew: &mut LatencyHistogram,
+) -> io::Result<()> {
+    if relay.downstreams.len() > 1 && !branch_post_nowait {
+        for &physical_slot in &seq_to_slot[..batch] {
+            let message = slots
+                .get(physical_slot * message_bytes..(physical_slot + 1) * message_bytes)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "OFI relay mapped TX slot is out of range",
+                    )
+                })?;
+            zcofi_relay_send_to_tails(relay, message, false, branch_post_skew)?;
+        }
+        return Ok(());
+    }
+    for &physical_slot in &seq_to_slot[..batch] {
+        let message = slots
+            .get(physical_slot * message_bytes..(physical_slot + 1) * message_bytes)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "OFI relay mapped TX slot is out of range",
+                )
+            })?;
+        let first_post = Instant::now();
+        for tail in relay.downstreams.iter_mut() {
+            tail.endpoint.send_nowait(message)?;
+        }
+        branch_post_skew.record_duration(first_post.elapsed());
+    }
+    zcofi_relay_drain_tails(relay)
+}
+
+struct ZcOfiRelayAckMatrixResult {
+    first: ZcWalAckHeader,
+    last: ZcWalAckHeader,
+    groups: usize,
+    poll_calls: u64,
+    empty_polls: u64,
+    out_of_order: u64,
+    hol_waits: u64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcofi_relay_collect_tail_ack_matrix(
+    relay: &mut ZcOfiRelayLane,
+    seq_base: usize,
+    batch: usize,
+    extents_per_lane: usize,
+    extent_bytes: usize,
+    issued: &[Instant],
+    branch_mask_wait: &mut LatencyHistogram,
+    ack_hol_wait: &mut LatencyHistogram,
+) -> io::Result<ZcOfiRelayAckMatrixResult> {
+    if batch == 0 || relay.downstreams.is_empty() || issued.len() < batch {
+        return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "OFI relay has no downstream tail to ACK",
+            "OFI relay ACK matrix has an invalid shape",
+        ));
+    }
+    let batch_end = seq_base.checked_add(batch).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "OFI relay ACK batch overflow")
+    })?;
+    let tail_count = relay.downstreams.len();
+    let mut masks = vec![vec![false; tail_count]; batch];
+    let mut first_branch_ack = vec![None; batch];
+    let mut mask_completed_at = vec![None; batch];
+    let mut hol_blocked = vec![false; batch];
+    let mut canonical_shard = None;
+    let mut ack_messages = 0usize;
+    let mut remaining = batch.checked_mul(tail_count).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "OFI relay ACK matrix overflow")
+    })?;
+    let mut next_retire = 0usize;
+    let mut poll_calls = 0u64;
+    let mut empty_polls = 0u64;
+    let mut out_of_order = 0u64;
+    let mut hol_waits = 0u64;
+    let mut last_progress = Instant::now();
+
+    while remaining != 0 {
+        let mut progress = 0usize;
+        for (tail_idx, tail) in relay.downstreams.iter_mut().enumerate() {
+            poll_calls = poll_calls.saturating_add(1);
+            let capacity = tail.completion_slots.len();
+            let completed = tail.endpoint.recv_poll(
+                &mut tail.completion_slots[..capacity],
+                &mut tail.completion_tokens[..capacity],
+                &mut tail.completion_lengths[..capacity],
+                &mut tail.completion_sources[..capacity],
+                false,
+            )?;
+            if completed == 0 {
+                empty_polls = empty_polls.saturating_add(1);
+                continue;
+            }
+            progress = progress.saturating_add(completed);
+            for completion_idx in 0..completed {
+                let recv_slot = tail.completion_slots[completion_idx];
+                if recv_slot >= capacity
+                    || tail.completion_tokens[completion_idx] != recv_slot as u64
+                    || tail.completion_lengths[completion_idx] != ZC_WAL_ACK_HEADER_LEN
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "OFI relay ACK completion mismatch branch={} lane={} slot={} token={} len={} depth={capacity}",
+                            tail.branch,
+                            relay.lane,
+                            recv_slot,
+                            tail.completion_tokens[completion_idx],
+                            tail.completion_lengths[completion_idx],
+                        ),
+                    ));
+                }
+                let offset = recv_slot * ZC_WAL_ACK_HEADER_LEN;
+                let ack_buf: &[u8; ZC_WAL_ACK_HEADER_LEN] = tail.ack_slots
+                    [offset..offset + ZC_WAL_ACK_HEADER_LEN]
+                    .try_into()
+                    .map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "OFI relay ACK slot shape mismatch",
+                        )
+                    })?;
+                let ack = ZcWalAckHeader::decode(ack_buf)?;
+                let records_per_extent = extent_bytes / ZC_WAL_RECORD_SIZE;
+                let (first_seq, covered) = zcofi_validate_ack_within_window(
+                    ack,
+                    relay.lane,
+                    seq_base,
+                    batch_end,
+                    records_per_extent,
+                    extent_bytes,
+                )
+                .map_err(|err| {
+                    io::Error::new(
+                        err.kind(),
+                        format!(
+                            "OFI relay tail ack invalid branch={} lane={}: {err}",
+                            tail.branch, relay.lane
+                        ),
+                    )
+                })?;
+                if let Some(shard) = canonical_shard {
+                    if ack.shard_id != shard {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "OFI relay tail ACK shard disagreement branch={} lane={} got={} expected={shard}",
+                                tail.branch, relay.lane, ack.shard_id
+                            ),
+                        ));
+                    }
+                } else {
+                    canonical_shard = Some(ack.shard_id);
+                }
+                ack_messages = ack_messages.saturating_add(1);
+                let marked =
+                    zcofi_mark_ack_range(&mut masks, tail_idx, seq_base, first_seq, covered)
+                        .map_err(|err| {
+                            io::Error::new(
+                                err.kind(),
+                                format!(
+                                    "OFI relay ACK mask invalid branch={} lane={}: {err}",
+                                    tail.branch, relay.lane
+                                ),
+                            )
+                        })?;
+                let marked_start = marked.start;
+                let marked_end = marked.end;
+                for slot in marked {
+                    first_branch_ack[slot].get_or_insert_with(Instant::now);
+                    remaining = remaining.checked_sub(1).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "OFI relay ACK count underflow")
+                    })?;
+                    if masks[slot].iter().all(|seen| *seen) {
+                        let completed_at = Instant::now();
+                        mask_completed_at[slot] = Some(completed_at);
+                        if let Some(first) = first_branch_ack[slot] {
+                            branch_mask_wait.record_duration(first.elapsed());
+                        }
+                    }
+                }
+                // One range ACK atomically completes every sequence it covers.
+                // Retire its newly contiguous prefix before classifying the
+                // remaining slots as out of order; advancing inside the loop
+                // above would incorrectly count every slot after the first as
+                // HOL-blocked and would omit their wait samples.
+                while next_retire < batch && masks[next_retire].iter().all(|seen| *seen) {
+                    if hol_blocked[next_retire]
+                        && let Some(completed_at) = mask_completed_at[next_retire]
+                    {
+                        ack_hol_wait.record_duration(completed_at.elapsed());
+                    }
+                    next_retire += 1;
+                }
+                for slot in marked_start..marked_end {
+                    if mask_completed_at[slot].is_some() && slot >= next_retire {
+                        hol_blocked[slot] = true;
+                        out_of_order = out_of_order.saturating_add(1);
+                        hol_waits = hol_waits.saturating_add(1);
+                    }
+                }
+                if batch_end < extents_per_lane {
+                    zcofi_relay_post_ack_slot(tail, recv_slot)?;
+                }
+            }
+        }
+        if progress != 0 {
+            last_progress = Instant::now();
+        } else if last_progress.elapsed()
+            >= Duration::from_millis(u64::try_from(zcofi_timeout_ms()).unwrap_or(30_000))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "OFI relay ACK matrix timed out lane={} seq_base={seq_base} batch={batch} remaining={remaining} tails={tail_count}",
+                    relay.lane
+                ),
+            ));
+        } else {
+            thread::yield_now();
+        }
+    }
+    if next_retire != batch {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "OFI relay ACK HWM stopped at {next_retire}/{batch} lane={} seq_base={seq_base}",
+                relay.lane
+            ),
+        ));
+    }
+    let shard_id = canonical_shard.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "OFI relay ACK matrix has no ACKs",
         )
+    })?;
+    let records_per_extent = extent_bytes / ZC_WAL_RECORD_SIZE;
+    let make_ack = |seq: usize| ZcWalAckHeader {
+        lane_id: relay.lane as u32,
+        shard_id,
+        status: 0,
+        record_size: ZC_WAL_RECORD_SIZE as u32,
+        first_logical_index: (seq * records_per_extent) as u64,
+        last_logical_index: ((seq + 1) * records_per_extent - 1) as u64,
+        extent_sequence: seq as u64,
+        durable_wal_offset: (seq * extent_bytes) as u64,
+    };
+    let first = make_ack(seq_base);
+    let last = make_ack(batch_end - 1);
+    Ok(ZcOfiRelayAckMatrixResult {
+        first,
+        last,
+        groups: ack_messages,
+        poll_calls,
+        empty_polls,
+        out_of_order,
+        hol_waits,
     })
 }
 
@@ -13938,28 +16654,40 @@ fn zcofi_wal_relay_worker(
     let start_thread_cpu = thread_cpu_time().unwrap_or_default();
     let start_cpu = current_cpu();
     let start_switches = read_thread_context_switches(tid).unwrap_or_default();
-    let compact_4k = zcofi_compact_4k_enabled(extent_bytes, ack_enabled);
-    let message_bytes = zcofi_wal_message_bytes(extent_bytes, ack_enabled);
+    let compact_4k = zcofi_compact_4k_enabled(provider.as_str(), extent_bytes, ack_enabled);
+    let message_bytes = zcofi_wal_message_bytes(provider.as_str(), extent_bytes, ack_enabled);
     let extents_per_lane = bytes_per_lane / extent_bytes;
     let ack_inject = ack_enabled && env_enabled_or("URING_PLAY_OFI_ACK_INJECT", false);
     let relay_window = zcofi_relay_window();
-    let prepost_recv = !ack_enabled
-        && env_enabled_or("URING_PLAY_OFI_RELAY_PREPOST_RECV", false)
-        && relay_window == 1;
+    let prepost_recv = env_enabled_or("URING_PLAY_OFI_RELAY_PREPOST_RECV", true);
     let range_acks =
         ack_enabled && relay_window > 1 && env_enabled_or("URING_PLAY_OFI_RELAY_RANGE_ACKS", true);
     let tx_nowait = env_enabled_or("URING_PLAY_OFI_RELAY_TX_NOWAIT", false)
         || env_enabled_or("URING_PLAY_OFI_TX_NOWAIT", false);
     let tx_nowait = tx_nowait && relay_window == 1;
-    let branch_post_nowait = relay_window > 1
-        && tail_specs.len() > 1
-        && env_enabled_or("URING_PLAY_OFI_RELAY_BRANCH_POST_NOWAIT", false);
+    let branch_post_nowait =
+        tail_specs.len() > 1 && env_enabled_or("URING_PLAY_OFI_RELAY_BRANCH_POST_NOWAIT", true);
     let rewrite_headers =
         !compact_4k && env_enabled_or("URING_PLAY_OFI_RELAY_REWRITE_HEADERS", true);
     let fast_headers = !compact_4k && env_enabled_or("URING_PLAY_OFI_RELAY_FAST_HEADERS", false);
     let wal_epoch = env_usize_or("URING_PLAY_OFI_RELAY_WAL_EPOCH", 1) as u64;
     let tail_count = tail_specs.len();
-    let stream_count = lanes.len() * (1 + tail_count);
+    let worker_lane_count = lanes.len();
+    let stream_count = worker_lane_count * (1 + tail_count);
+    let configured_ack_outstanding = if ack_enabled {
+        worker_lane_count
+            .saturating_mul(tail_count)
+            .saturating_mul(relay_window.max(1))
+    } else {
+        0
+    };
+    let contract = zcofi_wal_peer_contract(
+        provider.as_str(),
+        lane_count,
+        extent_bytes,
+        ack_enabled,
+        relay_window,
+    );
     let mut relay_lanes = Vec::with_capacity(lanes.len());
     for spec in lanes {
         let in_service = tcp_bench_port(in_base_service, spec.lane)?.to_string();
@@ -13972,7 +16700,7 @@ fn zcofi_wal_relay_worker(
         )?;
         zcofi_wal_check_endpoint_shape(&upstream, message_bytes, provider.as_str(), spec.lane)?;
         let in_control_port = zcofi_control_port(&in_service)?;
-        zcofi_server_exchange_peer(bind.as_str(), in_control_port, &mut upstream)?;
+        zcofi_server_exchange_peer(bind.as_str(), in_control_port, &mut upstream, &contract)?;
 
         let mut downstreams = Vec::with_capacity(tail_count);
         for (branch, (tail_addr, out_base_service)) in tail_specs.iter().enumerate() {
@@ -13991,7 +16719,12 @@ fn zcofi_wal_relay_worker(
                 spec.lane,
             )?;
             let out_control_port = zcofi_control_port(&out_service)?;
-            zcofi_client_exchange_peer(tail_addr.as_str(), out_control_port, &mut downstream)?;
+            zcofi_client_exchange_peer(
+                tail_addr.as_str(),
+                out_control_port,
+                &mut downstream,
+                &contract,
+            )?;
             println!(
                 "zcofi-wal-relay-tail: worker={worker} lane={} branch={branch} tail_addr={} out_base_service={} out_service={} out_control_port={} max_msg_size_out={} same_slot_forward=yes",
                 spec.lane,
@@ -14001,10 +16734,27 @@ fn zcofi_wal_relay_worker(
                 out_control_port,
                 downstream.max_msg_size(),
             );
-            downstreams.push(ZcOfiRelayTail {
+            let ack_depth = if ack_enabled { relay_window.max(1) } else { 0 };
+            let mut ack_slots = vec![0u8; ack_depth.saturating_mul(ZC_WAL_ACK_HEADER_LEN)];
+            if ack_enabled {
+                downstream.recv_queue_init(ack_depth)?;
+                downstream.register_recv_buffer(&mut ack_slots)?;
+            }
+            let mut relay_tail = ZcOfiRelayTail {
                 branch,
                 endpoint: downstream,
-            });
+                ack_slots,
+                completion_slots: vec![0; ack_depth],
+                completion_tokens: vec![0; ack_depth],
+                completion_lengths: vec![0; ack_depth],
+                completion_sources: vec![0; ack_depth],
+            };
+            if ack_enabled {
+                for slot in 0..ack_depth {
+                    zcofi_relay_post_ack_slot(&mut relay_tail, slot)?;
+                }
+            }
+            downstreams.push(relay_tail);
         }
         println!(
             "zcofi-wal-relay-lane: worker={worker} lane={} provider={} endpoint={} bind={} in_service={} in_control_port={} tail_count={} message_bytes={} max_msg_size_in={} same_slot_forward=yes rewrite_headers={}",
@@ -14026,18 +16776,26 @@ fn zcofi_wal_relay_worker(
         });
     }
 
-    let slot_count = if prepost_recv {
-        relay_window.max(2)
-    } else {
-        relay_window
-    };
+    let slot_count = relay_window.max(1);
     let mut slots = vec![
         0u8;
         slot_count.checked_mul(message_bytes).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "OFI relay slot arena overflow")
         })?
     ];
-    let mut ack_bufs = vec![[0u8; ZC_WAL_ACK_HEADER_LEN]; tail_count.max(1)];
+    let mut upstream_ack_buf = [0u8; ZC_WAL_ACK_HEADER_LEN];
+    for relay in &mut relay_lanes {
+        if prepost_recv {
+            relay.upstream.recv_queue_init(slot_count)?;
+        }
+        relay.upstream.register_recv_buffer(&mut slots)?;
+        if ack_enabled {
+            relay.upstream.register_send_buffer(&upstream_ack_buf)?;
+        }
+        for tail in &mut relay.downstreams {
+            tail.endpoint.register_send_buffer(&slots)?;
+        }
+    }
     let records_per_extent = extent_bytes / ZC_WAL_RECORD_SIZE;
     let mut payload_bytes = 0usize;
     let mut wire_bytes = 0usize;
@@ -14046,132 +16804,68 @@ fn zcofi_wal_relay_worker(
     let mut acks = 0usize;
     let mut header_rewrites = 0usize;
     let mut ack_latency = LatencyHistogram::new();
+    let mut branch_post_skew = LatencyHistogram::new();
+    let mut branch_mask_wait = LatencyHistogram::new();
+    let mut ack_hol_wait = LatencyHistogram::new();
+    let mut ack_poll_calls = 0u64;
+    let mut ack_poll_empty = 0u64;
+    let mut ack_out_of_order = 0u64;
+    let mut ack_hol_waits = 0u64;
+    let mut ack_groups = 0u64;
+    let mut upstream_rx_poll_calls = 0u64;
+    let mut upstream_rx_poll_empty = 0u64;
+    let mut upstream_rx_out_of_order = 0u64;
     let mut issued = vec![Instant::now(); slot_count];
+    let mut seq_to_slot = vec![usize::MAX; slot_count];
+    let mut upstream_slot_seen = vec![false; slot_count];
+    let mut upstream_completion_slots = vec![0; slot_count];
+    let mut upstream_completion_tokens = vec![0; slot_count];
+    let mut upstream_completion_lengths = vec![0; slot_count];
+    let mut upstream_completion_sources = vec![0; slot_count];
     let started = Instant::now();
     for mut relay in relay_lanes {
-        if prepost_recv && extents_per_lane != 0 {
-            let got = relay
-                .upstream
-                .recv(zcofi_slot_mut(&mut slots, message_bytes, 0)?)?;
-            if got != message_bytes {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "OFI relay upstream message length mismatch lane={} seq=0 got={got} expected={message_bytes}",
-                        relay.lane
-                    ),
-                ));
-            }
-
-            for seq in 0..extents_per_lane {
-                let slot_idx = seq & 1;
-                let next_slot_idx = (seq + 1) & 1;
-                let has_next = seq + 1 < extents_per_lane;
-                if has_next {
-                    relay.upstream.recv_start(zcofi_slot_mut(
-                        &mut slots,
-                        message_bytes,
-                        next_slot_idx,
-                    )?)?;
-                }
-
-                let message = zcofi_slot_mut(&mut slots, message_bytes, slot_idx)?;
-                if !compact_4k {
-                    header_rewrites += if fast_headers {
-                        zcofi_relay_fast_rewrite_header(
-                            message,
-                            relay.lane,
-                            seq,
-                            rewrite_headers,
-                            wal_epoch,
-                        )
-                    } else {
-                        zcofi_relay_verify_or_rewrite_header(
-                            message,
-                            relay.lane,
-                            lane_count,
-                            seq,
-                            extent_bytes,
-                            rewrite_headers,
-                            wal_epoch,
-                        )?
-                    };
-                }
-                issued[slot_idx] = Instant::now();
-                zcofi_relay_send_to_tails(&mut relay, message, tx_nowait)?;
-                payload_bytes += extent_bytes;
-                wire_bytes += message_bytes * relay.downstreams.len();
-                extents += 1;
-                records += records_per_extent;
-
-                if has_next && !ack_enabled {
-                    let got = relay.upstream.recv_finish()?;
-                    if got != message_bytes {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "OFI relay upstream message length mismatch lane={} seq={} got={got} expected={message_bytes}",
-                                relay.lane,
-                                seq + 1
-                            ),
-                        ));
-                    }
-                }
-                if tx_nowait {
-                    zcofi_relay_drain_tails(&mut relay)?;
-                }
-
-                if ack_enabled {
-                    let (ack, _) = zcofi_relay_recv_all_tail_acks(
-                        &mut relay,
-                        &mut ack_bufs,
-                        seq,
-                        seq + 1,
-                        extent_bytes,
-                    )?;
-                    let ack = ack.encode();
-                    if ack_inject && ack.len() <= relay.upstream.inject_size() {
-                        relay.upstream.inject_to_last(&ack)?;
-                    } else {
-                        relay.upstream.send_to_last(&ack)?;
-                    }
-                    acks += 1;
-                    ack_latency.record_duration(issued[slot_idx].elapsed());
-                }
-
-                if has_next && ack_enabled {
-                    let got = relay.upstream.recv_finish()?;
-                    if got != message_bytes {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "OFI relay upstream message length mismatch lane={} seq={} got={got} expected={message_bytes}",
-                                relay.lane,
-                                seq + 1
-                            ),
-                        ));
-                    }
-                }
-            }
-            continue;
-        }
-
         let mut seq_base = 0usize;
         while seq_base < extents_per_lane {
             let batch = relay_window.min(extents_per_lane - seq_base);
+            if prepost_recv {
+                let (polls, empty, out_of_order) = zcofi_relay_recv_preposted_batch(
+                    &mut relay,
+                    &mut slots,
+                    message_bytes,
+                    compact_4k,
+                    seq_base,
+                    batch,
+                    &mut seq_to_slot,
+                    &mut upstream_slot_seen,
+                    &mut upstream_completion_slots,
+                    &mut upstream_completion_tokens,
+                    &mut upstream_completion_lengths,
+                    &mut upstream_completion_sources,
+                )?;
+                upstream_rx_poll_calls = upstream_rx_poll_calls.saturating_add(polls);
+                upstream_rx_poll_empty = upstream_rx_poll_empty.saturating_add(empty);
+                upstream_rx_out_of_order = upstream_rx_out_of_order.saturating_add(out_of_order);
+            } else {
+                for slot_idx in 0..batch {
+                    let seq = seq_base + slot_idx;
+                    let message = zcofi_slot_mut(&mut slots, message_bytes, slot_idx)?;
+                    let got = relay.upstream.recv(message)?;
+                    if got != message_bytes {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "OFI relay upstream message length mismatch lane={} seq={seq} got={got} expected={message_bytes}",
+                                relay.lane
+                            ),
+                        ));
+                    }
+                    seq_to_slot[slot_idx] = slot_idx;
+                }
+            }
             for slot_idx in 0..batch {
                 let seq = seq_base + slot_idx;
-                let message = zcofi_slot_mut(&mut slots, message_bytes, slot_idx)?;
-                let got = relay.upstream.recv(message)?;
-                if got != message_bytes {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "OFI relay upstream message length mismatch lane={} seq={seq} got={got} expected={message_bytes}",
-                            relay.lane
-                        ),
-                    ));
-                }
+                let physical_slot = seq_to_slot[slot_idx];
+                let message = zcofi_slot_mut(&mut slots, message_bytes, physical_slot)?;
                 if !compact_4k {
                     header_rewrites += if fast_headers {
                         zcofi_relay_fast_rewrite_header(
@@ -14199,82 +16893,85 @@ fn zcofi_wal_relay_worker(
                 extents += 1;
                 records += records_per_extent;
             }
-            zcofi_relay_send_batch_to_tails(
-                &mut relay,
-                &slots,
-                message_bytes,
-                batch,
-                tx_nowait,
-                branch_post_nowait,
-            )?;
+            if prepost_recv {
+                zcofi_relay_send_mapped_batch_to_tails(
+                    &mut relay,
+                    &slots,
+                    message_bytes,
+                    &seq_to_slot,
+                    batch,
+                    branch_post_nowait,
+                    &mut branch_post_skew,
+                )?;
+            } else {
+                zcofi_relay_send_batch_to_tails(
+                    &mut relay,
+                    &slots,
+                    message_bytes,
+                    batch,
+                    tx_nowait,
+                    branch_post_nowait,
+                    &mut branch_post_skew,
+                )?;
+            }
 
             if tx_nowait && !ack_enabled {
                 zcofi_relay_drain_tails(&mut relay)?;
             }
 
-            if ack_enabled && range_acks && batch > 1 {
-                let mut first_ack = None;
-                let mut last_ack = None;
-                let batch_end = seq_base + batch;
-                let mut next_tail_ack_seq = seq_base;
-                while next_tail_ack_seq < batch_end {
-                    let (ack, covered) = zcofi_relay_recv_all_tail_acks(
-                        &mut relay,
-                        &mut ack_bufs,
-                        next_tail_ack_seq,
-                        batch_end,
-                        extent_bytes,
-                    )?;
-                    first_ack.get_or_insert(ack);
-                    last_ack = Some(ack);
-                    next_tail_ack_seq += covered;
-                }
-                let ack = zcofi_relay_make_range_ack(
-                    first_ack.ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "OFI relay range ACK missing first ACK",
-                        )
-                    })?,
-                    last_ack.ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "OFI relay range ACK missing last ACK",
-                        )
-                    })?,
-                )?
-                .encode();
-                if ack_inject && ack.len() <= relay.upstream.inject_size() {
-                    relay.upstream.inject_to_last(&ack)?;
-                } else {
-                    relay.upstream.send_to_last(&ack)?;
-                }
-                if tx_nowait {
-                    zcofi_relay_drain_tails(&mut relay)?;
-                }
-                acks += 1;
-                ack_latency.record_duration(issued[0].elapsed());
-            } else if ack_enabled {
-                for slot_idx in 0..batch {
-                    let seq = seq_base + slot_idx;
-                    let (ack, _) = zcofi_relay_recv_all_tail_acks(
-                        &mut relay,
-                        &mut ack_bufs,
-                        seq,
-                        seq + 1,
-                        extent_bytes,
-                    )?;
-                    let ack = ack.encode();
-                    if ack_inject && ack.len() <= relay.upstream.inject_size() {
-                        relay.upstream.inject_to_last(&ack)?;
+            if ack_enabled {
+                let matrix = zcofi_relay_collect_tail_ack_matrix(
+                    &mut relay,
+                    seq_base,
+                    batch,
+                    extents_per_lane,
+                    extent_bytes,
+                    &issued[..batch],
+                    &mut branch_mask_wait,
+                    &mut ack_hol_wait,
+                )?;
+                ack_poll_calls = ack_poll_calls.saturating_add(matrix.poll_calls);
+                ack_poll_empty = ack_poll_empty.saturating_add(matrix.empty_polls);
+                ack_out_of_order = ack_out_of_order.saturating_add(matrix.out_of_order);
+                ack_hol_waits = ack_hol_waits.saturating_add(matrix.hol_waits);
+                ack_groups = ack_groups.saturating_add(matrix.groups as u64);
+                if range_acks && batch > 1 {
+                    upstream_ack_buf.copy_from_slice(
+                        &zcofi_relay_make_range_ack(matrix.first, matrix.last)?.encode(),
+                    );
+                    if ack_inject && upstream_ack_buf.len() <= relay.upstream.inject_size() {
+                        relay.upstream.inject_to_last(&upstream_ack_buf)?;
                     } else {
-                        relay.upstream.send_to_last(&ack)?;
-                    }
-                    if tx_nowait {
-                        zcofi_relay_drain_tails(&mut relay)?;
+                        relay.upstream.send_to_last(&upstream_ack_buf)?;
                     }
                     acks += 1;
-                    ack_latency.record_duration(issued[slot_idx].elapsed());
+                    ack_latency.record_duration(issued[0].elapsed());
+                } else {
+                    for slot_idx in 0..batch {
+                        let seq = seq_base + slot_idx;
+                        let first_logical_index = (seq * records_per_extent) as u64;
+                        upstream_ack_buf.copy_from_slice(
+                            &ZcWalAckHeader {
+                                lane_id: relay.lane as u32,
+                                shard_id: matrix.first.shard_id,
+                                status: 0,
+                                record_size: ZC_WAL_RECORD_SIZE as u32,
+                                first_logical_index,
+                                last_logical_index: first_logical_index + records_per_extent as u64
+                                    - 1,
+                                extent_sequence: seq as u64,
+                                durable_wal_offset: (seq * extent_bytes) as u64,
+                            }
+                            .encode(),
+                        );
+                        if ack_inject && upstream_ack_buf.len() <= relay.upstream.inject_size() {
+                            relay.upstream.inject_to_last(&upstream_ack_buf)?;
+                        } else {
+                            relay.upstream.send_to_last(&upstream_ack_buf)?;
+                        }
+                        acks += 1;
+                        ack_latency.record_duration(issued[slot_idx].elapsed());
+                    }
                 }
             }
             seq_base += batch;
@@ -14294,12 +16991,17 @@ fn zcofi_wal_relay_worker(
         "disabled-transport-ceiling"
     };
     println!(
-        "zcofi-wal-relay-worker-contract: worker={worker} same_slot_forward=yes registered_memory=libfabric-mr-cache tail_count={tail_count} relay_window={relay_window} range_acks={} branch_post_nowait={} prepost_recv={} fast_headers={} header_rewrites={header_rewrites} tail_ack_gates_upstream_ack={} ack_policy={ack_policy}",
+        "zcofi-wal-relay-worker-contract: worker={worker} same_slot_forward=yes registered_memory=stable-explicit-libfabric-mr tail_count={tail_count} relay_window={relay_window} range_acks={} branch_post_nowait={} prepost_recv={} prepost_upstream_depth={} upstream_rx_poll_calls={upstream_rx_poll_calls} upstream_rx_poll_empty={upstream_rx_poll_empty} upstream_rx_out_of_order={upstream_rx_out_of_order} prepost_tail_ack_depth={} configured_ack_outstanding={configured_ack_outstanding} peak_ack_outstanding={configured_ack_outstanding} fast_headers={} header_rewrites={header_rewrites} tail_ack_gates_upstream_ack={} ack_policy={ack_policy} ack_groups={ack_groups} ack_poll_calls={ack_poll_calls} ack_poll_empty={ack_poll_empty} ack_out_of_order={ack_out_of_order} ack_hol_waits={ack_hol_waits} {} {} {}",
         yes(range_acks),
         yes(branch_post_nowait),
         yes(prepost_recv),
+        if prepost_recv { relay_window } else { 1 },
+        if ack_enabled { relay_window } else { 0 },
         yes(fast_headers),
-        yes(ack_enabled)
+        yes(ack_enabled),
+        zcwal_extent_latency_fields("branch_post_skew", &branch_post_skew),
+        zcwal_extent_latency_fields("branch_mask_wait", &branch_mask_wait),
+        zcwal_extent_latency_fields("ack_hol_wait", &ack_hol_wait),
     );
     Ok(ZcWalExtentStats {
         worker,
@@ -14346,12 +17048,10 @@ fn zcofi_wal_relay(
     zcwal_validate_extent_shape(bytes_per_lane, extent_bytes)?;
     let specs = zcofi_wal_lane_specs(in_base_service, lanes)?;
     let workers = tcp_bench_auto_workers(workers, lanes);
-    let message_bytes = zcofi_wal_message_bytes(extent_bytes, ack_enabled);
-    let compact_4k = zcofi_compact_4k_enabled(extent_bytes, ack_enabled);
+    let message_bytes = zcofi_wal_message_bytes(provider, extent_bytes, ack_enabled);
+    let compact_4k = zcofi_compact_4k_enabled(provider, extent_bytes, ack_enabled);
     let relay_window = zcofi_relay_window();
-    let prepost_recv = !ack_enabled
-        && env_enabled_or("URING_PLAY_OFI_RELAY_PREPOST_RECV", false)
-        && relay_window == 1;
+    let prepost_recv = env_enabled_or("URING_PLAY_OFI_RELAY_PREPOST_RECV", true);
     let fast_headers = !compact_4k && env_enabled_or("URING_PLAY_OFI_RELAY_FAST_HEADERS", false);
     let tx_nowait_requested = env_enabled_or("URING_PLAY_OFI_RELAY_TX_NOWAIT", false)
         || env_enabled_or("URING_PLAY_OFI_TX_NOWAIT", false);
@@ -14363,17 +17063,60 @@ fn zcofi_wal_relay(
             "zcofi WAL relay requires at least one downstream tail",
         ));
     }
-    let branch_post_nowait = relay_window > 1
-        && tail_specs.len() > 1
-        && env_enabled_or("URING_PLAY_OFI_RELAY_BRANCH_POST_NOWAIT", false);
+    let branch_post_nowait =
+        tail_specs.len() > 1 && env_enabled_or("URING_PLAY_OFI_RELAY_BRANCH_POST_NOWAIT", true);
+    if tail_specs.len() > 1 && !branch_post_nowait {
+        zc_topology_issue(
+            "zcofi-wal-relay",
+            "multi-tail relay branch_post_nowait is disabled; branch posting will serialize",
+        )?;
+    }
+    if !prepost_recv {
+        zc_topology_issue(
+            "zcofi-wal-relay",
+            "preposted upstream receive ring is disabled; relay RX will serialize",
+        )?;
+    }
+    zcofi_queue_depth_preflight(
+        "zcofi-wal-relay",
+        relay_window.max(1),
+        if prepost_recv {
+            relay_window.max(1)
+        } else if ack_enabled {
+            relay_window.max(1)
+        } else {
+            1
+        },
+    )?;
     let hwm_ack = if ack_enabled {
         "all-tail-acks-before-upstream-ack"
     } else {
         "disabled-transport-ceiling"
     };
+    zcofi_report_wire_profile("zcofi-wal-relay", provider, extent_bytes, ack_enabled);
     zcwal_extent_perf_warnings("zcofi-wal-relay", lanes, 1, workers)?;
+    zcofi_perf_contract_warnings(
+        "zcofi-wal-relay",
+        provider,
+        lanes,
+        tail_specs.len().saturating_add(1),
+        message_bytes,
+        0,
+        env_first_nonempty(&["URING_PLAY_OFI_DOMAIN"]).is_some(),
+    )?;
+    let lane_ids = (0..lanes).collect::<Vec<_>>();
+    let domain = env::var("URING_PLAY_OFI_DOMAIN").unwrap_or_else(|_| "auto".to_string());
+    zcofi_print_lane_worker_cpu_map("zcofi-wal-relay", &lane_ids, workers, &domain);
+    let aggregate_tx_outstanding = lanes
+        .saturating_mul(tail_specs.len())
+        .saturating_mul(relay_window.max(1));
+    let aggregate_ack_outstanding = if ack_enabled {
+        aggregate_tx_outstanding
+    } else {
+        0
+    };
     println!(
-        "zcofi-wal-relay: provider={provider} endpoint={endpoint} bind={bind} tails={} in_base_service={in_base_service} lanes={lanes} bytes_per_lane={bytes_per_lane} extent_bytes={extent_bytes} message_bytes={message_bytes} workers={workers} ack_enabled={} compact_4k={} rewrite_headers={} fast_headers={} relay_window={} range_acks={} branch_post_nowait={} prepost_recv={} tx_nowait_requested={} tx_nowait_effective={} ack_inject={} same_slot_forward=yes hwm_ack={hwm_ack} timeout_ms={} busy_poll_iters={} cq_sleep_ns={}",
+        "zcofi-wal-relay: provider={provider} endpoint={endpoint} bind={bind} tails={} in_base_service={in_base_service} lanes={lanes} bytes_per_lane={bytes_per_lane} extent_bytes={extent_bytes} message_bytes={message_bytes} workers={workers} ack_enabled={} completion_semantic={} compact_4k={} wire_sequence_header={} rewrite_headers={} fast_headers={} relay_window={} per_lane_upstream_rx_qd={} aggregate_rx_outstanding={} per_lane_tail_tx_qd={} aggregate_tx_outstanding={aggregate_tx_outstanding} aggregate_ack_outstanding={aggregate_ack_outstanding} range_acks={} branch_post_nowait={} prepost_recv={} tx_nowait_requested={} tx_nowait_effective={} ack_inject={} same_slot_forward=yes hwm_ack={hwm_ack} timeout_ms={} busy_poll_iters={} cq_sleep_ns={}",
         tail_specs
             .iter()
             .enumerate()
@@ -14381,10 +17124,19 @@ fn zcofi_wal_relay(
             .collect::<Vec<_>>()
             .join(","),
         yes(ack_enabled),
+        if ack_enabled {
+            "all-tail-remote-ack-before-upstream-ack"
+        } else {
+            "receive-and-forward-transport-ceiling"
+        },
         yes(compact_4k),
+        yes(!compact_4k),
         yes(!compact_4k && env_enabled_or("URING_PLAY_OFI_RELAY_REWRITE_HEADERS", true)),
         yes(fast_headers),
         relay_window,
+        if prepost_recv { relay_window } else { 1 },
+        lanes.saturating_mul(if prepost_recv { relay_window } else { 1 }),
+        relay_window.max(1),
         yes(range_acks),
         yes(branch_post_nowait),
         yes(prepost_recv),
@@ -15300,6 +18052,7 @@ fn zcraid_mirror_ack_for_header(header: ZcWalExtentHeader) -> io::Result<ZcWalAc
 fn zcraid_mirror_topology_warnings(
     label: &str,
     transport: ZcRaidMirrorTransport,
+    provider: &str,
     plan: &ZcRaidMirrorBenchPlan,
     lanes: &[usize],
     workers: usize,
@@ -15307,6 +18060,26 @@ fn zcraid_mirror_topology_warnings(
     coord_mode: ZcRaidZlaneCoordMode,
 ) -> io::Result<()> {
     zcwal_extent_perf_warnings(label, lanes.len(), 1, workers)?;
+    let efa_transport =
+        transport == ZcRaidMirrorTransport::Ofi && matches!(provider, "efa" | "efa-direct");
+    if transport == ZcRaidMirrorTransport::Ofi {
+        let domains_explicit = plan.branches.iter().all(|branch| {
+            branch
+                .fabric_domain
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+        });
+        zcofi_perf_contract_warnings(
+            label,
+            provider,
+            lanes.len(),
+            plan.branches.len(),
+            ZC_WAL_EXTENT_HEADER_LEN.saturating_add(extent_bytes),
+            0,
+            domains_explicit,
+        )?;
+        zcofi_print_lane_worker_cpu_map(label, lanes, workers, "branch-plan");
+    }
     if !plan.from_plan_json {
         zc_topology_issue(
             label,
@@ -15323,7 +18096,10 @@ fn zcraid_mirror_topology_warnings(
         )?;
     }
     if transport == ZcRaidMirrorTransport::Ofi {
-        if extent_bytes == ZC_WAL_RECORD_SIZE && !env_truthy("URING_PLAY_OFI_COMPACT_4K") {
+        if extent_bytes == ZC_WAL_RECORD_SIZE
+            && !zcofi_efa_direct_requested(provider)
+            && !env_truthy("URING_PLAY_OFI_COMPACT_4K")
+        {
             zc_topology_issue(
                 label,
                 "OFI mirror is not using URING_PLAY_OFI_COMPACT_4K=1; per-record headers will dominate 4K IOPS",
@@ -15349,6 +18125,20 @@ fn zcraid_mirror_topology_warnings(
         )?;
     }
     for branch in &plan.branches {
+        if efa_transport
+            && branch
+                .fabric_domain
+                .as_deref()
+                .is_none_or(|domain| domain.is_empty())
+        {
+            zc_topology_issue(
+                label,
+                format!(
+                    "branch={} is missing fabric_domain; its lane-to-EFA-domain mapping is not explicit",
+                    branch.branch
+                ),
+            )?;
+        }
         println!(
             "{label}-branch-topology: branch={} domain={} lanes={} leader_cpus={} workers={} block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches",
             branch.branch,
@@ -15357,6 +18147,16 @@ fn zcraid_mirror_topology_warnings(
             format_cpu_list(&branch.leader_cpus),
             format_cpu_list(&branch.workers),
         );
+        if efa_transport {
+            for &lane in lanes {
+                println!(
+                    "{label}-lane-domain-map: branch={} lane={lane} domain={} nic_selector={} placement_owner=userspace-raid",
+                    branch.branch,
+                    branch.fabric_domain.as_deref().unwrap_or("auto"),
+                    env::var("FI_EFA_IFACE").unwrap_or_else(|_| "all-implicit".to_string()),
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -15820,6 +18620,17 @@ fn zcraid_mirror_ofi_open_endpoint(
     ZcOfiEndpoint::open_on_domain(provider, endpoint, node, service, server, domain)
 }
 
+struct ZcRaidMirrorOfiRecvLane {
+    lane: usize,
+    endpoint: ZcOfiEndpoint,
+    messages: Vec<u8>,
+    ack_buf: Box<[u8; ZC_WAL_ACK_HEADER_LEN]>,
+    completion_slots: Vec<usize>,
+    completion_tokens: Vec<u64>,
+    completion_lengths: Vec<usize>,
+    completion_sources: Vec<u64>,
+}
+
 fn zcraid_mirror_ofi_recv_worker(
     worker: usize,
     provider: Arc<String>,
@@ -15832,6 +18643,7 @@ fn zcraid_mirror_ofi_recv_worker(
     extents_per_lane: usize,
     extent_bytes: usize,
     ack_enabled: bool,
+    recv_window: usize,
     coord_mode: ZcRaidZlaneCoordMode,
 ) -> io::Result<ZcWalExtentStats> {
     let affinity = maybe_pin_current_thread("zcraid-mirror-ofi-recv-worker", worker);
@@ -15839,9 +18651,19 @@ fn zcraid_mirror_ofi_recv_worker(
     let start_thread_cpu = thread_cpu_time().unwrap_or_default();
     let start_cpu = current_cpu();
     let start_switches = read_thread_context_switches(tid).unwrap_or_default();
-    let compact_4k = zcofi_compact_4k_enabled(extent_bytes, ack_enabled);
-    let message_bytes = zcofi_wal_message_bytes(extent_bytes, ack_enabled);
+    let compact_4k = zcofi_compact_4k_enabled(provider.as_str(), extent_bytes, ack_enabled);
+    let message_bytes = zcofi_wal_message_bytes(provider.as_str(), extent_bytes, ack_enabled);
     let ack_inject = ack_enabled && env_enabled_or("URING_PLAY_OFI_ACK_INJECT", false);
+    let recv_window = recv_window.max(1).min(extents_per_lane.max(1));
+    let contract = zcraid_mirror_ofi_peer_contract(
+        provider.as_str(),
+        branch.branch,
+        lane_count,
+        extent_bytes,
+        ack_enabled,
+        recv_window,
+        coord_mode,
+    );
     let mut endpoints = Vec::with_capacity(lanes.len());
     let stream_count = lanes.len();
     for lane in lanes {
@@ -15856,9 +18678,41 @@ fn zcraid_mirror_ofi_recv_worker(
         )?;
         zcofi_wal_check_endpoint_shape(&ep, message_bytes, provider.as_str(), lane)?;
         let control_port = zcofi_control_port(&service)?;
-        zcofi_server_exchange_peer(bind.as_str(), control_port, &mut ep)?;
+        zcofi_server_exchange_peer(bind.as_str(), control_port, &mut ep, &contract)?;
+        let arena_bytes = recv_window.checked_mul(message_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraid mirror RX arena overflow",
+            )
+        })?;
+        let mut messages = vec![0u8; arena_bytes];
+        let ack_buf = Box::new([0u8; ZC_WAL_ACK_HEADER_LEN]);
+        ep.recv_queue_init(recv_window)?;
+        ep.register_recv_buffer(&mut messages)?;
+        if ack_enabled {
+            ep.register_send_buffer(ack_buf.as_slice())?;
+        }
+        for slot in 0..recv_window {
+            let posted = unsafe {
+                ep.recv_post_raw(
+                    messages.as_mut_ptr().add(slot * message_bytes),
+                    message_bytes,
+                    slot,
+                    slot as u64,
+                )?
+            };
+            if !posted {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!(
+                        "zcraid mirror could not prepost payload branch={} lane={lane} slot={slot}",
+                        branch.branch
+                    ),
+                ));
+            }
+        }
         println!(
-            "zcraid-mirror-ofi-recv-lane: worker={worker} branch={} lane={lane} provider={} endpoint={} bind={} service={} control_port={} domain={} max_msg_size={} inject_size={}",
+            "zcraid-mirror-ofi-recv-lane: worker={worker} branch={} lane={lane} provider={} endpoint={} bind={} service={} control_port={} domain={} max_msg_size={} inject_size={} rx_queue_depth={recv_window} rx_registered_arena_bytes={arena_bytes}",
             branch.branch,
             provider.as_str(),
             endpoint.as_str(),
@@ -15869,67 +18723,159 @@ fn zcraid_mirror_ofi_recv_worker(
             ep.max_msg_size(),
             ep.inject_size(),
         );
-        endpoints.push((lane, ep));
+        endpoints.push(ZcRaidMirrorOfiRecvLane {
+            lane,
+            endpoint: ep,
+            messages,
+            ack_buf,
+            completion_slots: vec![0; recv_window],
+            completion_tokens: vec![0; recv_window],
+            completion_lengths: vec![0; recv_window],
+            completion_sources: vec![0; recv_window],
+        });
     }
 
-    let mut message = vec![0u8; message_bytes];
     let mut payload_bytes = 0usize;
     let mut wire_bytes = 0usize;
     let mut extents = 0usize;
     let mut records = 0usize;
     let mut acks = 0usize;
+    let mut cq_poll_calls = 0u64;
+    let mut cq_batches = 0u64;
+    let mut cq_completions = 0u64;
     let started = Instant::now();
-    for (lane, mut ep) in endpoints {
-        for seq in 0..extents_per_lane {
-            let got = ep.recv(&mut message)?;
-            if got != message_bytes {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "zcraid mirror OFI message length mismatch branch={} lane={lane} seq={seq} got={got} expected={message_bytes}",
-                        branch.branch
-                    ),
-                ));
+    for mut lane_state in endpoints {
+        let lane = lane_state.lane;
+        let mut next_post_seq = recv_window;
+        let mut completed_extents = 0usize;
+        let mut seen = vec![false; extents_per_lane];
+        while completed_extents < extents_per_lane {
+            cq_poll_calls = cq_poll_calls.saturating_add(1);
+            let completed = lane_state.endpoint.recv_poll(
+                &mut lane_state.completion_slots,
+                &mut lane_state.completion_tokens,
+                &mut lane_state.completion_lengths,
+                &mut lane_state.completion_sources,
+                true,
+            )?;
+            if completed != 0 {
+                cq_batches = cq_batches.saturating_add(1);
+                cq_completions = cq_completions.saturating_add(completed as u64);
             }
-            let header = if compact_4k {
-                zcraid_mirror_extent_header(
-                    lane,
-                    lane_count,
-                    branch.branch,
-                    seq,
-                    extent_bytes,
-                    coord_mode,
-                )?
-            } else {
-                let mut header_buf = [0u8; ZC_WAL_EXTENT_HEADER_LEN];
-                header_buf.copy_from_slice(&message[..ZC_WAL_EXTENT_HEADER_LEN]);
-                let header = ZcWalExtentHeader::decode(&header_buf)?;
-                zcraid_mirror_verify_extent_header(
-                    header,
-                    lane,
-                    lane_count,
-                    branch.branch,
-                    seq,
-                    extent_bytes,
-                    coord_mode,
-                )?;
-                header
-            };
-            payload_bytes += extent_bytes;
-            wire_bytes += message_bytes;
-            extents += 1;
-            records += header.record_count as usize;
-            if ack_enabled {
-                let ack = zcraid_mirror_ack_for_header(header)?.encode();
-                if ack_inject && ack.len() <= ep.inject_size() {
-                    ep.inject_to_last(&ack)?;
-                } else {
-                    ep.send_to_last(&ack)?;
+            for completion_idx in 0..completed {
+                let slot = lane_state.completion_slots[completion_idx];
+                let token = lane_state.completion_tokens[completion_idx];
+                if slot >= recv_window
+                    || lane_state.completion_lengths[completion_idx] != message_bytes
+                    || (!compact_4k && token != slot as u64)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "zcraid mirror OFI RX completion mismatch branch={} lane={lane} slot={slot} token={token} len={} depth={recv_window} extents={extents_per_lane}",
+                            branch.branch, lane_state.completion_lengths[completion_idx],
+                        ),
+                    ));
                 }
-                acks += 1;
+                let start = slot * message_bytes;
+                let message = &lane_state.messages[start..start + message_bytes];
+                let (header, seq) = if compact_4k {
+                    let seq = usize::try_from(token).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "mirror RX sequence overflow")
+                    })?;
+                    (
+                        zcraid_mirror_extent_header(
+                            lane,
+                            lane_count,
+                            branch.branch,
+                            seq,
+                            extent_bytes,
+                            coord_mode,
+                        )?,
+                        seq,
+                    )
+                } else {
+                    let mut header_buf = [0u8; ZC_WAL_EXTENT_HEADER_LEN];
+                    header_buf.copy_from_slice(&message[..ZC_WAL_EXTENT_HEADER_LEN]);
+                    let header = ZcWalExtentHeader::decode(&header_buf)?;
+                    let seq = usize::try_from(header.extent_sequence).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "mirror RX sequence overflow")
+                    })?;
+                    zcraid_mirror_verify_extent_header(
+                        header,
+                        lane,
+                        lane_count,
+                        branch.branch,
+                        seq,
+                        extent_bytes,
+                        coord_mode,
+                    )?;
+                    (header, seq)
+                };
+                if seq >= extents_per_lane || seen[seq] {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "zcraid mirror OFI RX sequence mismatch branch={} lane={lane} slot={slot} seq={seq} extents={extents_per_lane} duplicate={}",
+                            branch.branch,
+                            yes(seq < seen.len() && seen[seq]),
+                        ),
+                    ));
+                }
+                seen[seq] = true;
+                completed_extents += 1;
+                payload_bytes += extent_bytes;
+                wire_bytes += message_bytes;
+                extents += 1;
+                records += header.record_count as usize;
+                if ack_enabled {
+                    lane_state
+                        .ack_buf
+                        .copy_from_slice(&zcraid_mirror_ack_for_header(header)?.encode());
+                    if ack_inject && lane_state.ack_buf.len() <= lane_state.endpoint.inject_size() {
+                        lane_state
+                            .endpoint
+                            .inject_to_last(lane_state.ack_buf.as_slice())?;
+                    } else {
+                        lane_state
+                            .endpoint
+                            .send_to_last(lane_state.ack_buf.as_slice())?;
+                    }
+                    acks += 1;
+                }
+                if next_post_seq < extents_per_lane {
+                    let next_token = if compact_4k {
+                        next_post_seq as u64
+                    } else {
+                        slot as u64
+                    };
+                    let posted = unsafe {
+                        lane_state.endpoint.recv_post_raw(
+                            lane_state.messages.as_mut_ptr().add(start),
+                            message_bytes,
+                            slot,
+                            next_token,
+                        )?
+                    };
+                    if !posted {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            format!(
+                                "zcraid mirror could not recycle payload slot branch={} lane={lane} slot={slot} next_seq={next_post_seq}",
+                                branch.branch
+                            ),
+                        ));
+                    }
+                    next_post_seq += 1;
+                }
             }
         }
     }
+
+    println!(
+        "zcraid-mirror-ofi-recv-queue-worker: worker={worker} lanes={stream_count} configured_rx_depth={recv_window} cq_poll_calls={cq_poll_calls} cq_batches={cq_batches} cq_completions={cq_completions} avg_cqes_per_batch={:.2}",
+        cq_completions as f64 / cq_batches.max(1) as f64,
+    );
 
     let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
     let end_cpu = current_cpu();
@@ -15962,6 +18908,60 @@ fn zcraid_mirror_ofi_recv_worker(
     })
 }
 
+struct ZcRaidMirrorOfiBranchLane {
+    branch: usize,
+    endpoint: ZcOfiEndpoint,
+    tx_slots: Vec<u8>,
+    ack_slots: Vec<u8>,
+    completion_slots: Vec<usize>,
+    completion_tokens: Vec<u64>,
+    completion_lengths: Vec<usize>,
+    completion_sources: Vec<u64>,
+}
+
+fn zcraid_mirror_ofi_drain_branches(
+    lane: usize,
+    branches: &mut [ZcRaidMirrorOfiBranchLane],
+) -> io::Result<(u64, u64, u64)> {
+    let timeout = Duration::from_millis(u64::try_from(zcofi_timeout_ms()).unwrap_or(30_000));
+    let mut last_progress = Instant::now();
+    let mut polls = 0u64;
+    let mut empty_polls = 0u64;
+    let mut completions = 0u64;
+    loop {
+        let mut pending = 0usize;
+        let mut progress = 0usize;
+        for branch in branches.iter_mut() {
+            if branch.endpoint.send_pending() == 0 {
+                continue;
+            }
+            pending += 1;
+            polls = polls.saturating_add(1);
+            let completed = branch.endpoint.send_poll(false)?;
+            if completed == 0 {
+                empty_polls = empty_polls.saturating_add(1);
+            }
+            progress = progress.saturating_add(completed);
+            completions = completions.saturating_add(completed as u64);
+        }
+        if pending == 0 {
+            return Ok((polls, empty_polls, completions));
+        }
+        if progress != 0 {
+            last_progress = Instant::now();
+        } else if last_progress.elapsed() >= timeout {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "zcraid mirror fair TX CQ drain timed out lane={lane} pending_branches={pending}"
+                ),
+            ));
+        } else {
+            thread::yield_now();
+        }
+    }
+}
+
 fn zcraid_mirror_ofi_send_worker(
     worker: usize,
     provider: Arc<String>,
@@ -15980,25 +18980,60 @@ fn zcraid_mirror_ofi_send_worker(
     let start_thread_cpu = thread_cpu_time().unwrap_or_default();
     let start_cpu = current_cpu();
     let start_switches = read_thread_context_switches(tid).unwrap_or_default();
-    let compact_4k = zcofi_compact_4k_enabled(extent_bytes, ack_enabled);
-    let message_bytes = zcofi_wal_message_bytes(extent_bytes, ack_enabled);
+    let compact_4k = zcofi_compact_4k_enabled(provider.as_str(), extent_bytes, ack_enabled);
+    let message_bytes = zcofi_wal_message_bytes(provider.as_str(), extent_bytes, ack_enabled);
     let records_per_extent = extent_bytes / ZC_WAL_RECORD_SIZE;
     let payload_inject = env_enabled_or("URING_PLAY_OFI_PAYLOAD_INJECT", false);
-    let tx_nowait = ack_enabled && compact_4k && env_enabled_or("URING_PLAY_OFI_TX_NOWAIT", false);
-    let prepost_ack = ack_enabled && env_enabled_or("URING_PLAY_OFI_PREPOST_ACK", false);
-    let mut message = vec![0u8; message_bytes];
-    if compact_4k {
-        SendPayloadPattern::from_env(extent_bytes)?.fill(&mut message);
+    let branch_post_nowait = env_enabled_or("URING_PLAY_OFI_BRANCH_POST_NOWAIT", true);
+    let prepost_ack = ack_enabled && env_enabled_or("URING_PLAY_OFI_PREPOST_ACK", true);
+    let configured_window = if ack_enabled {
+        ack_window.max(1)
     } else {
-        SendPayloadPattern::from_env(extent_bytes)?.fill(&mut message[ZC_WAL_EXTENT_HEADER_LEN..]);
-    }
+        env_usize_or("URING_PLAY_OFI_TX_QUEUE_DEPTH", 64).max(1)
+    };
+    let tx_arena_bytes = configured_window
+        .checked_mul(message_bytes)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraid mirror OFI TX arena size overflow",
+            )
+        })?;
+    let ack_arena_bytes = configured_window
+        .checked_mul(ZC_WAL_ACK_HEADER_LEN)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraid mirror OFI ACK arena size overflow",
+            )
+        })?;
+    let payload_pattern = SendPayloadPattern::from_env(extent_bytes)?;
     let mut payload_bytes = 0usize;
     let mut wire_bytes = 0usize;
     let mut extents = 0usize;
     let mut records = 0usize;
     let mut acks = 0usize;
     let mut ack_latency = LatencyHistogram::new();
-    let stream_count = lanes.len() * branches.len();
+    let mut branch_post_skew = LatencyHistogram::new();
+    let mut ack_mask_wait = LatencyHistogram::new();
+    let mut ack_hol_wait = LatencyHistogram::new();
+    let mut ack_out_of_order = 0u64;
+    let mut ack_hol_waits = 0u64;
+    let mut ack_poll_calls = 0u64;
+    let mut ack_poll_empty = 0u64;
+    let mut tx_poll_calls = 0u64;
+    let mut tx_poll_empty = 0u64;
+    let mut tx_poll_completions = 0u64;
+    let worker_lane_count = lanes.len();
+    let stream_count = worker_lane_count * branches.len();
+    let configured_ack_outstanding = if prepost_ack {
+        worker_lane_count
+            .saturating_mul(branches.len())
+            .saturating_mul(configured_window)
+    } else {
+        0
+    };
+    let mut peak_ack_outstanding = 0usize;
     let mut lane_eps = Vec::with_capacity(lanes.len());
 
     for lane in lanes {
@@ -16015,9 +19050,40 @@ fn zcraid_mirror_ofi_send_worker(
             )?;
             zcofi_wal_check_endpoint_shape(&ep, message_bytes, provider.as_str(), lane)?;
             let control_port = zcofi_control_port(&service)?;
-            zcofi_client_exchange_peer(branch.addr.as_str(), control_port, &mut ep)?;
+            let contract = zcraid_mirror_ofi_peer_contract(
+                provider.as_str(),
+                branch.plan.branch,
+                lane_count,
+                extent_bytes,
+                ack_enabled,
+                if ack_enabled {
+                    configured_window.min(extents_per_lane.max(1))
+                } else {
+                    0
+                },
+                coordinator.mode,
+            );
+            zcofi_client_exchange_peer(branch.addr.as_str(), control_port, &mut ep, &contract)?;
+            let mut tx_slots = vec![0u8; tx_arena_bytes];
+            for slot in tx_slots.chunks_exact_mut(message_bytes) {
+                if compact_4k {
+                    payload_pattern.fill(slot);
+                } else {
+                    payload_pattern.fill(&mut slot[ZC_WAL_EXTENT_HEADER_LEN..]);
+                }
+            }
+            ep.register_send_buffer(&tx_slots)?;
+            let mut ack_slots = if prepost_ack {
+                vec![0u8; ack_arena_bytes]
+            } else {
+                Vec::new()
+            };
+            if prepost_ack {
+                ep.recv_queue_init(configured_window)?;
+                ep.register_recv_buffer(&mut ack_slots)?;
+            }
             println!(
-                "zcraid-mirror-ofi-send-lane: worker={worker} branch={} lane={lane} provider={} endpoint={} addr={} service={} control_port={} domain={} max_msg_size={} inject_size={}",
+                "zcraid-mirror-ofi-send-lane: worker={worker} branch={} lane={lane} provider={} endpoint={} addr={} service={} control_port={} domain={} max_msg_size={} inject_size={} tx_queue_depth={} tx_registered_arena_bytes={} ack_queue_depth={} ack_registered_arena_bytes={} branch_post_nowait={} prepost_ack={}",
                 branch.plan.branch,
                 provider.as_str(),
                 endpoint.as_str(),
@@ -16027,8 +19093,23 @@ fn zcraid_mirror_ofi_send_worker(
                 branch.plan.fabric_domain.as_deref().unwrap_or("auto"),
                 ep.max_msg_size(),
                 ep.inject_size(),
+                configured_window,
+                tx_slots.len(),
+                if prepost_ack { configured_window } else { 0 },
+                ack_slots.len(),
+                yes(branch_post_nowait),
+                yes(prepost_ack),
             );
-            branch_eps.push((branch.plan.branch, ep));
+            branch_eps.push(ZcRaidMirrorOfiBranchLane {
+                branch: branch.plan.branch,
+                endpoint: ep,
+                tx_slots,
+                ack_slots,
+                completion_slots: vec![0; configured_window],
+                completion_tokens: vec![0; configured_window],
+                completion_lengths: vec![0; configured_window],
+                completion_sources: vec![0; configured_window],
+            });
         }
         lane_eps.push((lane, branch_eps));
     }
@@ -16039,14 +19120,8 @@ fn zcraid_mirror_ofi_send_worker(
             && payload_inject
             && branch_eps
                 .iter()
-                .all(|(_, ep)| message_bytes <= ep.inject_size());
-        let effective_window = if ack_enabled && all_can_inject {
-            ack_window.max(1)
-        } else {
-            1
-        };
-        let use_prepost_ack = prepost_ack && effective_window == 1;
-        let mut ack_bufs = vec![[0u8; ZC_WAL_ACK_HEADER_LEN]; branch_eps.len()];
+                .all(|branch| message_bytes <= branch.endpoint.inject_size());
+        let effective_window = configured_window.min(extents_per_lane.max(1));
         let mut issued_slots = vec![Instant::now(); effective_window];
         let mut seq_base = 0usize;
         while seq_base < extents_per_lane {
@@ -16063,84 +19138,284 @@ fn zcraid_mirror_ofi_send_worker(
                 )?;
                 ranges.push((first_logical_index, last_logical_index));
             }
-            let range_guards = coordinator.acquire_many(&ranges)?;
+            // acquire_many() returns one guard per distinct lock shard, not one
+            // guard per sequence.  Keep the whole batch protected until its ACK
+            // high-water mark has retired; indexing these guards by slot is both
+            // incorrect for deduplicated shards and empty in lane-owner mode.
+            let mut range_guards = Some(coordinator.acquire_many(&ranges)?);
+
+            if prepost_ack {
+                for branch in &mut branch_eps {
+                    for slot in 0..batch {
+                        let offset = slot * ZC_WAL_ACK_HEADER_LEN;
+                        let token = u64::try_from(slot).map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "zcraid mirror ACK token overflow",
+                            )
+                        })?;
+                        let posted = unsafe {
+                            branch.endpoint.recv_post_raw(
+                                branch.ack_slots.as_mut_ptr().add(offset),
+                                ZC_WAL_ACK_HEADER_LEN,
+                                slot,
+                                token,
+                            )?
+                        };
+                        if !posted {
+                            return Err(io::Error::new(
+                                io::ErrorKind::WouldBlock,
+                                format!(
+                                    "zcraid mirror OFI could not prepost ACK branch={} lane={lane} slot={slot} window={effective_window}",
+                                    branch.branch
+                                ),
+                            ));
+                        }
+                    }
+                }
+                peak_ack_outstanding =
+                    peak_ack_outstanding.max(batch.saturating_mul(branch_eps.len()));
+            }
+
             for (slot, issued) in issued_slots.iter_mut().take(batch).enumerate() {
                 let seq = seq_base + slot;
                 *issued = Instant::now();
-                for (branch_idx, (branch_id, ep)) in branch_eps.iter_mut().enumerate() {
-                    if use_prepost_ack {
-                        ep.recv_start(&mut ack_bufs[branch_idx])?;
-                    }
-                    if compact_4k {
-                        if all_can_inject {
-                            ep.inject(&message)?;
-                        } else if tx_nowait {
-                            ep.send_nowait(&message)?;
-                        } else {
-                            ep.send(&message)?;
-                        }
-                    } else {
+                let first_post = Instant::now();
+                for branch in &mut branch_eps {
+                    let start = slot * message_bytes;
+                    let end = start + message_bytes;
+                    let message = &mut branch.tx_slots[start..end];
+                    if !compact_4k {
                         let header = zcraid_mirror_extent_header(
                             lane,
                             lane_count,
-                            *branch_id,
+                            branch.branch,
                             seq,
                             extent_bytes,
                             coordinator.mode(),
                         )?
                         .encode();
                         message[..ZC_WAL_EXTENT_HEADER_LEN].copy_from_slice(&header);
-                        if tx_nowait {
-                            ep.send_nowait(&message)?;
-                        } else {
-                            ep.send(&message)?;
-                        }
+                    }
+                    if all_can_inject {
+                        branch.endpoint.inject(message)?;
+                    } else if branch_post_nowait {
+                        branch.endpoint.send_nowait(message)?;
+                    } else {
+                        branch.endpoint.send(message)?;
                     }
                 }
+                branch_post_skew.record_duration(first_post.elapsed());
                 payload_bytes += extent_bytes;
                 wire_bytes += message_bytes * branch_eps.len();
                 extents += 1;
                 records += records_per_extent;
             }
+
+            if branch_post_nowait && !all_can_inject {
+                let (polls, empty, completions) =
+                    zcraid_mirror_ofi_drain_branches(lane, &mut branch_eps)?;
+                tx_poll_calls = tx_poll_calls.saturating_add(polls);
+                tx_poll_empty = tx_poll_empty.saturating_add(empty);
+                tx_poll_completions = tx_poll_completions.saturating_add(completions);
+            }
+
             if ack_enabled {
-                for (slot, issued) in issued_slots.iter().take(batch).enumerate() {
-                    let seq = seq_base + slot;
-                    for (branch_idx, (branch_id, ep)) in branch_eps.iter_mut().enumerate() {
-                        let got = if use_prepost_ack {
-                            ep.recv_finish()?
-                        } else {
-                            ep.recv(&mut ack_bufs[branch_idx])?
-                        };
-                        if got != ZC_WAL_ACK_HEADER_LEN {
+                if prepost_ack {
+                    let mut ack_masks = vec![vec![false; branch_eps.len()]; batch];
+                    let mut mask_complete = vec![false; batch];
+                    let mut first_ack = vec![None; batch];
+                    let mut mask_completed_at = vec![None; batch];
+                    let mut hol_blocked = vec![false; batch];
+                    let mut remaining = batch.saturating_mul(branch_eps.len());
+                    let mut next_retire = 0usize;
+                    let mut last_progress = Instant::now();
+                    while remaining != 0 {
+                        let mut progress = 0usize;
+                        for (branch_idx, branch) in branch_eps.iter_mut().enumerate() {
+                            ack_poll_calls = ack_poll_calls.saturating_add(1);
+                            let completed = branch.endpoint.recv_poll(
+                                &mut branch.completion_slots[..batch],
+                                &mut branch.completion_tokens[..batch],
+                                &mut branch.completion_lengths[..batch],
+                                &mut branch.completion_sources[..batch],
+                                false,
+                            )?;
+                            if completed == 0 {
+                                ack_poll_empty = ack_poll_empty.saturating_add(1);
+                                continue;
+                            }
+                            progress += completed;
+                            for index in 0..completed {
+                                let recv_slot = branch.completion_slots[index];
+                                if recv_slot >= batch
+                                    || branch.completion_tokens[index] != recv_slot as u64
+                                    || branch.completion_lengths[index] != ZC_WAL_ACK_HEADER_LEN
+                                {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!(
+                                            "zcraid mirror OFI ACK completion mismatch branch={} lane={lane} recv_slot={recv_slot} token={} len={} batch={batch}",
+                                            branch.branch,
+                                            branch.completion_tokens[index],
+                                            branch.completion_lengths[index],
+                                        ),
+                                    ));
+                                }
+                                let start = recv_slot * ZC_WAL_ACK_HEADER_LEN;
+                                let end = start + ZC_WAL_ACK_HEADER_LEN;
+                                let ack_buf: &[u8; ZC_WAL_ACK_HEADER_LEN] =
+                                    branch.ack_slots[start..end].try_into().map_err(|_| {
+                                        io::Error::new(
+                                            io::ErrorKind::InvalidData,
+                                            "zcraid mirror OFI ACK slot shape mismatch",
+                                        )
+                                    })?;
+                                let ack = ZcWalAckHeader::decode(ack_buf)?;
+                                let seq = usize::try_from(ack.extent_sequence).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "zcraid mirror OFI ACK sequence overflow",
+                                    )
+                                })?;
+                                if seq < seq_base || seq >= seq_base + batch {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!(
+                                            "zcraid mirror OFI ACK sequence outside window branch={} lane={lane} seq={seq} seq_base={seq_base} batch={batch} recv_slot={recv_slot}",
+                                            branch.branch,
+                                        ),
+                                    ));
+                                }
+                                let seq_slot = seq - seq_base;
+                                if ack_masks[seq_slot][branch_idx] {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!(
+                                            "zcraid mirror OFI duplicate ACK branch={} lane={lane} seq={seq} recv_slot={recv_slot}",
+                                            branch.branch,
+                                        ),
+                                    ));
+                                }
+                                zcraid_mirror_verify_ack(
+                                    ack,
+                                    branch.branch,
+                                    lane,
+                                    lane_count,
+                                    seq,
+                                    extent_bytes,
+                                    coordinator.mode(),
+                                )?;
+                                first_ack[seq_slot].get_or_insert_with(Instant::now);
+                                ack_masks[seq_slot][branch_idx] = true;
+                                remaining = remaining.checked_sub(1).ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "zcraid mirror OFI ACK remaining underflow",
+                                    )
+                                })?;
+                                if ack_masks[seq_slot].iter().all(|seen| *seen) {
+                                    let completed_at = Instant::now();
+                                    mask_complete[seq_slot] = true;
+                                    mask_completed_at[seq_slot] = Some(completed_at);
+                                    if let Some(first) = first_ack[seq_slot] {
+                                        ack_mask_wait.record_duration(first.elapsed());
+                                    }
+                                    if seq_slot != next_retire {
+                                        hol_blocked[seq_slot] = true;
+                                        ack_out_of_order = ack_out_of_order.saturating_add(1);
+                                        ack_hol_waits = ack_hol_waits.saturating_add(1);
+                                    }
+                                    while next_retire < batch && mask_complete[next_retire] {
+                                        if hol_blocked[next_retire]
+                                            && let Some(completed_at) =
+                                                mask_completed_at[next_retire]
+                                        {
+                                            ack_hol_wait.record_duration(completed_at.elapsed());
+                                        }
+                                        acks += 1;
+                                        ack_latency
+                                            .record_duration(issued_slots[next_retire].elapsed());
+                                        next_retire += 1;
+                                    }
+                                }
+                            }
+                        }
+                        if progress != 0 {
+                            last_progress = Instant::now();
+                        } else if last_progress.elapsed()
+                            >= Duration::from_millis(
+                                u64::try_from(zcofi_timeout_ms()).unwrap_or(30_000),
+                            )
+                        {
                             return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
+                                io::ErrorKind::TimedOut,
                                 format!(
-                                    "zcraid mirror OFI ack length mismatch branch={branch_id} lane={lane} seq={seq} got={got} expected={ZC_WAL_ACK_HEADER_LEN}"
+                                    "zcraid mirror OFI ACK matrix timed out lane={lane} seq_base={seq_base} remaining={remaining} batch={batch} branches={}",
+                                    branch_eps.len()
                                 ),
                             ));
-                        }
-                        let ack = ZcWalAckHeader::decode(&ack_bufs[branch_idx])?;
-                        zcraid_mirror_verify_ack(
-                            ack,
-                            *branch_id,
-                            lane,
-                            lane_count,
-                            seq,
-                            extent_bytes,
-                            coordinator.mode(),
-                        )?;
-                        if tx_nowait && !all_can_inject {
-                            ep.drain_send()?;
+                        } else {
+                            thread::yield_now();
                         }
                     }
-                    acks += 1;
-                    ack_latency.record_duration(issued.elapsed());
+                    drop(range_guards.take());
+                    if next_retire != batch {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "zcraid mirror OFI ACK HWM stopped at {next_retire}/{batch} lane={lane} seq_base={seq_base}"
+                            ),
+                        ));
+                    }
+                } else {
+                    let mut ack_buf = [0u8; ZC_WAL_ACK_HEADER_LEN];
+                    for (slot, issued) in issued_slots.iter().take(batch).enumerate() {
+                        let seq = seq_base + slot;
+                        for branch in &mut branch_eps {
+                            let got = branch.endpoint.recv(&mut ack_buf)?;
+                            if got != ZC_WAL_ACK_HEADER_LEN {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "zcraid mirror OFI ack length mismatch branch={} lane={lane} seq={seq} got={got} expected={ZC_WAL_ACK_HEADER_LEN}",
+                                        branch.branch
+                                    ),
+                                ));
+                            }
+                            let ack = ZcWalAckHeader::decode(&ack_buf)?;
+                            zcraid_mirror_verify_ack(
+                                ack,
+                                branch.branch,
+                                lane,
+                                lane_count,
+                                seq,
+                                extent_bytes,
+                                coordinator.mode(),
+                            )?;
+                        }
+                        acks += 1;
+                        ack_latency.record_duration(issued.elapsed());
+                    }
+                    drop(range_guards.take());
                 }
+            } else {
+                drop(range_guards.take());
             }
-            drop(range_guards);
             seq_base += batch;
         }
     }
+
+    println!(
+        "zcraid-mirror-ofi-queue-worker: worker={worker} branches={} lanes={} configured_window={configured_window} branch_post_nowait={} tx_cq_progress=fair-round-robin tx_poll_calls={tx_poll_calls} tx_poll_empty={tx_poll_empty} tx_poll_completions={tx_poll_completions} prepost_ack={} configured_ack_outstanding={configured_ack_outstanding} peak_ack_outstanding={peak_ack_outstanding} ack_poll_calls={ack_poll_calls} ack_poll_empty={ack_poll_empty} ack_out_of_order={ack_out_of_order} ack_hol_waits={ack_hol_waits} {} {} {}",
+        branches.len(),
+        stream_count / branches.len().max(1),
+        yes(branch_post_nowait),
+        yes(prepost_ack),
+        zcwal_extent_latency_fields("branch_post_skew", &branch_post_skew),
+        zcwal_extent_latency_fields("ack_mask_wait", &ack_mask_wait),
+        zcwal_extent_latency_fields("ack_hol_wait", &ack_hol_wait),
+    );
 
     let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
     let end_cpu = current_cpu();
@@ -16202,21 +19477,50 @@ fn zcraid_mirror_recv(
     let coord_mode = ZcRaidZlaneCoordMode::from_env()?;
     let coordinator = ZcRaidZlaneCoordinator::new(coord_mode);
     let tcp_recv_spin_budget = zcraid_mirror_tcp_recv_spin_budget();
+    if transport == ZcRaidMirrorTransport::Ofi {
+        zcofi_report_wire_profile(
+            "zcraid-mirror-recv",
+            provider,
+            record_bytes,
+            wire_ack_enabled,
+        );
+        zcofi_queue_depth_preflight(
+            "zcraid-mirror-recv",
+            1,
+            if wire_ack_enabled {
+                ack_window.max(1)
+            } else {
+                env_usize_or("URING_PLAY_OFI_RX_QUEUE_DEPTH", 64).max(1)
+            },
+        )?;
+    }
     zcraid_mirror_topology_warnings(
         "zcraid-mirror-recv",
         transport,
+        provider,
         &plan,
         &lanes,
         workers,
         record_bytes,
         coord_mode,
     )?;
+    let ofi_recv_window = if wire_ack_enabled {
+        ack_window.max(1)
+    } else {
+        env_usize_or("URING_PLAY_OFI_RX_QUEUE_DEPTH", 64).max(1)
+    };
+    let aggregate_rx_outstanding = if transport == ZcRaidMirrorTransport::Ofi {
+        lanes.len().saturating_mul(ofi_recv_window)
+    } else {
+        0
+    };
     println!(
-        "zcraid-mirror-recv: transport={} bind={bind} base_port={base_port} branch={branch_id} lanes={} lane_count={} bytes_per_lane={bytes_per_lane} extent_bytes={record_bytes} logical_record_bytes={ZC_WAL_RECORD_SIZE} extents_per_lane={extents_per_lane} workers={workers} ack_enabled={} ack_policy={} ack_window={ack_window} zlane_coord={} zlane_lock_shards={} tcp_recv_spin={} tcp_recv_spin_budget={} provider={provider} endpoint={endpoint} branch_domain={} plan_json={}",
+        "zcraid-mirror-recv: transport={} bind={bind} base_port={base_port} branch={branch_id} lanes={} lane_count={} bytes_per_lane={bytes_per_lane} extent_bytes={record_bytes} logical_record_bytes={ZC_WAL_RECORD_SIZE} extents_per_lane={extents_per_lane} workers={workers} ack_enabled={} ack_policy={} completion_semantic={} ack_window={ack_window} per_lane_rx_qd={ofi_recv_window} aggregate_rx_outstanding={aggregate_rx_outstanding} zlane_coord={} zlane_lock_shards={} tcp_recv_spin={} tcp_recv_spin_budget={} provider={provider} endpoint={endpoint} branch_domain={} plan_json={} compact_4k={} wire_sequence_header={}",
         transport.label(),
         format_cpu_list(&lanes),
         lane_count,
         yes(wire_ack_enabled),
+        ack_policy.label(),
         ack_policy.label(),
         coord_mode.label(),
         coordinator.lock_count(),
@@ -16226,6 +19530,16 @@ fn zcraid_mirror_recv(
             .unwrap_or_else(|| "off".to_string()),
         branch.fabric_domain.as_deref().unwrap_or("auto"),
         yes(plan.from_plan_json),
+        yes(zcofi_compact_4k_enabled(
+            provider,
+            record_bytes,
+            wire_ack_enabled
+        )),
+        yes(!zcofi_compact_4k_enabled(
+            provider,
+            record_bytes,
+            wire_ack_enabled
+        )),
     );
     let mut results = Vec::new();
     match transport {
@@ -16286,6 +19600,11 @@ fn zcraid_mirror_recv(
                         extents_per_lane,
                         record_bytes,
                         wire_ack_enabled,
+                        if wire_ack_enabled {
+                            ack_window
+                        } else {
+                            env_usize_or("URING_PLAY_OFI_RX_QUEUE_DEPTH", 64).max(1)
+                        },
                         coord_mode,
                     )
                 }));
@@ -16375,7 +19694,7 @@ fn zcraid_mirror_send(
         && matches!(requested_ack_policy, ZcRaidMirrorAckPolicy::Sync)
     {
         eprintln!(
-            "PERF WARNING: zcraid-mirror-send sync ACK policy is fully modeled on TCP; OFI is using remote ACK pacing until the provider path can safely hold multiple outstanding payload buffers"
+            "PERF WARNING: zcraid-mirror-send sync/FUA durability drains are not implemented for the OFI mirror protocol; this run is downgraded to remotely acknowledged writes and must not be reported as durable completion"
         );
         ZcRaidMirrorAckPolicy::Remote
     } else {
@@ -16394,9 +19713,45 @@ fn zcraid_mirror_send(
             coordinator.lock_count()
         );
     }
+    if transport == ZcRaidMirrorTransport::Ofi {
+        zcofi_report_wire_profile(
+            "zcraid-mirror-send",
+            provider,
+            record_bytes,
+            wire_ack_enabled,
+        );
+        if branch_count > 1 && !env_enabled_or("URING_PLAY_OFI_BRANCH_POST_NOWAIT", true) {
+            zc_topology_issue(
+                "zcraid-mirror-send",
+                "multi-branch OFI posting is configured to wait branch-by-branch",
+            )?;
+        }
+        if wire_ack_enabled && ack_window > 1 && !env_enabled_or("URING_PLAY_OFI_PREPOST_ACK", true)
+        {
+            zc_topology_issue(
+                "zcraid-mirror-send",
+                "windowed OFI ACK preposting is disabled; the branch-by-window ACK matrix cannot run",
+            )?;
+        }
+        let required_window = if wire_ack_enabled {
+            ack_window.max(1)
+        } else {
+            env_usize_or("URING_PLAY_OFI_TX_QUEUE_DEPTH", 64).max(1)
+        };
+        zcofi_queue_depth_preflight(
+            "zcraid-mirror-send",
+            required_window,
+            if wire_ack_enabled {
+                ack_window.max(1)
+            } else {
+                1
+            },
+        )?;
+    }
     zcraid_mirror_topology_warnings(
         "zcraid-mirror-send",
         transport,
+        provider,
         &plan,
         &lanes,
         workers,
@@ -16416,21 +19771,50 @@ fn zcraid_mirror_send(
             branch.plan.fabric_domain.as_deref().unwrap_or("auto")
         );
     }
+    let ofi_branch_post_nowait = transport == ZcRaidMirrorTransport::Ofi
+        && env_enabled_or("URING_PLAY_OFI_BRANCH_POST_NOWAIT", true);
+    let ofi_prepost_ack = transport == ZcRaidMirrorTransport::Ofi
+        && wire_ack_enabled
+        && env_enabled_or("URING_PLAY_OFI_PREPOST_ACK", true);
+    let ofi_window = if wire_ack_enabled {
+        ack_window.max(1)
+    } else {
+        env_usize_or("URING_PLAY_OFI_TX_QUEUE_DEPTH", 64).max(1)
+    };
+    let aggregate_tx_outstanding = lanes
+        .len()
+        .saturating_mul(branch_count)
+        .saturating_mul(ofi_window);
+    let aggregate_ack_outstanding = if ofi_prepost_ack {
+        aggregate_tx_outstanding
+    } else {
+        0
+    };
     println!(
-        "zcraid-mirror-send: transport={} addr={addr} branches={} lanes={} lane_count={lane_count} bytes_per_lane={bytes_per_lane} extent_bytes={record_bytes} logical_record_bytes={ZC_WAL_RECORD_SIZE} extents_per_lane={extents_per_lane} workers={workers} ack_enabled={} ack_policy={} ack_window={ack_window} ack_wait_window={wait_window} zlane_coord={} zlane_lock_shards={} provider={provider} endpoint={endpoint} plan_json={} compact_4k={} payload_inject={} ack_inject={} tx_nowait={} prepost_ack={}",
+        "zcraid-mirror-send: transport={} addr={addr} branches={} lanes={} lane_count={lane_count} bytes_per_lane={bytes_per_lane} extent_bytes={record_bytes} logical_record_bytes={ZC_WAL_RECORD_SIZE} extents_per_lane={extents_per_lane} workers={workers} ack_enabled={} ack_policy={} completion_semantic={} ack_window={ack_window} ack_wait_window={wait_window} per_lane_branch_qd={ofi_window} aggregate_tx_outstanding={aggregate_tx_outstanding} aggregate_ack_outstanding={aggregate_ack_outstanding} zlane_coord={} zlane_lock_shards={} provider={provider} endpoint={endpoint} plan_json={} compact_4k={} wire_sequence_header={} payload_inject={} ack_inject={} branch_post_nowait={} prepost_ack={}",
         transport.label(),
         branch_count,
         format_cpu_list(&lanes),
         yes(wire_ack_enabled),
         ack_policy.label(),
+        ack_policy.label(),
         coord_mode.label(),
         coordinator.lock_count(),
         yes(plan.from_plan_json),
-        yes(zcofi_compact_4k_enabled(record_bytes, wire_ack_enabled)),
+        yes(zcofi_compact_4k_enabled(
+            provider,
+            record_bytes,
+            wire_ack_enabled
+        )),
+        yes(!zcofi_compact_4k_enabled(
+            provider,
+            record_bytes,
+            wire_ack_enabled
+        )),
         yes(env_enabled_or("URING_PLAY_OFI_PAYLOAD_INJECT", false)),
         yes(env_enabled_or("URING_PLAY_OFI_ACK_INJECT", false)),
-        yes(env_enabled_or("URING_PLAY_OFI_TX_NOWAIT", false)),
-        yes(env_enabled_or("URING_PLAY_OFI_PREPOST_ACK", false)),
+        yes(ofi_branch_post_nowait),
+        yes(ofi_prepost_ack),
     );
     let lane_shards = zcraid_mirror_partition_lanes(&lanes, workers);
     let mut handles = Vec::new();
@@ -58228,6 +61612,35 @@ mod topology_tests {
     }
 
     #[test]
+    fn zcofi_rma_done_v2_preserves_operation_and_payload_digest() {
+        let extent = [0x3cu8; 32];
+        let repeated = extent.repeat(3);
+        let digest = zcofi_rma_repeated_extent_digest(&extent, 3);
+        assert_eq!(digest, zcofi_rma_digest(&repeated));
+        assert_eq!(digest, zcofi_rma_digest_volatile(&repeated));
+
+        let done = ZcOfiRmaDone {
+            lane_id: 2,
+            lane_count: 4,
+            payload_bytes: repeated.len() as u64,
+            extents: 3,
+            records: 3,
+            status: 0,
+            operation: ZCOFI_RMA_DONE_WRITE,
+            validation_digest: digest,
+        };
+        let decoded = ZcOfiRmaDone::decode(&done.encode()).unwrap();
+        assert_eq!(decoded.lane_id, done.lane_id);
+        assert_eq!(decoded.lane_count, done.lane_count);
+        assert_eq!(decoded.payload_bytes, done.payload_bytes);
+        assert_eq!(decoded.extents, done.extents);
+        assert_eq!(decoded.records, done.records);
+        assert_eq!(decoded.status, done.status);
+        assert_eq!(decoded.operation, done.operation);
+        assert_eq!(decoded.validation_digest, done.validation_digest);
+    }
+
+    #[test]
     fn zcofi_relay_tail_specs_expand_single_addr_across_base_ports() {
         let specs = zcofi_relay_tail_specs("127.0.0.1", "30600,31600").unwrap();
         assert_eq!(
@@ -58267,6 +61680,117 @@ mod topology_tests {
             zcofi_validate_ack_covering_seq(ack, 2, 1, 4, 16, 64 * 1024).unwrap(),
             2
         );
+    }
+
+    #[test]
+    fn zcofi_validate_ack_within_window_accepts_out_of_order_scalar_and_range() {
+        let scalar = ZcWalAckHeader {
+            lane_id: 2,
+            shard_id: 9,
+            status: 0,
+            record_size: ZC_WAL_RECORD_SIZE as u32,
+            first_logical_index: 6 * 16,
+            last_logical_index: 7 * 16 - 1,
+            extent_sequence: 6,
+            durable_wal_offset: 6 * 64 * 1024,
+        };
+        assert_eq!(
+            zcofi_validate_ack_within_window(scalar, 2, 4, 8, 16, 64 * 1024).unwrap(),
+            (6, 1)
+        );
+
+        let range = ZcWalAckHeader {
+            first_logical_index: 5 * 16,
+            last_logical_index: 8 * 16 - 1,
+            extent_sequence: 7,
+            durable_wal_offset: 7 * 64 * 1024,
+            ..scalar
+        };
+        assert_eq!(
+            zcofi_validate_ack_within_window(range, 2, 4, 8, 16, 64 * 1024).unwrap(),
+            (5, 3)
+        );
+    }
+
+    #[test]
+    fn zcofi_validate_ack_within_window_rejects_bad_geometry() {
+        let ack = ZcWalAckHeader {
+            lane_id: 2,
+            shard_id: 9,
+            status: 0,
+            record_size: ZC_WAL_RECORD_SIZE as u32,
+            first_logical_index: 5 * 16,
+            last_logical_index: 8 * 16 - 2,
+            extent_sequence: 7,
+            durable_wal_offset: 7 * 64 * 1024,
+        };
+        assert!(zcofi_validate_ack_within_window(ack, 2, 4, 8, 16, 64 * 1024).is_err());
+        let outside = ZcWalAckHeader {
+            first_logical_index: 8 * 16,
+            last_logical_index: 9 * 16 - 1,
+            extent_sequence: 8,
+            durable_wal_offset: 8 * 64 * 1024,
+            ..ack
+        };
+        assert!(zcofi_validate_ack_within_window(outside, 2, 4, 8, 16, 64 * 1024).is_err());
+    }
+
+    #[test]
+    fn zcofi_ack_mask_accepts_out_of_order_ranges_and_rejects_duplicates_atomically() {
+        let mut masks = vec![vec![false; 2]; 4];
+        assert_eq!(zcofi_mark_ack_range(&mut masks, 0, 4, 6, 2).unwrap(), 2..4);
+        assert_eq!(zcofi_mark_ack_range(&mut masks, 1, 4, 4, 4).unwrap(), 0..4);
+        let before = masks.clone();
+        assert!(zcofi_mark_ack_range(&mut masks, 0, 4, 5, 2).is_err());
+        assert_eq!(masks, before);
+        assert_eq!(masks[0], vec![false, true]);
+        assert_eq!(masks[1], vec![false, true]);
+        assert_eq!(masks[2], vec![true, true]);
+        assert_eq!(masks[3], vec![true, true]);
+    }
+
+    #[test]
+    fn zcofi_efa_direct_keeps_sequence_header_for_compact_request() {
+        assert!(zcofi_compact_4k_for_request(
+            "efa",
+            ZC_WAL_RECORD_SIZE,
+            true,
+            true
+        ));
+        assert!(!zcofi_compact_4k_for_request(
+            "efa-direct",
+            ZC_WAL_RECORD_SIZE,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn zcofi_peer_contract_rejects_wire_and_direct_profile_mismatches() {
+        let efa = "provider=efa fabric=efa endpoint_type=3 efa=1 efa_direct=0";
+        assert!(zcofi_validate_peer_profile(efa, efa, "wal-v2", "wal-v2").is_ok());
+        assert!(zcofi_validate_peer_profile(efa, efa, "wal-v2", "wal-v1").is_err());
+
+        let direct_a = "provider=efa fabric=efa-direct endpoint_type=3 efa=1 efa_direct=1";
+        let direct_b = "provider=efa fabric=efa endpoint_type=3 efa=1 efa_direct=1";
+        assert!(zcofi_validate_peer_profile(direct_a, direct_b, "wal-v2", "wal-v2").is_err());
+        assert!(zcofi_validate_peer_profile(efa, direct_a, "wal-v2", "wal-v2").is_err());
+    }
+
+    #[test]
+    fn zcofi_random_access_plan_is_a_full_deterministic_permutation() {
+        for extent_count in [1usize, 2, 3, 4, 7, 16, 63, 128] {
+            let plan =
+                ZcOfiRmaAccessPlan::new(ZcOfiRmaAccessMode::Random, 3, extent_count).unwrap();
+            let mut seen = vec![false; extent_count];
+            for ordinal in 0..extent_count {
+                let extent = plan.extent(ordinal, extent_count);
+                assert!(extent < extent_count);
+                assert!(!seen[extent]);
+                seen[extent] = true;
+            }
+            assert!(seen.into_iter().all(|value| value));
+        }
     }
 
     #[test]

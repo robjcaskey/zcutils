@@ -116,6 +116,84 @@ RTT, the matching ceiling, actual/theoretical efficiency, topology artifacts,
 and spread. The hooks own external process lifecycle; the block edge remains
 only `/dev/zcnblk0` and placement remains in userspace.
 
+### OFI queueing and EFA profiles
+
+The libfabric shim now uses one type-aware batched TX CQ dispatcher for SEND,
+RMA READ, and RMA WRITE, plus a batched RX dispatcher. Every operation owns a
+stable `fi_context2` ring slot until its CQE is reaped; completions may arrive
+out of order. `send_nowait`, fixed-batch sends, preposted receives, queued RMA
+reads, and queued RMA writes therefore maintain real outstanding windows.
+Endpoint shutdown prints configured and peak ring occupancy, CQ polls and CQE
+batch yield, `FI_EAGAIN` retries, provider/CQ errors, injection counts, and MR
+registration activity. A CQ error poisons the endpoint and leaves the failed
+slot owned; it cannot be recycled into another request.
+
+The main controls are:
+
+- `URING_PLAY_OFI_TX_QUEUE_DEPTH` and `URING_PLAY_OFI_RX_QUEUE_DEPTH` for MSG
+  slot rings. The TX value is also the fixed-batch window for headered no-ACK
+  WAL sends, so that transport-ceiling path does not silently collapse to QD1;
+- `URING_PLAY_OFI_RMA_READ_QD` and `URING_PLAY_OFI_RMA_WRITE_QD` for one-sided
+  operation rings;
+- `URING_PLAY_OFI_CQ_SIZE` for both CQs, or
+  `URING_PLAY_OFI_TX_CQ_SIZE`/`URING_PLAY_OFI_RX_CQ_SIZE` separately;
+- `URING_PLAY_OFI_CQ_BATCH` and `URING_PLAY_OFI_CQ_HEADROOM` for CQ progress
+  and safety capacity;
+- `URING_PLAY_OFI_MR_ARENA_COUNT` for the explicit stable-arena table; and
+- `URING_PLAY_OFI_SELECTIVE_COMPLETION=1` for an A/B profile that binds
+  selective completion but still requests every completion needed for safe
+  slot recycling. Periodic completion suppression is not implemented.
+
+Every control-plane address exchange also exchanges the selected endpoint
+profile and a versioned wire contract. Provider class, endpoint type,
+`efa`/`efa-direct` selection, message shape, ACK window, compact/header mode,
+and mirror branch/zlane fields must agree before a peer address is installed or
+the timed data phase begins.
+
+The raw RMA window contract initializes the remote arena with a nonzero
+sentinel. Reads verify every returned extent against that sentinel. Queued
+writes send an operation-tagged payload digest in the v3 done record, and the
+target verifies the complete remote arena after the initiator's timed local-CQ
+interval. That post-timing semantic check catches missing or mis-placed writes;
+it is validation evidence, not a remote-admission or durability latency.
+
+Use provider `efa` for the normal EFA RDM profile. Use provider `efa-direct`
+(or `URING_PLAY_OFI_EFA_FABRIC=efa-direct`) only after `fi_getinfo` returns the
+direct fabric with `FI_CONTEXT2` and the full direct MR contract:
+`FI_MR_LOCAL | FI_MR_VIRT_ADDR | FI_MR_ALLOCATED | FI_MR_PROV_KEY`. The
+endpoint log records the requested/query/returned API versions, compatibility
+fallback to 1.11 when needed, returned MR mode, device, maximum MSG/RMA sizes,
+and queried EFA emulated READ/WRITE state. The direct profile keeps the WAL
+sequence header even if `URING_PLAY_OFI_COMPACT_4K=1`, because `efa-direct`
+lacks the normal EFA provider's SAS guarantee. Its queried MSG limit gates
+compact 4 KiB first; large extents use the separate RMA path rather than silent
+segmentation.
+
+`URING_PLAY_OFI_EFA_WRITE_HIGH_PPS=1` opts RMA writes into the EFA
+`FI_EFA_WR_HIGH_PPS` `fi_writemsg` variant only when the build-time EFA header
+advertises that flag. The shim never manufactures a provider-reserved bit.
+Endpoint profiles and final statistics report
+`efa_write_high_pps_available`, `requested`, `effective`, and `verified`;
+strict mode rejects a requested-but-unavailable variant before timing, while a
+non-strict run records its fallback. `scripts/zcofi-rma-queue-matrix.sh` drives
+matched read, write, and explicitly selected high-PPS write curves at
+QD1/2/4/8/16 and a separate random-permutation saturation curve. It requires
+at least three repeats, an external fresh-target runner, explicit topology
+evidence, and reports spread and completion-matched theoretical efficiency.
+Read and write are the default modes; add `write-high-pps` through
+`ZCOFI_RMA_MATRIX_MODES` only on a build/provider pair that advertises the
+flag, because a representative unavailable request is intentionally fatal.
+Raw random access is enabled with `URING_PLAY_OFI_RMA_ACCESS_PATTERN=random`
+and a reproducible optional `URING_PLAY_OFI_RMA_RANDOM_SEED`.
+
+In `URING_PLAY_TOPOLOGY_STRICT=1` or `URING_PLAY_TOPOLOGY_FATAL=1`, sleeping
+CQ progress, insufficient rings/CQs, hot MR churn, missing worker/CPU or
+EFA domain/NIC mapping, and inadequate hugetlb or memlock headroom fail before
+representative summaries. `FI_EFA_IFACE`, `URING_PLAY_OFI_DOMAIN`,
+`URING_PLAY_PIN_CPUS=1`, and `URING_PLAY_PIN_CPU_LIST` are part of that
+contract. See the upstream [`fi_efa(7)` documentation](https://ofiwg.github.io/libfabric/main/man/fi_efa.7.html)
+for the provider-specific options and limits.
+
 ## Command Idiom
 
 The descriptor-native model is:
@@ -1132,11 +1210,25 @@ userspace mirror legs, not block-device RAID primitives.
 `zcraid-mirror-send` supports three ACK policies. The default
 `URING_PLAY_RAID_MIRROR_ACK_POLICY=remote` is a conservative commit benchmark:
 ordinary extents wait for every mirror branch HWM in each ACK window. Use
-`URING_PLAY_RAID_MIRROR_ACK_POLICY=sync` to model writeback block semantics:
-ordinary writes are treated as locally admitted and the sender waits for remote
-branch HWMs only at `URING_PLAY_RAID_MIRROR_SYNC_EVERY_EXTENTS` or at the end of
-the lane by default. Use `disabled` only as a transport ceiling; it does not
-measure committed or sync-safe writes.
+`URING_PLAY_RAID_MIRROR_ACK_POLICY=sync` only on the TCP model to separate
+ordinary local admission from its periodic remote drain. The OFI protocol does
+not yet implement a durability/FUA drain; requesting `sync` on OFI prints a
+warning and is explicitly downgraded to remotely acknowledged writes. Use
+`disabled` only as a transport ceiling; it does not measure committed or
+sync-safe writes.
+
+The OFI sender allocates stable per-branch TX and ACK arenas, posts an entire
+window to every userspace branch, progresses branch TX CQs fairly, and polls
+the branch-by-window ACK matrix without assuming CQ order. A sequence commits
+only when its required branch mask is complete. Receivers prepost the full RX
+window and derive the sequence from the WAL header when the wire profile has
+one. `URING_PLAY_OFI_BRANCH_POST_NOWAIT=1` and
+`URING_PLAY_OFI_PREPOST_ACK=1` are enabled by default; strict mode rejects a
+multi-branch/windowed run that disables either fast path. The queue summary
+reports branch-post skew, branch-mask completion time, out-of-order mask
+completions, configured and peak ACK outstanding depth, and the measured HOL
+residence time for masks that completed before the contiguous commit HWM could
+retire them.
 
 Zlane coordination is part of the mirror contract. By default
 `URING_PLAY_RAID_ZLANE_COORD=lane-owner` maps each `(lane, sequence)` to a
@@ -2069,11 +2161,14 @@ and then sends one upstream HWM ACK. `tail-addr` and `out-base-service` accept
 CSV lists; a single value is expanded across all tails. Example local shape:
 
 ```bash
-zcwal-ofi-recv tcp rdm 127.0.0.1 30600 2 8M 64K 2 true
-zcwal-ofi-recv tcp rdm 127.0.0.1 31600 2 8M 64K 2 true
-zcwal-ofi-relay tcp rdm 127.0.0.1 127.0.0.1 29600 30600,31600 2 8M 64K 2 true
-zcwal-ofi-send tcp rdm 127.0.0.1 29600 2 8M 64K 2 true
+zcwal-ofi-recv sockets rdm 127.0.0.1 32000 2 8M 64K 2 true
+zcwal-ofi-recv sockets rdm 127.0.0.1 34000 2 8M 64K 2 true
+zcwal-ofi-relay sockets rdm 127.0.0.1 127.0.0.1 30000 32000,34000 2 8M 64K 2 true
+zcwal-ofi-send sockets rdm 127.0.0.1 30000 2 8M 64K 2 true
 ```
+
+The default TCP control offset is 1000, so keep each data-service range and its
+control range disjoint as in this example.
 
 The relay summary prints `tail_count`, logical payload throughput, branch wire
 throughput, tail-gated ACK latency, context switches, and migrations. It is a
@@ -2081,10 +2176,16 @@ userspace RAID primitive; it must not be replaced by a block-device mirror.
 Use `URING_PLAY_OFI_ACK_WINDOW=N` to let senders, relays, and terminal OFI WAL
 receivers exchange one HWM/range ACK per contiguous batch instead of one ACK per
 extent; the startup banners print `ack_window`, `range_ack_send`, and
-`range_acks`. `URING_PLAY_OFI_RELAY_BRANCH_POST_NOWAIT=1` enables an
-experimental mirror fanout mode that posts a batch to all tails before draining
-completions; keep it off unless a benchmark shows it helps on the target
-provider/topology. On the local `tcp;rdm` provider, direct one-hop numbers and
+`range_acks`. The relay preposts `URING_PLAY_OFI_RELAY_WINDOW` stable upstream
+RX slots, derives headered message sequence independently of physical receive
+slot, posts each window across every tail, fairly progresses tail TX CQs, and
+joins nonblocking tail ACK masks before emitting the upstream HWM.
+`URING_PLAY_OFI_RELAY_PREPOST_RECV=1` and
+`URING_PLAY_OFI_RELAY_BRANCH_POST_NOWAIT=1` are enabled by default; disabling
+either makes a strict representative run fail. The worker contract reports
+branch-post skew, tail-mask/HOL latency, and configured and peak ACK depth. On
+the local `sockets;rdm`
+provider, direct one-hop numbers and
 mirrored relay numbers must be interpreted by total data touches: a two-tail
 mirror does one upstream receive plus two downstream sends, so equal aggregate
 copy bandwidth appears as roughly one third of the direct one-hop logical IOPS.

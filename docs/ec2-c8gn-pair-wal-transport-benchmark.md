@@ -304,13 +304,12 @@ Common topology:
 | TCP lane sockets | 16 | 1.16M | 76.3 | p50 191 us, p99 494 us, p999 2.0 ms | 120k | 1.17M / 1.19M |
 | TCP lane sockets | 64 | 1.48M | 96.8 | p50 330 us, p99 2.0 ms, p999 12 ms | 43k | 1.48M / 1.52M |
 
-The EFA path is now meaningfully faster for this mirror commit benchmark when
-throughput is weighted, mostly because it avoids the TCP sender context-switch
-rate. These corrected sender numbers exclude endpoint/control setup from the
-timed region. The current bottleneck is still sender-side mirror fanout and
-ACK joining: one lane worker serially sends the same record to both branches and
-then waits for the all-branch commit condition. Window 16 is the current
-throughput and latency point for this implementation.
+The EFA path was meaningfully faster for this June 5 mirror commit benchmark,
+mostly because it avoided the TCP sender context-switch rate. These corrected
+sender numbers exclude endpoint/control setup from the timed region. At that
+revision, sender-side serial mirror fanout and slot-major ACK joining were the
+known bottlenecks; the table is historical and must not be used to describe the
+current queue implementation.
 
 Do not compare this table directly to the 522.6 Gbit/s TCP/WAL bulk transport
 result above. That run used large ordered WAL extents and measured data-plane
@@ -318,6 +317,109 @@ capacity, while this table used 4 KiB mirror commit records. The mirror tools
 now also accept large ordered extents, for example `384K` or `1M`, and count
 the logical 4 KiB records inside each extent; use that mode when validating the
 dual-card EFA path against the 600 Gbit/s instance envelope.
+
+### Batched OFI queue validation: August 11, 2026
+
+The current implementation replaces the June scalar path with persistent
+SEND/RECV/RMA READ/RMA WRITE rings and a type-aware batched CQ dispatcher.
+Userspace mirror and relay stages now post a complete window to all branches,
+fairly progress branch CQs, prepost branch/window ACK receives, and retire
+out-of-order ACKs through explicit branch masks and HWMs. Stable arenas are
+registered before posting; strict mode rejects hot MR replacement. Endpoint
+logs include queue peaks, CQ batch yield, retry/error counts, MR activity,
+provider/fabric/domain/device, API fallback, maximum MSG/RMA sizes, and EFA
+emulation/high-PPS state. Strict startup also reports the queue-registration
+estimate, the actual target or operation working set when it is larger, the
+required and available huge-page counts, and the memlock limit before it emits
+representative results.
+
+The `efa-direct` profile now requests `FI_CONTEXT2` and
+`FI_MR_LOCAL | FI_MR_VIRT_ADDR | FI_MR_ALLOCATED | FI_MR_PROV_KEY`, validates
+both peer profiles and their versioned wire contract before timing, and retains
+the WAL sequence header because direct EFA has no SAS guarantee. Compact 4 KiB
+MSG and large-extent RMA are separate test shapes. RMA reads and writes support
+deterministic random-permutation offsets for the high-QD saturation curve.
+
+Run `zcutils-grumps-efa-adhoc-c8gn16-20260811T0355Z` used two
+`c8gn.16xlarge` hosts in `us-east-2c`, AWS libfabric 2.4.0amzn5.0, one lane and
+one worker per host, lane 0 -> worker 0 -> CPU 2 -> NUMA 0 ->
+`efa_0/efa_0-rdm`, CQ sleep disabled, and 100,000 busy-poll iterations. Each
+host had 1,024 free 2 MiB huge pages and unlimited memlock. The soft-exclusive
+cloud/network coordination lease was honored. The raw 4 KiB `fi_pingpong`
+send/receive baseline was 13.733 us per transfer, or a derived 27.466 us RTT,
+over three repeats with 0.073% spread. That message RTT is not used as the
+denominator for one-sided local-CQ completion.
+
+The strict 256 MiB RMA matrix below used three repeats at every point. QD is
+per worker and per lane; with one worker and one lane it is also aggregate
+outstanding depth. The measured latency and ceiling are matched to each
+operation's completion semantic: read data visible at the initiator local CQ,
+or write source buffer reusable at the initiator local CQ. Neither write column
+means remote WAL admission or durability.
+
+| Operation | QD | Mean IOPS | Spread | Measured local-CQ latency | Matching ceiling | Efficiency |
+|---|---:|---:|---:|---:|---:|---:|
+| RMA read | 1 | 53,659 | 0.38% | 16.995 us | 58,841 | 91.19% |
+| RMA read | 2 | 100,317 | 1.77% | 18.281 us | 109,411 | 91.69% |
+| RMA read | 4 | 183,629 | 2.99% | 19.949 us | 200,540 | 91.57% |
+| RMA read | 8 | 323,757 | 3.70% | 22.463 us | 356,224 | 90.89% |
+| RMA read | 16 | 421,727 | 1.56% | 32.323 us | 495,019 | 85.19% |
+| RMA write | 1 | 64,271 | 0.79% | 15.504 us | 64,500 | 99.65% |
+| RMA write | 2 | 124,558 | 0.67% | 15.989 us | 125,085 | 99.58% |
+| RMA write | 4 | 237,755 | 0.53% | 16.729 us | 239,112 | 99.43% |
+| RMA write | 8 | 437,755 | 0.51% | 18.118 us | 441,559 | 99.14% |
+| RMA write | 16 | 731,469 | 4.61% | 21.405 us | 747,730 | 97.82% |
+
+The separate deterministic random-permutation saturation curve was 435,027,
+411,608, 381,556, and 307,812 read IOPS at QD32/64/128/256. Write was
+1,113,185, 1,183,754, 903,000, and 618,892 IOPS at the same depths; QD64 was
+the observed single-lane write peak. Read spread was 2.83%, 10.53%, 0.37%, and
+1.24%; write spread was 2.14%, 0.32%, 0.11%, and 0.27%.
+
+A matched build of commit `2edd8300` on the same hosts measured read means of
+52,744, 104,066, 195,102, 345,957, and 411,251 IOPS at QD1/2/4/8/16. The new
+general dispatcher was +1.7%, -3.6%, -5.9%, -6.4%, and +2.5% respectively; it
+made QD16 much steadier (1.56% versus 10.49% spread). Scalar write QD1 was
+64,183 IOPS, effectively unchanged. The new capability is async write scaling,
+which has no matched queued-write result in the old build.
+
+Completion-separated 4 KiB and fanout results, all with three repeats, were:
+
+- one-hop remote application ACK, window 32: 439,323 mean IOPS, 0.74% spread;
+- headered no-ACK local-send transport ceiling, QD64: 747,247 mean IOPS,
+  3.66% spread, versus 76,098 IOPS when that path still serialized at QD1;
+- two-branch userspace mirror, all-branch remote ACK, window 32: 218,521 mean
+  logical IOPS, 1.49% spread; and
+- two-tail userspace relay, all-tail HWM ACK, window 32: 123,750 mean end-to-end
+  source IOPS with 2.09% spread. The relay's internal receive/fanout interval
+  was 145,963 logical IOPS with 1.18% spread. Every repeat delivered all 8,192
+  extents to both terminal userspace leaves. No block device performed mirror,
+  placement, or fanout.
+
+The relay preposted 32 upstream RX slots and 32 ACK slots per tail, posted both
+tails before draining, and all three cloud repeats correctly reported
+`ack_out_of_order=0`, `ack_hol_waits=0`, and `ack_hol_wait_count=0` for their
+in-order range-ACK stream. Synthetic ACK-mask tests cover genuinely
+out-of-order branch retirement without violating the all-tail HWM. The mirror
+used stable per-branch TX and ACK arenas and reported about 0.7 us average
+branch-post skew. Its in-order cloud stream reported zero OOO/HOL events and a
+zero-sample HOL histogram; synthetic mask tests cover the OOO case. Endpoint
+statistics reported no CQ/provider errors or hot-path MR replacement.
+
+For the separate 1 MiB `efa-direct` RMA shape at QD16, reads averaged 2,631
+operations/s (about 22.1 Gbit/s) with 1.06% spread and writes averaged 24,628
+operations/s (about 206.6 Gbit/s) with 0.74% spread. These are local-CQ RMA
+completion results and are not comparable to 4 KiB remote-ACK IOPS. Both
+ordinary `efa` and `efa-direct` cross-host one-message semantic smokes passed;
+an intentionally mismatched peer contract failed before the timed phase. A
+final `efa-direct` v3 semantic smoke also verified the nonzero read sentinel and
+an exact target-side write payload digest after the separately timed local-CQ
+interval.
+
+The installed AWS EFA header did not advertise `FI_EFA_WR_HIGH_PPS`, so this
+run has no valid high-PPS A/B number. A strict request failed immediately with
+an explicit build-header capability error. The implementation never synthesizes
+the provider-reserved flag or labels the fallback as high-PPS.
 
 ## Transport Abstraction
 

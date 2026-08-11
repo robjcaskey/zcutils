@@ -116,10 +116,24 @@ fn open_direction(config: &DirectionConfig) -> io::Result<ZcOfiEndpoint> {
         ));
     }
     let control_port = zcofi_control_port(&service)?;
+    let contract = format!(
+        "zcofi-pipe-v2;direction={};frame={}",
+        config.label, config.frame_bytes
+    );
     if config.server {
-        zcofi_server_exchange_peer(config.ofi_node.as_str(), control_port, &mut endpoint)?;
+        zcofi_server_exchange_peer(
+            config.ofi_node.as_str(),
+            control_port,
+            &mut endpoint,
+            &contract,
+        )?;
     } else {
-        zcofi_client_exchange_peer(config.ofi_node.as_str(), control_port, &mut endpoint)?;
+        zcofi_client_exchange_peer(
+            config.ofi_node.as_str(),
+            control_port,
+            &mut endpoint,
+            &contract,
+        )?;
     }
     Ok(endpoint)
 }
@@ -130,6 +144,11 @@ fn send_direction(mut stream: TcpStream, config: DirectionConfig) -> io::Result<
     let payload_cap = config.frame_bytes - PIPE_HEADER_LEN;
     let mut payload = vec![0u8; payload_cap];
     let mut message = Vec::with_capacity(config.frame_bytes);
+    // `message` never grows beyond this capacity, so the registered arena and
+    // every SEND slice derived from it retain one stable address.
+    unsafe {
+        endpoint.register_send_buffer_raw(message.as_ptr(), message.capacity())?;
+    }
     let mut sequence = 0u64;
     let mut bytes = 0u64;
     let mut frames = 0u64;
@@ -176,6 +195,7 @@ fn recv_direction(mut stream: TcpStream, config: DirectionConfig) -> io::Result<
     let affinity = maybe_pin_current_thread("zcwal-ofi-pipe-recv", config.cpu_index);
     let mut endpoint = open_direction(&config)?;
     let mut message = vec![0u8; config.frame_bytes];
+    endpoint.register_recv_buffer(&mut message)?;
     let mut expected_sequence = 0u64;
     let mut bytes = 0u64;
     let mut frames = 0u64;
