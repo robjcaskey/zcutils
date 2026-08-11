@@ -8,6 +8,7 @@ LOW_QDS="${ZCOFI_RMA_MATRIX_LOW_QDS:-1,2,4,8,16}"
 SATURATION_QDS="${ZCOFI_RMA_MATRIX_SATURATION_QDS:-32,64,128,256}"
 REPEATS="${ZCOFI_RMA_MATRIX_REPEATS:-3}"
 REPRESENTATIVE="${ZCOFI_RMA_MATRIX_REPRESENTATIVE:-1}"
+WRITE_DELIVERY_COMPLETE="${URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE:-1}"
 TOPOLOGY_ARTIFACT="${ZCOFI_RMA_MATRIX_TOPOLOGY_ARTIFACT:-}"
 OUTROOT="${OUTROOT:-$ROOT/bench-results/zcofi-rma-queue-matrix-$(date -u +%Y%m%dT%H%M%SZ)}"
 
@@ -22,6 +23,8 @@ die() {
 	die "ZCOFI_RMA_MATRIX_REPEATS must be at least 3"
 [[ "$REPRESENTATIVE" =~ ^[01]$ ]] || \
 	die "ZCOFI_RMA_MATRIX_REPRESENTATIVE must be zero or one"
+[[ "$WRITE_DELIVERY_COMPLETE" =~ ^[01]$ ]] || \
+	die "URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE must be zero or one"
 
 IFS=',' read -r -a modes <<<"$MODES"
 IFS=',' read -r -a low_qds <<<"$LOW_QDS"
@@ -80,9 +83,11 @@ fi
 printf 'modes=%s low_qds=%s saturation_qds=%s repeats=%s representative=%s\n' \
 	"$MODES" "$LOW_QDS" "$SATURATION_QDS" "$REPEATS" "$REPRESENTATIVE" \
 	| tee "$OUTROOT/matrix-topology.log"
-printf 'lane_to_worker_cpu=%s ofi_domain=%s efa_iface=%s cq_sleep_ns=%s completion_semantics=read:data-visible-local-cq,write:source-reusable-local-cq remote_admission=separate durability=separate\n' \
+printf 'lane_to_worker_cpu=%s ofi_domain=%s efa_iface=%s cq_sleep_ns=%s rma_write_delivery_complete=%s completion_semantics=read:data-visible-local-cq,write:%s remote_admission=separate durability=separate\n' \
 	"${URING_PLAY_PIN_CPU_LIST:-unreported}" "${URING_PLAY_OFI_DOMAIN:-unreported}" \
 	"${FI_EFA_IFACE:-unreported}" "${URING_PLAY_OFI_CQ_SLEEP_NS:-50000}" \
+	"$WRITE_DELIVERY_COMPLETE" \
+	"$([ "$WRITE_DELIVERY_COMPLETE" = 1 ] && printf delivery-cq-remote-visible || printf source-reusable-local-cq)" \
 	| tee -a "$OUTROOT/matrix-topology.log"
 : >"$OUTROOT/matrix-summary.log"
 
@@ -104,13 +109,23 @@ run_point() {
 			;;
 		write)
 			summary_prefix='zcofi-rma-write-summary:'
-			expected_completion='initiator-local-cq-source-reusable'
-			expected_rtt_semantics='rma-write-post-to-initiator-local-cq-source-reusable'
+			if [ "$WRITE_DELIVERY_COMPLETE" = 1 ]; then
+				expected_completion='initiator-delivery-cq-remote-visible'
+				expected_rtt_semantics='rma-write-post-to-initiator-delivery-cq-remote-visible'
+			else
+				expected_completion='initiator-local-cq-source-reusable'
+				expected_rtt_semantics='rma-write-post-to-initiator-local-cq-source-reusable'
+			fi
 			;;
 		write-high-pps)
 			summary_prefix='zcofi-rma-write-summary:'
-			expected_completion='initiator-local-cq-source-reusable'
-			expected_rtt_semantics='rma-write-post-to-initiator-local-cq-source-reusable'
+			if [ "$WRITE_DELIVERY_COMPLETE" = 1 ]; then
+				expected_completion='initiator-delivery-cq-remote-visible'
+				expected_rtt_semantics='rma-write-post-to-initiator-delivery-cq-remote-visible'
+			else
+				expected_completion='initiator-local-cq-source-reusable'
+				expected_rtt_semantics='rma-write-post-to-initiator-local-cq-source-reusable'
+			fi
 			high_pps=1
 			;;
 	esac
@@ -118,11 +133,12 @@ run_point() {
 	: >"$point_dir/repeats.log"
 	for ((rep = 1; rep <= REPEATS; rep++)); do
 		local log="$point_dir/rep$rep.log"
-		env \
+			env \
 			URING_PLAY_TOPOLOGY_STRICT="$REPRESENTATIVE" \
 			URING_PLAY_OFI_RMA_ACCESS_PATTERN="$access" \
 			URING_PLAY_OFI_RMA_READ_QD="$qd" \
 			URING_PLAY_OFI_RMA_WRITE_QD="$qd" \
+			URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE="$WRITE_DELIVERY_COMPLETE" \
 			URING_PLAY_OFI_EFA_WRITE_HIGH_PPS="$high_pps" \
 			"$RUNNER" "$mode" "$qd" "$rep" "$point_dir" 2>&1 | tee "$log"
 		local summary

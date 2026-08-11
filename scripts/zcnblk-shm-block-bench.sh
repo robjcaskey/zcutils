@@ -20,6 +20,7 @@ IODEPTH="${IODEPTH:-128}"
 RING_ENTRIES="${RING_ENTRIES:-256}"
 BLOCK_RING_MODE="${BLOCK_RING_MODE:-normal}"
 BLOCK_ENGINE="${BLOCK_ENGINE:-uring-fixed}"
+BLOCK_FUA_WRITES="${URING_PLAY_BLOCKBENCH_FUA_WRITES:-0}"
 SQPOLL_CPU_LIST="${SQPOLL_CPU_LIST:-}"
 SQPOLL_IDLE_MS="${SQPOLL_IDLE_MS:-1000}"
 LATENCY_SAMPLE_RATE="${URING_PLAY_BLOCKBENCH_LATENCY_SAMPLE_RATE:-0}"
@@ -57,6 +58,7 @@ SIZE_MIB="${SIZE_MIB:-$((LANES * 128))}"
 REGION_BYTES_PER_WORKER="${REGION_BYTES_PER_WORKER:-67108864}"
 BACKEND="${BACKEND:-memory}"
 START_LOCAL_LEAF="${START_LOCAL_LEAF:-$([ "$BACKEND" = wal-tcp ] && printf 1 || printf 0)}"
+EXTERNAL_LEAF_TOPOLOGY_ARTIFACT="${EXTERNAL_LEAF_TOPOLOGY_ARTIFACT:-}"
 MODE="${MODE:-rw}"
 READ_PERCENT="${READ_PERCENT:-50}"
 if [ -z "${SHM_PAYLOAD_ENTRIES+x}" ]; then
@@ -110,6 +112,19 @@ EFA_USE_DEVICE_RDMA="${FI_EFA_USE_DEVICE_RDMA:-0}"
 SHM_OFI_RMA_READS="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS:-0}"
 SHM_OFI_RMA_READ_QD="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD:-1}"
 LEAF_OFI_RMA_READS="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS:-$SHM_OFI_RMA_READS}"
+SHM_OFI_RMA_WRITES="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES:-0}"
+SHM_OFI_RMA_WRITES_REQUIRED="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED:-$SHM_OFI_RMA_WRITES}"
+SHM_OFI_RMA_WRITE_QD="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD:-${URING_PLAY_OFI_RMA_WRITE_QD:-1}}"
+LEAF_OFI_RMA_WRITES="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES:-$SHM_OFI_RMA_WRITES}"
+OFI_ENDPOINT_RMA_READ_QD="$([ "$SHM_OFI_RMA_READS" = 1 ] && printf '%s' "$SHM_OFI_RMA_READ_QD" || printf 1)"
+OFI_ENDPOINT_RMA_WRITE_QD="$([ "$SHM_OFI_RMA_WRITES" = 1 ] && printf '%s' "$SHM_OFI_RMA_WRITE_QD" || printf 1)"
+OFI_RMA_WRITE_DELIVERY_COMPLETE="${URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE:-1}"
+OFI_RMA_SOURCE_HUGETLB_CONFIRMED="${URING_PLAY_ZCNBLK_SHM_RMA_SOURCE_HUGETLB_CONFIRMED:-0}"
+OFI_CONTROL_PORT_OFFSET="${URING_PLAY_OFI_CONTROL_PORT_OFFSET:-1000}"
+LEAF_TRANSPORT="${URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT:-$REMOTE_TRANSPORT}"
+LEAF_OFI_PROVIDER="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_PROVIDER:-$REMOTE_OFI_PROVIDER}"
+LEAF_OFI_ENDPOINT="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ENDPOINT:-$REMOTE_OFI_ENDPOINT}"
+LEAF_ZCMEM_HUGETLB="${URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_HUGETLB:-0}"
 LEAF_SPIN_READS="${URING_PLAY_ZCNBLK_WAL_LEAF_SPIN_READS:-0}"
 if [ -n "${URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN+x}" ]; then
 	LEAF_ADAPTIVE_SPIN="$URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN"
@@ -295,6 +310,21 @@ join_comma() {
 	printf '%s' "$*"
 }
 
+leaf_listener_count() {
+	local base="$LEAF_PORT"
+	if [ "$LEAF_TRANSPORT" != tcp ]; then
+		base=$((base + OFI_CONTROL_PORT_OFFSET))
+	fi
+	ss -H -ltn | awk -v base="$base" -v lanes="$LANES" '
+		{
+			port=$4
+			sub(/^.*:/, "", port)
+			if (port + 0 >= base && port + 0 < base + lanes) seen[port]=1
+		}
+		END { for (port in seen) count++; print count + 0 }
+	'
+}
+
 cpu_numa_node() {
 	local cpu="$1" node_path
 	for node_path in "/sys/devices/system/cpu/cpu$cpu"/node[0-9]*; do
@@ -362,6 +392,20 @@ safe_stop_leaf() {
 	leaf_pid=""
 }
 
+safe_unload_client_module() {
+	local attempt
+
+	for attempt in $(seq 1 100); do
+		grep -q '^zcnblk_client_mod ' /proc/modules 2>/dev/null || return 0
+		if sudo -n rmmod zcnblk_client_mod 2>/dev/null; then
+			return 0
+		fi
+		sleep 0.05
+	done
+	printf 'zcnblk-shm-block-bench: ERROR: zcnblk_client_mod remained busy during cleanup\n' >&2
+	return 1
+}
+
 restore_governors() {
 	[ -s "$governors_file" ] || return 0
 	while read -r path governor; do
@@ -371,7 +415,7 @@ restore_governors() {
 }
 
 cleanup() {
-	local status=$?
+	local status=$? cleanup_failed=0
 	set +e
 	if [ -n "$kernel_state_pid" ] && kill -0 "$kernel_state_pid" 2>/dev/null; then
 		kill "$kernel_state_pid" 2>/dev/null
@@ -382,12 +426,11 @@ cleanup() {
 		wait "$target_job_pid" 2>/dev/null
 	fi
 	safe_stop_leaf
-	if grep -q '^zcnblk_client_mod ' /proc/modules 2>/dev/null; then
-		sudo -n rmmod zcnblk_client_mod
-	fi
+	safe_unload_client_module || cleanup_failed=1
 	restore_governors
 	[ -n "$perf_lease" ] && "$COORD_BIN" release "$perf_lease" >>"$OUTDIR/coordination.log" 2>&1
 	[ -n "$block_lease" ] && "$COORD_BIN" release "$block_lease" >>"$OUTDIR/coordination.log" 2>&1
+	[ "$status" -ne 0 ] || [ "$cleanup_failed" -eq 0 ] || status=1
 	exit "$status"
 }
 
@@ -395,8 +438,16 @@ trap cleanup EXIT INT TERM
 
 [ "$LANES" -gt 0 ] || die "LANES must be positive"
 [ "$REPEATS" -gt 0 ] || die "REPEATS must be positive"
+if [ "$REPRESENTATIVE" = 1 ] && [ "$REPEATS" -lt 3 ]; then
+	die "representative block measurements require REPEATS>=3"
+fi
 [[ "$EXTERNAL_NIC_LOW_LATENCY_CONFIRMED" =~ ^[01]$ ]] || \
 	die "URING_PLAY_EXTERNAL_NIC_LOW_LATENCY_CONFIRMED must be zero or one"
+[[ "$BLOCK_FUA_WRITES" =~ ^[01]$ ]] || \
+	die "URING_PLAY_BLOCKBENCH_FUA_WRITES must be zero or one"
+if [ "$BLOCK_FUA_WRITES" = 1 ] && [ "$MODE" = read ]; then
+	die "URING_PLAY_BLOCKBENCH_FUA_WRITES=1 requires a write or mixed workload"
+fi
 [[ "$SHM_RING_ENTRIES" =~ ^[0-9]+$ ]] && [ "$SHM_RING_ENTRIES" -gt 0 ] || \
 	die "SHM_RING_ENTRIES must be a positive integer"
 [[ "$KERNEL_QUEUE_DEPTH" =~ ^[0-9]+$ ]] && [ "$KERNEL_QUEUE_DEPTH" -gt 0 ] || \
@@ -533,6 +584,50 @@ if [ "$SHM_OFI_RMA_READS" = 1 ]; then
 		[ "$REPRESENTATIVE" != 1 ] || die "representative OFI RMA runs require wal_lane_window >= rma_read_qd"
 	fi
 fi
+if [ "$REMOTE_TRANSPORT" = ofi ] || [ "$REMOTE_TRANSPORT" = rdm ] || [ "$REMOTE_TRANSPORT" = efa ]; then
+	[ -z "$LEAF_SOURCE_ADDR" ] && [ -z "$LEAF_SOURCE_ADDRS" ] || \
+		die "OFI WAL transport uses URING_PLAY_OFI_DOMAIN; leaf source-address binding is TCP-only"
+fi
+[[ "$SHM_OFI_RMA_WRITE_QD" =~ ^[0-9]+$ ]] && [ "$SHM_OFI_RMA_WRITE_QD" -gt 0 ] && \
+	[ "$SHM_OFI_RMA_WRITE_QD" -le 1024 ] || \
+	die "URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD must be in 1..=1024"
+if [ "$SHM_OFI_RMA_WRITES" = 1 ]; then
+	[ "$REMOTE_TRANSPORT" = ofi ] || [ "$REMOTE_TRANSPORT" = rdm ] || [ "$REMOTE_TRANSPORT" = efa ] || \
+		die "OFI RMA writes require URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT=ofi"
+	[ "$WAL_OWNER_INGRESS" = 1 ] || die "OFI RMA writes require stable WAL owner ingress"
+	[ "$WAL_OWNER_PIPELINE_BATCHES" -eq 1 ] || \
+		die "OFI RMA writes require URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES=1"
+	[ "$OFI_RMA_WRITE_DELIVERY_COMPLETE" = 1 ] || \
+		die "OFI RMA writes require URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1"
+	if [ "$OFI_RMA_SOURCE_HUGETLB_CONFIRMED" != 1 ]; then
+		printf 'PERF WARNING: the registered RMA source is the vmalloc_user/remap_vmalloc_range shared arena, not an explicit HugeTLB mapping; this run cannot be classified as a HugeTLB-backed RMA source path\n' >&2
+		if [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
+			[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; then
+			die "representative/strict RMA write runs require an explicit HugeTLB-backed shared-arena ABI"
+		fi
+	fi
+	if [ "$REPRESENTATIVE" = 1 ]; then
+		[ "$SHM_OFI_RMA_WRITES_REQUIRED" = 1 ] || \
+			die "representative RMA write runs must forbid message-payload fallback"
+		[ "$MODE" = write ] || die "representative RMA write attribution currently requires MODE=write"
+	fi
+fi
+if [ "$START_LOCAL_LEAF" = 1 ] && [ "$BACKEND" = wal-tcp ] && \
+	[ "$LEAF_TRANSPORT" != "$REMOTE_TRANSPORT" ]; then
+	die "local leaf transport $LEAF_TRANSPORT does not match remote transport $REMOTE_TRANSPORT"
+fi
+if [ "$BACKEND" = wal-tcp ] && [ "$START_LOCAL_LEAF" != 1 ] && \
+	{ [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
+		[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; }; then
+	[ -n "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" ] && [ -r "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" ] || \
+		die "representative/strict external WAL runs require EXTERNAL_LEAF_TOPOLOGY_ARTIFACT"
+	grep -q '^lane_to_worker_cpu=' "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" || \
+		die "external leaf topology artifact lacks lane_to_worker_cpu mapping"
+	if [ "$REMOTE_TRANSPORT" = ofi ] || [ "$REMOTE_TRANSPORT" = rdm ] || [ "$REMOTE_TRANSPORT" = efa ]; then
+		grep -q '^lane_to_nic=' "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" || \
+			die "external EFA leaf topology artifact lacks lane_to_nic mapping"
+	fi
+fi
 if [ "$START_LOCAL_LEAF" = 1 ] && [ "$LEAF_SPIN_READS" != 1 ] && [ "$LEAF_ADAPTIVE_SPIN" != 1 ]; then
 	printf 'PERF WARNING: WAL leaf receive spinning is disabled; blocking once or more per network batch adds avoidable context switches. Enable URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN=1 for high-IOPS controls\n' >&2
 	[ "$REPRESENTATIVE" != 1 ] || die "representative local WAL leaf runs require adaptive or fixed receive spinning"
@@ -550,6 +645,13 @@ command -v sudo >/dev/null || die "sudo is required"
 sudo -n true || die "passwordless sudo is required for the block client edge"
 [ ! -e /dev/zcnblk0 ] || die "/dev/zcnblk0 already exists; another owner may be using it"
 mkdir -p "$OUTDIR"
+external_leaf_cpu_map=none
+external_leaf_nic_map=none
+if [ -n "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" ] && [ -r "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" ]; then
+	cp "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" "$OUTDIR/external-leaf-topology.log"
+	external_leaf_cpu_map="$(sed -n 's/^lane_to_worker_cpu=//p' "$OUTDIR/external-leaf-topology.log" | head -n 1)"
+	external_leaf_nic_map="$(sed -n 's/^lane_to_nic=//p' "$OUTDIR/external-leaf-topology.log" | head -n 1)"
+fi
 
 case "$COORDINATION_SCOPE" in
 	shared-host)
@@ -866,11 +968,14 @@ fi
 	printf 'target_busy_poll_us=%s\n' "$BUSY_POLL_US"
 	printf 'target_busy_hysteresis_us=%s\n' "$BUSY_HYSTERESIS_US"
 	printf 'target_poll_clock_check_spins=%s\n' "$POLL_CLOCK_CHECK_SPINS"
-	printf 'kernel_completion_poll_us=%s\n' "$KERNEL_POLL_US"
+	printf 'kernel_completion_poll_us=%s kernel_idle_recheck_us=%s\n' \
+		"$KERNEL_POLL_US" "$KERNEL_POLL_US"
 	printf 'kernel_state_interval_ms=%s\n' "$KERNEL_STATE_INTERVAL_MS"
 	printf 'block_ring_mode=%s sqpoll_cpu_list=%s sqpoll_idle_ms=%s\n' \
 		"$BLOCK_RING_MODE" "$sqpoll_cpu_list" "$SQPOLL_IDLE_MS"
-	printf 'block_engine=%s\n' "$BLOCK_ENGINE"
+	printf 'block_engine=%s fua_writes=%s write_completion=%s\n' \
+		"$BLOCK_ENGINE" "$BLOCK_FUA_WRITES" \
+		"$([ "$BLOCK_FUA_WRITES" = 1 ] && printf remote-fua-drain || printf ordinary-device-ack)"
 	printf 'block_latency_sample_rate=%s\n' "$LATENCY_SAMPLE_RATE"
 	printf 'block_ring_stats=%s block_wait_min_completions=%s block_cqe_spin=%s block_cqe_adaptive_spin=%s block_cqe_adaptive_spin_min=%s block_cqe_adaptive_spin_max=%s block_cqe_adaptive_wait_ns=%s block_cqe_hot_poll=%s block_cqe_hot_poll_progress_spins=%s\n' \
 		"$BLOCK_RING_STATS" "$BLOCK_WAIT_MIN_COMPLETIONS" "$BLOCK_CQE_SPIN" "$BLOCK_CQE_ADAPTIVE_SPIN" \
@@ -936,12 +1041,18 @@ fi
 	printf 'remote_send_mode=%s remote_send_ring_entries=%s remote_send_zc_required=%s allow_unsafe_send_zc=%s\n' \
 		"$REMOTE_SEND_MODE" "$REMOTE_SEND_RING_ENTRIES" "$REMOTE_SEND_ZC_REQUIRED" \
 		"$ALLOW_UNSAFE_SEND_ZC"
-	printf 'remote_transport=%s remote_ofi_provider=%s remote_ofi_endpoint=%s ofi_domain=%s ofi_cq_sleep_ns=%s wal_ofi_message_bytes=%s wal_ofi_hugetlb_confirmed=%s efa_use_device_rdma=%s shm_ofi_rma_reads=%s shm_ofi_rma_read_qd=%s rma_aggregate_outstanding_depth=%s leaf_ofi_rma_reads=%s\n' \
+	printf 'remote_transport=%s remote_ofi_provider=%s remote_ofi_endpoint=%s ofi_domain=%s ofi_cq_sleep_ns=%s wal_ofi_message_bytes=%s wal_ofi_hugetlb_confirmed=%s efa_use_device_rdma=%s shm_ofi_rma_reads=%s shm_ofi_rma_read_qd=%s rma_read_aggregate_outstanding_depth=%s leaf_ofi_rma_reads=%s shm_ofi_rma_writes=%s shm_ofi_rma_writes_required=%s shm_ofi_rma_write_qd=%s rma_write_aggregate_outstanding_depth=%s leaf_ofi_rma_writes=%s rma_write_delivery_complete=%s\n' \
 		"$REMOTE_TRANSPORT" "$REMOTE_OFI_PROVIDER" "$REMOTE_OFI_ENDPOINT" \
 		"${OFI_DOMAIN:-auto}" "$OFI_CQ_SLEEP_NS" "$WAL_OFI_MESSAGE_BYTES" \
 		"$WAL_OFI_HUGETLB_CONFIRMED" "$EFA_USE_DEVICE_RDMA" \
 		"$SHM_OFI_RMA_READS" "$SHM_OFI_RMA_READ_QD" "$((LANES * SHM_OFI_RMA_READ_QD))" \
-		"$LEAF_OFI_RMA_READS"
+		"$LEAF_OFI_RMA_READS" "$SHM_OFI_RMA_WRITES" "$SHM_OFI_RMA_WRITES_REQUIRED" \
+		"$SHM_OFI_RMA_WRITE_QD" "$((LANES * SHM_OFI_RMA_WRITE_QD))" \
+		"$LEAF_OFI_RMA_WRITES" "$OFI_RMA_WRITE_DELIVERY_COMPLETE"
+	printf 'rma_write_completion=delivery-cq-before-doorbell-result-hwm rma_write_pipeline_batches=%s rma_write_overlap_order=delivery-barrier end_to_end_zero_copy=no\n' \
+		"$WAL_OWNER_PIPELINE_BATCHES"
+	printf 'rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=%s\n' \
+		"$OFI_RMA_SOURCE_HUGETLB_CONFIRMED"
 	printf 'order_smoke_pairs=%s\n' "$ORDER_SMOKE_PAIRS"
 	printf 'shm_payload_slot_bytes=%s\n' "$MAX_FRAME_BYTES"
 	printf 'shm_lease_release_batch=%s\n' "$LEASE_RELEASE_BATCH"
@@ -950,6 +1061,9 @@ fi
 	printf 'leaf_source_addr=%s\n' "${LEAF_SOURCE_ADDR:-kernel-route}"
 	printf 'leaf_addrs=%s leaf_source_addrs=%s\n' \
 		"${LEAF_ADDRS:-single-address}" "${LEAF_SOURCE_ADDRS:-single-source}"
+	printf 'external_leaf_topology_artifact=%s leaf_lane_to_worker_cpu=%s leaf_lane_to_nic=%s\n' \
+		"${EXTERNAL_LEAF_TOPOLOGY_ARTIFACT:-local-leaf}" \
+		"$external_leaf_cpu_map" "$external_leaf_nic_map"
 } | tee "$OUTDIR/topology.log"
 ps -eLo pid,tid,psr,pcpu,comm --sort=-pcpu | head -n 80 >"$OUTDIR/process-noise.before" || true
 
@@ -982,10 +1096,12 @@ fi
 
 if [ "$START_LOCAL_LEAF" = 1 ]; then
 	command -v ss >/dev/null || die "ss is required to validate the local WAL leaf listener"
-	ss -H -ltn | awk -v port=":$LEAF_PORT" '$4 ~ port "$" { found=1 } END { exit found ? 0 : 1 }' && \
-		die "TCP port $LEAF_PORT is already listening"
+	[ "$(leaf_listener_count)" -eq 0 ] || die "one or more WAL leaf lane/control ports are already listening"
 	log "starting terminal userspace WAL leaf on cpu $leaf_cpu_list"
 	env URING_PLAY_PIN_CPU_LIST="$leaf_cpu_list" URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1 \
+		URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT="$LEAF_TRANSPORT" \
+		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_PROVIDER="$LEAF_OFI_PROVIDER" \
+		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ENDPOINT="$LEAF_OFI_ENDPOINT" \
 		URING_PLAY_ZCNBLK_WAL_LEAF_SPIN_READS="$LEAF_SPIN_READS" \
 		URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN="$LEAF_ADAPTIVE_SPIN" \
 		URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN_MIN="$LEAF_ADAPTIVE_SPIN_MIN" \
@@ -994,16 +1110,27 @@ if [ "$START_LOCAL_LEAF" = 1 ]; then
 		URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_HYSTERESIS_NS="$LEAF_ADAPTIVE_HYSTERESIS_NS" \
 		URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC="$LEAF_ALLOW_VOLATILE_SYNC" \
 		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS="$LEAF_OFI_RMA_READS" \
+		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES="$LEAF_OFI_RMA_WRITES" \
+		URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_HUGETLB="$LEAF_ZCMEM_HUGETLB" \
+		URING_PLAY_OFI_DOMAIN="$OFI_DOMAIN" \
+		URING_PLAY_OFI_CONTROL_PORT_OFFSET="$OFI_CONTROL_PORT_OFFSET" \
+		URING_PLAY_OFI_CQ_SLEEP_NS="$OFI_CQ_SLEEP_NS" \
+		URING_PLAY_OFI_RMA_READ_QD="$OFI_ENDPOINT_RMA_READ_QD" \
+		URING_PLAY_OFI_RMA_WRITE_QD="$OFI_ENDPOINT_RMA_WRITE_QD" \
+		URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE="$OFI_RMA_WRITE_DELIVERY_COMPLETE" \
+		URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$WAL_OFI_MESSAGE_BYTES" \
+		URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED="$WAL_OFI_HUGETLB_CONFIRMED" \
+		FI_EFA_USE_DEVICE_RDMA="$EFA_USE_DEVICE_RDMA" \
 		"$LEAF_BIN" "$LEAF_TARGET" "$LEAF_ADDR" "$LEAF_PORT" "$LANES" 1 4096 "$LANES" true "$LEAF_SUBMIT_MODE" \
 		>"$OUTDIR/leaf.log" 2>&1 &
 	leaf_pid=$!
 	for _ in $(seq 1 100); do
-		ss -H -ltn | awk -v port=":$LEAF_PORT" '$4 ~ port "$" { found=1 } END { exit !found }' && break
+		[ "$(leaf_listener_count)" -eq "$LANES" ] && break
 		[ -e "/proc/$leaf_pid" ] || die "WAL leaf exited before listening; see $OUTDIR/leaf.log"
 		sleep 0.05
 	done
-	ss -H -ltn | awk -v port=":$LEAF_PORT" '$4 ~ port "$" { found=1 } END { exit !found }' || \
-		die "WAL leaf did not listen on $LEAF_ADDR:$LEAF_PORT"
+	[ "$(leaf_listener_count)" -eq "$LANES" ] || \
+		die "WAL leaf did not open all $LANES lane/control listeners"
 fi
 
 log "starting userspace shared target/fan; no placement decision exists in the kernel edge"
@@ -1060,8 +1187,14 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
 	URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_ENDPOINT="$REMOTE_OFI_ENDPOINT" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS="$SHM_OFI_RMA_READS" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD="$SHM_OFI_RMA_READ_QD" \
+	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES="$SHM_OFI_RMA_WRITES" \
+	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED="$SHM_OFI_RMA_WRITES_REQUIRED" \
+	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD="$SHM_OFI_RMA_WRITE_QD" \
 	URING_PLAY_OFI_DOMAIN="$OFI_DOMAIN" \
 	URING_PLAY_OFI_CQ_SLEEP_NS="$OFI_CQ_SLEEP_NS" \
+	URING_PLAY_OFI_RMA_READ_QD="$OFI_ENDPOINT_RMA_READ_QD" \
+	URING_PLAY_OFI_RMA_WRITE_QD="$OFI_ENDPOINT_RMA_WRITE_QD" \
+	URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE="$OFI_RMA_WRITE_DELIVERY_COMPLETE" \
 	URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$WAL_OFI_MESSAGE_BYTES" \
 	URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED="$WAL_OFI_HUGETLB_CONFIRMED" \
 	FI_EFA_USE_DEVICE_RDMA="$EFA_USE_DEVICE_RDMA" \
@@ -1091,6 +1224,17 @@ done
 [ -s "$pid_file" ] || die "target did not publish its PID file"
 target_pid="$(cat "$pid_file")"
 [[ "$target_pid" =~ ^[0-9]+$ ]] || die "invalid target PID: $target_pid"
+if [ "$SHM_OFI_RMA_WRITES" = 1 ]; then
+	for _ in $(seq 1 200); do
+		rma_windows="$(grep -c '^zcnblk-shm-target-ofi-rma-write-window: lane=.* completion=initiator-delivery-cq-before-doorbell' "$OUTDIR/target.log" || true)"
+		[ "$rma_windows" -eq "$WAL_OWNER_COUNT" ] && break
+		[ -r "/proc/$target_pid/comm" ] || die "target exited during RMA write-window negotiation"
+		sleep 0.05
+	done
+	rma_windows="$(grep -c '^zcnblk-shm-target-ofi-rma-write-window: lane=.* completion=initiator-delivery-cq-before-doorbell' "$OUTDIR/target.log" || true)"
+	[ "$rma_windows" -eq "$WAL_OWNER_COUNT" ] || \
+		die "RMA write-window negotiation covered $rma_windows owners, expected $WAL_OWNER_COUNT"
+fi
 
 declare -A kthread_pid_by_name=()
 for _ in $(seq 1 100); do
@@ -1207,6 +1351,9 @@ for ((rep = 1; rep <= REPEATS; rep++)); do
 	if [ "$LATENCY_SAMPLE_RATE" -gt 0 ]; then
 		bench+=(--latency-sample-rate "$LATENCY_SAMPLE_RATE")
 	fi
+	if [ "$BLOCK_FUA_WRITES" = 1 ]; then
+		bench+=(--fua)
+	fi
 	if [ "$sqpoll_cpu_list" != none ]; then
 		bench+=(--sqpoll-cpus "$sqpoll_cpu_list")
 	fi
@@ -1298,6 +1445,10 @@ fi
 if [ -n "$CONTRACT_SMOKE_BLOCK" ]; then
 	grep -Eq 'fua_requests=[1-9][0-9]*' <<<"$target_summary" || \
 		die "contract smoke completed without a native target FUA"
+fi
+if [ "$BLOCK_FUA_WRITES" = 1 ]; then
+	grep -Eq 'fua_requests=[1-9][0-9]*' <<<"$target_summary" || \
+		die "FUA benchmark completed without a native target FUA"
 fi
 if [ "$START_LOCAL_LEAF" = 1 ]; then
 	grep 'zcnblk-shm-target-remote-leaf-summary:' "$OUTDIR/target.log" | tee -a "$OUTDIR/summary.log"

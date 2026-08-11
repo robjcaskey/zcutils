@@ -155,6 +155,7 @@ struct zc_ofi_endpoint {
     int max_msg_size_query_rc;
     int max_rma_size_query_rc;
     int selective_completion;
+    int rma_write_delivery_complete;
     int fatal_rc;
     int mr_local;
     int mr_virt_addr;
@@ -487,7 +488,8 @@ int zc_ofi_format_profile(struct zc_ofi_endpoint *ep, char *buf,
         "efa_write_high_pps_verified=%d "
         "tx_cq_size=%zu tx_cq_required=%zu "
         "rx_cq_size=%zu rx_cq_required=%zu tx_cq_batch=%zu rx_cq_batch=%zu "
-        "cq_headroom=%zu cq_sleep_ns=%ld strict_topology=%d selective_completion=%d",
+        "cq_headroom=%zu cq_sleep_ns=%ld strict_topology=%d selective_completion=%d "
+        "rma_write_delivery_complete=%d",
         provider, fabric, domain, device,
         ep->info->ep_attr ? ep->info->ep_attr->type : FI_EP_UNSPEC,
         FI_MAJOR(ep->requested_api_version), FI_MINOR(ep->requested_api_version),
@@ -509,7 +511,8 @@ int zc_ofi_format_profile(struct zc_ofi_endpoint *ep, char *buf,
         ep->rx_cq_state.configured_size, ep->rx_cq_required,
         ep->tx_cq_state.batch_capacity, ep->rx_cq_state.batch_capacity,
         ep->cq_headroom, ep->cq_sleep_ns,
-        ep->strict_topology, ep->selective_completion);
+        ep->strict_topology, ep->selective_completion,
+        ep->rma_write_delivery_complete);
     return zc_ofi_finish_format(ep, buf, capacity, written,
                                 "zc_ofi_format_profile");
 }
@@ -539,6 +542,7 @@ int zc_ofi_format_stats(struct zc_ofi_endpoint *ep, char *buf,
         "inject_posts=%llu fatal_rc=%d efa_write_high_pps_available=%d "
         "efa_write_high_pps_effective=%d "
         "efa_write_high_pps_verified=%d efa_write_high_pps_fallbacks=%llu "
+        "rma_write_delivery_complete=%d "
         "tx_cq_avg_cqes_per_nonempty=%.2f rx_cq_avg_cqes_per_nonempty=%.2f",
         ep->send_ring.depth, ep->send_ring.active,
         ep->send_ring.provider_inflight, ep->send_ring.peak_active,
@@ -605,6 +609,7 @@ int zc_ofi_format_stats(struct zc_ofi_endpoint *ep, char *buf,
         ep->efa_write_high_pps_effective,
         ep->efa_write_high_pps_verified,
         (unsigned long long)ep->efa_write_high_pps_fallbacks,
+        ep->rma_write_delivery_complete,
         ep->tx_cq_state.nonempty_polls
             ? (double)ep->tx_cq_state.entries_read /
                   (double)ep->tx_cq_state.nonempty_polls
@@ -819,6 +824,8 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
                           zc_ofi_env_enabled("URING_PLAY_TOPOLOGY_FATAL");
     ep->selective_completion =
         zc_ofi_env_enabled("URING_PLAY_OFI_SELECTIVE_COMPLETION");
+    ep->rma_write_delivery_complete =
+        zc_ofi_env_u64("URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE", 1) != 0;
     if (ep->efa_write_high_pps_requested &&
         !ZC_OFI_HAVE_EFA_WR_HIGH_PPS) {
         if (ep->strict_topology) {
@@ -1936,7 +1943,8 @@ static int zc_ofi_write_post_call(struct zc_ofi_endpoint *ep,
                                   const void *buf, size_t len, void *desc,
                                   uint64_t remote_addr, uint64_t remote_key,
                                   void *context) {
-    if (!ep->efa_write_high_pps_effective && !ep->selective_completion) {
+    if (!ep->efa_write_high_pps_effective && !ep->selective_completion &&
+        !ep->rma_write_delivery_complete) {
         return (int)fi_write(ep->ep, buf, len, desc, ep->peer_addr,
                              remote_addr, remote_key, context);
     }
@@ -1972,6 +1980,12 @@ static int zc_ofi_write_post_call(struct zc_ofi_endpoint *ep,
          * does not then produce the CQE required to recycle this slot. */
         flags |= FI_COMPLETION;
     }
+    if (ep->rma_write_delivery_complete) {
+        /* The WAL metadata doorbell may only be sent after the remote payload
+         * is visible at the leaf. A transmit-completion-only CQE is not a
+         * remote-delivery guarantee. */
+        flags |= FI_COMPLETION | FI_DELIVERY_COMPLETE;
+    }
     int rc = (int)fi_writemsg(ep->ep, &message, flags);
     if (!rc && ep->efa_write_high_pps_effective) {
         return 0;
@@ -1988,11 +2002,15 @@ static int zc_ofi_write_post_call(struct zc_ofi_endpoint *ep,
     }
     ep->efa_write_high_pps_effective = 0;
     ep->efa_write_high_pps_fallbacks++;
-    if (!ep->selective_completion) {
+    if (!ep->selective_completion && !ep->rma_write_delivery_complete) {
         return (int)fi_write(ep->ep, buf, len, desc, ep->peer_addr,
                              remote_addr, remote_key, context);
     }
-    return (int)fi_writemsg(ep->ep, &message, FI_COMPLETION);
+    uint64_t fallback_flags = FI_COMPLETION;
+    if (ep->rma_write_delivery_complete) {
+        fallback_flags |= FI_DELIVERY_COMPLETE;
+    }
+    return (int)fi_writemsg(ep->ep, &message, fallback_flags);
 }
 
 int zc_ofi_rma_write_post(struct zc_ofi_endpoint *ep, const void *buf,

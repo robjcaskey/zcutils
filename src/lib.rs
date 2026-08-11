@@ -10571,7 +10571,12 @@ fn zcofi_error_from_endpoint(ep: &ZcOfiEndpoint, rc: c_int, op: &str) -> io::Err
     } else {
         format!(": {detail}")
     };
-    io::Error::other(format!("{op} failed rc={rc}{suffix}"))
+    let kind = if rc == -libc::ETIMEDOUT {
+        io::ErrorKind::TimedOut
+    } else {
+        io::ErrorKind::Other
+    };
+    io::Error::new(kind, format!("{op} failed rc={rc}{suffix}"))
 }
 
 #[cfg(zc_has_libfabric)]
@@ -11167,9 +11172,15 @@ impl ZcOfiEndpoint {
     }
 
     fn rma_register_write_buffer(&mut self, buf: &[u8]) -> io::Result<()> {
-        let rc = unsafe {
-            zc_ofi_rma_register_write_buffer(self.raw, buf.as_ptr().cast::<c_void>(), buf.len())
-        };
+        unsafe { self.rma_register_write_buffer_raw(buf.as_ptr(), buf.len()) }
+    }
+
+    unsafe fn rma_register_write_buffer_raw(
+        &mut self,
+        buf: *const u8,
+        len: usize,
+    ) -> io::Result<()> {
+        let rc = unsafe { zc_ofi_rma_register_write_buffer(self.raw, buf.cast::<c_void>(), len) };
         if rc != 0 {
             return Err(zcofi_error_from_endpoint(
                 self,
@@ -11657,6 +11668,17 @@ impl ZcOfiEndpoint {
     }
 
     fn rma_register_write_buffer(&mut self, _buf: &[u8]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    unsafe fn rma_register_write_buffer_raw(
+        &mut self,
+        _buf: *const u8,
+        _len: usize,
+    ) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "zcutils was built without libfabric headers",
@@ -12156,6 +12178,44 @@ impl ZcOfiMessageStream {
         self.endpoint.rma_read_queue_init(depth)
     }
 
+    unsafe fn register_rma_write_buffer_raw(
+        &mut self,
+        source: *const u8,
+        len: usize,
+    ) -> io::Result<()> {
+        unsafe { self.endpoint.rma_register_write_buffer_raw(source, len) }
+    }
+
+    fn configure_rma_write_queue(&mut self, depth: usize) -> io::Result<()> {
+        self.endpoint.rma_write_queue_init(depth)
+    }
+
+    /// `source` must remain allocated and immutable until `slot` is returned
+    /// by `poll_rma_writes`.
+    unsafe fn post_rma_write_raw(
+        &mut self,
+        source: *const u8,
+        len: usize,
+        remote_addr: u64,
+        remote_key: u64,
+        slot: usize,
+        user_data: u64,
+    ) -> io::Result<bool> {
+        unsafe {
+            self.endpoint
+                .rma_write_post_raw(source, len, remote_addr, remote_key, slot, user_data)
+        }
+    }
+
+    fn poll_rma_writes(
+        &mut self,
+        out_slots: &mut [usize],
+        out_user_data: &mut [u64],
+        wait: bool,
+    ) -> io::Result<usize> {
+        self.endpoint.rma_write_poll(out_slots, out_user_data, wait)
+    }
+
     /// `target` must remain valid and exclusively assigned to `slot` until
     /// `poll_rma_reads` returns that slot.
     unsafe fn post_rma_read_raw(
@@ -12197,6 +12257,39 @@ impl ZcOfiMessageStream {
         self.receive_start = 0;
         self.receive_end = received;
         Ok(())
+    }
+
+    fn refill_idle(&mut self) -> io::Result<()> {
+        self.endpoint.recv_start(&mut self.receive)?;
+        let received = loop {
+            match self.endpoint.recv_finish() {
+                Ok(received) => break received,
+                // A long-lived OFI listener must not turn an otherwise healthy
+                // connection into a transport failure merely because no WAL
+                // frame arrived during one diagnostic timeout. recv_finish
+                // retains the same posted receive on timeout, so retrying here
+                // neither leaks a queue slot nor lets a later frame land in an
+                // abandoned buffer.
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => continue,
+                Err(error) => return Err(error),
+            }
+        };
+        if received == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "OFI WAL received an empty message",
+            ));
+        }
+        self.receive_start = 0;
+        self.receive_end = received;
+        Ok(())
+    }
+
+    fn read_idle_exact(&mut self, out: &mut [u8]) -> io::Result<()> {
+        if self.receive_start == self.receive_end {
+            self.refill_idle()?;
+        }
+        self.read_exact(out)
     }
 }
 
@@ -13882,6 +13975,11 @@ fn zcofi_rma_write_worker(
     let stream_count = specs.len();
     let pattern = SendPayloadPattern::from_env(extent_bytes)?;
     let access_mode = ZcOfiRmaAccessMode::from_env()?;
+    let write_completion = if env_enabled_or("URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE", true) {
+        "initiator-delivery-cq-remote-visible"
+    } else {
+        "initiator-local-cq-source-reusable"
+    };
     let extents_per_lane = bytes_per_lane / extent_bytes;
     let buffer_bytes = queue_depth.checked_mul(extent_bytes).ok_or_else(|| {
         io::Error::new(
@@ -13924,7 +14022,7 @@ fn zcofi_rma_write_worker(
         ep.rma_register_write_buffer(&buffer)?;
         ep.rma_write_queue_init(queue_depth)?;
         println!(
-            "zcofi-rma-write-lane: worker={worker} lane={} provider={} endpoint={} addr={} service={} control_port={} remote_addr=0x{:016x} remote_key=0x{:016x} extent_bytes={} queue_depth={} registered_buffer_bytes={} validation_digest=0x{validation_digest:016x} max_msg_size={} max_rma_size={} inject_size={} completion=initiator-local-cq-source-reusable cq_processing=batched access_pattern={} permutation_start={} permutation_stride={}",
+            "zcofi-rma-write-lane: worker={worker} lane={} provider={} endpoint={} addr={} service={} control_port={} remote_addr=0x{:016x} remote_key=0x{:016x} extent_bytes={} queue_depth={} registered_buffer_bytes={} validation_digest=0x{validation_digest:016x} max_msg_size={} max_rma_size={} inject_size={} completion={write_completion} cq_processing=batched access_pattern={} permutation_start={} permutation_stride={}",
             spec.lane,
             provider.as_str(),
             endpoint.as_str(),
@@ -14596,6 +14694,17 @@ fn zcofi_rma_write(
     let endpoint = libfabric_endpoint_pingpong(endpoint)?;
     zcwal_validate_extent_shape(bytes_per_lane, extent_bytes)?;
     let access_mode = ZcOfiRmaAccessMode::from_env()?;
+    let delivery_complete = env_enabled_or("URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE", true);
+    let completion_semantics = if delivery_complete {
+        "initiator-delivery-cq-remote-visible"
+    } else {
+        "initiator-local-cq-source-reusable"
+    };
+    let raw_rtt_semantics = if delivery_complete {
+        "rma-write-post-to-initiator-delivery-cq-remote-visible"
+    } else {
+        "rma-write-post-to-initiator-local-cq-source-reusable"
+    };
     let queue_depth = match env::var("URING_PLAY_OFI_RMA_WRITE_QD") {
         Ok(value) => value.parse::<usize>().map_err(|error| {
             io::Error::new(
@@ -14678,10 +14787,11 @@ fn zcofi_rma_write(
          per_lane_qd={queue_depth} aggregate_outstanding_depth={aggregate_outstanding_depth} \
          per_worker_qd_min={per_worker_qd_min} per_worker_qd_max={per_worker_qd_max} \
          worker_lane_map={worker_lane_map} worker_lane_scheduling=event-driven-interleave access_pattern={} \
-         source_payload_pattern={} commit_doorbell=ofi-msg records_per_extent={} \
+         source_payload_pattern={} commit_doorbell=ofi-msg completion={} records_per_extent={} \
          timeout_ms={} busy_poll_iters={} cq_sleep_ns={} ofi_domain={}",
         access_mode.label(),
         SendPayloadPattern::from_env(extent_bytes)?.label(),
+        completion_semantics,
         extent_bytes / ZC_WAL_RECORD_SIZE,
         zcofi_timeout_ms(),
         env_usize_or("URING_PLAY_OFI_BUSY_POLL_ITERS", 0),
@@ -14768,7 +14878,7 @@ fn zcofi_rma_write(
         operation_iops * 100.0 / matching_theoretical_iops
     };
     println!(
-        "zcofi-rma-write-summary: payload_bytes={} wire_bytes={} extents={} logical_records={} doorbells={} seconds={secs:.6} payload_Gbitps={:.3} operation_iops={operation_iops:.0} measured_raw_transport_rtt_us={average_local_cq_completion_us:.3} raw_rtt_semantics=rma-write-post-to-initiator-local-cq-source-reusable matching_theoretical_iops={matching_theoretical_iops:.0} actual_theoretical_efficiency_pct={efficiency_pct:.2} completion=initiator-local-cq-source-reusable access_pattern={} per_lane_qd={queue_depth} per_worker_qd_min={per_worker_qd_min} per_worker_qd_max={per_worker_qd_max} workers={workers} lanes={lanes} aggregate_outstanding_depth={aggregate_outstanding_depth} cq_poll_calls={cq_poll_calls} cq_batches={cq_batches} cq_completions={cq_completions} cq_batch_avg={:.3} post_eagain={post_eagain} peak_outstanding={peak_outstanding} {} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
+        "zcofi-rma-write-summary: payload_bytes={} wire_bytes={} extents={} logical_records={} doorbells={} seconds={secs:.6} payload_Gbitps={:.3} operation_iops={operation_iops:.0} measured_raw_transport_rtt_us={average_local_cq_completion_us:.3} raw_rtt_semantics={raw_rtt_semantics} matching_theoretical_iops={matching_theoretical_iops:.0} actual_theoretical_efficiency_pct={efficiency_pct:.2} completion={completion_semantics} access_pattern={} per_lane_qd={queue_depth} per_worker_qd_min={per_worker_qd_min} per_worker_qd_max={per_worker_qd_max} workers={workers} lanes={lanes} aggregate_outstanding_depth={aggregate_outstanding_depth} cq_poll_calls={cq_poll_calls} cq_batches={cq_batches} cq_completions={cq_completions} cq_batch_avg={:.3} post_eagain={post_eagain} peak_outstanding={peak_outstanding} {} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
         total.payload_bytes,
         total.wire_bytes,
         total.extents,
@@ -32919,7 +33029,7 @@ fn zcnblk_read_fan(
 }
 
 const ZCNBLK_FAN_WAL_MAGIC: &[u8; 8] = b"ZCFANW1\0";
-const ZCNBLK_FAN_WAL_VERSION: u16 = 3;
+const ZCNBLK_FAN_WAL_VERSION: u16 = 4;
 const ZCNBLK_FAN_WAL_MIN_VERSION: u16 = 2;
 const ZCNBLK_FAN_WAL_HEADER_LEN: usize = 128;
 const ZCNBLK_FAN_WAL_OP_HELLO: u16 = 1;
@@ -32939,6 +33049,8 @@ const ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH: u16 = 1 << 0;
 const ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT: u16 = 1 << 1;
 const ZCNBLK_FAN_WAL_FLAG_IO_CONTRACT_NEGOTIATION: u16 = 1 << 2;
 const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW: u16 = 1 << 3;
+const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW: u16 = 1 << 4;
+const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD: u16 = 1 << 5;
 const ZCNBLK_FAN_WAL_COMPACT_WRITE_EXTENT_LEN: usize = 48;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33559,6 +33671,35 @@ fn zcnblk_fan_wal_write_leaf_batch_payload<W: Write + ?Sized>(
         batch_payloads.extend(payload_slices.iter().copied());
         zcnblk_fan_wal_write_frame_vectored(stream, frame, &mut batch_payloads)
     }
+}
+
+fn zcnblk_fan_wal_write_rma_payload_doorbell<W: Write + ?Sized>(
+    stream: &mut W,
+    frame: ZcnblkFanWalFrame,
+    descriptor_bytes: &[u8],
+) -> io::Result<()> {
+    if frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RMA WAL doorbell is missing the RMA payload flag",
+        ));
+    }
+    if !matches!(
+        frame.op,
+        ZCNBLK_FAN_WAL_OP_WRITE_BATCH
+            | ZCNBLK_FAN_WAL_OP_REQUEST_BATCH
+            | ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH
+    ) || descriptor_bytes.is_empty()
+        || descriptor_bytes.len() > frame.payload_len as usize
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid RMA WAL payload doorbell shape",
+        ));
+    }
+    let header = frame.encode();
+    let mut parts = [IoSlice::new(&header), IoSlice::new(descriptor_bytes)];
+    tcp_write_all_vectored(stream, &mut parts, "RMA WAL payload doorbell")
 }
 
 fn zcnblk_fan_wal_write_owned_leaf_batch_payload(
@@ -41530,7 +41671,6 @@ fn zcnblk_fan_wal_send_early_cached_read_responses_from_parts(
     )? {
         return Ok(());
     }
-
     let mut response_headers =
         Vec::with_capacity(cached_read_indices.len() * ZCNBLK_FRAME_HEADER_LEN);
     let mut response_payload_len = 0usize;
@@ -50176,6 +50316,8 @@ struct ZcnblkWalLeafStats {
     heap_payload_descriptor_bytes: usize,
     heap_payload_data_bytes: usize,
     direct_memory_recv_bytes: usize,
+    rma_write_payload_bytes: usize,
+    rma_write_doorbells: usize,
     memfd_payload_bytes: usize,
     lease_submit_bytes: usize,
     memfd_lease_submit_bytes: usize,
@@ -50212,6 +50354,8 @@ struct ZcnblkWalLeafStreamStats {
     heap_payload_descriptor_bytes: usize,
     heap_payload_data_bytes: usize,
     direct_memory_recv_bytes: usize,
+    rma_write_payload_bytes: usize,
+    rma_write_doorbells: usize,
     memfd_payload_bytes: usize,
     lease_submit_bytes: usize,
     memfd_lease_submit_bytes: usize,
@@ -50850,6 +50994,24 @@ impl ZcnblkWalLeafStream {
         }
     }
 
+    fn read_idle_frame(
+        &mut self,
+        spin_reads: bool,
+        spin_budget: Option<usize>,
+    ) -> io::Result<ZcnblkFanWalFrame> {
+        match self {
+            Self::Tcp(stream) if spin_reads => {
+                zcnblk_fan_wal_read_frame_spin_then_block(stream, spin_budget)
+            }
+            Self::Tcp(stream) => zcnblk_fan_wal_read_frame(stream),
+            Self::Ofi(stream) => {
+                let mut header = [0u8; ZCNBLK_FAN_WAL_HEADER_LEN];
+                stream.read_idle_exact(&mut header)?;
+                ZcnblkFanWalFrame::decode(&header)
+            }
+        }
+    }
+
     fn read_payload_measured(
         &mut self,
         frame: ZcnblkFanWalFrame,
@@ -51177,6 +51339,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
     {
         return Ok(false);
     }
+    let rma_payload = batch.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0;
     let count = batch.segment_count as usize;
     if count == 0 {
         return Err(io::Error::new(
@@ -51224,7 +51387,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
         if frame.io_contract()?.atomic_write {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "atomic WAL writes cannot use the direct-memory receive layout",
+                "atomic WAL writes cannot use the direct-memory/RMA payload layout",
             ));
         }
         let len = frame.payload_len as usize;
@@ -51279,7 +51442,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
     stats.phase_decode = stats.phase_decode.saturating_add(decode_started.elapsed());
 
     let data_recv_started = Instant::now();
-    if !direct_iovecs.is_empty() {
+    if !rma_payload && !direct_iovecs.is_empty() {
         stream.recv_iovecs(&mut direct_iovecs, spin_reads, spin_budget, false)?;
     }
     recv_elapsed = recv_elapsed.saturating_add(data_recv_started.elapsed());
@@ -51288,16 +51451,27 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
         .saturating_add(payload_read_started.elapsed());
     stats.phase_payload_alloc = stats.phase_payload_alloc.saturating_add(alloc_elapsed);
     stats.phase_payload_recv = stats.phase_payload_recv.saturating_add(recv_elapsed);
-    stats.payload_read_bytes = stats.payload_read_bytes.saturating_add(payload_len);
+    stats.payload_read_bytes = stats.payload_read_bytes.saturating_add(if rma_payload {
+        descriptor_bytes_len
+    } else {
+        payload_len
+    });
     stats.heap_payload_bytes = stats
         .heap_payload_bytes
         .saturating_add(descriptor_bytes_len);
     stats.heap_payload_descriptor_bytes = stats
         .heap_payload_descriptor_bytes
         .saturating_add(descriptor_bytes_len);
-    stats.direct_memory_recv_bytes = stats
-        .direct_memory_recv_bytes
-        .saturating_add(write_payload_len);
+    if rma_payload {
+        stats.rma_write_payload_bytes = stats
+            .rma_write_payload_bytes
+            .saturating_add(write_payload_len);
+        stats.rma_write_doorbells = stats.rma_write_doorbells.saturating_add(1);
+    } else {
+        stats.direct_memory_recv_bytes = stats
+            .direct_memory_recv_bytes
+            .saturating_add(write_payload_len);
+    }
     stats.write_submit_runs = stats.write_submit_runs.saturating_add(submit_runs);
     stats.max_write_submit_run_frames = stats.max_write_submit_run_frames.max(max_run_records);
 
@@ -51342,7 +51516,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
              desc_queue={} desc_preferred_worker={} desc_preferred_cpu={} \
              desc_numa_node={} leaf_target_cpu={} leaf_numa_node={} \
              leaf_affinity_applied={} result_ranges={} incoming_cpu={} \
-             payload_destination=direct-memory-scatter",
+            payload_destination={}",
             meta.lane,
             batch.branch_id,
             count,
@@ -51357,6 +51531,11 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
             affinity.applied,
             result_ranges,
             current_cpu(),
+            if rma_payload {
+                "rma-preplaced-leaf-memory"
+            } else {
+                "direct-memory-scatter"
+            },
         );
         *logged_descriptor_topology = true;
     }
@@ -51412,6 +51591,12 @@ fn zcnblk_wal_leaf_process_request_batch(
         stats,
     )? {
         return Ok(());
+    }
+    if batch.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "RMA request payload doorbells require a range-result zcmem leaf",
+        ));
     }
     let count = batch.segment_count as usize;
     if count == 0 {
@@ -51971,6 +52156,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
     {
         return Ok(false);
     }
+    let rma_payload = batch.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0;
     let record_count = batch.segment_count as usize;
     let extent_count = batch.segment_index as usize;
     if record_count == 0 || extent_count == 0 {
@@ -52105,7 +52291,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
         if frame.io_contract()?.atomic_write {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "atomic WAL writes cannot use the direct compact receive layout",
+                "atomic WAL writes cannot use the direct compact/RMA payload layout",
             ));
         }
         writes.push(ZcnblkWalLeafPendingWrite {
@@ -52127,23 +52313,36 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
     stats.phase_decode = stats.phase_decode.saturating_add(decode_started.elapsed());
 
     let data_recv_started = Instant::now();
-    stream.recv_iovecs(&mut direct_iovecs, spin_reads, spin_budget, true)?;
+    if !rma_payload {
+        stream.recv_iovecs(&mut direct_iovecs, spin_reads, spin_budget, true)?;
+    }
     recv_elapsed = recv_elapsed.saturating_add(data_recv_started.elapsed());
     stats.phase_payload_read = stats
         .phase_payload_read
         .saturating_add(payload_read_started.elapsed());
     stats.phase_payload_alloc = stats.phase_payload_alloc.saturating_add(alloc_elapsed);
     stats.phase_payload_recv = stats.phase_payload_recv.saturating_add(recv_elapsed);
-    stats.payload_read_bytes = stats.payload_read_bytes.saturating_add(payload_len);
+    stats.payload_read_bytes = stats.payload_read_bytes.saturating_add(if rma_payload {
+        descriptor_bytes_len
+    } else {
+        payload_len
+    });
     stats.heap_payload_bytes = stats
         .heap_payload_bytes
         .saturating_add(descriptor_bytes_len);
     stats.heap_payload_descriptor_bytes = stats
         .heap_payload_descriptor_bytes
         .saturating_add(descriptor_bytes_len);
-    stats.direct_memory_recv_bytes = stats
-        .direct_memory_recv_bytes
-        .saturating_add(write_payload_len);
+    if rma_payload {
+        stats.rma_write_payload_bytes = stats
+            .rma_write_payload_bytes
+            .saturating_add(write_payload_len);
+        stats.rma_write_doorbells = stats.rma_write_doorbells.saturating_add(1);
+    } else {
+        stats.direct_memory_recv_bytes = stats
+            .direct_memory_recv_bytes
+            .saturating_add(write_payload_len);
+    }
     stats.write_submit_runs = stats.write_submit_runs.saturating_add(submit_runs);
     stats.max_write_submit_run_frames = stats.max_write_submit_run_frames.max(max_run_records);
     zcnblk_wal_leaf_finish_fua(backend, &writes, allow_volatile_sync)?;
@@ -52157,7 +52356,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
              first_leaf_offset={} first_payload_len={} desc_preferred_cpu={} \
              desc_numa_node={} leaf_target_cpu={} leaf_numa_node={} \
              leaf_affinity_applied={} result_ranges={} incoming_cpu={} \
-             payload_destination=direct-memory-scatter",
+             payload_destination={}",
             meta.lane,
             batch.branch_id,
             record_count,
@@ -52172,6 +52371,11 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
             affinity.applied,
             result_ranges,
             current_cpu(),
+            if rma_payload {
+                "rma-preplaced-leaf-memory"
+            } else {
+                "direct-memory-scatter"
+            },
         );
         *logged_descriptor_topology = true;
     }
@@ -52232,6 +52436,12 @@ fn zcnblk_wal_leaf_process_write_extent_batch(
         stats,
     )? {
         return Ok(());
+    }
+    if batch.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "RMA compact-write doorbells require a range-result zcmem leaf",
+        ));
     }
     let record_count = batch.segment_count as usize;
     let extent_count = batch.segment_index as usize;
@@ -52604,6 +52814,13 @@ fn zcnblk_wal_leaf_process_write_batch(
             ),
         ));
     }
+    let rma_payload = batch.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0;
+    if rma_payload && (!result_ranges || !matches!(backend, ZcnblkWalLeafBackend::Memory { .. })) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "RMA write-batch doorbells require range results and a zcmem leaf",
+        ));
+    }
     let (leaf_preferred_cpu, leaf_numa_node) = zcnblk_fan_wal_local_topology_hints(affinity);
     let mut writes = Vec::with_capacity(count);
     let mut payload_log = Vec::new();
@@ -52614,7 +52831,90 @@ fn zcnblk_wal_leaf_process_write_batch(
     let mut heap_payload_bytes = 0usize;
     let mut heap_payload_descriptor_bytes = 0usize;
     let mut heap_payload_data_bytes = 0usize;
-    if batch.payload_len > 0 {
+    if rma_payload {
+        let payload_read_started = Instant::now();
+        let descriptor_bytes_len =
+            count
+                .checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcnblk-wal-leaf descriptor byte count overflow",
+                    )
+                })?;
+        let logical_payload_len = batch.payload_len as usize;
+        if logical_payload_len < descriptor_bytes_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "RMA write-batch doorbell is shorter than its descriptor table",
+            ));
+        }
+        let alloc_started = Instant::now();
+        let mut descriptors = vec![0u8; descriptor_bytes_len];
+        payload_alloc_elapsed = payload_alloc_elapsed.saturating_add(alloc_started.elapsed());
+        let recv_started = Instant::now();
+        stream.recv_exact_mode(&mut descriptors, spin_reads, spin_budget)?;
+        payload_recv_elapsed = payload_recv_elapsed.saturating_add(recv_started.elapsed());
+        payload_read_elapsed = payload_read_elapsed.saturating_add(payload_read_started.elapsed());
+        heap_payload_bytes = heap_payload_bytes.saturating_add(descriptor_bytes_len);
+        heap_payload_descriptor_bytes =
+            heap_payload_descriptor_bytes.saturating_add(descriptor_bytes_len);
+        let expected_payload_len = logical_payload_len - descriptor_bytes_len;
+        let decode_started = Instant::now();
+        let mut decoded_payload_len = 0usize;
+        let mut submit_runs = 0usize;
+        let mut current_run_records = 0usize;
+        let mut max_run_records = 0usize;
+        let mut last_write_end = None::<u64>;
+        for descriptor in descriptors.chunks_exact(ZCNBLK_FAN_WAL_HEADER_LEN) {
+            let frame = zcnblk_fan_wal_decode_frame_slice(descriptor)?;
+            zcnblk_wal_leaf_validate_write_batch_descriptor(batch, frame, negotiated_features)?;
+            if frame.io_contract()?.atomic_write {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "atomic WAL writes cannot use the RMA payload layout",
+                ));
+            }
+            let payload_len = frame.payload_len as usize;
+            backend.validate_range(frame.leaf_offset, payload_len)?;
+            decoded_payload_len =
+                decoded_payload_len
+                    .checked_add(payload_len)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "RMA write payload overflow")
+                    })?;
+            if last_write_end == Some(frame.leaf_offset) {
+                current_run_records = current_run_records.saturating_add(1);
+            } else {
+                submit_runs = submit_runs.saturating_add(1);
+                current_run_records = 1;
+            }
+            max_run_records = max_run_records.max(current_run_records);
+            last_write_end = frame.leaf_offset.checked_add(u64::from(frame.payload_len));
+            writes.push(ZcnblkWalLeafPendingWrite {
+                frame,
+                payload_offset: 0,
+                payload_len,
+                record_count: 1,
+                submit_mode: io_mode.adapter_for_frame(frame),
+            });
+        }
+        if decoded_payload_len != expected_payload_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "RMA write-batch payload mismatch descriptors={descriptor_bytes_len} writes={decoded_payload_len} frame_payload={logical_payload_len}"
+                ),
+            ));
+        }
+        stats.rma_write_payload_bytes = stats
+            .rma_write_payload_bytes
+            .saturating_add(decoded_payload_len);
+        stats.rma_write_doorbells = stats.rma_write_doorbells.saturating_add(1);
+        stats.write_submit_runs = stats.write_submit_runs.saturating_add(submit_runs);
+        stats.max_write_submit_run_frames = stats.max_write_submit_run_frames.max(max_run_records);
+        decode_elapsed = decode_elapsed.saturating_add(decode_started.elapsed());
+    } else if batch.payload_len > 0 {
         let payload_read_started = Instant::now();
         let (batch_payload, alloc_elapsed, recv_elapsed) =
             stream.read_payload_measured(batch, spin_reads, spin_budget)?;
@@ -52758,7 +53058,8 @@ fn zcnblk_wal_leaf_process_write_batch(
                  stream_lane={} branch={} records={} batch_payload_bytes={} desc_lane={} \
                  desc_queue={} desc_preferred_worker={} desc_preferred_cpu={} \
                  desc_numa_node={} leaf_target_cpu={} leaf_numa_node={} \
-                 leaf_affinity_applied={} result_ranges={} incoming_cpu={}",
+                 leaf_affinity_applied={} result_ranges={} incoming_cpu={} \
+                 payload_destination={}",
                 meta.lane,
                 batch.branch_id,
                 count,
@@ -52772,22 +53073,29 @@ fn zcnblk_wal_leaf_process_write_batch(
                 leaf_numa_node,
                 affinity.applied,
                 result_ranges,
-                current_cpu()
+                current_cpu(),
+                if rma_payload {
+                    "rma-preplaced-leaf-memory"
+                } else {
+                    "heap-payload-copy"
+                }
             );
         }
         *logged_descriptor_topology = true;
     }
 
     let submit_started = Instant::now();
-    let mut completed = vec![false; writes.len()];
+    let mut completed = vec![rma_payload; writes.len()];
     let payload_log = Arc::new(payload_log);
-    if !zcnblk_wal_leaf_write_contiguous_lease_runs(
-        backend,
-        &writes,
-        Arc::clone(&payload_log),
-        &mut completed,
-        stats,
-    )? {
+    if !rma_payload
+        && !zcnblk_wal_leaf_write_contiguous_lease_runs(
+            backend,
+            &writes,
+            Arc::clone(&payload_log),
+            &mut completed,
+            stats,
+        )?
+    {
         zcnblk_wal_leaf_write_contiguous_runs(
             backend,
             ring,
@@ -53015,6 +53323,7 @@ fn zcnblk_wal_leaf_process_stream(
     let mut logged_descriptor_topology = false;
     let mut result_ranges = false;
     let mut negotiated_features = 0u32;
+    let mut rma_writes_negotiated = false;
     let mut stream_plan = ZcPlanRuntime::default();
     let result_ranges_configured = zcnblk_fan_wal_result_ranges_enabled();
     let (leaf_preferred_cpu, leaf_numa_node) = zcnblk_fan_wal_local_topology_hints(affinity);
@@ -53049,7 +53358,7 @@ fn zcnblk_wal_leaf_process_stream(
         None
     };
     loop {
-        let frame_result = stream.read_frame(spin_reads, spin_budget);
+        let frame_result = stream.read_idle_frame(spin_reads, spin_budget);
         let frame = match frame_result {
             Ok(frame) => frame,
             Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
@@ -53089,31 +53398,43 @@ fn zcnblk_wal_leaf_process_stream(
                         ..ZcnblkFanWalFrame::default()
                     }
                     .with_hello_features(negotiated_features)?;
-                    let rma_requested = frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW != 0;
-                    if rma_requested
-                        && env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false)
+                    let rma_read_requested =
+                        frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW != 0;
+                    let rma_write_requested =
+                        frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW != 0;
+                    let rma_read_enabled = rma_read_requested
+                        && env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false);
+                    let rma_write_enabled = rma_write_requested
+                        && env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES", false);
+                    if (rma_read_enabled || rma_write_enabled)
+                        && let Some((window_ptr, window_len)) = backend.ofi_rma_read_window()
                     {
-                        if let Some((window_ptr, window_len)) = backend.ofi_rma_read_window() {
-                            // The backend Arc keeps this arena mapped until the stream is
-                            // dropped. Per-record ordering gates protect CPU writes while
-                            // libfabric holds the registration; no Rust reference spanning
-                            // those concurrent raw-memory operations is created here.
-                            let (window_addr, window_key) =
-                                unsafe { stream.register_rma_target(window_ptr, window_len)? };
+                        // The backend Arc keeps this arena mapped until the stream is
+                        // dropped. Userspace owner routing keeps a logical range on one
+                        // lane, and the RMA write sender admits one unacknowledged
+                        // doorbell per lane. No Rust reference spans the concurrent raw
+                        // memory operation.
+                        let (window_addr, window_key) =
+                            unsafe { stream.register_rma_target(window_ptr, window_len)? };
+                        if rma_read_enabled {
                             hello_ack.flags |= ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW;
-                            hello_ack.logical_offset = window_addr;
-                            hello_ack.leaf_offset = window_key;
-                            hello_ack.sync_epoch = u64::try_from(window_len).map_err(|_| {
-                                io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    "OFI RMA leaf window length exceeds u64",
-                                )
-                            })?;
-                            println!(
-                                "zcnblk-wal-leaf-ofi-rma-read-window: worker={worker} slot={stream_slot} lane={} bytes={window_len} addr={window_addr:#x} key={window_key:#x} completion=initiator-local-cq-data-visible durability=not-applicable",
-                                meta.lane,
-                            );
                         }
+                        if rma_write_enabled {
+                            hello_ack.flags |= ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW;
+                            rma_writes_negotiated = true;
+                        }
+                        hello_ack.logical_offset = window_addr;
+                        hello_ack.leaf_offset = window_key;
+                        hello_ack.sync_epoch = u64::try_from(window_len).map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "OFI RMA leaf window length exceeds u64",
+                            )
+                        })?;
+                        println!(
+                            "zcnblk-wal-leaf-ofi-rma-window: worker={worker} slot={stream_slot} lane={} bytes={window_len} addr={window_addr:#x} key={window_key:#x} read_enabled={rma_read_enabled} write_enabled={rma_write_enabled} read_completion=initiator-local-cq-data-visible write_local_completion=initiator-delivery-cq write_remote_completion=doorbell-result-hwm write_sync_fua=leaf-after-doorbell",
+                            meta.lane,
+                        );
                     }
                     zcnblk_fan_wal_write_frame(&mut stream, hello_ack, &[])?;
                     println!(
@@ -53140,6 +53461,14 @@ fn zcnblk_wal_leaf_process_stream(
             }
             ZCNBLK_FAN_WAL_OP_WRITE_BATCH => {
                 zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "write batch")?;
+                if frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0
+                    && !rma_writes_negotiated
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "zcnblk-wal-leaf received an RMA write doorbell without a negotiated write window",
+                    ));
+                }
                 zcnblk_wal_leaf_process_write_batch(
                     &mut stream,
                     backend.as_ref(),
@@ -53161,6 +53490,14 @@ fn zcnblk_wal_leaf_process_stream(
             }
             ZCNBLK_FAN_WAL_OP_REQUEST_BATCH => {
                 zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "request batch")?;
+                if frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0
+                    && !rma_writes_negotiated
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "zcnblk-wal-leaf received an RMA write doorbell without a negotiated write window",
+                    ));
+                }
                 zcnblk_wal_leaf_process_request_batch(
                     &mut stream,
                     backend.as_ref(),
@@ -53182,6 +53519,14 @@ fn zcnblk_wal_leaf_process_stream(
             }
             ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH => {
                 zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "write extent batch")?;
+                if frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0
+                    && !rma_writes_negotiated
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "zcnblk-wal-leaf received an RMA write doorbell without a negotiated write window",
+                    ));
+                }
                 zcnblk_wal_leaf_process_write_extent_batch(
                     &mut stream,
                     backend.as_ref(),
@@ -53380,6 +53725,8 @@ fn zcnblk_wal_leaf_worker(
     let mut heap_payload_descriptor_bytes = 0usize;
     let mut heap_payload_data_bytes = 0usize;
     let mut direct_memory_recv_bytes = 0usize;
+    let mut rma_write_payload_bytes = 0usize;
+    let mut rma_write_doorbells = 0usize;
     let mut memfd_payload_bytes = 0usize;
     let mut lease_submit_bytes = 0usize;
     let mut memfd_lease_submit_bytes = 0usize;
@@ -53437,6 +53784,9 @@ fn zcnblk_wal_leaf_worker(
             heap_payload_data_bytes.saturating_add(stats.heap_payload_data_bytes);
         direct_memory_recv_bytes =
             direct_memory_recv_bytes.saturating_add(stats.direct_memory_recv_bytes);
+        rma_write_payload_bytes =
+            rma_write_payload_bytes.saturating_add(stats.rma_write_payload_bytes);
+        rma_write_doorbells = rma_write_doorbells.saturating_add(stats.rma_write_doorbells);
         memfd_payload_bytes = memfd_payload_bytes.saturating_add(stats.memfd_payload_bytes);
         lease_submit_bytes = lease_submit_bytes.saturating_add(stats.lease_submit_bytes);
         memfd_lease_submit_bytes =
@@ -53507,6 +53857,8 @@ fn zcnblk_wal_leaf_worker(
         heap_payload_descriptor_bytes,
         heap_payload_data_bytes,
         direct_memory_recv_bytes,
+        rma_write_payload_bytes,
+        rma_write_doorbells,
         memfd_payload_bytes,
         lease_submit_bytes,
         memfd_lease_submit_bytes,
@@ -53571,6 +53923,28 @@ fn zcnblk_wal_leaf(
         ));
     }
     let result_ranges_configured = zcnblk_fan_wal_result_ranges_enabled();
+    let rma_writes_enabled =
+        direct_ofi && env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES", false);
+    if rma_writes_enabled {
+        if !matches!(backend.as_ref(), ZcnblkWalLeafBackend::Memory { .. }) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "OFI RMA write payloads require a zcmem leaf so the negotiated window is final userspace media",
+            ));
+        }
+        if !result_ranges_configured {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OFI RMA write payloads require URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1",
+            ));
+        }
+        if !env_enabled_or("URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE", true) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OFI RMA write payloads require URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1 before the metadata doorbell may be sent",
+            ));
+        }
+    }
     let ring_entries = u32::try_from(
         env_usize_or("URING_PLAY_ZCNBLK_WAL_LEAF_RING_ENTRIES", 64).max(1),
     )
@@ -53689,7 +54063,7 @@ fn zcnblk_wal_leaf(
                     "OFI message pool size overflow",
                 )
             })?;
-        if env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false) {
+        if env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false) || rma_writes_enabled {
             let rma_registered_bytes = usize::try_from(backend.device_bytes())
                 .ok()
                 .and_then(|bytes| bytes.checked_mul(total_connections))
@@ -53708,8 +54082,9 @@ fn zcnblk_wal_leaf(
                     )
                 })?;
             println!(
-                "zcnblk-wal-leaf-ofi-rma-preflight: connections={total_connections} window_bytes={} estimated_per_endpoint_domain_registered_bytes={rma_registered_bytes} memlock_accounting=conservative-full-window-per-connection",
+                "zcnblk-wal-leaf-ofi-rma-preflight: connections={total_connections} window_bytes={} estimated_per_endpoint_domain_registered_bytes={rma_registered_bytes} memlock_accounting=conservative-full-window-per-connection read_enabled={} write_enabled={rma_writes_enabled} write_local_completion=delivery-cq-before-doorbell write_remote_completion=result-hwm",
                 backend.device_bytes(),
+                env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false),
             );
         }
         if let Some(limit) = memlock_rlimit_bytes()? {
@@ -53847,6 +54222,8 @@ fn zcnblk_wal_leaf(
             );
             let rma_reads_enabled =
                 env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false);
+            let rma_writes_enabled =
+                env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES", false);
             handles.reserve(ports);
             for lane in 0..ports {
                 let backend = Arc::clone(&backend);
@@ -53861,7 +54238,7 @@ fn zcnblk_wal_leaf(
                         &bind,
                         port,
                         true,
-                        rma_reads_enabled,
+                        rma_reads_enabled || rma_writes_enabled,
                     )?;
                     let accepted = ZcnblkWalLeafAccepted {
                         meta: TcpBenchStreamMeta {
@@ -53909,6 +54286,8 @@ fn zcnblk_wal_leaf(
     let mut total_heap_payload_descriptor_bytes = 0usize;
     let mut total_heap_payload_data_bytes = 0usize;
     let mut total_direct_memory_recv_bytes = 0usize;
+    let mut total_rma_write_payload_bytes = 0usize;
+    let mut total_rma_write_doorbells = 0usize;
     let mut total_memfd_payload_bytes = 0usize;
     let mut total_lease_submit_bytes = 0usize;
     let mut total_memfd_lease_submit_bytes = 0usize;
@@ -53933,7 +54312,8 @@ fn zcnblk_wal_leaf(
             "zcnblk-wal-leaf-worker: worker={} streams={} read_bytes={} write_bytes={} \
              payload_read_bytes={} heap_payload_bytes={} \
              heap_payload_descriptor_bytes={} heap_payload_data_bytes={} \
-             direct_memory_recv_bytes={} \
+             direct_memory_recv_bytes={} rma_write_payload_bytes={} \
+             rma_write_doorbells={} \
              memfd_payload_bytes={} \
              lease_submit_bytes={} memfd_lease_submit_bytes={} copy_submit_bytes={} \
              result_records={} result_batches={} result_range_batches={} \
@@ -53955,6 +54335,8 @@ fn zcnblk_wal_leaf(
             stats.heap_payload_descriptor_bytes,
             stats.heap_payload_data_bytes,
             stats.direct_memory_recv_bytes,
+            stats.rma_write_payload_bytes,
+            stats.rma_write_doorbells,
             stats.memfd_payload_bytes,
             stats.lease_submit_bytes,
             stats.memfd_lease_submit_bytes,
@@ -54002,6 +54384,10 @@ fn zcnblk_wal_leaf(
             total_heap_payload_data_bytes.saturating_add(stats.heap_payload_data_bytes);
         total_direct_memory_recv_bytes =
             total_direct_memory_recv_bytes.saturating_add(stats.direct_memory_recv_bytes);
+        total_rma_write_payload_bytes =
+            total_rma_write_payload_bytes.saturating_add(stats.rma_write_payload_bytes);
+        total_rma_write_doorbells =
+            total_rma_write_doorbells.saturating_add(stats.rma_write_doorbells);
         total_memfd_payload_bytes =
             total_memfd_payload_bytes.saturating_add(stats.memfd_payload_bytes);
         total_lease_submit_bytes =
@@ -54076,6 +54462,9 @@ fn zcnblk_wal_leaf(
          heap_payload_descriptor_bytes={total_heap_payload_descriptor_bytes} \
          heap_payload_data_bytes={total_heap_payload_data_bytes} \
          direct_memory_recv_bytes={total_direct_memory_recv_bytes} \
+         rma_write_payload_bytes={total_rma_write_payload_bytes} \
+         rma_write_doorbells={total_rma_write_doorbells} \
+         rma_write_completion=delivery-cq-before-doorbell-result-hwm \
          memfd_payload_bytes={total_memfd_payload_bytes} \
          lease_submit_bytes={total_lease_submit_bytes} \
          memfd_lease_submit_bytes={total_memfd_lease_submit_bytes} \
@@ -62241,6 +62630,38 @@ EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_grou
     }
 
     #[test]
+    fn zcnblk_fan_wal_rma_doorbell_sends_metadata_only() {
+        let descriptor = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+            lane_id: 0,
+            lane_count: 1,
+            payload_len: 4096,
+            logical_len: 4096,
+            ..ZcnblkFanWalFrame::default()
+        }
+        .encode();
+        let frame = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_REQUEST_BATCH,
+            flags: ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT
+                | ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD,
+            lane_id: 0,
+            lane_count: 1,
+            segment_count: 1,
+            payload_len: (ZCNBLK_FAN_WAL_HEADER_LEN + 4096) as u32,
+            ..ZcnblkFanWalFrame::default()
+        };
+        let mut wire = Vec::new();
+        zcnblk_fan_wal_write_rma_payload_doorbell(&mut wire, frame, &descriptor).unwrap();
+        assert_eq!(wire.len(), ZCNBLK_FAN_WAL_HEADER_LEN * 2);
+        let wire_header: &[u8; ZCNBLK_FAN_WAL_HEADER_LEN] =
+            wire[..ZCNBLK_FAN_WAL_HEADER_LEN].try_into().unwrap();
+        let decoded = ZcnblkFanWalFrame::decode(wire_header).unwrap();
+        assert_eq!(decoded.payload_len, frame.payload_len);
+        assert_ne!(decoded.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD, 0);
+        assert_eq!(&wire[ZCNBLK_FAN_WAL_HEADER_LEN..], descriptor.as_slice());
+    }
+
+    #[test]
     fn zcnblk_fan_wal_request_round_trips_all_io_contract_fields() {
         let contract = ZcnblkWalIoContract {
             fua: true,
@@ -68013,6 +68434,7 @@ struct BlockBenchConfig {
     sqpoll_cpu_list: Option<Vec<usize>>,
     sqpoll_idle_ms: u32,
     latency_sample_rate: usize,
+    fua_writes: bool,
 }
 
 impl Default for BlockBenchConfig {
@@ -68037,6 +68459,7 @@ impl Default for BlockBenchConfig {
             sqpoll_cpu_list: None,
             sqpoll_idle_ms: 1000,
             latency_sample_rate: env_usize_or("URING_PLAY_BLOCKBENCH_LATENCY_SAMPLE_RATE", 0),
+            fua_writes: false,
         }
     }
 }
@@ -68093,6 +68516,7 @@ fn zcblockbench_help() {
            [--pin true|false] [--ring-mode normal|no-sqarray|sq-rewind|sqpoll|sqpoll-no-sqarray]\n\
            [--cqe 16|32] [--iopoll off|classic|hybrid] [--registered-ring true|false]\n\
            [--sqpoll-cpus CPU-LIST]\n\
+           [--fua|--fua-writes true|false]\n\
            [--latency-sample-rate N|--latency]\n\
          \n\
          Defaults run a short multithreaded write suite against /dev/null.\n\
@@ -68184,6 +68608,10 @@ fn parse_zcblockbench_args(args: impl Iterator<Item = String>) -> io::Result<Blo
                     parse_usize_value(&next_flag_value(&mut args, &arg)?, &arg)?
             }
             "--latency" => cfg.latency_sample_rate = 1,
+            "--fua" => cfg.fua_writes = true,
+            "--fua-writes" => {
+                cfg.fua_writes = parse_bool_arg(&next_flag_value(&mut args, &arg)?, &arg)?
+            }
             "--suite" => cfg.engine = BlockBenchEngine::Suite,
             "--uring-plain" => cfg.engine = BlockBenchEngine::UringPlain,
             "--uring-fixed" => cfg.engine = BlockBenchEngine::UringFixed,
@@ -68283,6 +68711,17 @@ fn zcblockbench_validate_config(cfg: &BlockBenchConfig) -> io::Result<()> {
             "IOPOLL is supported only by --engine uring-plain or uring-fixed",
         ));
     }
+    if cfg.fua_writes
+        && matches!(
+            cfg.engine,
+            BlockBenchEngine::Suite | BlockBenchEngine::UringSlot
+        )
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "FUA writes require uring-plain, uring-fixed, aio, sync, or hybrid; the io-slot benchmark ABI has no per-request FUA control",
+        ));
+    }
     validate_slot_wal_pipeline(cfg.pipeline, cfg.ring_entries)?;
     if matches!(cfg.mode, SlotRandMode::Mixed) && cfg.read_percent > 100 {
         return Err(io::Error::new(
@@ -68348,6 +68787,7 @@ fn zcblockbench_open_files(
     target: &BlockBenchTarget,
     mode: SlotRandMode,
     direct: bool,
+    fua_writes: bool,
 ) -> io::Result<(Vec<fs::File>, u32, u32)> {
     match target {
         BlockBenchTarget::NullChar => {
@@ -68368,7 +68808,7 @@ fn zcblockbench_open_files(
                 files.push(
                     OpenOptions::new()
                         .write(true)
-                        .custom_flags(libc::O_CLOEXEC)
+                        .custom_flags(libc::O_CLOEXEC | if fua_writes { libc::O_DSYNC } else { 0 })
                         .open("/dev/null")?,
                 );
             }
@@ -68392,7 +68832,7 @@ fn zcblockbench_open_files(
                 files.push(
                     OpenOptions::new()
                         .write(true)
-                        .custom_flags(libc::O_CLOEXEC)
+                        .custom_flags(libc::O_CLOEXEC | if fua_writes { libc::O_DSYNC } else { 0 })
                         .open("/dev/zero")?,
                 );
             }
@@ -68401,7 +68841,9 @@ fn zcblockbench_open_files(
         BlockBenchTarget::Block(target) => {
             let mut open = OpenOptions::new();
             open.read(true).write(mode.needs_write());
-            let flags = libc::O_CLOEXEC | if direct { libc::O_DIRECT } else { 0 };
+            let flags = libc::O_CLOEXEC
+                | if direct { libc::O_DIRECT } else { 0 }
+                | if fua_writes { libc::O_DSYNC } else { 0 };
             let file = open.custom_flags(flags).open(target.open_path())?;
             Ok((vec![file], 0, 0))
         }
@@ -68478,6 +68920,7 @@ fn zcblockbench_uring_fixed_worker(
     sqpoll_cpu: Option<usize>,
     sqpoll_idle_ms: u32,
     registered_io: bool,
+    fua_writes: bool,
     latency_sample_rate: usize,
     start_barrier: Arc<Barrier>,
 ) -> io::Result<BlockBenchWorkerResult> {
@@ -68489,7 +68932,8 @@ fn zcblockbench_uring_fixed_worker(
     } else {
         None
     };
-    let (files, read_file_index, write_file_index) = zcblockbench_open_files(&target, mode, true)?;
+    let (files, read_file_index, write_file_index) =
+        zcblockbench_open_files(&target, mode, true, fua_writes)?;
     let mut fds: Vec<i32> = files.iter().map(AsRawFd::as_raw_fd).collect();
     let buffers = buffer_mode.allocate_for_worker(pipeline, chunk_bytes, preferred_numa_node)?;
     if mode.needs_write() {
@@ -68789,6 +69233,7 @@ fn zcblockbench_sync_worker(
     buffer_mode: SlotWalBufferMode,
     pin: bool,
     planned_cpu: Option<usize>,
+    fua_writes: bool,
     latency_sample_rate: usize,
     start_barrier: Arc<Barrier>,
 ) -> io::Result<BlockBenchWorkerResult> {
@@ -68800,7 +69245,8 @@ fn zcblockbench_sync_worker(
     } else {
         None
     };
-    let (files, read_file_index, write_file_index) = zcblockbench_open_files(&target, mode, true)?;
+    let (files, read_file_index, write_file_index) =
+        zcblockbench_open_files(&target, mode, true, fua_writes)?;
     let fds: Vec<i32> = files.iter().map(AsRawFd::as_raw_fd).collect();
     let buffers = buffer_mode.allocate_for_worker(pipeline, chunk_bytes, preferred_numa_node)?;
     if mode.needs_write() {
@@ -68933,6 +69379,7 @@ fn zcblockbench_aio_worker(
     buffer_mode: SlotWalBufferMode,
     pin: bool,
     planned_cpu: Option<usize>,
+    fua_writes: bool,
     latency_sample_rate: usize,
     start_barrier: Arc<Barrier>,
 ) -> io::Result<BlockBenchWorkerResult> {
@@ -68944,7 +69391,8 @@ fn zcblockbench_aio_worker(
     } else {
         None
     };
-    let (files, read_file_index, write_file_index) = zcblockbench_open_files(&target, mode, true)?;
+    let (files, read_file_index, write_file_index) =
+        zcblockbench_open_files(&target, mode, true, fua_writes)?;
     let buffers = buffer_mode.allocate_for_worker(pipeline, chunk_bytes, preferred_numa_node)?;
     if mode.needs_write() {
         fill_slot_wal_buffers(&buffers, chunk_bytes);
@@ -69216,7 +69664,7 @@ fn zcblockbench_print_results(
     );
     println!(
         "zcblockbench-result: target={} engine={} mode={} workers={} \
-         ops_per_worker={} total_ops={} reads={} writes={} read_percent={} \
+         ops_per_worker={} total_ops={} reads={} writes={} read_percent={} fua_writes={} write_completion={} \
          chunk_bytes={} region_bytes_per_worker={} pipeline_per_worker={} \
          total_pipeline={} wait_min_completions={} ring_entries={} ring_mode={} cqe={} iopoll={} registered_ring={} \
          buffers={} pin_workers={} \
@@ -69233,6 +69681,12 @@ fn zcblockbench_print_results(
         total_reads,
         total_writes,
         cfg.read_percent,
+        cfg.fua_writes,
+        if cfg.fua_writes {
+            "per-write-fua-dsync"
+        } else {
+            "ordinary-device-ack"
+        },
         cfg.chunk_bytes,
         cfg.region_bytes_per_worker,
         cfg.pipeline,
@@ -69407,6 +69861,7 @@ fn zcblockbench_run_direct_engine(
                         sqpoll_cpu,
                         cfg.sqpoll_idle_ms,
                         worker_engine == BlockBenchEngine::UringFixed,
+                        cfg.fua_writes,
                         cfg.latency_sample_rate,
                         start_barrier,
                     )
@@ -69424,6 +69879,7 @@ fn zcblockbench_run_direct_engine(
                     cfg.buffer_mode,
                     cfg.pin_workers,
                     planned_cpu,
+                    cfg.fua_writes,
                     cfg.latency_sample_rate,
                     start_barrier,
                 ),
@@ -69440,6 +69896,7 @@ fn zcblockbench_run_direct_engine(
                     cfg.buffer_mode,
                     cfg.pin_workers,
                     planned_cpu,
+                    cfg.fua_writes,
                     cfg.latency_sample_rate,
                     start_barrier,
                 ),
@@ -69556,7 +70013,7 @@ fn zcblockbench(args: impl Iterator<Item = String>) -> io::Result<()> {
         "zcblockbench-plan: target={} engine={} mode={} workers={} ops_per_worker={} \
          chunk_bytes={} iodepth={} ring_entries={} read_percent={} region_bytes_per_worker={} \
          ring_mode={} cqe={} iopoll={} registered_ring={} sqpoll_idle_ms={} buffers={} pin_workers={} \
-         latency_sample_rate={} target_kind={}",
+         latency_sample_rate={} fua_writes={} write_completion={} target_kind={}",
         target.label(),
         cfg.engine.as_str(),
         cfg.mode.as_str(),
@@ -69575,6 +70032,12 @@ fn zcblockbench(args: impl Iterator<Item = String>) -> io::Result<()> {
         cfg.buffer_mode.as_str(),
         cfg.pin_workers,
         cfg.latency_sample_rate,
+        cfg.fua_writes,
+        if cfg.fua_writes {
+            "per-write-fua-dsync"
+        } else {
+            "ordinary-device-ack"
+        },
         match &target {
             BlockBenchTarget::Block(_) => "block",
             BlockBenchTarget::NullChar => "char-null",
@@ -69607,6 +70070,48 @@ fn zcblockbench(args: impl Iterator<Item = String>) -> io::Result<()> {
         | BlockBenchEngine::Sync
         | BlockBenchEngine::Hybrid => zcblockbench_run_direct_engine(target, cfg.engine, &cfg),
         BlockBenchEngine::UringSlot => zcblockbench_run_slot_engine(&target, &cfg),
+    }
+}
+
+#[cfg(test)]
+mod zcblockbench_arg_tests {
+    use super::*;
+
+    #[test]
+    fn fua_flag_selects_remote_drain_write_contract() {
+        let cfg = parse_zcblockbench_args(
+            [
+                "/dev/zcnblk0",
+                "--engine",
+                "uring-fixed",
+                "--mode",
+                "write",
+                "--fua",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .unwrap();
+        assert!(cfg.fua_writes);
+        zcblockbench_validate_config(&cfg).unwrap();
+    }
+
+    #[test]
+    fn fua_rejects_slot_engine_without_per_request_flags() {
+        let cfg = parse_zcblockbench_args(
+            [
+                "/dev/zcnblk0",
+                "--engine",
+                "uring-slot",
+                "--mode",
+                "write",
+                "--fua",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .unwrap();
+        assert!(zcblockbench_validate_config(&cfg).is_err());
     }
 }
 

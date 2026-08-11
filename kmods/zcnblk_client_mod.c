@@ -14,6 +14,7 @@
 #include <linux/hash.h>
 #include <linux/in.h>
 #include <linux/inet.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/ktime.h>
@@ -133,7 +134,7 @@ MODULE_PARM_DESC(shm_sector_order_slots, "Power-of-two hashed 4K sector predeces
 
 static uint shm_poll_us = 50;
 module_param(shm_poll_us, uint, 0644);
-MODULE_PARM_DESC(shm_poll_us, "Shared transport completion busy-poll budget before sleeping");
+MODULE_PARM_DESC(shm_poll_us, "Shared transport completion busy-poll budget and maximum idle sleep before rechecking work");
 
 static bool shm_ordering_epochs = true;
 module_param(shm_ordering_epochs, bool, 0444);
@@ -2147,12 +2148,33 @@ static int zcnblk_shm_conn_thread(void *data)
 					->completion_wake_armed, 0);
 			continue;
 		}
-		wait_event_interruptible(conn->wait,
-			kthread_should_stop() || conn->failed ||
-			zcnblk_shm_completion_ready(conn) ||
-			(zcnblk_shm_daemon_online(conn->dev) &&
-			 !list_empty_careful(&conn->pending) &&
-			 zcnblk_shm_has_capacity(conn)));
+		/*
+		 * A producer wake is the fast path, but it cannot be the only
+		 * liveness mechanism.  blk-mq can refill an empty connection at the
+		 * same boundary where the consumer arms this wait.  If that wake is
+		 * missed, there may be neither an in-flight completion nor another
+		 * submission to wake the connection again, leaving an otherwise empty
+		 * shared ring with requests stranded on conn->pending.  Bound the idle
+		 * sleep by the configured SHM polling interval so the condition is
+		 * rechecked without adding a timer to the active hot path.
+		 */
+		if (shm_poll_us) {
+			wait_event_interruptible_timeout(conn->wait,
+				kthread_should_stop() || conn->failed ||
+				zcnblk_shm_completion_ready(conn) ||
+				(zcnblk_shm_daemon_online(conn->dev) &&
+				 !list_empty_careful(&conn->pending) &&
+				 zcnblk_shm_has_capacity(conn)),
+				max_t(unsigned long, 1,
+				      usecs_to_jiffies(shm_poll_us)));
+		} else {
+			wait_event_interruptible(conn->wait,
+				kthread_should_stop() || conn->failed ||
+				zcnblk_shm_completion_ready(conn) ||
+				(zcnblk_shm_daemon_online(conn->dev) &&
+				 !list_empty_careful(&conn->pending) &&
+				 zcnblk_shm_has_capacity(conn)));
+		}
 		WRITE_ONCE(zcnblk_shm_channel(conn->dev, conn->conn_id)
 				->completion_wake_armed, 0);
 	}

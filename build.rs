@@ -6,7 +6,10 @@ fn main() {
     println!("cargo:rerun-if-changed=src/ofi_shim.c");
     println!("cargo:rustc-check-cfg=cfg(zc_has_libfabric)");
 
-    let include_dir = ["/usr/include", "/opt/amazon/efa/include"]
+    // Prefer the provider's matching headers and library when the AWS EFA
+    // stack is installed.  Ubuntu's distro libfabric can be older than EFA's
+    // userspace provider and lacks the endpoint options used by the shim.
+    let include_dir = ["/opt/amazon/efa/include", "/usr/include"]
         .into_iter()
         .find(|dir| Path::new(dir).join("rdma/fabric.h").exists());
     let Some(include_dir) = include_dir else {
@@ -14,11 +17,11 @@ fn main() {
         return;
     };
     let lib_dir = [
+        "/opt/amazon/efa/lib",
         "/usr/lib",
         "/usr/lib64",
         "/usr/lib/aarch64-linux-gnu",
         "/usr/lib/x86_64-linux-gnu",
-        "/opt/amazon/efa/lib",
     ]
     .into_iter()
     .find(|dir| Path::new(dir).join("libfabric.so").exists());

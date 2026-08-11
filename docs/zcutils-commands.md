@@ -97,14 +97,90 @@ of fixed 4 KiB buffers, one stable buffer per outstanding operation. Set
 `URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD` to the per-lane ring depth (1 by
 default, maximum 1024). Reads are posted independently, CQ entries are drained
 in batches, and out-of-order slot completions are copied into their owned
-shared block slots before request batches retire in FIFO order. The full shared
-mapping is deliberately not registered: EFA provider behavior must be measured
+shared block slots before request batches retire in FIFO order. The RMA-read
+path deliberately does not register the full shared mapping: EFA provider behavior must be measured
 for MR size and subrange access, and the kernel client still owns no placement
 decision. Startup and summary logs state the lane QD, registered ring bytes,
 peak in-flight reads, batched-CQ yield, local-CQ completion semantics, and copy
 time. Reads from a leaf that does not advertise the feature retain the framed
 result-payload path; sync/FUA and RMA-to-framed transitions drain outstanding
 reads before using the explicit message/HWM contract.
+
+The shared-block WAL path also has an OFI RMA write-payload mode. Enable it on
+the initiator with `URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES=1` and on the terminal
+`zcmem` leaf with `URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES=1`. The hello
+exchange advertises one final-memory window per owner lane. Before the hot path,
+each initiator endpoint registers the complete shared mapping once as an
+`FI_WRITE` source. A write batch then performs RMA directly from leased shared
+slots to the chosen leaf offsets and sends only its descriptor table as a
+metadata doorbell; there is no payload gather into the OFI message buffer.
+
+This mode has stricter ordering rules than framed payloads:
+
+- `URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS=1` is mandatory so logical extents
+  have stable userspace owners. Placement remains outside the kernel block
+  client.
+- `URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES=1` is mandatory. A lane cannot
+  expose a second direct-to-final-memory batch until the first doorbell result
+  retires. Disjoint runs inside one batch may use
+  `URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD`; overlapping runs are separated by a
+  delivery-completion barrier so input order is preserved.
+- `URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1` is the default and is required
+  by the WAL path. The shim posts `FI_DELIVERY_COMPLETE`; only after every CQE
+  is reaped may it send the doorbell. The leaf validates metadata, performs any
+  requested sync/FUA action, and returns a result HWM. A local transmit CQE
+  without delivery semantics is not sufficient.
+- Set `URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED=1` for attributable
+  benchmarks. Otherwise an unnegotiated window or a busy lane may retain the
+  compatible framed-message fallback.
+
+Startup preflight accounts for the full shared mapping once per initiator OFI
+domain and the full leaf window once per leaf endpoint. Logs report RMA bytes,
+doorbells, queue occupancy, CQ batching, completion semantics, and the copy
+ledger. This removes the userspace message-payload gather and leaf receive copy;
+it is not end-to-end PostgreSQL zero copy because the filesystem/block edge
+still copies into the shared slot. `scripts/zcnblk-shm-block-bench.sh` exposes
+the same variables for correctness and QD curves. `scripts/zcnblk-pgbench.sh`
+uses `WAL_TRANSPORT=tcp|ofi`; keep owner count, owner/ingress/leaf CPU maps,
+pipeline depth, database settings, and workload parameters identical for a
+matched TCP-versus-EFA comparison.
+
+The current client shared arena is still allocated with `vmalloc_user()` and
+mapped with `remap_vmalloc_range()`. Reserving HugeTLB pages does not change
+that source backing. Both block and PostgreSQL harnesses therefore warn and
+mark RMA-write measurements non-representative unless
+`URING_PLAY_ZCNBLK_SHM_RMA_SOURCE_HUGETLB_CONFIRMED=1` (block) or
+`OFI_RMA_SOURCE_HUGETLB_CONFIRMED=1` (PostgreSQL) is supplied after an actual
+external-HugeTLB arena ABI is implemented and verified. The terminal `zcmem`
+leaf can independently use its existing explicit HugeTLB mapping.
+
+### PostgreSQL TCP versus EFA RMA proof, 2026-08-11
+
+Two independent fresh-database runs per transport completed on the same pair
+of `c8gn.16xlarge` hosts in `us-east-2c`. Each run used PostgreSQL 16.14,
+scale 300, 128 clients, 16 jobs, two lanes, three 20-second samples, the same
+lane/owner/application CPU map, a 32 GiB volatile-memory leaf, and synchronous
+commit with `fsync` and full-page writes enabled.
+
+| Transport | Fresh runs | Samples | Mean TPS | Mean latency | Sample spread |
+|---|---:|---:|---:|---:|---:|
+| TCP message payload | 2 | 6 | 94,961.2 | 1.343 ms | 4.530% |
+| EFA RMA payload | 2 | 6 | 96,661.6 | 1.319 ms | 3.683% |
+
+EFA was 1.791% faster in aggregate and reduced mean transaction latency by
+about 1.8%. The two fresh-run TPS deltas were 1.37% and 2.21%. Both EFA runs
+had zero provider/CQ errors, no message-payload fallback, and exact equality
+between target write bytes and leaf RMA payload bytes (29,436,796,928 and
+29,538,689,024 bytes). The leaf reported zero payload receive-copy bytes.
+
+The TCP rows passed strict topology preflight. The EFA rows are intentionally
+classified non-representative because the client RMA source remains the
+`vmalloc_user()` shared arena described above; a captured strict EFA attempt
+failed before printing numbers. The remote leaf was explicit HugeTLB, and RMA
+payload completion was delivery CQ before the metadata doorbell and result
+HWM. Sync acknowledged remote volatile memory rather than power-loss-durable
+media. Full topology, repeat, correctness, copy-ledger, and provider evidence
+is in `bench-results/zcutils-pgrma-adhoc-c8gn16-20260811T1055Z/`.
 
 `scripts/zcnblk-shm-rma-qd-ladder.sh` drives QD1/2/4/8/16 with at least three
 repeats per point. A representative run requires an executable
@@ -135,6 +211,8 @@ The main controls are:
   WAL sends, so that transport-ceiling path does not silently collapse to QD1;
 - `URING_PLAY_OFI_RMA_READ_QD` and `URING_PLAY_OFI_RMA_WRITE_QD` for one-sided
   operation rings;
+- `URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1` to require remote-delivery
+  CQ semantics for write operations that precede a WAL doorbell;
 - `URING_PLAY_OFI_CQ_SIZE` for both CQs, or
   `URING_PLAY_OFI_TX_CQ_SIZE`/`URING_PLAY_OFI_RX_CQ_SIZE` separately;
 - `URING_PLAY_OFI_CQ_BATCH` and `URING_PLAY_OFI_CQ_HEADROOM` for CQ progress
@@ -185,6 +263,10 @@ Read and write are the default modes; add `write-high-pps` through
 flag, because a representative unavailable request is intentionally fatal.
 Raw random access is enabled with `URING_PLAY_OFI_RMA_ACCESS_PATTERN=random`
 and a reproducible optional `URING_PLAY_OFI_RMA_RANDOM_SEED`.
+RMA writes now default to `URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1`, so
+new write matrices label and derive their ceiling from post-to-delivery-CQ
+latency. Set it explicitly to `0` only for a source-reusable local-CQ transport
+control; the WAL RMA payload path rejects that weaker completion semantic.
 
 In `URING_PLAY_TOPOLOGY_STRICT=1` or `URING_PLAY_TOPOLOGY_FATAL=1`, sleeping
 CQ progress, insufficient rings/CQs, hot MR churn, missing worker/CPU or

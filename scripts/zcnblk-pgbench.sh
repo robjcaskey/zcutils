@@ -21,10 +21,28 @@ LEAF_PORT="${LEAF_PORT:-29000}"
 LEAF_HOST="${LEAF_HOST:-127.0.0.1}"
 LEAF_SOURCE_ADDR="${LEAF_SOURCE_ADDR:-}"
 START_LOCAL_LEAF="${START_LOCAL_LEAF:-1}"
+EXTERNAL_LEAF_TOPOLOGY_ARTIFACT="${EXTERNAL_LEAF_TOPOLOGY_ARTIFACT:-}"
+WAL_TRANSPORT="${WAL_TRANSPORT:-tcp}"
+OFI_PROVIDER="${OFI_PROVIDER:-efa}"
+OFI_ENDPOINT="${OFI_ENDPOINT:-rdm}"
+OFI_DOMAIN="${OFI_DOMAIN:-${URING_PLAY_OFI_DOMAIN:-}}"
+OFI_CONTROL_PORT_OFFSET="${OFI_CONTROL_PORT_OFFSET:-1000}"
+OFI_CQ_SLEEP_NS="${OFI_CQ_SLEEP_NS:-0}"
+OFI_MESSAGE_BYTES="${OFI_MESSAGE_BYTES:-1048576}"
+OFI_RMA_READS="${OFI_RMA_READS:-0}"
+OFI_RMA_WRITE_QD="${OFI_RMA_WRITE_QD:-16}"
+OFI_RMA_DELIVERY_COMPLETE="${OFI_RMA_DELIVERY_COMPLETE:-1}"
+OFI_HUGETLB_CONFIRMED="${OFI_HUGETLB_CONFIRMED:-0}"
+OFI_RMA_SOURCE_HUGETLB_CONFIRMED="${OFI_RMA_SOURCE_HUGETLB_CONFIRMED:-0}"
+LEAF_ZCMEM_HUGETLB="${LEAF_ZCMEM_HUGETLB:-0}"
 KERNEL_QUEUES="${KERNEL_QUEUES:-2}"
 TARGET_CPU_LIST="${TARGET_CPU_LIST:-1,9}"
 KTHREAD_CPU_LIST="${KTHREAD_CPU_LIST:-2,10}"
 LEAF_CPU_LIST="${LEAF_CPU_LIST:-3,11}"
+OWNER_INGRESS="${OWNER_INGRESS:-1}"
+OWNER_COUNT="${OWNER_COUNT:-2}"
+OWNER_CPU_LIST="${OWNER_CPU_LIST:-18,26}"
+OWNER_PIPELINE_BATCHES="${OWNER_PIPELINE_BATCHES:-1}"
 POSTGRES_CPU_LIST="${POSTGRES_CPU_LIST:-4-7,12-15,20-23,28-31}"
 PGBENCH_CPU_LIST="${PGBENCH_CPU_LIST:-0,8,16,24}"
 SYNC_COORDINATOR_CPU="${SYNC_COORDINATOR_CPU:-17}"
@@ -57,6 +75,41 @@ env_true() {
 		*) return 1 ;;
 	esac
 }
+
+case "$WAL_TRANSPORT" in
+	tcp)
+		OFI_RMA_WRITES="${OFI_RMA_WRITES:-0}"
+		OFI_RMA_WRITES_REQUIRED="${OFI_RMA_WRITES_REQUIRED:-0}"
+		;;
+	ofi)
+		OFI_RMA_WRITES="${OFI_RMA_WRITES:-1}"
+		OFI_RMA_WRITES_REQUIRED="${OFI_RMA_WRITES_REQUIRED:-1}"
+		;;
+	*) die 'WAL_TRANSPORT must be tcp or ofi' ;;
+esac
+if [ "$WAL_TRANSPORT" = tcp ] && env_true "$OFI_RMA_WRITES"; then
+	die 'OFI_RMA_WRITES cannot be enabled for the TCP transport'
+fi
+if [ "$WAL_TRANSPORT" = ofi ] && [ -n "$LEAF_SOURCE_ADDR" ]; then
+	die 'LEAF_SOURCE_ADDR is TCP-only; select EFA locality with OFI_DOMAIN'
+fi
+if env_true "$OFI_RMA_WRITES"; then
+	env_true "$OWNER_INGRESS" || die 'RMA writes require OWNER_INGRESS=1'
+	[ "$OWNER_PIPELINE_BATCHES" -eq 1 ] || die 'RMA writes require OWNER_PIPELINE_BATCHES=1'
+	env_true "$OFI_RMA_DELIVERY_COMPLETE" || die 'RMA writes require OFI_RMA_DELIVERY_COMPLETE=1'
+	env_true "$OFI_RMA_WRITES_REQUIRED" || die 'RMA benchmark runs require OFI_RMA_WRITES_REQUIRED=1'
+fi
+[ "$KERNEL_QUEUES" -eq 2 ] || die 'this matched harness currently requires KERNEL_QUEUES=2'
+[ "$OWNER_COUNT" -eq 2 ] || die 'this matched harness currently requires OWNER_COUNT=2'
+[ "$REPEATS" -ge 3 ] || die 'representative PostgreSQL transport comparisons require REPEATS>=3'
+IFS=, read -r -a target_cpus <<<"$TARGET_CPU_LIST"
+IFS=, read -r -a kthread_cpus <<<"$KTHREAD_CPU_LIST"
+IFS=, read -r -a leaf_cpus <<<"$LEAF_CPU_LIST"
+IFS=, read -r -a owner_cpus <<<"$OWNER_CPU_LIST"
+[ "${#target_cpus[@]}" -eq 2 ] || die 'TARGET_CPU_LIST must name exactly two individual CPUs'
+[ "${#kthread_cpus[@]}" -eq 2 ] || die 'KTHREAD_CPU_LIST must name exactly two individual CPUs'
+[ "${#leaf_cpus[@]}" -eq 2 ] || die 'LEAF_CPU_LIST must name exactly two individual CPUs'
+[ "${#owner_cpus[@]}" -eq 2 ] || die 'OWNER_CPU_LIST must name exactly two individual CPUs'
 
 cpu_lists_intersect() {
 	local first="$1" second="$2"
@@ -151,7 +204,7 @@ case "$COORDINATION_SCOPE" in
 
 		perf_result="$($COORD_BIN request --owner codex:zcutils-pgbench-hwm --mode soft-exclusive \
 			--sensitivity critical --priority 65 --ttl 3600 \
-			--resource "cpu=0-31;memory-bandwidth=*;port=$LEAF_PORT-$((LEAF_PORT + 1)),$PORT" \
+			--resource "cpu=0-31;memory-bandwidth=*;nic=*;port=$LEAF_PORT-$((LEAF_PORT + 1)),$((LEAF_PORT + OFI_CONTROL_PORT_OFFSET))-$((LEAF_PORT + OFI_CONTROL_PORT_OFFSET + 1)),$PORT" \
 			--note 'two-lane topology-explicit durable PostgreSQL benchmark')"
 		printf '%s\n' "$perf_result" | tee -a "$OUTDIR/coordination.log"
 		perf_token="$(token_from_result "$perf_result")"
@@ -182,6 +235,7 @@ preflight_warnings=0
 warn_preflight() {
 	printf 'zcnblk-pgbench: WARNING: %s\n' "$*" | tee -a "$OUTDIR/preflight.log" >&2
 	preflight_warnings=$((preflight_warnings + 1))
+	topology_representative=0
 }
 if [ "$coord_honored" != true ]; then
 	topology_representative=0
@@ -192,6 +246,40 @@ if [ "$hugepages_total" -eq 0 ]; then
 fi
 if [ "$memlock_kib" != unlimited ] && [ "$memlock_kib" -lt 1048576 ]; then
 	warn_preflight "memlock headroom is only ${memlock_kib} KiB; registered/fixed-buffer fast paths need a larger limit."
+fi
+if [ "$WAL_TRANSPORT" = ofi ]; then
+	[ "$OFI_CQ_SLEEP_NS" -eq 0 ] || warn_preflight "OFI CQ polling sleeps for ${OFI_CQ_SLEEP_NS} ns; low-latency transport comparison requires zero."
+	if [ "$OFI_PROVIDER" = efa ] && [ -z "$OFI_DOMAIN" ]; then
+		warn_preflight 'EFA domain/NIC mapping is implicit; set OFI_DOMAIN before treating results as representative.'
+	fi
+	env_true "$OFI_HUGETLB_CONFIRMED" || warn_preflight 'OFI registered-buffer HugeTLB policy is not confirmed.'
+	if env_true "$OFI_RMA_WRITES" && ! env_true "$OFI_RMA_SOURCE_HUGETLB_CONFIRMED"; then
+		warn_preflight 'The registered RMA source is the vmalloc_user/remap_vmalloc_range shared arena, not an explicit HugeTLB mapping; reserve pages for the leaf, but do not classify this client source path as HugeTLB-backed.'
+	fi
+	if [ "$START_LOCAL_LEAF" = 1 ] && ! env_true "$LEAF_ZCMEM_HUGETLB"; then
+		warn_preflight 'The local RMA leaf window is not MAP_HUGETLB-backed.'
+	fi
+fi
+external_leaf_cpu_map=
+external_leaf_nic_map=
+if [ "$START_LOCAL_LEAF" != 1 ]; then
+	if [ -z "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" ] || [ ! -r "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" ]; then
+		warn_preflight 'External leaf topology evidence is missing; set EXTERNAL_LEAF_TOPOLOGY_ARTIFACT to the copied leaf-host artifact.'
+	else
+		cp "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" "$OUTDIR/external-leaf-topology.log"
+		external_leaf_cpu_map="$(sed -n 's/^lane_to_worker_cpu=//p' "$OUTDIR/external-leaf-topology.log" | head -n 1)"
+		external_leaf_nic_map="$(sed -n 's/^lane_to_nic=//p' "$OUTDIR/external-leaf-topology.log" | head -n 1)"
+		[ -n "$external_leaf_cpu_map" ] || warn_preflight 'External leaf topology artifact lacks lane_to_worker_cpu mapping.'
+		if [ "$WAL_TRANSPORT" = ofi ] && [ -z "$external_leaf_nic_map" ]; then
+			warn_preflight 'External EFA leaf topology artifact lacks lane_to_nic mapping.'
+		fi
+	fi
+fi
+if ! env_true "$OWNER_INGRESS"; then
+	warn_preflight 'Stable userspace owner ingress is disabled; this run is not topology-matched to the RMA path.'
+fi
+if [ "$OWNER_PIPELINE_BATCHES" -ne 1 ]; then
+	warn_preflight 'Owner pipeline depth is not one; completion semantics are not matched to the RMA overwrite-safety contract.'
 fi
 if [ "$preflight_warnings" -ne 0 ] &&
 	(env_true "${URING_PLAY_TOPOLOGY_STRICT:-0}" || env_true "${URING_PLAY_TOPOLOGY_FATAL:-0}"); then
@@ -230,19 +318,38 @@ sudo -n chown postgres:postgres "$SOCKET_DIR"
 
 if [ "$START_LOCAL_LEAF" = 1 ]; then
 	env URING_PLAY_PIN_CPU_LIST="$LEAF_CPU_LIST" URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1 \
+		URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT="$WAL_TRANSPORT" \
+		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_PROVIDER="$OFI_PROVIDER" \
+		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ENDPOINT="$OFI_ENDPOINT" \
+		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS="$OFI_RMA_READS" \
+		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES="$OFI_RMA_WRITES" \
+		URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_HUGETLB="$LEAF_ZCMEM_HUGETLB" \
+		URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED="$OFI_HUGETLB_CONFIRMED" \
+		URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$OFI_MESSAGE_BYTES" \
+		URING_PLAY_OFI_DOMAIN="$OFI_DOMAIN" \
+		URING_PLAY_OFI_CONTROL_PORT_OFFSET="$OFI_CONTROL_PORT_OFFSET" \
+		URING_PLAY_OFI_CQ_SLEEP_NS="$OFI_CQ_SLEEP_NS" \
+		URING_PLAY_OFI_RMA_WRITE_QD="$OFI_RMA_WRITE_QD" \
+		URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE="$OFI_RMA_DELIVERY_COMPLETE" \
+		FI_EFA_USE_DEVICE_RDMA=1 \
 		URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN=1 \
 		URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC=1 \
 		"$LEAF" "zcmem:$LEAF_SIZE" "$LEAF_HOST" "$LEAF_PORT" 2 1 4096 2 true blocking \
 		>"$OUTDIR/leaf.log" 2>&1 &
 	leaf_pid=$!
 	for _ in $(seq 1 200); do
-		listeners="$(ss -H -ltn | awk -v first=":$LEAF_PORT" -v second=":$((LEAF_PORT + 1))" \
+		if [ "$WAL_TRANSPORT" = ofi ]; then
+			ready_port="$((LEAF_PORT + OFI_CONTROL_PORT_OFFSET))"
+		else
+			ready_port="$LEAF_PORT"
+		fi
+		listeners="$(ss -H -ltn | awk -v first=":$ready_port" -v second=":$((ready_port + 1))" \
 			'$4 ~ first"$" || $4 ~ second"$" {count++} END {print count + 0}')"
 		[ "$listeners" -eq 2 ] && break
 		[ -r "/proc/$leaf_pid/comm" ] || die 'leaf exited during startup'
 		sleep 0.05
 	done
-	[ "${listeners:-0}" -eq 2 ] || die 'leaf did not open both lane listeners'
+	[ "${listeners:-0}" -eq 2 ] || die 'leaf did not open both lane/control listeners'
 fi
 
 sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$OUTDIR/target.pid" \
@@ -255,7 +362,10 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$OUTDIR/target.pid" \
 	URING_PLAY_ZCNBLK_SHM_VECTOR_HWM="$VECTOR_HWM" \
 	URING_PLAY_ZCNBLK_SHM_WAL_DEBUG_STATE="$WAL_DEBUG_STATE" \
 	URING_PLAY_ZCNBLK_SHM_WAL_OWNER_DISPATCH=0 \
-	URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS=0 \
+	URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS="$OWNER_INGRESS" \
+	URING_PLAY_ZCNBLK_SHM_OWNER_COUNT="$OWNER_COUNT" \
+	URING_PLAY_ZCNBLK_SHM_OWNER_CPU_LIST="$OWNER_CPU_LIST" \
+	URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES="$OWNER_PIPELINE_BATCHES" \
 	URING_PLAY_ZCNBLK_SHM_WAL_LANE_WINDOW=4 \
 	URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1 \
 	URING_PLAY_ZCNBLK_SHM_REMOTE_RECV_POLICY=adaptive \
@@ -266,6 +376,21 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$OUTDIR/target.pid" \
 	URING_PLAY_ZCNBLK_SHM_DIRTY_PRESSURE_RESERVE=0 \
 	URING_PLAY_ZCNBLK_SHM_LEAF_ADDR="$LEAF_HOST:$LEAF_PORT" \
 	URING_PLAY_ZCNBLK_SHM_LEAF_SOURCE_ADDR="$LEAF_SOURCE_ADDR" \
+	URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT="$WAL_TRANSPORT" \
+	URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER="$OFI_PROVIDER" \
+	URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_ENDPOINT="$OFI_ENDPOINT" \
+	URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS="$OFI_RMA_READS" \
+	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES="$OFI_RMA_WRITES" \
+	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED="$OFI_RMA_WRITES_REQUIRED" \
+	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD="$OFI_RMA_WRITE_QD" \
+	URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED="$OFI_HUGETLB_CONFIRMED" \
+	URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$OFI_MESSAGE_BYTES" \
+	URING_PLAY_OFI_DOMAIN="$OFI_DOMAIN" \
+	URING_PLAY_OFI_CONTROL_PORT_OFFSET="$OFI_CONTROL_PORT_OFFSET" \
+	URING_PLAY_OFI_CQ_SLEEP_NS="$OFI_CQ_SLEEP_NS" \
+	URING_PLAY_OFI_RMA_WRITE_QD="$OFI_RMA_WRITE_QD" \
+	URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE="$OFI_RMA_DELIVERY_COMPLETE" \
+	FI_EFA_USE_DEVICE_RDMA=1 \
 	URING_PLAY_ROUTE_PROBE="${URING_PLAY_ROUTE_PROBE:-0}" \
 	URING_PLAY_EXPECT_ROUTE_DEV="${URING_PLAY_EXPECT_ROUTE_DEV:-}" \
 	URING_PLAY_EXPECT_ROUTE_SRC="${URING_PLAY_EXPECT_ROUTE_SRC:-}" \
@@ -277,9 +402,35 @@ target_job_pid=$!
 for _ in $(seq 1 200); do [ -s "$OUTDIR/target.pid" ] && break; sleep 0.05; done
 [ -s "$OUTDIR/target.pid" ] || die 'target did not publish its PID'
 target_pid="$(cat "$OUTDIR/target.pid")"
+[ -r "/proc/$target_pid/comm" ] || die 'target exited immediately after publishing its PID'
+if [ "$WAL_TRANSPORT" = ofi ]; then
+	for _ in $(seq 1 200); do
+		provider_ready=0
+		delivery_ready=0
+		windows_ready=0
+		grep -q "zcofi-endpoint-profile: provider=$OFI_PROVIDER " "$OUTDIR/target.log" && provider_ready=1
+		grep -q 'rma_write_delivery_complete=1' "$OUTDIR/target.log" && delivery_ready=1
+		if env_true "$OFI_RMA_WRITES"; then
+			rma_windows="$(grep -c '^zcnblk-shm-target-ofi-rma-write-window: lane=.* completion=initiator-delivery-cq-before-doorbell' "$OUTDIR/target.log" || true)"
+			[ "$rma_windows" -eq "$OWNER_COUNT" ] && windows_ready=1
+		else
+			windows_ready=1
+		fi
+		[ "$provider_ready" -eq 1 ] && [ "$delivery_ready" -eq 1 ] && [ "$windows_ready" -eq 1 ] && break
+		[ -r "/proc/$target_pid/comm" ] || die 'target exited during OFI negotiation'
+		sleep 0.05
+	done
+	grep -q "zcofi-endpoint-profile: provider=$OFI_PROVIDER " "$OUTDIR/target.log" || \
+		die "target did not report the requested OFI provider $OFI_PROVIDER"
+	grep -q 'rma_write_delivery_complete=1' "$OUTDIR/target.log" || \
+		die 'target OFI profile did not confirm remote-delivery RMA write completions'
+	if env_true "$OFI_RMA_WRITES"; then
+		rma_windows="$(grep -c '^zcnblk-shm-target-ofi-rma-write-window: lane=.* completion=initiator-delivery-cq-before-doorbell' "$OUTDIR/target.log" || true)"
+		[ "$rma_windows" -eq "$OWNER_COUNT" ] || \
+			die "RMA write-window negotiation covered $rma_windows lanes, expected $OWNER_COUNT"
+	fi
+fi
 
-IFS=, read -r -a kthread_cpus <<<"$KTHREAD_CPU_LIST"
-[ "${#kthread_cpus[@]}" -eq 2 ] || die 'KTHREAD_CPU_LIST must name exactly two CPUs'
 for lane in 0 1; do
 	name="zcnblk-shm-$lane-0"
 	pid="$(ps -e -o pid=,comm= | awk -v name="$name" '$2 == name {print $1}')"
@@ -292,15 +443,34 @@ for lane in 0 1; do
 	sudo -n taskset -pc "$cpu" "$pid" >>"$OUTDIR/kthreads.log"
 done
 
+if [ "$START_LOCAL_LEAF" = 1 ]; then
+	leaf_cpu_map="0:${leaf_cpus[0]},1:${leaf_cpus[1]}"
+	leaf_nic_map="0:${OFI_DOMAIN:-tcp-route},1:${OFI_DOMAIN:-tcp-route}"
+else
+	leaf_cpu_map="${external_leaf_cpu_map:-missing-see-external-leaf-topology.log}"
+	leaf_nic_map="${external_leaf_nic_map:-missing-see-external-leaf-topology.log}"
+fi
 {
 	printf 'classification=%s\ncoordination_honored=%s\n' \
 		"$([ "$START_LOCAL_LEAF" = 1 ] && printf local-shared-system || printf remote-userspace-leaf)" \
 		"$coord_honored"
 	printf 'leaf_host=%s leaf_port=%s leaf_source_addr=%s local_leaf=%s\n' \
 		"$LEAF_HOST" "$LEAF_PORT" "${LEAF_SOURCE_ADDR:-kernel-route}" "$START_LOCAL_LEAF"
+	printf 'wal_transport=%s ofi_provider=%s ofi_endpoint=%s ofi_domain=%s ofi_cq_sleep_ns=%s ofi_message_bytes=%s\n' \
+		"$WAL_TRANSPORT" "$OFI_PROVIDER" "$OFI_ENDPOINT" "${OFI_DOMAIN:-implicit}" "$OFI_CQ_SLEEP_NS" "$OFI_MESSAGE_BYTES"
+	printf 'rma_writes=%s rma_writes_required=%s rma_write_qd_per_owner=%s rma_delivery_complete=%s rma_reads=%s\n' \
+		"$OFI_RMA_WRITES" "$OFI_RMA_WRITES_REQUIRED" "$OFI_RMA_WRITE_QD" "$OFI_RMA_DELIVERY_COMPLETE" "$OFI_RMA_READS"
+	printf 'rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=%s\n' \
+		"$OFI_RMA_SOURCE_HUGETLB_CONFIRMED"
 	printf 'topology_representative=%s preflight_warnings=%s\n' "$topology_representative" "$preflight_warnings"
-	printf 'kernel_queues=%s target_cpus=%s kthread_cpus=%s leaf_cpus=%s\n' \
-		"$KERNEL_QUEUES" "$TARGET_CPU_LIST" "$KTHREAD_CPU_LIST" "$LEAF_CPU_LIST"
+	printf 'kernel_queues=%s target_cpus=%s kthread_cpus=%s leaf_cpus=%s owner_cpus=%s owner_count=%s owner_pipeline_batches=%s\n' \
+		"$KERNEL_QUEUES" "$TARGET_CPU_LIST" "$KTHREAD_CPU_LIST" "$LEAF_CPU_LIST" "$OWNER_CPU_LIST" "$OWNER_COUNT" "$OWNER_PIPELINE_BATCHES"
+	printf 'lane_to_kthread_cpu=0:%s,1:%s lane_to_ingress_worker_cpu=0:%s,1:%s owner_lane_to_worker_cpu=0:%s,1:%s leaf_lane_to_worker_cpu=%s\n' \
+		"${kthread_cpus[0]}" "${kthread_cpus[1]}" "${target_cpus[0]}" "${target_cpus[1]}" \
+		"${owner_cpus[0]}" "${owner_cpus[1]}" "$leaf_cpu_map"
+	printf 'leaf_lane_to_nic=%s external_leaf_topology_artifact=%s\n' \
+		"$leaf_nic_map" "${EXTERNAL_LEAF_TOPOLOGY_ARTIFACT:-local-leaf}"
+	printf 'placement_owner=separate-userspace-stable-extent-owner block_client_placement=no owner_ingress=%s\n' "$OWNER_INGRESS"
 	printf 'lane0_hctx=%s\n' "$(cat /sys/block/zcnblk0/mq/0/cpu_list)"
 	printf 'lane1_hctx=%s\n' "$(cat /sys/block/zcnblk0/mq/1/cpu_list)"
 	printf 'postgres_connection0_hctxs=%s postgres_connection1_hctxs=%s\n' \
@@ -312,6 +482,13 @@ done
 		printf 'write_completion=local-dirty-lease-admission; sync_completion=remote-volatile-leaf-hwm\n'
 	else
 		printf 'write_completion=local-dirty-lease-admission; sync_completion=remote-volatile-global-hwm\n'
+	fi
+	if env_true "$OFI_RMA_WRITES"; then
+		printf 'transport_write_payload_completion=initiator-delivery-cq-before-metadata-doorbell; remote_write_ack=doorbell-result-hwm; sync_fua=leaf-after-doorbell\n'
+		printf 'copy_ledger=postgres-kernel-filesystem+one-block-edge-copy-to-shared-slot+registered-shared-slot-rma-direct-to-leaf-memory+metadata-doorbell-only; end_to_end_zero_copy=no\n'
+	else
+		printf 'transport_write_payload_completion=message-send-before-remote-result; remote_write_ack=message-result-hwm; sync_fua=leaf-after-message-payload\n'
+		printf 'copy_ledger=postgres-kernel-filesystem+one-block-edge-copy-to-shared-slot+userspace-transport-message-gather+transport-provider-copy-to-leaf-memory; end_to_end_zero_copy=no\n'
 	fi
 	printf 'hugepages_total=%s memlock_kib=%s loadavg=%s\n' \
 		"$hugepages_total" "$memlock_kib" "$(cat /proc/loadavg)"
@@ -388,4 +565,31 @@ postgres_started=0
 sudo -n cp "$MOUNTPOINT/postgres.log" "$OUTDIR/postgres.log"
 sudo -n chown "$(id -u):$(id -g)" "$OUTDIR/postgres.log"
 
-awk '/^latency average|^tps =/{print FILENAME ": " $0}' "$OUTDIR"/rep*.log
+printf 'repeat\ttransport\ttps\tlatency_ms\n' >"$OUTDIR/pgbench-repeats.tsv"
+for rep in $(seq 1 "$REPEATS"); do
+	tps="$(awk '/^tps =/{print $3; exit}' "$OUTDIR/rep$rep.log")"
+	latency_ms="$(awk '/^latency average =/{print $4; exit}' "$OUTDIR/rep$rep.log")"
+	[ -n "$tps" ] && [ -n "$latency_ms" ] || die "repeat $rep lacks pgbench TPS or latency output"
+	printf '%s\t%s\t%s\t%s\n' "$rep" "$WAL_TRANSPORT" "$tps" "$latency_ms" >>"$OUTDIR/pgbench-repeats.tsv"
+done
+awk -F '\t' -v transport="$WAL_TRANSPORT" '
+	NR == 1 { next }
+	NR == 2 { min_tps=max_tps=$3; min_latency=max_latency=$4 }
+	{
+		count++
+		total_tps += $3
+		total_latency += $4
+		if ($3 < min_tps) min_tps=$3
+		if ($3 > max_tps) max_tps=$3
+		if ($4 < min_latency) min_latency=$4
+		if ($4 > max_latency) max_latency=$4
+	}
+	END {
+		mean_tps=total_tps/count
+		mean_latency=total_latency/count
+		printf "zcnblk-pgbench-summary: transport=%s repeats=%d mean_tps=%.3f min_tps=%.3f max_tps=%.3f spread_pct=%.3f mean_latency_ms=%.3f min_latency_ms=%.3f max_latency_ms=%.3f\n",
+			transport, count, mean_tps, min_tps, max_tps,
+			(max_tps-min_tps)*100/mean_tps,
+			mean_latency, min_latency, max_latency
+	}
+' "$OUTDIR/pgbench-repeats.tsv" | tee "$OUTDIR/summary.log"
