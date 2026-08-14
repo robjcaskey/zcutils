@@ -1,0 +1,125 @@
+c[?7l[2J[0mSeaBIOS (version 1.16.3-debian-1.16.3-2)
+Booting from ROM..c[?7l[2J[    0.020712] RDSEED32 is broken. Disabling the corresponding CPUID bit.
+[zcnblk-wal-vm] uname
+Linux (none) 7.2.0-rc1-io-slots-nvme #nvme1 SMP PREEMPT_DYNAMIC Thu Jul 16 08:07:47 EDT 2026 x86_64 GNU/Linux
+[zcnblk-wal-vm] starting userspace memory leaf
+[zcnblk-wal-vm] loading ABI-v6 client module inside guest
+[zcnblk-wal-vm] starting shared-memory onramp
+[zcnblk-wal-vm] target log
+zcnblk-shm-target-shared-arena: requested=vmalloc backing=kernel-vmalloc-user region_bytes=4231168 hugepage_bytes=0 import_supported=true import_active=false first_touch_cpu=0
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+zcnblk-shm-target-remote-connect: transport=tcp lane=0 address=127.0.0.1:44916->127.0.0.1:29000 tcp_nodelay=true quickack=false socket_buffer_bytes=16777216
+zcnblk-shm-target-remote-contract: lane=0 requested=0x7f negotiated=0x7f
+zcnblk-shm-target: device=/dev/zcnblk-shmctl backend=WalTcp remote_transport=tcp channels=1 ring_entries=128 payload_entries=1024 slot_bytes=4096 region_bytes=4231168 capacity_bytes=67108864 kick_batch=32 lease_release_batch=1 writeback_batch=32 read_batch=128 read_batch_fill_us=0 read_batch_fill_min=32 write_batch_fill_us=0 write_batch_fill_min=128 remote_leaf=127.0.0.1:44916->127.0.0.1:29000 cpu_list=2 owner_dispatch=false owner_count=1 owner_extent_records=256 owner_max_tx_iovecs=960 split_transport=false transport_cpu_list=inline transport_wait=adaptive poll_us=1000 busy_poll_us=1000 busy_hysteresis_us=10000 poll_clock_check_spins=64 wait_policy=fixed-active ordering=global-submit-order sync_contract=remote-leaf-hwm shared_payload_slots=true payload_ownership=legacy-contiguous-hwm placement_owner=downstream-userspace-stage block_client_placement=no representative=false 
+zcnblk-shm-target-owner-worker: lane=0 cpu=unpinned command_result_spins=0 pipeline_batches=16
+zcnblk-shm-target-summary: backend=WalTcp remote_transport=tcp channels=1 requests=124 writes=50 reads=69 syncs=5 write_bytes=204800 read_bytes=282624 wall_seconds=0.958959 active_seconds=0.053784 active_descriptor_iops=2306 active_4k_equivalent_iops=2213 active_payload_Gibitps=0.07 kicks=43 idle_polls=52 lease_releases=42 early_write_acks=49 fua_requests=1 polled_requests=0 ioprio_requests=119 registered_lease_requests=0 atomic_write_requests=0 write_lifetime_requests=49 lease_release_batch=1 writeback_batch=32 writeback_batches=4 writeback_writes=50 writeback_bytes=204800 durable_submit_hwm=91 pending_writes=0 poll_us=1000 busy_poll_us=1000 busy_hysteresis_us=10000 poll_clock_check_spins=64 completion_order=global-fifo data_order=per-sector+sync-hwm sync_contract=remote-leaf-hwm sync_boundary=remote-leaf-hwm placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-reference dirty_read_source=remote-result-payload+shared-slot-copy kernel_payload_copies=one-per-direction writeback_materialization_copies=none-userspace;tcp-kernel-copy
+zcnblk-shm-target-remote-leaf-summary: address=127.0.0.1:44916->127.0.0.1:29000 lanes=1 transport=tcp send_mode=blocking-writev recv_policy=adaptive recv_spin_hits=36 recv_blocking_fallbacks=10 recv_would_block_polls=8224 recv_grows=11 recv_shrinks=0 fan_stage=userspace placement=single-leaf write_batches=4 write_records=50 write_bytes=204800 write_payload_iovecs=50 write_payload_tx_iovecs=5 write_payload_runs=5 avg_write_iovecs_per_batch=12.50 avg_write_tx_iovecs_per_batch=1.25 avg_write_run_bytes=40960 max_write_payload_run_bytes=65536 read_batches=37 read_records=52 read_bytes=212992 rma_read_calls=0 rma_read_seconds=0.000000 avg_rma_read_us=0.000 rma_read_copy_seconds=0.000000 avg_rma_read_copy_us=0.000 syncs=5 control_writev_batches=0 send_zc_notifications=0 send_zc_copied_notifications=0 payload_source=shared-slot-coalesced-iovec read_payload_destination=remote-result-payload+shared-slot-copy rma_read_completion=not-negotiated rma_write_completion=not-negotiated result_contract=range-hwm+fifo-read-batch
+zcnblk-shm-target-remote-lane: lane=0 lane_count=1 target_cpu=unpinned incoming_cpu=3 incoming_napi_id=0 send_mode=blocking-writev recv_policy=adaptive recv_spin_budget=1024 recv_spin_hits=36 recv_blocking_fallbacks=10 recv_would_block_polls=8224 recv_grows=11 recv_shrinks=0 write_batches=4 write_records=50 write_bytes=204800 write_payload_iovecs=50 write_payload_tx_iovecs=5 write_payload_runs=5 max_write_payload_run_bytes=65536 read_batches=37 read_records=52 read_bytes=212992 rma_read_calls=0 rma_read_seconds=0.000000 avg_rma_read_us=0.000 rma_read_copy_seconds=0.000000 avg_rma_read_copy_us=0.000 syncs=5 control_writev_batches=0 send_zc_notifications=0 send_zc_copied_notifications=0 tcp_nodelay=true quickack=false request_send_calls=41 request_send_seconds=0.000638 avg_request_send_us=15.566 result_recv_calls=41 result_recv_seconds=0.001470 avg_result_recv_us=35.851 result_header_seconds=0.001406 result_descriptor_seconds=0.000015 result_payload_seconds=0.000028
+[zcnblk-wal-vm] leaf log
+PERF CONTRACT: zcnblk-wal-leaf target=zcmem:67108864 may ACK SYNC after remote volatile memory admission; process or host loss can lose acknowledged data
+zcnblk-wal-leaf: target=zcmem:67108864 transport=tcp bind=127.0.0.1 base_port=29000 ports=1 connections_per_port=1 total_connections=1 chunk_bytes=4096 workers=1 pin_workers=true submit_mode=blocking ring_entries=64 ring_cq_entries=128 cqe_hot_poll=false leaf_sqpoll=false leaf_spin_reads=false leaf_spin_policy=off leaf_spin_budget=unbounded leaf_adaptive_spin_min=off leaf_adaptive_spin_max=off leaf_adaptive_wait_ns=off leaf_adaptive_hysteresis_ns=off uninit_read_buffers=true zero_copy_strict=false result_ranges_configured=true device_bytes=67108864 required_alignment=4096 durability=volatile sync_contract=remote-volatile-retained-hwm allow_volatile_sync=true memory_policy=first-touch memory_hugetlb=false preferred_numa_node=0 protocol=fan-wal-v5
+PERF WARNING: requested SO_SNDBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+PERF WARNING: requested SO_RCVBUF=16777216 bytes via URING_PLAY_SOCKET_BUFFER_BYTES but kernel reports 8388608 bytes; raise net.core.wmem_max/net.core.rmem_max and tcp_wmem/tcp_rmem before trusting high-IOPS TCP fan context-switch numbers
+tcp-bench-uring-mux-server: accepted peer=127.0.0.1:44916 lane=0 port=29000 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment: worker=0 policy=port-lane peer=127.0.0.1:44916 listener_lane=0 listener_port=29000 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-mux-assignment-summary: policy=port-lane workers=1 streams_by_worker=0:1
+zcnblk-wal-leaf-worker: affinity_index=0 target_cpu=3 status=ok
+zcnblk-wal-leaf-stream: affinity_index=0 target_cpu=3 status=ok
+zcnblk-wal-leaf-stream: worker=0 slot=0 peer=127.0.0.1:44916 lane=0 port=29000 conn=0 incoming_cpu=2 incoming_napi_id=unknown
+zcnblk-wal-leaf-contract: worker=0 slot=0 lane=0 requested=0x7f supported=0x7f negotiated=0x7f
+zcnblk-wal-leaf-request-batch-topology: worker=0 slot=0 stream_lane=0 branch=0 records=1 batch_payload_bytes=128 desc_lane=0 desc_queue=0 desc_preferred_worker=0 desc_preferred_cpu=-1 desc_numa_node=-1 leaf_target_cpu=3 leaf_numa_node=0 leaf_affinity_applied=true result_ranges=true incoming_cpu=3
+zcnblk-wal-leaf-worker: worker=0 streams=1 read_bytes=212992 write_bytes=204800 payload_read_bytes=217856 heap_payload_bytes=13056 heap_payload_descriptor_bytes=13056 heap_payload_data_bytes=0 direct_memory_recv_bytes=204800 rma_write_payload_bytes=0 rma_write_doorbells=0 memfd_payload_bytes=0 lease_submit_bytes=0 memfd_lease_submit_bytes=0 copy_submit_bytes=0 result_records=107 result_batches=41 result_range_batches=4 frames=102 blocking_io_frames=102 uring_io_frames=0 write_submit_runs=5 max_write_submit_run_frames=16 phase_payload_read_seconds=0.000068 phase_payload_alloc_seconds=0.000006 phase_payload_recv_seconds=0.000047 phase_decode_seconds=0.000026 phase_submit_seconds=0.000050 phase_result_write_seconds=0.000418 frames_per_sec=106 seconds=0.959352 logical_MiBps=0.42 stream_thread_cpu_seconds=0.001480 stream_cpu_wall_pct=0.2 target_cpu=3 affinity_applied=true voluntary_ctxt_switches=47 involuntary_ctxt_switches=0 migrations=0
+zcnblk-wal-leaf-summary: streams=1 read_bytes=212992 write_bytes=204800 payload_read_bytes=217856 heap_payload_bytes=13056 heap_payload_descriptor_bytes=13056 heap_payload_data_bytes=0 direct_memory_recv_bytes=204800 rma_write_payload_bytes=0 rma_write_doorbells=0 rma_write_completion=delivery-cq-before-doorbell-result-hwm memfd_payload_bytes=0 lease_submit_bytes=0 memfd_lease_submit_bytes=0 copy_submit_bytes=0 phase_payload_read_seconds=0.000068 phase_payload_alloc_seconds=0.000006 phase_payload_recv_seconds=0.000047 phase_decode_seconds=0.000026 phase_submit_seconds=0.000050 phase_result_write_seconds=0.000418 result_records=107 result_batches=41 result_range_batches=4 frames=102 blocking_io_frames=102 uring_io_frames=0 write_submit_runs=5 max_write_submit_run_frames=16 stream_thread_cpu_seconds=0.001480 stream_cpu_wall_ratio=0.001 voluntary_ctxt_switches=47 involuntary_ctxt_switches=0 migrations=0 frames_per_sec=102
+zcnblk-wal-leaf: bytes=417792 seconds=1.003877 GiBps=0.000 Gbitps=0.003
+[zcnblk-wal-vm] order log
+zcnblk-order-smoke: PASS target=/dev/zcnblk0 pairs=16 uring_dependency=io-link read_before_write=old-value write_before_read=new-value sync_terminal_state=true cross_lane_same_sector=skipped cross_lane_cpus=unavailable
+[zcnblk-wal-vm] contract log
+zcnblk-contract-smoke: PASS target=/dev/zcnblk0 block=7 fua=RWF_DSYNC ioprio=0x4001 write_lifetime=inode-short readback=true
+[zcnblk-wal-vm] attached kernel state
+online=1 transport=shm total_conns=1 active_conns=1
+shm=1 daemon_online=1 daemon_generation=1 global_submit_sequence=0 ring_entries=128 payload_entries=1024 transfer_payload_slots=0 arena_backing=vmalloc-user region_bytes=4231168
+conn=0 lane=0 stream=0 failed=0 pending=0 inflight_count=0 inflight_slots=0 req_prod=0 req_cons=0 req_used=0 admitted_tail=0 flush_tail=0 flush_epoch=0 comp_prod=0 comp_cons=0 comp_ready=0 next_comp_sequence=0 next_req_slot=0 next_req_slot_busy=0 payload_free_slots=1024 payload_lease_hwm=0 request_wake_armed=1 completion_wake_armed=1 request_publishes=0 request_kicks=0 completion_kicks=0 has_capacity=1
+[zcnblk-wal-vm] recent kernel log
+[    0.076494] pci_bus 0000:00: resource 7 [mem 0x80000000-0xfebfffff window]
+[    0.076495] pci_bus 0000:00: resource 8 [mem 0x100000000-0x17fffffff window]
+[    0.076515] pci 0000:00:01.0: PIIX3: Enabling Passive Release
+[    0.076526] pci 0000:00:00.0: Limiting direct PCI/PCI transfers
+[    0.076566] PCI: CLS 0 bytes, default 64
+[    0.076650] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x3dfb5c5b649, max_idle_ns: 440795282177 ns
+[    0.076677] Trying to unpack rootfs image as initramfs...
+[    0.076852] Initialise system trusted keyrings
+[    0.076864] Key type blacklist registered
+[    0.076915] workingset: timestamp_bits=36 (anon: 31) max_order=19 bucket_order=0 (anon: 0)
+[    0.077011] fuse: init (API version 7.45)
+[    0.077156] integrity: Platform Keyring initialized
+[    0.077160] integrity: Machine keyring initialized
+[    0.080586] Freeing initrd memory: 18924K
+[    0.080842] Key type asymmetric registered
+[    0.080844] Asymmetric key parser 'x509' registered
+[    0.080861] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 245)
+[    0.080919] io scheduler mq-deadline registered
+[    0.081105] ledtrig-cpu: registered to indicate activity on CPUs
+[    0.081449] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[    0.081840] 00:03: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16550A
+[    0.082733] i8042: PNP: PS/2 Controller [PNP0303:KBD,PNP0f13:MOU] at 0x60,0x64 irq 1,12
+[    0.083432] serio: i8042 KBD port at 0x60,0x64 irq 1
+[    0.083438] serio: i8042 AUX port at 0x60,0x64 irq 12
+[    0.083510] mousedev: PS/2 mouse device common for all mice
+[    0.083537] rtc_cmos PNP0B00:00: RTC can wake from S4
+[    0.084031] rtc_cmos PNP0B00:00: registered as rtc0
+[    0.084126] rtc_cmos PNP0B00:00: setting system clock to 2026-08-12T22:59:27 UTC (1786575567)
+[    0.084187] rtc_cmos PNP0B00:00: alarms up to one day, y3k, 242 bytes nvram, hpet irqs
+[    0.084198] amd_pstate: The CPPC feature is supported but currently disabled by the BIOS.
+[    0.084198] Please enable it if your BIOS has the CPPC option.
+[    0.084199] amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled
+[    0.084311] NET: Registered PF_INET6 protocol family
+[    0.084743] input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input0
+[    0.084793] Segment Routing with IPv6
+[    0.084807] In-situ OAM (IOAM) with IPv6
+[    0.084849] mip6: Mobile IPv6
+[    0.084858] NET: Registered PF_PACKET protocol family
+[    0.084931] mpls_gso: MPLS GSO support
+[    0.085355] IPI shorthand broadcast: enabled
+[    0.085997] sched_clock: Marking stable (82791773, 2466845)->(88610174, -3351556)
+[    0.086113] registered taskstats version 1
+[    0.086203] Loading compiled-in X.509 certificates
+[    0.086449] Loaded X.509 cert 'Build time autogenerated kernel key: 97356056667abe0b0674ef7d83308a27da237f7d'
+[    0.087124] Demotion targets for Node 0: null
+[    0.087193] Key type .fscrypt registered
+[    0.087195] Key type fscrypt-provisioning registered
+[    0.087668] Key type encrypted registered
+[    0.087671] AppArmor: AppArmor sha256 policy hashing enabled
+[    0.087673] ima: No TPM chip found, activating TPM-bypass!
+[    0.087675] ima: Allocated hash algorithm: sha256
+[    0.087696] ima: No architecture policies found
+[    0.087711] evm: Initialising EVM extended attributes:
+[    0.087712] evm: security.selinux
+[    0.087713] evm: security.SMACK64 (disabled)
+[    0.087714] evm: security.SMACK64EXEC (disabled)
+[    0.087714] evm: security.SMACK64TRANSMUTE (disabled)
+[    0.087715] evm: security.SMACK64MMAP (disabled)
+[    0.087715] evm: security.apparmor
+[    0.087715] evm: security.ima
+[    0.087715] evm: security.capability
+[    0.087716] evm: HMAC attrs: 0x1
+[    0.087768] RAS: Correctable Errors collector initialized.
+[    0.087864] clk: Disabling unused clocks
+[    0.087867] PM: genpd: Disabling unused power domains
+[    0.088541] Freeing unused decrypted memory: 2036K
+[    0.088882] Freeing unused kernel image (initmem) memory: 4404K
+[    0.088894] Write protecting the kernel read-only data: 32768k
+[ [    3.478412] reboot: Power down
+   0.089136] Freeing unused kernel image (text/rodata gap) memory: 1892K
+[    0.089303] Freeing unused kernel image (rodata/data gap) memory: 1684K
+[    0.105028] x86/mm: Checked W+X mappings: passed, no W+X pages found.
+[    0.105033] Run /init as init process
+[    0.105034]   with arguments:
+[    0.105035]     /init
+[    0.105035]   with environment:
+[    0.105035]     HOME=/
+[    0.105036]     TERM=linux
+[    1.115272] zcnblk_client_mod: loading out-of-tree module taints kernel.
+[    1.115283] zcnblk_client_mod: module verification failed: signature and/or required key missing - tainting kernel
+[    1.116360] zcnblk: /dev/zcnblk0 transport=shm remote=127.0.0.1 remote_ips=- remote_count=0 port_base=19600 lanes=1 connections_per_lane=1 total_conns=1 shards=1 bytes=67108864 frame=4096 queues=1 depth=128 pipeline_depth=128 batch_depth=1 batch_fill_timeout_us=0 fill_timeout_ms=0 write_acks=0 null_backend=0 null_read_zero=1 hctx_affinity=1 pin_threads=1 pin_base_cpu=1 pin_cpu_count=1 pin_stride=1 shard_affinity=0 encryption=none aes_frame=65536 publish_delay_ms=0 shm_ring_entries=128 shm_payload_entries=1024 shm_region_bytes=4231168 shm_poll_us=50 placement_owner=userspace block_client_placement=no
+[zcnblk-wal-vm] PASS: abi-v6 read-write-fua-sync-order contract=0x7f arena=vmalloc lane_batch=0

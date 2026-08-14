@@ -1,0 +1,17 @@
+{
+  "commands": [
+    "gcloud compute instances create zcutils-h4d-rdma-20260813t115943z-00 --project rob-adhoc-81326 --zone us-central1-a --machine-type h4d-standard-192 --provisioning-model=SPOT --image-family=hpc-rocky-linux-8 --image-project=cloud-hpc-image-public --boot-disk-size=64GB --boot-disk-auto-delete --no-deletion-protection --format=json --boot-disk-type=hyperdisk-balanced --network-interface=nic-type=GVNIC,network=default,subnet=default,stack-type=IPV4_ONLY --network-interface=nic-type=IRDMA,network=zcutils-h4d-rdma-20260813t115943z-falcon,subnet=zcutils-h4d-rdma-20260813t115943z-falcon-sub,stack-type=IPV4_ONLY,no-address --resource-policies=zcutils-h4d-rdma-20260813t115943z-compact --maintenance-policy=TERMINATE --labels=adhoc=true,adhoc_run_id=zcutils-h4d-rdma-20260813t115943z,topology=compact-rdma --metadata=adhoc_estimated_total_cost_usd=5.497200,adhoc_hourly_instance_price_usd=3.29832,adhoc_max_total_cost_usd=6,bulk_traffic_policy=irdma-same-zone-only,control_plane=gvnic-public-ssh --instance-termination-action=DELETE --max-run-duration=3000s",
+    "gcloud compute instances create zcutils-h4d-rdma-20260813t115943z-01 --project rob-adhoc-81326 --zone us-central1-a --machine-type h4d-standard-192 --provisioning-model=SPOT --image-family=hpc-rocky-linux-8 --image-project=cloud-hpc-image-public --boot-disk-size=64GB --boot-disk-auto-delete --no-deletion-protection --format=json --boot-disk-type=hyperdisk-balanced --network-interface=nic-type=GVNIC,network=default,subnet=default,stack-type=IPV4_ONLY --network-interface=nic-type=IRDMA,network=zcutils-h4d-rdma-20260813t115943z-falcon,subnet=zcutils-h4d-rdma-20260813t115943z-falcon-sub,stack-type=IPV4_ONLY,no-address --resource-policies=zcutils-h4d-rdma-20260813t115943z-compact --maintenance-policy=TERMINATE --labels=adhoc=true,adhoc_run_id=zcutils-h4d-rdma-20260813t115943z,topology=compact-rdma --metadata=adhoc_estimated_total_cost_usd=5.497200,adhoc_hourly_instance_price_usd=3.29832,adhoc_max_total_cost_usd=6,bulk_traffic_policy=irdma-same-zone-only,control_plane=gvnic-public-ssh --instance-termination-action=DELETE --max-run-duration=3000s"
+  ],
+  "dry_run": true,
+  "effective_max_runtime_seconds": 3000,
+  "instance_termination_action": "DELETE",
+  "instances": [
+    "zcutils-h4d-rdma-20260813t115943z-00",
+    "zcutils-h4d-rdma-20260813t115943z-01"
+  ],
+  "project": "rob-adhoc-81326",
+  "requested_max_runtime_seconds": 3000,
+  "run_id": "zcutils-h4d-rdma-20260813t115943z",
+  "zone": "us-central1-a"
+}

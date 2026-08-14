@@ -222,16 +222,46 @@ imds_value() {
 		"http://169.254.169.254/latest/meta-data/$path" 2>/dev/null || true
 }
 
+gce_metadata_value() {
+	local path="$1"
+	curl -fsS --connect-timeout 1 \
+		-H 'Metadata-Flavor: Google' \
+		"http://metadata.google.internal/computeMetadata/v1/instance/$path" \
+		2>/dev/null || true
+}
+
+metadata_basename() {
+	local value="$1"
+	printf '%s\n' "${value##*/}"
+}
+
 write_bootstrap_manifest() {
-	local tmp git_head instance_id instance_type az
+	local tmp git_head cloud_provider instance_id instance_type az project_id
 	mkdir -p "$(dirname "$MANIFEST_PATH")"
 	tmp="${MANIFEST_PATH}.tmp.$$"
 	git_head="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || printf dirty-or-unversioned)"
 	instance_id="$(imds_value instance-id)"
 	instance_type="$(imds_value instance-type)"
 	az="$(imds_value placement/availability-zone)"
+	project_id=
+	if [ -n "$instance_id" ]; then
+		cloud_provider=ec2
+	else
+		instance_id="$(gce_metadata_value id)"
+		instance_type="$(metadata_basename "$(gce_metadata_value machine-type)")"
+		az="$(metadata_basename "$(gce_metadata_value zone)")"
+		project_id="$(curl -fsS --connect-timeout 1 \
+			-H 'Metadata-Flavor: Google' \
+			http://metadata.google.internal/computeMetadata/v1/project/project-id \
+			2>/dev/null || true)"
+		if [ -n "$instance_id" ]; then
+			cloud_provider=gce
+		else
+			cloud_provider=unknown
+		fi
+	fi
 	{
-		printf 'manifest_version=1\n'
+		printf 'manifest_version=2\n'
 		printf 'bootstrapped_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 		printf 'host=%s\n' "$(hostname)"
 		printf 'kernel=%s\n' "$(uname -r)"
@@ -239,9 +269,11 @@ write_bootstrap_manifest() {
 		printf 'rustc=%s\n' "$(rustc -V 2>/dev/null | tr ' ' '_' || printf unavailable)"
 		printf 'cargo=%s\n' "$(cargo -V 2>/dev/null | tr ' ' '_' || printf unavailable)"
 		printf 'git_head=%s\n' "$git_head"
-		printf 'instance_id=%s\n' "${instance_id:-not-ec2}"
-		printf 'instance_type=%s\n' "${instance_type:-not-ec2}"
-		printf 'availability_zone=%s\n' "${az:-not-ec2}"
+		printf 'cloud_provider=%s\n' "$cloud_provider"
+		printf 'cloud_project=%s\n' "${project_id:-unknown}"
+		printf 'instance_id=%s\n' "${instance_id:-unknown}"
+		printf 'instance_type=%s\n' "${instance_type:-unknown}"
+		printf 'availability_zone=%s\n' "${az:-unknown}"
 		printf 'online_cpus=%s\n' "$(nproc)"
 		printf 'numa_nodes=%s\n' "$(find /sys/devices/system/node -maxdepth 1 -type d -name 'node[0-9]*' | wc -l)"
 		printf 'hugepages=%s\n' "$(cat /proc/sys/vm/nr_hugepages 2>/dev/null || printf 0)"
@@ -249,7 +281,7 @@ write_bootstrap_manifest() {
 		printf 'coordination_scope=dedicated-adhoc-instance\n'
 		printf 'coordination_honored=true\n'
 		printf 'cloud_daily_budget_usd=%s\n' "${ZCUTILS_CLOUD_DAILY_BUDGET_USD:-20}"
-		printf 'bulk_traffic_policy=private-ip-same-az-only\n'
+		printf 'bulk_traffic_policy=private-ip-same-zone-only\n'
 		printf 'public_ip_policy=control-only-one-per-node\n'
 		for iface in /sys/class/net/*; do
 			iface="${iface##*/}"

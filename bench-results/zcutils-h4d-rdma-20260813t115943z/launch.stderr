@@ -1,0 +1,10 @@
+command failed: WARNING: Some requests generated warnings:
+ - You are creating a global DNS VM. VM instances using global DNS are vulnerable to cross-regional outages. To reduce the risk of widespread service disruption, use zonal DNS instead. Learn more at https://cloud.google.com/compute/docs/networking/zonal-dns?utm_id=vm-insert
+
+ERROR: (gcloud.compute.instances.create) Could not fetch resource:
+ - Quota 'CPUS_ALL_REGIONS' exceeded.  Limit: 32.0 globally.
+	metric name = compute.googleapis.com/cpus_all_regions
+	limit name = CPUS-ALL-REGIONS-per-project
+	limit = 32.0
+	dimensions = global: global
+Try your request in another zone, or view documentation on how to increase quotas: https://cloud.google.com/compute/quotas.

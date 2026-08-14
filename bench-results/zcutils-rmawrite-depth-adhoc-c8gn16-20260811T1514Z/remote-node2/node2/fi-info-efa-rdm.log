@@ -1,0 +1,381 @@
+# FI_PREFER_SYSCONFIG: Boolean (0/1, on/off, true/false, yes/no)
+# Prefer system configured variables when loading the environment and variables are defined in both the system config (libfabric.conf) and in runtime environment. (default: false)
+
+# FI_LOG_INTERVAL: Integer
+# Delay in ms between rate limited log messages (default 2000)
+
+# FI_LOG_LEVEL: String
+# Specify logging level: warn, trace, info, debug (default: warn)
+
+# FI_LOG_PROV: String
+# Specify specific provider to log (default: all)
+
+# FI_LOG_SUBSYS: String
+# Specify specific subsystem to log (default: all)
+
+# FI_PERF_CNTR: String
+# Performance counter to analyze (default: cpu_instr). Options: cpu_instr, cpu_cycles.
+
+# FI_HOOK: String
+# Intercept calls to underlying provider and apply the specified functionality to them.  Hook option: perf (gather performance data)
+
+# FI_HMEM: String
+# List of hmem interfaces to attempt to initialize (default: all available interfaces)
+
+# FI_HMEM_CUDA_USE_GDRCOPY: Boolean (0/1, on/off, true/false, yes/no)
+# Use gdrcopy to copy data to/from CUDA GPU memory. If libfabric is not compiled with gdrcopy support, this variable is not checked. (default: true)
+
+# FI_HMEM_CUDA_USE_DMABUF: Boolean (0/1, on/off, true/false, yes/no)
+# Use dma-buf for sharing buffer with hardware. (default:true)
+
+# FI_HMEM_DISABLE_P2P: Boolean (0/1, on/off, true/false, yes/no)
+# Disable peer to peer support between device memory and network devices. (default: no).
+
+# FI_MR_CACHE_MAX_SIZE: size_t
+# Defines the total number of bytes for all memory regions that may be tracked by the MR cache. Setting this will reduce the amount of memory not actively in use that may be registered. (default: total memory / number of cpu cores / 2)
+
+# FI_MR_CACHE_MAX_COUNT: size_t
+# Defines the total number of memory regions that may be store in the cache.  Setting this will reduce the number of registered regions, regardless of their size, stored in the cache.  Setting this to zero will disable MR caching.  (default: 1024)
+
+# FI_MR_CACHE_MONITOR: String
+# Define a default memory registration monitor. The monitor checks for virtual to physical memory address changes.  Options are: userfaultfd, memhooks kdreg2, and disabled.  Userfaultfd is a Linux kernel feature. Memhooks operates by intercepting memory allocation and free calls. kdreg2 is a supplied as a loadable Linux kernel module. Userfaultfd is the default if available on the system. 'disabled' option disables memory caching.
+
+# FI_MR_CUDA_CACHE_MONITOR_ENABLED: Boolean (0/1, on/off, true/false, yes/no)
+# Enable or disable the CUDA cache memory monitor.Enabled by default.
+
+# FI_MR_ROCR_CACHE_MONITOR_ENABLED: Boolean (0/1, on/off, true/false, yes/no)
+# Enable or disable the ROCR cache memory monitor. Enabled by default.
+
+# FI_MR_ZE_CACHE_MONITOR_ENABLED: Boolean (0/1, on/off, true/false, yes/no)
+# Enable or disable the oneAPI Level Zero cache memory monitor.  Enabled by default.
+
+# FI_PROVIDER: String
+# Only use specified provider (default: all available)
+
+# FI_FORK_UNSAFE: Boolean (0/1, on/off, true/false, yes/no)
+# Whether use of fork() may be unsafe for some providers (default: no). Setting this to yes could improve performance at the expense of making fork() potentially unsafe
+
+# FI_UNIVERSE_SIZE: size_t
+# Defines the maximum number of processes that will be used by distribute OFI application. The provider uses this to optimize resource allocations (default: provider specific)
+
+# FI_AV_REMOVE_CLEANUP: Boolean (0/1, on/off, true/false, yes/no)
+# When true, release any underlying resources, such as hidden connections when removing an entry from an AV.  This can help save resources on AV entries that reference a peer which is no longer active.  However, it may abruptly terminate data transfers from peers that are active at the time their address is removed from the local AV.  (default: false)
+
+# FI_OFFLOAD_COLL_PROVIDER: String
+# The name of a colective offload provider (default: 			empty - no provider)
+
+# FI_PROVIDER_PATH: String
+# Search for providers in specific path.  Path is specified similar to dir1:dir2:dir3.  If the path starts with @, loaded providers are given preference based on discovery order, rather than version. Optionally any of the dir can be replaced with + followed by the full path to a provider library, which specifies a preferred provider.  If registered successfully, a preferred provider has priority over other providers with the same name. (default: /opt/amazon/efa/lib/libfabric)
+
+# FI_SHM_SAR_THRESHOLD: size_t
+# shm: Max size to use for alternate SAR protocol if CMA 			 is not available before switching to mmap protocol 			 Default: SIZE_MAX (18446744073709551615)
+
+# FI_SHM_TX_SIZE: size_t
+# shm: Max number of outstanding tx operations 			 Default: 1024
+
+# FI_SHM_RX_SIZE: size_t
+# shm: Max number of outstanding rx operations 			 Default: 1024
+
+# FI_SHM_DISABLE_CMA: Boolean (0/1, on/off, true/false, yes/no)
+# shm: Manually disables CMA. Default: false
+
+# FI_SHM_USE_DSA_SAR: Boolean (0/1, on/off, true/false, yes/no)
+# shm: Enable use of DSA in SAR protocol. Default: false
+
+# FI_SHM_USE_XPMEM: Boolean (0/1, on/off, true/false, yes/no)
+# shm: Enable XPMEM over CMA when possible (default: false)
+
+# FI_OFI_RXM_BUFFER_SIZE: size_t
+# ofi_rxm: Defines the allocated buffer size used for bounce buffers, including buffers posted at the receive side to handle unexpected messages.  This value corresponds to the rxm inject limit, and is also typically used as the eager message size. (default 16384)
+
+# FI_OFI_RXM_COMP_PER_PROGRESS: Integer
+# ofi_rxm: Defines the maximum number of MSG provider CQ entries (default: 1) that would be read per progress (RxM CQ read).
+
+# FI_OFI_RXM_SAR_LIMIT: size_t
+# ofi_rxm: Specifies the maximum size transfer that the SAR Segmentation And Reassembly) protocol For transfers smaller than SAR, data may be copied into multiple bounce buffers on the transmit side and received into bounce buffers at the receiver. The sar_limit value must be greater than the eager_limit to take effect.  (default 131072).
+
+# FI_OFI_RXM_USE_SRX: Boolean (0/1, on/off, true/false, yes/no)
+# ofi_rxm: Set this environment variable to control the RxM receive path. If this variable set to 1 (default: 0), the RxM uses Shared Receive Context. This mode improves memory consumption, but it may increase small message latency as a side-effect.
+
+# FI_OFI_RXM_TX_SIZE: size_t
+# ofi_rxm: Defines default tx context size (default: 2048).
+
+# FI_OFI_RXM_RX_SIZE: size_t
+# ofi_rxm: Defines default rx context size (default: 2048).
+
+# FI_OFI_RXM_MSG_TX_SIZE: size_t
+# ofi_rxm: Defines FI_EP_MSG tx size that would be requested (default: 128).
+
+# FI_OFI_RXM_MSG_RX_SIZE: size_t
+# ofi_rxm: Defines FI_EP_MSG rx or srx size that would be requested. (default: 128, 4096 with srx
+
+# FI_OFI_RXM_CM_PROGRESS_INTERVAL: Integer
+# ofi_rxm: Defines the number of microseconds to wait between function calls to the connection management progression functions during fi_cq_read calls. Higher values may decrease noise during cq polling, but may result in longer connection establishment times. (default: 10000).
+
+# FI_OFI_RXM_CQ_EQ_FAIRNESS: Integer
+# ofi_rxm: Defines the maximum number of message provider CQ entries that can be consecutively read across progress calls without checking to see if the CM progress interval has been reached. (default: 128).
+
+# FI_OFI_RXM_DATA_AUTO_PROGRESS: Boolean (0/1, on/off, true/false, yes/no)
+# ofi_rxm: Force auto-progress for data transfers even if app requested manual progress (default: false/no).
+
+# FI_OFI_RXM_USE_RNDV_WRITE: Boolean (0/1, on/off, true/false, yes/no)
+# ofi_rxm: Set this environment variable to control the  RxM Rendezvous protocol.  If set (1), RxM will use RMA writes rather than RMA reads during Rendezvous transactions. (default: false/no).
+
+# FI_OFI_RXM_ENABLE_DIRECT_SEND: Boolean (0/1, on/off, true/false, yes/no)
+# ofi_rxm: Enable support to pass application buffers directly to the core provider when possible.  This avoids copying application buffers through bounce buffers before passing them to the core provider.  This feature targets small to medium size message transfers over the tcp provider.  (default: true)
+
+# FI_OFI_RXM_ENABLE_PASSTHRU: Boolean (0/1, on/off, true/false, yes/no)
+# ofi_rxm: Enable passthru optimization.  Pass thru allows rxm to pass all data transfer calls directly to the core provider, which eliminates the rxm protocol and related overhead.  Pass thru is an optimized path to the tcp provider, depending on the capabilities requested by the application.
+
+# FI_OFI_RXM_DETECT_HMEM_IFACE: Boolean (0/1, on/off, true/false, yes/no)
+# ofi_rxm: Detect iface for user buffers with NULL desc passed in. This allows such buffers be copied or registered internally by RxM. (default: false).
+
+# FI_OFI_RXM_RESCAN: Boolean (0/1, on/off, true/false, yes/no)
+# ofi_rxm: Force or disable rescanning for network interface changes. Setting this to true will force rescanning on each fi_getinfo() invocation; setting it to false will disable rescanning. (default: unset)
+
+# FI_OFI_RXM_DEF_WAIT_OBJ: String
+# ofi_rxm: Specifies the default wait object used for blocking operations (e.g. fi_cq_sread).  Supported values are: fd and pollfd (default: fd).
+
+# FI_OFI_RXM_DEF_TCP_WAIT_OBJ: String
+# ofi_rxm: See def_wait_obj for description.  If set, this overrides the def_wait_obj when running over the tcp provider.  See def_wait_obj for valid values. (default: UNSPEC, tcp provider will select).
+
+# FI_OFI_MRAIL_CONFIG: String
+# ofi_mrail: Comma separated list of '<max_size>:<policy>' pairs, with <max_size> in ascending order and <policy> being fixed, round-robin, or striping
+
+# FI_OFI_MRAIL_ADDR_STRC: String
+# ofi_mrail: Deprecated. Replaced by FI_OFI_MRAIL_ADDR.
+
+# FI_OFI_MRAIL_ADDR: String
+# ofi_mrail: Comma separated list of rail addresses (FI_ADDR_STR, host name, IP address, or netdev interface name)
+
+# FI_EFA_USE_DEVICE_RDMA: Boolean (0/1, on/off, true/false, yes/no)
+# efa: Specifies whether to use device's RDMA functionality for one-sided and two-sided transfers if supported by the EFA device on the instance.
+
+# FI_EFA_IFACE: String
+# efa: A comma delimited list of case-sensitive names to restrict eligible EFA NICs (Default: all).
+
+# FI_EFA_TX_MIN_CREDITS: Integer
+# efa: Defines the minimum number of credits a sender requests from a receiver (Default: 32).
+
+# FI_EFA_TX_QUEUE_SIZE: Integer
+# efa: Defines the maximum number of unacknowledged sends with the NIC.
+
+# FI_EFA_ENABLE_SHM_TRANSFER: Integer
+# efa: Enable using SHM provider to perform TX/RX operations between processes on the same system. (Default: 1)
+
+# FI_EFA_USE_ZCPY_RX: Integer
+# efa: Enables the use of application's receive buffers in place of bounce-buffers when feasible. (Default: 1)
+
+# FI_EFA_ZCPY_RX_SEED: Integer
+# efa: Defines the number of bounce-buffers the provider will prepost during EP initialization.  (Default: 0)
+
+# FI_EFA_SHM_AV_SIZE: Integer
+# efa: Defines the maximum number of entries in SHM provider's address vector (Default 128).
+
+# FI_EFA_RECVWIN_SIZE: Integer
+# efa: Defines the size of sliding receive window. (Default: 16384)
+
+# FI_EFA_READCOPY_POOL_SIZE: Integer
+# efa: Defines the size of readcopy packet pool size. (Default: 256)
+
+# FI_EFA_CQ_SIZE: Integer
+# efa: Define the size of completion queue. (Default: 8192)
+
+# FI_EFA_MR_CACHE_ENABLE: Boolean (0/1, on/off, true/false, yes/no)
+# efa: Enables using the mr cache and in-line registration instead of a bounce buffer for iov's larger than max_memcpy_size. Defaults to true. When disabled, only uses a bounce buffer.
+
+# FI_EFA_MR_MAX_CACHED_COUNT: size_t
+# efa: Sets the maximum number of memory registrations that can be cached at any time.
+
+# FI_EFA_MR_MAX_CACHED_SIZE: size_t
+# efa: Sets the maximum amount of memory that cached memory registrations can hold onto at any time.
+
+# FI_EFA_MAX_MEMCPY_SIZE: size_t
+# efa: Threshold size switch between using memory copy into a pre-registered bounce buffer and memory registration on the user buffer. (Default: 4096)
+
+# FI_EFA_TX_SIZE: size_t
+# efa: Set the maximum number of transmit operations before the provider returns -FI_EAGAIN. For only the RDM endpoint, this parameter will cause transmit operations to be queued when this value is set higher than the default and the transmit queue is full.
+
+# FI_EFA_RX_SIZE: size_t
+# efa: Set the maximum number of receive operations before the provider returns -FI_EAGAIN.
+
+# FI_EFA_RX_COPY_UNEXP: Boolean (0/1, on/off, true/false, yes/no)
+# efa: Enables the use of a separate pool of bounce-buffers to copy unexpected messages out of the pre-posted receive buffers. (Default: 1)
+
+# FI_EFA_RX_COPY_OOO: Boolean (0/1, on/off, true/false, yes/no)
+# efa: Enables the use of a separate pool of bounce-buffers to copy out-of-order RTM packets out of the pre-posted receive buffers. (Default: 1)
+
+# FI_EFA_MAX_TIMEOUT: Integer
+# efa: Set the maximum timeout (us) for backoff to a peer after a receiver not ready error. (Default: 1000000)
+
+# FI_EFA_TIMEOUT_INTERVAL: Integer
+# efa: Set the time interval (us) for the base timeout to use for exponential backoff to a peer after a receiver not ready error. (Default: 0 [random])
+
+# FI_EFA_EFA_CQ_READ_SIZE: size_t
+# efa: Set the number of EFA completion entries to read for one loop for one iteration of the progress engine. (Default: 50)
+
+# FI_EFA_SHM_CQ_READ_SIZE: size_t
+# efa: Set the number of SHM completion entries to read for one loop for one iteration of the progress engine. (Default: 50)
+
+# FI_EFA_INTER_MAX_MEDIUM_MESSAGE_SIZE: Integer
+# efa: The maximum message size for inter EFA medium message protocol (Default 65536).
+
+# FI_EFA_INTER_MIN_READ_MESSAGE_SIZE: Integer
+# efa: The minimum message size in bytes for inter EFA read message protocol. If instance support RDMA read, messages whose size is larger than this value will be sent by read message protocol (Default 1048576).
+
+# FI_EFA_INTER_MAX_GDRCOPY_MESSAGE_SIZE: Integer
+# efa: The maximum message size to use gdrcopy. If instance support gdrcopy, messages whose size is smaller than this value will be sent by eager/longcts protocol (Default 32768).
+
+# FI_EFA_INTER_MIN_READ_WRITE_SIZE: Integer
+# efa: The mimimum message size for inter EFA write to use read write protocol. If firmware support RDMA read, and FI_EFA_USE_DEVICE_RDMA is 1, write requests whose size is larger than this value will use the read write protocol (Default 65536). If the efa device supports RDMA write, device RDMA write will always be used.
+
+# FI_EFA_INTER_READ_SEGMENT_SIZE: Integer
+# efa: Calls to RDMA read is segmented using this value.
+
+# FI_EFA_FORK_SAFE: Boolean (0/1, on/off, true/false, yes/no)
+# efa: Enables fork support and disables internal usage of huge pages. Has no effect on kernels which set copy-on-fork for registered pages, generally 5.13 and later. (Default: false)
+
+# FI_EFA_RUNT_SIZE: Integer
+# efa: The maximum number of bytes that will be eagerly sent by inflight messages uses runting read message protocol (Default 307200).
+
+# FI_EFA_USE_SM2: Boolean (0/1, on/off, true/false, yes/no)
+# efa: Use the experimental shared memory provider SM2 for intra node communication.
+
+# FI_EFA_USE_HUGE_PAGE: Boolean (0/1, on/off, true/false, yes/no)
+# efa: Whether EFA provider can use huge page memory for internal buffer. Using huge page memory has a small performance advantage, but can cause system to run out of huge page memory. By default, EFA provider will use huge page unless FI_EFA_FORK_SAFE is set to 1/on/true.
+
+# FI_EFA_USE_UNSOLICITED_WRITE_RECV: Boolean (0/1, on/off, true/false, yes/no)
+# efa: Use device's unsolicited write recv functionality when it's available. (Default: true)
+
+# FI_EFA_INTERNAL_RX_REFILL_THRESHOLD: size_t
+# efa: The threshold that EFA provider will refill the internal rx pkt pool. (Default: 8)
+
+# FI_EFA_USE_DATA_PATH_DIRECT: Boolean (0/1, on/off, true/false, yes/no)
+# efa: Use the direct data path implementation that bypasses rdma-core on data path, includingthe CQ polling and TX/RX submissions, when it's available. Setting this variable as 0will disable this feature (Default: 1)
+
+# FI_EFA_IMPLICIT_AV_SIZE: size_t
+# efa: The maximum size of the implicit AV used to store AV entries of peers that were not explicitly inserted into the AV by the application. Setting this variable to a positive value will enforce the the maximum size. Setting this value to 0 will allow unbounded growth of the implicit AV. (Default: 0)
+
+# FI_UDP_IFACE: String
+# udp: Specify interface name
+
+# FI_SOCKETS_PE_WAITTIME: Integer
+# sockets: How many milliseconds to spin while waiting for progress
+
+# FI_SOCKETS_CONN_TIMEOUT: Integer
+# sockets: How many milliseconds to wait for one connection establishment
+
+# FI_SOCKETS_MAX_CONN_RETRY: Integer
+# sockets: Number of connection retries before reporting as failure
+
+# FI_SOCKETS_DEF_CONN_MAP_SZ: Integer
+# sockets: Default connection map size
+
+# FI_SOCKETS_DEF_AV_SZ: Integer
+# sockets: Default address vector size
+
+# FI_SOCKETS_DEF_CQ_SZ: Integer
+# sockets: Default completion queue size
+
+# FI_SOCKETS_DEF_EQ_SZ: Integer
+# sockets: Default event queue size
+
+# FI_SOCKETS_PE_AFFINITY: String
+# sockets: If specified, bind the progress thread to the indicated range(s) of Linux virtual processor ID(s). This option is currently not supported on OS X and Windows. Usage: id_start[-id_end[:stride]][,]
+
+# FI_SOCKETS_KEEPALIVE_ENABLE: Boolean (0/1, on/off, true/false, yes/no)
+# sockets: Enable keepalive support
+
+# FI_SOCKETS_KEEPALIVE_TIME: Integer
+# sockets: Idle time in seconds before sending the first keepalive probe
+
+# FI_SOCKETS_KEEPALIVE_INTVL: Integer
+# sockets: Time in seconds between individual keepalive probes
+
+# FI_SOCKETS_KEEPALIVE_PROBES: Integer
+# sockets: Maximum number of keepalive probes sent before dropping the connection
+
+# FI_SOCKETS_IFACE: String
+# sockets: Specify interface name
+
+# FI_SOCKETS_MAX_BUF_SZ: Integer
+# sockets: Maximum socket send and recv buffer in bytes (i.e. SO_RCVBUF, SO_SNDBUF)
+
+# FI_TCP_PROV_NAME: String
+# tcp: Rename provider for testing
+
+# FI_TCP_IFACE: String
+# tcp: Specify interface name
+
+# FI_TCP_PORT_LOW_RANGE: Integer
+# tcp: define port low range
+
+# FI_TCP_PORT_HIGH_RANGE: Integer
+# tcp: define port high range
+
+# FI_TCP_TX_SIZE: size_t
+# tcp: define default tx context size (default: 256)
+
+# FI_TCP_RX_SIZE: size_t
+# tcp: define default rx context size (default: 256)
+
+# FI_TCP_MAX_INJECT: size_t
+# tcp: maximum size for inject messages (default: 128)
+
+# FI_TCP_MAX_SAVED: Integer
+# tcp: maximum number of received messages that do not have a posted application buffer that will be queued by the provider.  A larger value increases memory and processing overhead, negatively impacting performance, but may be required by some applications to prevent hangs. (default: 64)
+
+# FI_TCP_MAX_SAVED_SIZE: size_t
+# tcp: maximum size of any message that will be buffered by the provider which does not have an application posted buffer ready (i.e. an unexpected message) A larger value increases memory and data copying overhead to handle unexpected messages, but may be required by some applications to prevents hangs.
+
+# FI_TCP_MAX_RX_SIZE: size_t
+# tcp: maximum size for message buffers. If set lower than FI_TCP_MAX_INJECT, it will be increased to match (default: 16384)
+
+# FI_TCP_NODELAY: Boolean (0/1, on/off, true/false, yes/no)
+# tcp: overrides default TCP_NODELAY socket setting (default -1)
+
+# FI_TCP_STAGING_SBUF_SIZE: Integer
+# tcp: size of buffer used to coalesce iovec's or send requests before posting to the kernel, set to 0 to disable
+
+# FI_TCP_PREFETCH_RBUF_SIZE: Integer
+# tcp: size of buffer used to prefetch received data from the kernel, set to 0 to disable
+
+# FI_TCP_ZEROCOPY_SIZE: size_t
+# tcp: lower threshold where zero copy transfers will be used, if supported by the platform, set to -1 to disable (default: 18446744073709551615)
+
+# FI_TCP_TRACE_MSG: Boolean (0/1, on/off, true/false, yes/no)
+# tcp: Capture and display transport message information when FI_LOG_LEVEL=TRACE is specified
+
+# FI_TCP_DISABLE_AUTO_PROGRESS: Boolean (0/1, on/off, true/false, yes/no)
+# tcp: prevent auto-progress thread from starting
+
+# FI_TCP_IO_URING: Boolean (0/1, on/off, true/false, yes/no)
+# tcp: Enable io_uring support if available (default: 0)
+
+# FI_TCP_FIREWALL_ADDR: Boolean (0/1, on/off, true/false, yes/no)
+# tcp: if this node is behind firewall
+
+# FI_LNX_PROV_LINKS: String
+# lnx: Specify which providers LNX will link together. Format: <prov 1>+<prov 2>+...+<prov N>. EX: shm+cxi
+
+# FI_LNX_DISABLE_SHM: Boolean (0/1, on/off, true/false, yes/no)
+# lnx: Turn off SHM support. Defaults to 0
+
+# FI_LNX_DUMP_STATS: Boolean (0/1, on/off, true/false, yes/no)
+# lnx: Dump LNX stats on shutdown. Defaults to 0
+
+# FI_OFI_HOOK_MONITOR_LINGER: Boolean (0/1, on/off, true/false, yes/no)
+# ofi_hook_monitor: Whether synchronisation files should linger after termination. (default: 0)
+
+# FI_OFI_HOOK_MONITOR_TICK_MAX: Integer
+# ofi_hook_monitor: Number of API calls before synchronisation files are checked for data request. (default: 1024)
+
+# FI_OFI_HOOK_MONITOR_FILE_MODE: Integer
+# ofi_hook_monitor: POSIX mode/permission for synchronisation files. (default: 0600)
+
+# FI_OFI_HOOK_MONITOR_DIR_MODE: Integer
+# ofi_hook_monitor: POSIX mode/permission for directories in basepath. (default: 1700)
+
+# FI_OFI_HOOK_MONITOR_BASEPATH: String
+# ofi_hook_monitor: String to basepath for synchronisation files. (default: /dev/shm/ofi)
+

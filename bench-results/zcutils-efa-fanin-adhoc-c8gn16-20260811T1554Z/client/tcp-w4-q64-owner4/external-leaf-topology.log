@@ -1,0 +1,8 @@
+source_commit=117ad8ad
+lane_to_worker_cpu=0:3,1:19,2:35,3:51
+lane_to_nic=0:lo,1:lo,2:lo,3:lo
+worker_count=4 worker_cpus=3,19,35,51 remote_endpoint_count=4
+transport=tcp efa_domain=efa_0-rdm efa_device=efa_0
+tcp_interface=lo tcp_route_src=172.31.35.59 irq_cpu_set=60-63
+hugetlb_total_pages=8192 hugetlb_free_pages=8192 memlock_kib=unlimited
+coordination_scope=dedicated-adhoc-instance

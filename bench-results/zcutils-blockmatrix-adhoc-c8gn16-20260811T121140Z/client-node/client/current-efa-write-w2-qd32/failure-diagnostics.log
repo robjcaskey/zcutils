@@ -1,0 +1,33 @@
+timestamp=2026-08-11T13:16:22Z
+proc_modules
+zcnblk_client_mod 57344 3 - Live 0x0000000000000000 (OE)
+kernel_state
+online=1 transport=shm total_conns=2 active_conns=2
+shm=1 daemon_online=1 daemon_generation=1 global_submit_sequence=9251 ring_entries=128 payload_entries=4096 transfer_payload_slots=1
+conn=0 lane=0 stream=0 failed=0 pending=32 inflight_count=0 inflight_slots=0 req_prod=4554 req_cons=4554 req_used=0 admitted_tail=4586 flush_tail=0 flush_epoch=0 comp_prod=4554 comp_cons=4554 comp_ready=0 next_comp_sequence=4427 next_req_slot=74 next_req_slot_busy=0 payload_free_slots=4095 payload_lease_hwm=0 request_wake_armed=1 completion_wake_armed=1 request_publishes=4554 request_kicks=1 completion_kicks=1879 has_capacity=1
+conn=1 lane=1 stream=0 failed=0 pending=32 inflight_count=0 inflight_slots=0 req_prod=4697 req_cons=4697 req_used=0 admitted_tail=4729 flush_tail=0 flush_epoch=0 comp_prod=4697 comp_cons=4697 comp_ready=0 next_comp_sequence=4570 next_req_slot=89 next_req_slot_busy=0 payload_free_slots=4095 payload_lease_hwm=0 request_wake_armed=1 completion_wake_armed=1 request_publishes=4697 request_kicks=1 completion_kicks=2189 has_capacity=1
+stacks
+pid=44577
+[<0>] futex_do_wait+0xcc/0xd8
+[<0>] __futex_wait+0xdc/0x1a0
+[<0>] futex_wait+0x94/0x148
+[<0>] do_futex+0x188/0x268
+[<0>] __arm64_sys_futex+0xf8/0x1c0
+[<0>] invoke_syscall+0x74/0x128
+[<0>] el0_svc_common.constprop.0+0x4c/0x140
+[<0>] do_el0_svc+0x28/0x58
+[<0>] el0_svc+0x40/0x160
+[<0>] el0t_64_sync_handler+0xc0/0x108
+[<0>] el0t_64_sync+0x1b8/0x1c0
+pid=44616
+[<0>] futex_do_wait+0xcc/0xd8
+[<0>] __futex_wait+0xdc/0x1a0
+[<0>] futex_wait+0x94/0x148
+[<0>] do_futex+0x188/0x268
+[<0>] __arm64_sys_futex+0xf8/0x1c0
+[<0>] invoke_syscall+0x74/0x128
+[<0>] el0_svc_common.constprop.0+0x4c/0x140
+[<0>] do_el0_svc+0x28/0x58
+[<0>] el0_svc+0x40/0x160
+[<0>] el0t_64_sync_handler+0xc0/0x108
+[<0>] el0t_64_sync+0x1b8/0x1c0

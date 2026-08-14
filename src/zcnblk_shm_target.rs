@@ -1,21 +1,22 @@
 use super::{
     IORING_CQE_F_MORE, IORING_CQE_F_NOTIF, IORING_NOTIF_USAGE_ZC_COPIED, IORING_OP_SEND_ZC,
     RawRing, SendZcBatchAttempts, UringSendMode, ZCNBLK_FAN_WAL_COMPACT_WRITE_EXTENT_LEN,
-    ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT, ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW,
-    ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD, ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW,
-    ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH, ZCNBLK_FAN_WAL_HEADER_LEN, ZCNBLK_FAN_WAL_OP_EOF,
-    ZCNBLK_FAN_WAL_OP_HELLO, ZCNBLK_FAN_WAL_OP_HELLO_ACK, ZCNBLK_FAN_WAL_OP_READ_DESC,
-    ZCNBLK_FAN_WAL_OP_REQUEST_BATCH, ZCNBLK_FAN_WAL_OP_RESULT, ZCNBLK_FAN_WAL_OP_RESULT_BATCH,
-    ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH, ZCNBLK_FAN_WAL_OP_SYNC, ZCNBLK_FAN_WAL_OP_WRITE_BATCH,
-    ZCNBLK_FAN_WAL_OP_WRITE_DESC, ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH, ZCNBLK_FAN_WAL_STATUS_OK,
-    ZCNBLK_OP_READ, ZCNBLK_OP_WRITE, ZcOfiMessageStream, ZcnblkFanWalAdaptiveRecvSpin,
+    ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT, ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_RESULT,
+    ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW, ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD,
+    ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW, ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH,
+    ZCNBLK_FAN_WAL_HEADER_LEN, ZCNBLK_FAN_WAL_OP_EOF, ZCNBLK_FAN_WAL_OP_HELLO,
+    ZCNBLK_FAN_WAL_OP_HELLO_ACK, ZCNBLK_FAN_WAL_OP_READ_DESC, ZCNBLK_FAN_WAL_OP_REQUEST_BATCH,
+    ZCNBLK_FAN_WAL_OP_RESULT, ZCNBLK_FAN_WAL_OP_RESULT_BATCH, ZCNBLK_FAN_WAL_OP_RESULT_RANGE_BATCH,
+    ZCNBLK_FAN_WAL_OP_SYNC, ZCNBLK_FAN_WAL_OP_WRITE_BATCH, ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+    ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH, ZCNBLK_FAN_WAL_STATUS_OK, ZCNBLK_OP_READ,
+    ZCNBLK_OP_WRITE, ZcOfiMessageStream, ZcnblkFanWalAdaptiveRecvSpin,
     ZcnblkFanWalCompactWriteExtent, ZcnblkFanWalFrame, ZcnblkFanWalSharedLeaseSource,
     ZcnblkShmArenaDirtyHwmCache, advance_send_zc_iovecs, connect_tcp_bound_local_ip,
-    env_enabled_or, kernel_supports_request_opcode, memlock_rlimit_bytes, set_tcp_bench_buffers,
-    socket_bench_buffer_bytes, validate_uring_send_mode_location, zc_topology_issue,
-    zcnblk_fan_wal_decode_frame_slice, zcnblk_fan_wal_recv_exact_spin_then_block,
-    zcnblk_fan_wal_write_frame, zcnblk_fan_wal_write_leaf_batch_payload,
-    zcnblk_fan_wal_write_rma_payload_doorbell,
+    default_hugepage_size, env_enabled_or, first_touch_pages, kernel_supports_request_opcode,
+    memlock_rlimit_bytes, set_tcp_bench_buffers, socket_bench_buffer_bytes,
+    validate_uring_send_mode_location, zc_topology_issue, zcnblk_fan_wal_decode_frame_slice,
+    zcnblk_fan_wal_recv_exact_spin_then_block, zcnblk_fan_wal_write_frame,
+    zcnblk_fan_wal_write_leaf_batch_payload, zcnblk_fan_wal_write_rma_payload_doorbell,
 };
 use crate::wal_contract::{
     ZCNBLK_WAL_FEATURE_ALL, ZCNBLK_WAL_FEATURE_ATOMIC_WRITE, ZCNBLK_WAL_FEATURE_BATCH_SUBMISSION,
@@ -42,7 +43,7 @@ use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
 const ZCNBLK_SHM_MAGIC: u64 = 0x3130_4d48_534e_435a;
-const ZCNBLK_SHM_VERSION: u32 = 5;
+const ZCNBLK_SHM_VERSION: u32 = 6;
 const ZCNBLK_SHM_DESC_BYTES: u32 = 64;
 const ZCNBLK_SHM_OP_WRITE: u16 = 1;
 const ZCNBLK_SHM_OP_READ: u16 = 2;
@@ -55,6 +56,8 @@ const ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED: u64 = 1 << 4;
 const ZCNBLK_SHM_CAP_ORDERING_EPOCH: u64 = 1 << 5;
 const ZCNBLK_SHM_CAP_ORDERING_VECTOR: u64 = 1 << 6;
 const ZCNBLK_SHM_CAP_IO_CONTRACT_SIDECAR: u64 = 1 << 7;
+const ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_IMPORT: u64 = 1 << 8;
+const ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_ACTIVE: u64 = 1 << 9;
 const ZCNBLK_SHM_IO_FEATURE_ALL: u64 = ZCNBLK_WAL_FEATURE_FUA as u64
     | ZCNBLK_WAL_FEATURE_POLLED_COMPLETION as u64
     | ZCNBLK_WAL_FEATURE_BATCH_SUBMISSION as u64
@@ -73,6 +76,7 @@ const ZCNBLK_SHM_REQUEST_ID_MASK: u64 = (1 << ZCNBLK_SHM_REQUEST_ID_BITS) - 1;
 const ZCNBLK_SHM_CQE_F_READ_PAYLOAD_REF: u32 = 1 << 0;
 const ZCNBLK_SHM_CQE_REF_CHANNEL_SHIFT: u32 = 8;
 const ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS: u32 = 1 << 0;
+const ZCNBLK_SHM_ARENA_IMPORT_F_HUGETLB: u32 = 1 << 0;
 const ZCNBLK_SHM_HEADER_CAPABILITIES: usize = 0;
 const ZCNBLK_SHM_HEADER_PAYLOAD_OWNER_OFFSET: usize = 1;
 const ZCNBLK_SHM_HEADER_IO_CONTRACT_OFFSET: usize = 2;
@@ -87,6 +91,9 @@ const IOC_NRSHIFT: u32 = 0;
 const IOC_TYPESHIFT: u32 = 8;
 const IOC_SIZESHIFT: u32 = 16;
 const IOC_DIRSHIFT: u32 = 30;
+const ZCNBLK_MFD_CLOEXEC: libc::c_uint = 0x0001;
+const ZCNBLK_MFD_ALLOW_SEALING: libc::c_uint = 0x0002;
+const ZCNBLK_MFD_HUGETLB: libc::c_uint = 0x0004;
 
 const fn ioctl_code(dir: u32, nr: u32, size: usize) -> libc::c_ulong {
     ((dir << IOC_DIRSHIFT)
@@ -99,6 +106,8 @@ const ZCNBLK_SHM_IOC_ATTACH: libc::c_ulong = ioctl_code(IOC_WRITE, 1, size_of::<
 const ZCNBLK_SHM_IOC_KICK: libc::c_ulong = ioctl_code(IOC_WRITE, 2, size_of::<u32>());
 const ZCNBLK_SHM_IOC_GET_INFO: libc::c_ulong =
     ioctl_code(IOC_READ, 3, size_of::<ZcnblkShmHeader>());
+const ZCNBLK_SHM_IOC_IMPORT_ARENA: libc::c_ulong =
+    ioctl_code(IOC_WRITE, 4, size_of::<ZcnblkShmArenaImport>());
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -233,18 +242,106 @@ struct ZcnblkShmAttach {
     flags: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct ZcnblkShmArenaImport {
+    magic: u64,
+    version: u32,
+    flags: u32,
+    fd: i32,
+    reserved: u32,
+    region_bytes: u64,
+}
+
 const _: () = assert!(size_of::<ZcnblkShmChannel>() == 320);
 const _: () = assert!(size_of::<ZcnblkShmRequest>() == 64);
 const _: () = assert!(size_of::<ZcnblkShmCompletion>() == 64);
 const _: () = assert!(size_of::<ZcnblkShmIoContract>() == 16);
 const _: () = assert!(size_of::<ZcnblkShmHeader>() == 144);
+const _: () = assert!(size_of::<ZcnblkShmArenaImport>() == 32);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SharedArenaBacking {
+    KernelVmalloc,
+    ExternalHugeTlb,
+}
+
+impl SharedArenaBacking {
+    fn label(self) -> &'static str {
+        match self {
+            Self::KernelVmalloc => "kernel-vmalloc-user",
+            Self::ExternalHugeTlb => "external-hugetlb-memfd",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SharedArenaRequest {
+    Vmalloc,
+    HugeTlb,
+    Auto,
+}
+
+impl SharedArenaRequest {
+    fn from_env() -> io::Result<Self> {
+        match env::var("URING_PLAY_ZCNBLK_SHM_ARENA_BACKING")
+            .unwrap_or_else(|_| "vmalloc".to_string())
+            .as_str()
+        {
+            "vmalloc" | "kernel-vmalloc" | "small-pages" => Ok(Self::Vmalloc),
+            "hugetlb" | "huge" | "external-hugetlb" => Ok(Self::HugeTlb),
+            "auto" => Ok(Self::Auto),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown shared arena backing {other:?}; use vmalloc, hugetlb, or auto"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Vmalloc => "vmalloc",
+            Self::HugeTlb => "hugetlb",
+            Self::Auto => "auto",
+        }
+    }
+}
 
 struct Mapping {
     ptr: *mut u8,
     len: usize,
+    backing: SharedArenaBacking,
+    hugepage_bytes: usize,
 }
 
 impl Mapping {
+    fn map_control(
+        file: &File,
+        len: usize,
+        backing: SharedArenaBacking,
+        hugepage_bytes: usize,
+    ) -> io::Result<Self> {
+        let ptr = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            ptr: ptr.cast(),
+            len,
+            backing,
+            hugepage_bytes,
+        })
+    }
+
     fn slice(&self, start: usize, len: usize) -> io::Result<&[u8]> {
         let end = start.checked_add(len).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "shared mapping range overflow")
@@ -442,6 +539,20 @@ impl RemoteWalStream {
     fn register_rma_read_buffer(&mut self, target: &mut [u8]) -> io::Result<()> {
         match self {
             Self::Ofi(stream) => stream.register_rma_read_buffer(target),
+            Self::Tcp(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "OFI RMA read-buffer registration requested for TCP",
+            )),
+        }
+    }
+
+    unsafe fn register_rma_read_buffer_raw(
+        &mut self,
+        target: *mut u8,
+        len: usize,
+    ) -> io::Result<()> {
+        match self {
+            Self::Ofi(stream) => unsafe { stream.register_rma_read_buffer_raw(target, len) },
             Self::Tcp(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "OFI RMA read-buffer registration requested for TCP",
@@ -690,7 +801,6 @@ struct RemoteWalRmaBatch {
 }
 
 struct RemoteWalRmaReadQueue {
-    buffer: Vec<u8>,
     slot_bytes: usize,
     depth: usize,
     free_slots: Vec<usize>,
@@ -820,15 +930,14 @@ struct RemoteWalRmaProgress {
 }
 
 impl RemoteWalRmaReadQueue {
-    fn new(buffer: Vec<u8>, slot_bytes: usize, depth: usize) -> io::Result<Self> {
-        if slot_bytes == 0 || depth == 0 || buffer.len() != slot_bytes.saturating_mul(depth) {
+    fn new(slot_bytes: usize, depth: usize) -> io::Result<Self> {
+        if slot_bytes == 0 || depth == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "invalid OFI RMA lane-local buffer ring shape",
+                "invalid OFI RMA direct-placement queue shape",
             ));
         }
         Ok(Self {
-            buffer,
             slot_bytes,
             depth,
             free_slots: (0..depth).rev().collect(),
@@ -939,6 +1048,7 @@ impl RemoteWalRmaReadQueue {
     fn post_available(
         &mut self,
         stream: &mut RemoteWalStream,
+        mapping: &Mapping,
         window: RemoteWalRmaReadWindow,
     ) -> io::Result<()> {
         while let Some((slot, queued)) = self.take_postable() {
@@ -949,9 +1059,6 @@ impl RemoteWalRmaReadQueue {
                 ));
             }
             let len = queued.request.request.len as usize;
-            let local_offset = slot.checked_mul(self.slot_bytes).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "OFI RMA local slot overflow")
-            })?;
             let remote_addr = window
                 .addr
                 .checked_add(queued.request.request.offset)
@@ -961,9 +1068,14 @@ impl RemoteWalRmaReadQueue {
                         "OFI RMA remote address overflow",
                     )
                 })?;
-            // `buffer` is allocated once and never resized. The slot is removed
-            // from the free list until its CQ entry is retired below.
-            let target = unsafe { self.buffer.as_mut_ptr().add(local_offset) };
+            // The block-edge request owns this shared payload slot until its
+            // completion is published. The whole mapping is registered once,
+            // and the operation slot is retained until its CQE is retired.
+            let target = unsafe {
+                mapping
+                    .slice_mut(queued.request.payload_offset, len)?
+                    .as_mut_ptr()
+            };
             let posted_at = Instant::now();
             let posted = unsafe {
                 stream.post_rma_read_raw(
@@ -1007,7 +1119,7 @@ impl RemoteWalRmaReadQueue {
         window: RemoteWalRmaReadWindow,
         wait: bool,
     ) -> io::Result<RemoteWalRmaProgress> {
-        self.post_available(stream, window)?;
+        self.post_available(stream, mapping, window)?;
         if self.in_flight == 0 {
             return Ok(RemoteWalRmaProgress::default());
         }
@@ -1046,19 +1158,9 @@ impl RemoteWalRmaReadQueue {
                     ),
                 ));
             }
-            let len = active.queued.request.request.len as usize;
-            let local_offset = slot.checked_mul(self.slot_bytes).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "OFI RMA local slot overflow")
-            })?;
             progress.completion_time = progress
                 .completion_time
                 .saturating_add(active.posted_at.elapsed());
-            let copy_started = Instant::now();
-            // The block-edge request owns this shared payload slot until its
-            // completion is published. Lane routing prevents concurrent writers.
-            unsafe { mapping.slice_mut(active.queued.request.payload_offset, len)? }
-                .copy_from_slice(&self.buffer[local_offset..local_offset + len]);
-            progress.copy_time = progress.copy_time.saturating_add(copy_started.elapsed());
             let batch = self
                 .batches
                 .get_mut(&active.queued.batch_id)
@@ -1078,7 +1180,7 @@ impl RemoteWalRmaReadQueue {
             })?;
         }
         self.cq_completions = self.cq_completions.saturating_add(completed as u64);
-        self.post_available(stream, window)?;
+        self.post_available(stream, mapping, window)?;
         Ok(progress)
     }
 
@@ -2072,19 +2174,25 @@ impl RemoteWalLeaf {
                     .unwrap_or_else(|_| "efa".to_string());
                 let endpoint = env::var("URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_ENDPOINT")
                     .unwrap_or_else(|_| "rdm".to_string());
+                let domain =
+                    lane_env_entry("URING_PLAY_ZCNBLK_SHM_OFI_DOMAINS", lane_id, lane_count)?
+                        .or_else(|| env::var("URING_PLAY_OFI_DOMAIN").ok())
+                        .filter(|value| !value.trim().is_empty());
                 let node = socket_address.ip().to_string();
-                let ofi = ZcOfiMessageStream::connect(
+                let ofi = ZcOfiMessageStream::connect_on_domain(
                     &provider,
                     &endpoint,
                     &node,
                     socket_address.port(),
                     false,
                     rma_reads_enabled || rma_writes_enabled,
+                    domain.as_deref(),
                 )?;
                 let message_bytes = ofi.message_bytes();
                 let address = format!("ofi://{node}:{}", socket_address.port());
                 eprintln!(
-                    "zcnblk-shm-target-remote-connect: transport=ofi provider={provider} endpoint={endpoint} lane={lane_id} address={address} message_bytes={message_bytes} cq_sleep_ns={} placement_owner=external-userspace-stage block_client_placement=no",
+                    "zcnblk-shm-target-remote-connect: transport=ofi provider={provider} endpoint={endpoint} lane={lane_id} domain={} address={address} message_bytes={message_bytes} cq_sleep_ns={} placement_owner=external-userspace-stage block_client_placement=no",
+                    domain.as_deref().unwrap_or("implicit"),
                     env::var("URING_PLAY_OFI_CQ_SLEEP_NS").unwrap_or_else(|_| "50000".to_string()),
                 );
                 (RemoteWalStream::Ofi(ofi), address, false, false)
@@ -2242,37 +2350,19 @@ impl RemoteWalLeaf {
                 ),
             ));
         }
-        let mut rma_read_queue = if rma_read_window.is_some() {
-            let ring_bytes = rma_read_buffer_bytes
-                .checked_mul(rma_read_qd)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "OFI RMA read buffer ring size overflow",
-                    )
-                })?;
-            if ring_bytes == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "OFI RMA read buffer ring must be non-empty",
-                ));
-            }
+        let rma_read_queue = if rma_read_window.is_some() {
             Some(RemoteWalRmaReadQueue::new(
-                vec![0u8; ring_bytes],
                 rma_read_buffer_bytes,
                 rma_read_qd,
             )?)
         } else {
             None
         };
-        if let Some(queue) = rma_read_queue.as_mut() {
-            stream.register_rma_read_buffer(&mut queue.buffer)?;
+        if let Some(queue) = rma_read_queue.as_ref() {
             stream.configure_rma_read_queue(queue.depth)?;
             eprintln!(
-                "zcnblk-shm-target-ofi-rma-local-buffer: lane={lane_id} qd={} slot_bytes={} ring_bytes={} registration_scope=lane-local-fixed-buffer-ring destination=shared-slot-copy cq_processing=batched",
-                queue.depth,
-                queue.slot_bytes,
-                queue.buffer.len(),
+                "zcnblk-shm-target-ofi-rma-local-buffer: lane={lane_id} qd={} slot_bytes={} ring_bytes=0 registration_scope=deferred-whole-shared-mapping destination=direct-shared-slot cq_processing=batched",
+                queue.depth, queue.slot_bytes,
             );
         }
         let rma_write_qd = env::var("URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD")
@@ -2363,6 +2453,19 @@ impl RemoteWalLeaf {
                 "remote WAL leaf already has a different shared mapping attached",
             ));
         }
+        if self.rma_read_window.is_some() {
+            // Read responses land directly in request-owned shared payload
+            // slots. Register once before any post so strict topology never
+            // permits a hot-path MR registration.
+            unsafe {
+                self.stream
+                    .register_rma_read_buffer_raw(mapping.ptr, mapping.len)?;
+            }
+            eprintln!(
+                "zcnblk-shm-target-ofi-rma-read-destination: lane={} registered_bytes={} registration_scope=whole-shared-mapping hot_registration=no placement=direct-request-owned-shared-slot copy_after_cq=no",
+                self.lane_id, mapping.len,
+            );
+        }
         if self.rma_write_window.is_some() {
             // Register the mapping once, before any post. Payload leases keep
             // source ranges stable through local delivery completion and the
@@ -2401,7 +2504,13 @@ impl RemoteWalLeaf {
             )
         })?;
         let batch_id = queue.submit_batch(window, requests)?;
-        queue.post_available(&mut self.stream, window)?;
+        let mapping = self.mapping.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI RMA read sender has no registered shared mapping",
+            )
+        })?;
+        queue.post_available(&mut self.stream, mapping.as_ref(), window)?;
         Ok(Some(batch_id))
     }
 
@@ -2504,11 +2613,10 @@ impl RemoteWalLeaf {
             return;
         };
         eprintln!(
-            "zcnblk-shm-target-ofi-rma-queue: lane={} per_lane_qd={} slot_bytes={} registered_ring_bytes={} peak_in_flight={} final_in_flight={} final_queued={} final_batches={} cq_poll_calls={} cq_batches={} cq_completions={} avg_cq_completions_per_batch={:.2} post_eagain={} completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy",
+            "zcnblk-shm-target-ofi-rma-queue: lane={} per_lane_qd={} slot_bytes={} registered_ring_bytes=0 peak_in_flight={} final_in_flight={} final_queued={} final_batches={} cq_poll_calls={} cq_batches={} cq_completions={} avg_cq_completions_per_batch={:.2} post_eagain={} completion=initiator-local-cq-data-visible buffer_policy=request-owned-shared-slot retirement=fifo-batch-after-out-of-order-cq copy_after_cq=no",
             self.lane_id,
             queue.depth,
             queue.slot_bytes,
-            queue.buffer.len(),
             queue.peak_in_flight,
             queue.in_flight,
             queue.pending.len(),
@@ -3147,13 +3255,22 @@ impl RemoteWalLeaf {
             };
             descriptors.extend_from_slice(&self.request_frame(&pending, op, true)?.encode());
         }
+        let rma_read_results = self.rma_read_window.is_some()
+            && requests
+                .iter()
+                .any(|request| request.request.op == ZCNBLK_SHM_OP_READ);
         let batch = ZcnblkFanWalFrame {
             op: ZCNBLK_FAN_WAL_OP_REQUEST_BATCH,
-            flags: if requests
-                .iter()
-                .any(|request| request.request.op == ZCNBLK_SHM_OP_WRITE)
+            flags: if rma_read_results
+                || requests
+                    .iter()
+                    .any(|request| request.request.op == ZCNBLK_SHM_OP_WRITE)
             {
                 ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT
+            } else {
+                0
+            } | if rma_read_results {
+                ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_RESULT
             } else {
                 0
             },
@@ -3179,9 +3296,13 @@ impl RemoteWalLeaf {
             })?,
             ..ZcnblkFanWalFrame::default()
         };
+        // The leaf's direct-memory request-batch decoder already accepts
+        // mixed read/write descriptors with preplaced write payload. Reads
+        // still return through the result message for this framed mixed-batch
+        // form; ordered all-read spans take the one-sided read queue instead.
         let rma_eligible = requests
             .iter()
-            .all(|request| request.request.op == ZCNBLK_SHM_OP_WRITE);
+            .any(|request| request.request.op == ZCNBLK_SHM_OP_WRITE);
         let used_rma =
             self.send_batch_payload(tx, mapping, batch, descriptors, &payload_plan, rma_eligible)?;
         self.write_payload_iovecs = self
@@ -3232,6 +3353,10 @@ impl RemoteWalLeaf {
         }
         let (descriptor_len, read_payload_len, write_payload_len) =
             Self::request_batch_lengths(requests)?;
+        let rma_read_results = self.rma_read_window.is_some()
+            && requests
+                .iter()
+                .any(|request| request.request.op == ZCNBLK_SHM_OP_READ);
         let expected_lease_hwm = requests
             .iter()
             .filter(|request| request.io_contract.registered_lease)
@@ -3275,12 +3400,15 @@ impl RemoteWalLeaf {
             self.finish_request_batch_tracking()?;
             return Ok(());
         }
-        let expected_result_len =
+        let expected_result_len = if rma_read_results {
+            descriptor_len
+        } else {
             descriptor_len
                 .checked_add(read_payload_len)
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "read result batch overflow")
-                })?;
+                })?
+        };
         if result_batch.op != ZCNBLK_FAN_WAL_OP_RESULT_BATCH
             || result_batch.status != ZCNBLK_FAN_WAL_STATUS_OK
             || result_batch.branch_id != 0
@@ -3324,7 +3452,7 @@ impl RemoteWalLeaf {
                 || result.leaf_offset != request.request.offset
                 || result.sync_epoch != request.io_contract.lease_id
                 || result.payload_len
-                    != if request.request.op == ZCNBLK_SHM_OP_READ {
+                    != if request.request.op == ZCNBLK_SHM_OP_READ && !rma_read_results {
                         request.request.len
                     } else {
                         0
@@ -3346,15 +3474,37 @@ impl RemoteWalLeaf {
             }
         }
         let payload_started = Instant::now();
-        for request in requests {
-            if request.request.op == ZCNBLK_SHM_OP_READ {
-                let out = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        mapping.ptr.add(request.payload_offset),
-                        request.request.len as usize,
-                    )
-                };
-                self.recv_result_exact(out)?;
+        if rma_read_results {
+            let reads = requests
+                .iter()
+                .copied()
+                .filter(|request| request.request.op == ZCNBLK_SHM_OP_READ)
+                .collect::<Vec<_>>();
+            let batch_id = self.try_submit_rma_read_batch(&reads)?.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "RMA read-result batch lost its negotiated read window",
+                )
+            })?;
+            self.drain_rma_reads(mapping)?;
+            if !self.rma_read_batch_complete(batch_id)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!("OFI RMA read-result batch id={batch_id} did not complete"),
+                ));
+            }
+            self.finish_rma_read_batch(batch_id)?;
+        } else {
+            for request in requests {
+                if request.request.op == ZCNBLK_SHM_OP_READ {
+                    let out = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            mapping.ptr.add(request.payload_offset),
+                            request.request.len as usize,
+                        )
+                    };
+                    self.recv_result_exact(out)?;
+                }
             }
         }
         self.result_payload_time = self
@@ -3368,7 +3518,7 @@ impl RemoteWalLeaf {
             .filter(|request| request.request.op == ZCNBLK_SHM_OP_READ)
             .count() as u64;
         let write_records = requests.len() as u64 - read_records;
-        if read_records != 0 {
+        if read_records != 0 && !rma_read_results {
             self.read_batches += 1;
             self.read_records += read_records;
             self.read_bytes += read_payload_len as u64;
@@ -6844,6 +6994,183 @@ struct SharedTarget {
 }
 
 impl SharedTarget {
+    fn first_touch_hugetlb_arena(mapping: &Mapping, header: &ZcnblkShmHeader) -> io::Result<()> {
+        let Some(cpu_text) = env::var("URING_PLAY_ZCNBLK_SHM_ARENA_CPU_LIST")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            return first_touch_pages(mapping.ptr.cast(), mapping.len, 0);
+        };
+        let cpus = parse_cpu_list(&cpu_text)?;
+        if cpus.len() != header.channels as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "URING_PLAY_ZCNBLK_SHM_ARENA_CPU_LIST must provide one CPU per channel: got {} for {} channels",
+                    cpus.len(),
+                    header.channels
+                ),
+            ));
+        }
+        let payload_offset = usize::try_from(header.payload_offset).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "payload offset exceeds usize")
+        })?;
+        let channel_payload_bytes = usize::try_from(header.payload_entries)
+            .ok()
+            .and_then(|entries| entries.checked_mul(header.slot_bytes as usize))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "channel payload size overflow")
+            })?;
+        let original_cpu = unsafe { libc::sched_getcpu() };
+        if original_cpu < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut pages_by_channel = vec![0usize; cpus.len()];
+        for page_offset in (0..mapping.len).step_by(mapping.hugepage_bytes) {
+            let page_len = mapping.hugepage_bytes.min(mapping.len - page_offset);
+            let midpoint = page_offset.saturating_add(page_len / 2);
+            let channel = midpoint
+                .saturating_sub(payload_offset)
+                .checked_div(channel_payload_bytes)
+                .unwrap_or(0)
+                .min(cpus.len() - 1);
+            pin_current_thread(cpus[channel])?;
+            first_touch_pages(unsafe { mapping.ptr.add(page_offset) }.cast(), page_len, 0)?;
+            pages_by_channel[channel] += 1;
+        }
+        pin_current_thread(original_cpu as usize)?;
+        eprintln!(
+            "zcnblk-shm-target-arena-topology: policy=metadata-on-channel0+payload-channel-midpoint hugepage_bytes={} channel_to_cpu={} pages_by_channel={} metadata_prefix_bytes={} placement=memory-locality-only block_client_placement=no",
+            mapping.hugepage_bytes,
+            cpus.iter()
+                .enumerate()
+                .map(|(channel, cpu)| format!("{channel}:{cpu}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            pages_by_channel
+                .iter()
+                .enumerate()
+                .map(|(channel, pages)| format!("{channel}:{pages}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            payload_offset,
+        );
+        Ok(())
+    }
+
+    fn import_hugetlb_mapping(file: &File, header: &mut ZcnblkShmHeader) -> io::Result<Mapping> {
+        if header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] & ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_IMPORT
+            == 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "zcnblk client does not support external HugeTLB arena import",
+            ));
+        }
+        let hugepage_bytes = default_hugepage_size()?;
+        if !hugepage_bytes.is_power_of_two() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "default HugeTLB page size is not a power of two",
+            ));
+        }
+        let logical_bytes = usize::try_from(header.region_bytes).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "shared region does not fit usize",
+            )
+        })?;
+        let mapped_bytes = logical_bytes
+            .checked_add(hugepage_bytes - 1)
+            .map(|value| value & !(hugepage_bytes - 1))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "HugeTLB arena length overflow")
+            })?;
+        let raw_fd = unsafe {
+            libc::memfd_create(
+                b"zcnblk-shm-arena\0".as_ptr().cast(),
+                ZCNBLK_MFD_CLOEXEC | ZCNBLK_MFD_ALLOW_SEALING | ZCNBLK_MFD_HUGETLB,
+            )
+        };
+        if raw_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let arena_fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+        let truncate_len = libc::off_t::try_from(mapped_bytes).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "HugeTLB arena exceeds off_t")
+        })?;
+        if unsafe { libc::ftruncate(arena_fd.as_raw_fd(), truncate_len) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let staging_ptr = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                mapped_bytes,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                arena_fd.as_raw_fd(),
+                0,
+            )
+        };
+        if staging_ptr == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        let staging = Mapping {
+            ptr: staging_ptr.cast(),
+            len: mapped_bytes,
+            backing: SharedArenaBacking::ExternalHugeTlb,
+            hugepage_bytes,
+        };
+        Self::first_touch_hugetlb_arena(&staging, header)?;
+        let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
+        if unsafe { libc::fcntl(arena_fd.as_raw_fd(), libc::F_ADD_SEALS, seals) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let import = ZcnblkShmArenaImport {
+            magic: ZCNBLK_SHM_MAGIC,
+            version: ZCNBLK_SHM_VERSION,
+            flags: ZCNBLK_SHM_ARENA_IMPORT_F_HUGETLB,
+            fd: arena_fd.as_raw_fd(),
+            reserved: 0,
+            region_bytes: mapped_bytes as u64,
+        };
+        let ret = unsafe { libc::ioctl(file.as_raw_fd(), ZCNBLK_SHM_IOC_IMPORT_ARENA, &import) };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        drop(staging);
+
+        let mut imported_header = ZcnblkShmHeader::default();
+        let ret = unsafe {
+            libc::ioctl(
+                file.as_raw_fd(),
+                ZCNBLK_SHM_IOC_GET_INFO,
+                &mut imported_header,
+            )
+        };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Self::validate_header(&imported_header)?;
+        if imported_header.region_bytes != mapped_bytes as u64
+            || imported_header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES]
+                & ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_ACTIVE
+                == 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "kernel did not activate the imported HugeTLB arena",
+            ));
+        }
+        *header = imported_header;
+        Mapping::map_control(
+            file,
+            mapped_bytes,
+            SharedArenaBacking::ExternalHugeTlb,
+            hugepage_bytes,
+        )
+    }
+
     fn open(
         path: &str,
         backend: BackendMode,
@@ -6889,29 +7216,107 @@ impl SharedTarget {
                 ),
             ));
         }
-        let len = usize::try_from(header.region_bytes).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "shared region does not fit usize",
-            )
-        })?;
-        let ptr = unsafe {
-            libc::mmap(
-                ptr::null_mut(),
-                len,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED,
-                file.as_raw_fd(),
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
+        let arena_request = SharedArenaRequest::from_env()?;
+        let arena_active = header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES]
+            & ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_ACTIVE
+            != 0;
+        if arena_active || arena_request != SharedArenaRequest::Vmalloc {
+            if let Some(cpu) = env::var("URING_PLAY_ZCNBLK_SHM_ARENA_CPU")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+            {
+                pin_current_thread(cpu)?;
+            }
         }
-        let mapping = Arc::new(Mapping {
-            ptr: ptr.cast(),
-            len,
-        });
+        let mapping = if arena_active {
+            let len = usize::try_from(header.region_bytes).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "shared region does not fit usize",
+                )
+            })?;
+            Arc::new(Mapping::map_control(
+                &file,
+                len,
+                SharedArenaBacking::ExternalHugeTlb,
+                default_hugepage_size()?,
+            )?)
+        } else {
+            match arena_request {
+                SharedArenaRequest::HugeTlb => {
+                    Arc::new(Self::import_hugetlb_mapping(&file, &mut header)?)
+                }
+                SharedArenaRequest::Auto => {
+                    match Self::import_hugetlb_mapping(&file, &mut header) {
+                        Ok(mapping) => Arc::new(mapping),
+                        Err(error) => {
+                            let mut current = ZcnblkShmHeader::default();
+                            let ret = unsafe {
+                                libc::ioctl(file.as_raw_fd(), ZCNBLK_SHM_IOC_GET_INFO, &mut current)
+                            };
+                            if ret >= 0
+                                && current.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES]
+                                    & ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_ACTIVE
+                                    != 0
+                            {
+                                return Err(io::Error::other(format!(
+                                    "HugeTLB arena import became active but remapping failed: {error}"
+                                )));
+                            }
+                            zc_topology_issue(
+                                "zcnblk-shm-target",
+                                format!(
+                                    "external HugeTLB arena auto-allocation failed ({error}); using the kernel vmalloc arena"
+                                ),
+                            )?;
+                            let len = usize::try_from(header.region_bytes).map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "shared region does not fit usize",
+                                )
+                            })?;
+                            Arc::new(Mapping::map_control(
+                                &file,
+                                len,
+                                SharedArenaBacking::KernelVmalloc,
+                                0,
+                            )?)
+                        }
+                    }
+                }
+                SharedArenaRequest::Vmalloc => {
+                    let len = usize::try_from(header.region_bytes).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "shared region does not fit usize",
+                        )
+                    })?;
+                    Arc::new(Mapping::map_control(
+                        &file,
+                        len,
+                        SharedArenaBacking::KernelVmalloc,
+                        0,
+                    )?)
+                }
+            }
+        };
+        eprintln!(
+            "zcnblk-shm-target-shared-arena: requested={} backing={} region_bytes={} hugepage_bytes={} import_supported={} import_active={} first_touch_cpu={}",
+            arena_request.label(),
+            mapping.backing.label(),
+            mapping.len,
+            mapping.hugepage_bytes,
+            header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES]
+                & ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_IMPORT
+                != 0,
+            header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES]
+                & ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_ACTIVE
+                != 0,
+            unsafe { libc::sched_getcpu() },
+        );
         let transfer_payload_slots = backend == BackendMode::WalTcp
             && env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH", false)
             && !env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_OWNER_DISPATCH", false)
@@ -8931,6 +9336,16 @@ impl SharedTarget {
             .unwrap_or(64)
             .max(1)
             .min(extent_records);
+        // Preserve latency-first behavior by default.  Saturation runs may
+        // opt into the same bounded extent-fill policy already used for
+        // writes, avoiding tiny RMA issue batches at high aggregate depth.
+        // This remains a userspace transport decision; the block client does
+        // not learn or own placement, stripe, mirror, or lane policy.
+        let foreground_read_immediate =
+            env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_FOREGROUND_READ_IMMEDIATE", true);
+        eprintln!(
+            "zcnblk-shm-target-wal-read-policy: lane={channel} foreground_immediate={foreground_read_immediate} extent_records={extent_records} extent_fill_us={extent_fill_us} minimum_batch_records={split_min_batch_records}"
+        );
         let pending_limit = extent_records.checked_mul(lane_window).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "lane pending limit overflow")
         })?;
@@ -9378,7 +9793,8 @@ impl SharedTarget {
                     || fill_started.get_or_insert_with(Instant::now).elapsed()
                         >= Duration::from_micros(extent_fill_us);
                 let dependency_boundary = send_ready < pending_send.len().min(extent_records);
-                let latency_sensitive_read = transport.foreground_immediate_available()
+                let latency_sensitive_read = foreground_read_immediate
+                    && transport.foreground_immediate_available()
                     && pending_send
                         .iter()
                         .take(send_ready)
@@ -9851,8 +10267,8 @@ impl SharedTarget {
             .iter()
             .any(|remote| remote.rma_write_window.is_some());
         let read_payload_destination = match (self.dirty_read_payload_refs, rma_read_negotiated) {
-            (true, true) => "dirty-shared-slot-reference-or-lane-local-rma-bounce+shared-slot-copy",
-            (false, true) => "dirty-shared-slot-copy-or-lane-local-rma-bounce+shared-slot-copy",
+            (true, true) => "dirty-shared-slot-reference-or-rma-direct-shared-slot",
+            (false, true) => "dirty-shared-slot-copy-or-rma-direct-shared-slot",
             (true, false) => {
                 "dirty-shared-slot-reference-or-remote-result-payload+shared-slot-copy"
             }
@@ -10028,7 +10444,7 @@ impl SharedTarget {
                     total + remote.rma_read_copy_time
                 });
             let read_payload_destination = if rma_read_negotiated {
-                "lane-local-registered-bounce+shared-slot-copy"
+                "registered-shared-slot-direct-rma"
             } else {
                 "remote-result-payload+shared-slot-copy"
             };
@@ -10676,7 +11092,7 @@ impl SharedTarget {
             .iter()
             .any(|remote| remote.rma_write_window.is_some());
         let remote_read_source = if rma_read_negotiated {
-            "lane-local-rma-bounce+shared-slot-copy"
+            "registered-shared-slot-direct-rma"
         } else {
             "remote-result-payload+shared-slot-copy"
         };
@@ -10811,7 +11227,7 @@ impl SharedTarget {
                     total + remote.rma_read_copy_time
                 });
             let read_payload_destination = if rma_read_negotiated {
-                "lane-local-registered-bounce+shared-slot-copy"
+                "registered-shared-slot-direct-rma"
             } else {
                 "remote-result-payload+shared-slot-copy"
             };
@@ -11266,14 +11682,15 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
                 )
             })?;
         if env_enabled_or("URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS", false) {
-            let rma_registered_bytes = endpoint_count
-                .checked_mul(target.header.slot_bytes as usize)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "OFI RMA lane-local buffer registration size overflow",
-                    )
-                })?;
+            let rma_registered_bytes =
+                endpoint_count
+                    .checked_mul(target.mapping.len)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "OFI RMA shared mapping registration size overflow",
+                        )
+                    })?;
             estimated_registered_bytes = estimated_registered_bytes
                 .checked_add(rma_registered_bytes)
                 .ok_or_else(|| {
@@ -11283,8 +11700,8 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
                     )
                 })?;
             eprintln!(
-                "zcnblk-shm-target-ofi-rma-preflight: lanes={} lane_local_buffer_bytes={} estimated_per_lane_domain_registered_bytes={} registration_scope=lane-local-fixed-bounce shared_mapping_registered=no",
-                endpoint_count, target.header.slot_bytes, rma_registered_bytes,
+                "zcnblk-shm-target-ofi-rma-preflight: lanes={} shared_mapping_bytes={} estimated_per_endpoint_domain_registered_bytes={} registration_scope=whole-shared-mapping shared_mapping_registered=yes destination=request-owned-shared-slot copy_after_cq=no",
+                endpoint_count, target.mapping.len, rma_registered_bytes,
             );
         }
         if rma_writes_requested {
@@ -11652,7 +12069,7 @@ mod tests {
             payload_offset: offset as usize,
             dirty_ref: None,
         };
-        let mut queue = RemoteWalRmaReadQueue::new(vec![0; 4096], 4096, 1).unwrap();
+        let mut queue = RemoteWalRmaReadQueue::new(4096, 1).unwrap();
         queue
             .submit_batch(
                 RemoteWalRmaReadWindow {
@@ -11801,11 +12218,13 @@ mod tests {
         assert_eq!(size_of::<ZcnblkShmCompletion>(), 64);
         assert_eq!(size_of::<ZcnblkShmIoContract>(), 16);
         assert_eq!(size_of::<ZcnblkShmHeader>(), 144);
-        assert_eq!(ZCNBLK_SHM_VERSION, 5);
+        assert_eq!(size_of::<ZcnblkShmArenaImport>(), 32);
+        assert_eq!(ZCNBLK_SHM_VERSION, 6);
         assert_eq!(ZCNBLK_SHM_IO_FEATURE_ALL, 0x7f);
         assert_eq!(ZCNBLK_SHM_IOC_ATTACH, 0x4010_bc01);
         assert_eq!(ZCNBLK_SHM_IOC_KICK, 0x4004_bc02);
         assert_eq!(ZCNBLK_SHM_IOC_GET_INFO, 0x8090_bc03);
+        assert_eq!(ZCNBLK_SHM_IOC_IMPORT_ARENA, 0x4020_bc04);
     }
 
     #[test]

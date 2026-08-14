@@ -1,0 +1,30 @@
+{
+  "compiled": {
+    "lane_count": 1,
+    "parallel_raid": {
+      "block_device_raid_primitive": false,
+      "branch_topology": [
+        {
+          "branch": 0,
+          "policy": "mirror",
+          "placement_owner": "userspace-raid",
+          "block_device_raid_primitive": false,
+          "fabric_domain": "efa_0-rdm",
+          "lanes": [0],
+          "leader_cpus": [3],
+          "workers": [0]
+        },
+        {
+          "branch": 1,
+          "policy": "mirror",
+          "placement_owner": "userspace-raid",
+          "block_device_raid_primitive": false,
+          "fabric_domain": "efa_0-rdm",
+          "lanes": [0],
+          "leader_cpus": [4],
+          "workers": [0]
+        }
+      ]
+    }
+  }
+}

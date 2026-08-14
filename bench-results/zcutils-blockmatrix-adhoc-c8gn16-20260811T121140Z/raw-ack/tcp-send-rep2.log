@@ -1,0 +1,7 @@
+zcwal-extent-send: addr=172.31.39.213 base_port=36002 lanes=1 connections_per_lane=1 total_connections=1 bytes_per_connection=67108864 extent_bytes=4096 record_size=4096 records_per_extent=1 workers=1 framing=extent data_path=blocking ack_enabled=yes sync_acks=yes tcp_nodelay=yes socket_buffer_bytes=16777216 uring_send_bytes=4096 uring_pipeline=32 uring_entries=64 source_ports=kernel-ephemeral
+zcwal-extent-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcwal-extent-send-stream: worker=0 lane=0 port=36002 conn=0
+zcwal-extent-send-worker: worker=0 streams=1 payload_bytes=67108864 wire_bytes=69206016 extents=16384 logical_records=16384 acks=16384 seconds=0.466240 payload_Gbitps=1.151 logical_iops=35141 thread_cpu_seconds=0.063387 cpu_wall_pct=13.6 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=16390 involuntary_ctxt_switches=0 migrations=0
+zcwal-extent-send-worker-latency: worker=0 ack_count=16384 ack_avg_ns=28405 ack_min_ns=25847 ack_p50_ns=28000 ack_p95_ns=30000 ack_p99_ns=44000 ack_p999_ns=52000 ack_max_ns=267639
+zcwal-extent-send-summary: payload_bytes=67108864 wire_bytes=69206016 extents=16384 logical_records=16384 acks=16384 seconds=0.466304 payload_Gbitps=1.151 logical_iops=35136
+zcwal-extent-send-latency-summary: ack_count=16384 ack_avg_ns=28405 ack_min_ns=25847 ack_p50_ns=28000 ack_p95_ns=30000 ack_p99_ns=44000 ack_p999_ns=52000 ack_max_ns=267639

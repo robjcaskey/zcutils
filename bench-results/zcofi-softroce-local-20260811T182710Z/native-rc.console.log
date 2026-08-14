@@ -1,0 +1,18 @@
+softroce-native-rc-start: transport=native-verbs-rc operation=send-recv-pingpong rma=no message_bytes=4096 iterations=1000 repeats=3 client_device=rxe_zc_c target_device=rxe_zc_t client_cpu=0 target_cpu=1 gid_index=1 shared_system=yes representative=false coordination_token=l18cad140a34ef62b-ce04e coordination_honored=true
+  local address:  LID 0x0000, QPN 0x000021, PSN 0x6a3315, GID ::ffff:198.18.0.1
+  remote address: LID 0x0000, QPN 0x000021, PSN 0x25fdcd, GID ::ffff:198.18.0.2
+8192000 bytes in 0.02 seconds = 4106.78 Mbit/sec
+1000 iters in 0.02 seconds = 15.96 usec/iter
+repeat=1 usec_per_pingpong_iteration=15.96
+  local address:  LID 0x0000, QPN 0x000022, PSN 0xee90f4, GID ::ffff:198.18.0.1
+  remote address: LID 0x0000, QPN 0x000022, PSN 0xde5e36, GID ::ffff:198.18.0.2
+8192000 bytes in 0.02 seconds = 4167.90 Mbit/sec
+1000 iters in 0.02 seconds = 15.72 usec/iter
+repeat=2 usec_per_pingpong_iteration=15.72
+  local address:  LID 0x0000, QPN 0x000023, PSN 0x3eec4a, GID ::ffff:198.18.0.1
+  remote address: LID 0x0000, QPN 0x000023, PSN 0x2eb98c, GID ::ffff:198.18.0.2
+8192000 bytes in 0.02 seconds = 3845.33 Mbit/sec
+1000 iters in 0.02 seconds = 17.04 usec/iter
+repeat=3 usec_per_pingpong_iteration=17.04
+softroce-native-rc-summary: operation=send-recv-pingpong rma=no repeats=3 min_usec=15.720 mean_usec=16.240 max_usec=17.040 spread_pct=8.13 shared_system=yes representative=false
+artifact=/home/rob/zcutils/bench-results/zcofi-softroce-local-20260811T182710Z/native-rc

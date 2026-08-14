@@ -38,17 +38,21 @@ OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED="${OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED
 OFI_HUGETLB_CONFIRMED="${OFI_HUGETLB_CONFIRMED:-0}"
 OFI_RMA_SOURCE_HUGETLB_CONFIRMED="${OFI_RMA_SOURCE_HUGETLB_CONFIRMED:-0}"
 LEAF_ZCMEM_HUGETLB="${LEAF_ZCMEM_HUGETLB:-0}"
-KERNEL_QUEUES="${KERNEL_QUEUES:-2}"
+LANES="${LANES:-2}"
+KERNEL_QUEUES="${KERNEL_QUEUES:-$LANES}"
 TARGET_CPU_LIST="${TARGET_CPU_LIST:-1,9}"
 KTHREAD_CPU_LIST="${KTHREAD_CPU_LIST:-2,10}"
 LEAF_CPU_LIST="${LEAF_CPU_LIST:-3,11}"
 OWNER_INGRESS="${OWNER_INGRESS:-1}"
-OWNER_COUNT="${OWNER_COUNT:-2}"
+OWNER_COUNT="${OWNER_COUNT:-$LANES}"
 OWNER_CPU_LIST="${OWNER_CPU_LIST:-18,26}"
 OWNER_PIPELINE_BATCHES="${OWNER_PIPELINE_BATCHES:-1}"
 POSTGRES_CPU_LIST="${POSTGRES_CPU_LIST:-4-7,12-15,20-23,28-31}"
 PGBENCH_CPU_LIST="${PGBENCH_CPU_LIST:-0,8,16,24}"
 SYNC_COORDINATOR_CPU="${SYNC_COORDINATOR_CPU:-17}"
+MAX_CONNECTIONS="${MAX_CONNECTIONS:-420}"
+SHARED_BUFFERS="${SHARED_BUFFERS:-4GB}"
+SECTOR_ORDER_SLOTS="${SECTOR_ORDER_SLOTS:-4194304}"
 
 COORD_BIN="${AGENT_COORD_BIN:-$HOME/.local/bin/agent-coord}"
 COORDINATION_SCOPE="${COORDINATION_SCOPE:-shared-host}"
@@ -56,6 +60,9 @@ BOOTSTRAP_MANIFEST="${ZCUTILS_BOOTSTRAP_MANIFEST:-$HOME/.local/state/zcutils/adh
 MODULE="$ROOT/kmods/zcnblk_client_mod.ko"
 TARGET="$ROOT/target/release/zcnblk-shm-target"
 LEAF="$ROOT/target/release/zcnblk-wal-leaf"
+if [ -z "${PGBIN:-}" ] && command -v pg_config >/dev/null 2>&1; then
+	PGBIN="$(pg_config --bindir)"
+fi
 PGBIN="${PGBIN:-/usr/lib/postgresql/17/bin}"
 MOUNTPOINT=/mnt/zc-pgbench-hwm
 SOCKET_DIR=/tmp/zc-pgbench-hwm-socket
@@ -107,20 +114,21 @@ fi
 [[ "$OFI_RMA_WRITE_MIN_QD" =~ ^[0-9]+$ ]] && [ "$OFI_RMA_WRITE_MIN_QD" -gt 0 ] && \
 	[ "$OFI_RMA_WRITE_MIN_QD" -le 1024 ] || die 'OFI_RMA_WRITE_MIN_QD must be in 1..=1024'
 [ "$OFI_RMA_WRITE_OWNER_MODE" = placement ] || \
-	die 'this matched two-owner PostgreSQL harness supports OFI_RMA_WRITE_OWNER_MODE=placement only'
+	die 'the topology-matched PostgreSQL harness supports OFI_RMA_WRITE_OWNER_MODE=placement only'
 [[ "$OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED" =~ ^[01]$ ]] || \
 	die 'OFI_RMA_WRITE_MULTI_ENDPOINT_CONFIRMED must be zero or one'
-[ "$KERNEL_QUEUES" -eq 2 ] || die 'this matched harness currently requires KERNEL_QUEUES=2'
-[ "$OWNER_COUNT" -eq 2 ] || die 'this matched harness currently requires OWNER_COUNT=2'
+[[ "$LANES" =~ ^[0-9]+$ ]] && [ "$LANES" -gt 0 ] || die 'LANES must be a positive integer'
+[ "$KERNEL_QUEUES" -eq "$LANES" ] || die 'KERNEL_QUEUES must equal LANES'
+[ "$OWNER_COUNT" -eq "$LANES" ] || die 'OWNER_COUNT must equal LANES'
 [ "$REPEATS" -ge 3 ] || die 'representative PostgreSQL transport comparisons require REPEATS>=3'
 IFS=, read -r -a target_cpus <<<"$TARGET_CPU_LIST"
 IFS=, read -r -a kthread_cpus <<<"$KTHREAD_CPU_LIST"
 IFS=, read -r -a leaf_cpus <<<"$LEAF_CPU_LIST"
 IFS=, read -r -a owner_cpus <<<"$OWNER_CPU_LIST"
-[ "${#target_cpus[@]}" -eq 2 ] || die 'TARGET_CPU_LIST must name exactly two individual CPUs'
-[ "${#kthread_cpus[@]}" -eq 2 ] || die 'KTHREAD_CPU_LIST must name exactly two individual CPUs'
-[ "${#leaf_cpus[@]}" -eq 2 ] || die 'LEAF_CPU_LIST must name exactly two individual CPUs'
-[ "${#owner_cpus[@]}" -eq 2 ] || die 'OWNER_CPU_LIST must name exactly two individual CPUs'
+[ "${#target_cpus[@]}" -eq "$LANES" ] || die 'TARGET_CPU_LIST must name exactly one individual CPU per lane'
+[ "${#kthread_cpus[@]}" -eq "$LANES" ] || die 'KTHREAD_CPU_LIST must name exactly one individual CPU per lane'
+[ "${#leaf_cpus[@]}" -eq "$LANES" ] || die 'LEAF_CPU_LIST must name exactly one individual CPU per lane'
+[ "${#owner_cpus[@]}" -eq "$LANES" ] || die 'OWNER_CPU_LIST must name exactly one individual CPU per lane'
 
 cpu_lists_intersect() {
 	local first="$1" second="$2"
@@ -215,8 +223,8 @@ case "$COORDINATION_SCOPE" in
 
 		perf_result="$($COORD_BIN request --owner codex:zcutils-pgbench-hwm --mode soft-exclusive \
 			--sensitivity critical --priority 65 --ttl 3600 \
-			--resource "cpu=0-31;memory-bandwidth=*;nic=*;port=$LEAF_PORT-$((LEAF_PORT + 1)),$((LEAF_PORT + OFI_CONTROL_PORT_OFFSET))-$((LEAF_PORT + OFI_CONTROL_PORT_OFFSET + 1)),$PORT" \
-			--note 'two-lane topology-explicit durable PostgreSQL benchmark')"
+			--resource "cpu=0-31;memory-bandwidth=*;nic=*;port=$LEAF_PORT-$((LEAF_PORT + LANES - 1)),$((LEAF_PORT + OFI_CONTROL_PORT_OFFSET))-$((LEAF_PORT + OFI_CONTROL_PORT_OFFSET + LANES - 1)),$PORT" \
+			--note "$LANES-lane topology-explicit durable PostgreSQL benchmark")"
 		printf '%s\n' "$perf_result" | tee -a "$OUTDIR/coordination.log"
 		perf_token="$(token_from_result "$perf_result")"
 		grep -q ' honored=true ' <<<"$perf_result" && coord_honored=true
@@ -227,8 +235,15 @@ case "$COORDINATION_SCOPE" in
 			die 'bootstrap manifest does not prove dedicated adhoc ownership'
 		grep -qx 'coordination_honored=true' "$BOOTSTRAP_MANIFEST" || \
 			die 'bootstrap manifest does not honor dedicated coordination'
-		grep -Eq '^instance_id=i-[0-9a-f]+$' "$BOOTSTRAP_MANIFEST" || \
-			die 'bootstrap manifest does not identify an EC2 instance'
+		if grep -q '^cloud_provider=' "$BOOTSTRAP_MANIFEST"; then
+			grep -Eq '^cloud_provider=(ec2|gce)$' "$BOOTSTRAP_MANIFEST" || \
+				die 'bootstrap manifest does not identify a supported cloud provider'
+			grep -Eq '^instance_id=(i-[0-9a-f]+|[0-9]+)$' "$BOOTSTRAP_MANIFEST" || \
+				die 'bootstrap manifest does not identify an EC2 or GCE instance'
+		else
+			grep -Eq '^instance_id=i-[0-9a-f]+$' "$BOOTSTRAP_MANIFEST" || \
+				die 'legacy bootstrap manifest does not identify an EC2 instance'
+		fi
 		printf 'scope=dedicated-adhoc honored=true manifest=%s\n' "$BOOTSTRAP_MANIFEST" | \
 			tee -a "$OUTDIR/coordination.log"
 		coord_honored=true
@@ -304,25 +319,28 @@ if [ "$preflight_warnings" -ne 0 ] &&
 	die 'strict topology preflight rejected this benchmark before representative numbers were printed'
 fi
 
-sudo -n insmod "$MODULE" transport=shm lanes=2 connections_per_lane=1 \
-	size_mib="$SIZE_MIB" queues="$KERNEL_QUEUES" queue_depth=256 shm_sector_order_slots=4194304 \
+sudo -n insmod "$MODULE" transport=shm lanes="$LANES" connections_per_lane=1 \
+	size_mib="$SIZE_MIB" queues="$KERNEL_QUEUES" queue_depth=256 shm_sector_order_slots="$SECTOR_ORDER_SLOTS" \
 	max_frame_bytes=4096 pipeline_depth=128 shm_ring_entries=512 \
 	shm_payload_entries=8192 shm_poll_us=1000 shm_ordering_epochs="$ORDERING_EPOCHS" pin_threads=0
 
-declare -a postgres_connection_hctxs=("" "")
+declare -a postgres_connection_hctxs=()
+for ((connection = 0; connection < LANES; connection++)); do
+	postgres_connection_hctxs+=("")
+done
 for hctx_cpu_file in /sys/block/zcnblk0/mq/*/cpu_list; do
 	[ -r "$hctx_cpu_file" ] || die 'zcnblk0 did not expose an hctx CPU map'
 	hctx="${hctx_cpu_file%/cpu_list}"
 	hctx="${hctx##*/}"
 	if cpu_lists_intersect "$POSTGRES_CPU_LIST" "$(cat "$hctx_cpu_file")"; then
-		connection=$((hctx % 2))
+		connection=$((hctx % LANES))
 		postgres_connection_hctxs[$connection]="${postgres_connection_hctxs[$connection]}${postgres_connection_hctxs[$connection]:+,}$hctx"
 	fi
 done
-for connection in 0 1; do
+for ((connection = 0; connection < LANES; connection++)); do
 	if [ -z "${postgres_connection_hctxs[$connection]}" ]; then
 		topology_representative=0
-		warn_preflight "PostgreSQL CPU list $POSTGRES_CPU_LIST reaches no hctx mapped to connection $connection (hctx modulo 2)."
+		warn_preflight "PostgreSQL CPU list $POSTGRES_CPU_LIST reaches no hctx mapped to connection $connection (hctx modulo $LANES)."
 	fi
 done
 if [ "$preflight_warnings" -ne 0 ] &&
@@ -352,7 +370,7 @@ if [ "$START_LOCAL_LEAF" = 1 ]; then
 		FI_EFA_USE_DEVICE_RDMA=1 \
 		URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN=1 \
 		URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC=1 \
-		"$LEAF" "zcmem:$LEAF_SIZE" "$LEAF_HOST" "$LEAF_PORT" 2 1 4096 2 true blocking \
+		"$LEAF" "zcmem:$LEAF_SIZE" "$LEAF_HOST" "$LEAF_PORT" "$LANES" 1 4096 "$LANES" true blocking \
 		>"$OUTDIR/leaf.log" 2>&1 &
 	leaf_pid=$!
 	for _ in $(seq 1 200); do
@@ -361,13 +379,20 @@ if [ "$START_LOCAL_LEAF" = 1 ]; then
 		else
 			ready_port="$LEAF_PORT"
 		fi
-		listeners="$(ss -H -ltn | awk -v first=":$ready_port" -v second=":$((ready_port + 1))" \
-			'$4 ~ first"$" || $4 ~ second"$" {count++} END {print count + 0}')"
-		[ "$listeners" -eq 2 ] && break
+		listeners="$(ss -H -ltn | awk -v base="$ready_port" -v lanes="$LANES" '
+			{
+				address = $4
+				sub(/^.*:/, "", address)
+				port = address + 0
+				if (port >= base && port < base + lanes) count++
+			}
+			END { print count + 0 }
+		')"
+		[ "$listeners" -eq "$LANES" ] && break
 		[ -r "/proc/$leaf_pid/comm" ] || die 'leaf exited during startup'
 		sleep 0.05
 	done
-	[ "${listeners:-0}" -eq 2 ] || die 'leaf did not open both lane/control listeners'
+	[ "${listeners:-0}" -eq "$LANES" ] || die 'leaf did not open every lane/control listener'
 fi
 
 sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$OUTDIR/target.pid" \
@@ -451,7 +476,7 @@ if [ "$WAL_TRANSPORT" = ofi ]; then
 	fi
 fi
 
-for lane in 0 1; do
+for ((lane = 0; lane < LANES; lane++)); do
 	name="zcnblk-shm-$lane-0"
 	pid="$(ps -e -o pid=,comm= | awk -v name="$name" '$2 == name {print $1}')"
 	[ -n "$pid" ] || die "missing kernel lane thread $name"
@@ -464,8 +489,12 @@ for lane in 0 1; do
 done
 
 if [ "$START_LOCAL_LEAF" = 1 ]; then
-	leaf_cpu_map="0:${leaf_cpus[0]},1:${leaf_cpus[1]}"
-	leaf_nic_map="0:${OFI_DOMAIN:-tcp-route},1:${OFI_DOMAIN:-tcp-route}"
+	leaf_cpu_map=
+	leaf_nic_map=
+	for ((lane = 0; lane < LANES; lane++)); do
+		leaf_cpu_map="${leaf_cpu_map}${leaf_cpu_map:+,}$lane:${leaf_cpus[$lane]}"
+		leaf_nic_map="${leaf_nic_map}${leaf_nic_map:+,}$lane:${OFI_DOMAIN:-tcp-route}"
+	done
 else
 	leaf_cpu_map="${external_leaf_cpu_map:-missing-see-external-leaf-topology.log}"
 	leaf_nic_map="${external_leaf_nic_map:-missing-see-external-leaf-topology.log}"
@@ -484,21 +513,28 @@ fi
 	printf 'rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=%s\n' \
 		"$OFI_RMA_SOURCE_HUGETLB_CONFIRMED"
 	printf 'topology_representative=%s preflight_warnings=%s\n' "$topology_representative" "$preflight_warnings"
-	printf 'kernel_queues=%s target_cpus=%s kthread_cpus=%s leaf_cpus=%s owner_cpus=%s owner_count=%s owner_pipeline_batches=%s\n' \
-		"$KERNEL_QUEUES" "$TARGET_CPU_LIST" "$KTHREAD_CPU_LIST" "$LEAF_CPU_LIST" "$OWNER_CPU_LIST" "$OWNER_COUNT" "$OWNER_PIPELINE_BATCHES"
-	printf 'lane_to_kthread_cpu=0:%s,1:%s lane_to_ingress_worker_cpu=0:%s,1:%s owner_lane_to_worker_cpu=0:%s,1:%s leaf_lane_to_worker_cpu=%s\n' \
-		"${kthread_cpus[0]}" "${kthread_cpus[1]}" "${target_cpus[0]}" "${target_cpus[1]}" \
-		"${owner_cpus[0]}" "${owner_cpus[1]}" "$leaf_cpu_map"
+	printf 'lane_count=%s kernel_queues=%s target_cpus=%s kthread_cpus=%s leaf_cpus=%s owner_cpus=%s owner_count=%s owner_pipeline_batches=%s sector_order_slots=%s\n' \
+		"$LANES" "$KERNEL_QUEUES" "$TARGET_CPU_LIST" "$KTHREAD_CPU_LIST" "$LEAF_CPU_LIST" "$OWNER_CPU_LIST" "$OWNER_COUNT" "$OWNER_PIPELINE_BATCHES" "$SECTOR_ORDER_SLOTS"
+	lane_to_kthread_cpu=
+	lane_to_ingress_worker_cpu=
+	owner_lane_to_worker_cpu=
+	for ((lane = 0; lane < LANES; lane++)); do
+		lane_to_kthread_cpu="${lane_to_kthread_cpu}${lane_to_kthread_cpu:+,}$lane:${kthread_cpus[$lane]}"
+		lane_to_ingress_worker_cpu="${lane_to_ingress_worker_cpu}${lane_to_ingress_worker_cpu:+,}$lane:${target_cpus[$lane]}"
+		owner_lane_to_worker_cpu="${owner_lane_to_worker_cpu}${owner_lane_to_worker_cpu:+,}$lane:${owner_cpus[$lane]}"
+	done
+	printf 'lane_to_kthread_cpu=%s lane_to_ingress_worker_cpu=%s owner_lane_to_worker_cpu=%s leaf_lane_to_worker_cpu=%s\n' \
+		"$lane_to_kthread_cpu" "$lane_to_ingress_worker_cpu" "$owner_lane_to_worker_cpu" "$leaf_cpu_map"
 	printf 'leaf_lane_to_nic=%s external_leaf_topology_artifact=%s\n' \
 		"$leaf_nic_map" "${EXTERNAL_LEAF_TOPOLOGY_ARTIFACT:-local-leaf}"
 	printf 'placement_owner=separate-userspace-stable-extent-owner block_client_placement=no owner_ingress=%s\n' "$OWNER_INGRESS"
-	printf 'lane0_hctx=%s\n' "$(cat /sys/block/zcnblk0/mq/0/cpu_list)"
-	printf 'lane1_hctx=%s\n' "$(cat /sys/block/zcnblk0/mq/1/cpu_list)"
-	printf 'postgres_connection0_hctxs=%s postgres_connection1_hctxs=%s\n' \
-		"${postgres_connection_hctxs[0]}" "${postgres_connection_hctxs[1]}"
+	for ((lane = 0; lane < LANES; lane++)); do
+		printf 'lane%s_hctx=%s\n' "$lane" "$(cat "/sys/block/zcnblk0/mq/$lane/cpu_list")"
+		printf 'postgres_connection%s_hctxs=%s\n' "$lane" "${postgres_connection_hctxs[$lane]}"
+	done
 	printf 'sync_coordinator_cpu=%s\n' "$SYNC_COORDINATOR_CPU"
 	printf 'postgres_cpus=%s\npgbench_cpus=%s\n' "$POSTGRES_CPU_LIST" "$PGBENCH_CPU_LIST"
-	printf 'scale=%s clients=%s jobs=%s duration=%s repeats=%s warmup_seconds=%s builtin=%s track_wal_io_timing=%s vector_hwm=%s ordering_epochs=%s\n' "$SCALE" "$CLIENTS" "$JOBS" "$DURATION" "$REPEATS" "$WARMUP_SECONDS" "$PGBENCH_BUILTIN" "$TRACK_WAL_IO_TIMING" "$VECTOR_HWM" "$ORDERING_EPOCHS"
+	printf 'scale=%s clients=%s jobs=%s duration=%s repeats=%s warmup_seconds=%s builtin=%s track_wal_io_timing=%s vector_hwm=%s ordering_epochs=%s max_connections=%s shared_buffers=%s\n' "$SCALE" "$CLIENTS" "$JOBS" "$DURATION" "$REPEATS" "$WARMUP_SECONDS" "$PGBENCH_BUILTIN" "$TRACK_WAL_IO_TIMING" "$VECTOR_HWM" "$ORDERING_EPOCHS" "$MAX_CONNECTIONS" "$SHARED_BUFFERS"
 	if [ "$VECTOR_HWM" = 1 ]; then
 		printf 'write_completion=local-dirty-lease-admission; sync_completion=remote-volatile-leaf-hwm\n'
 	else
@@ -523,7 +559,7 @@ sudo -n chown postgres:postgres "$MOUNTPOINT"
 sudo -n -u postgres "$PGBIN/initdb" -D "$DATA_DIR" --no-locale --encoding=UTF8 >"$OUTDIR/initdb.log" 2>&1
 sudo -n -u postgres taskset -c "$POSTGRES_CPU_LIST" "$PGBIN/pg_ctl" \
 	-D "$DATA_DIR" -l "$MOUNTPOINT/postgres.log" -w start -o \
-	"-k $SOCKET_DIR -p $PORT -c max_connections=420 -c shared_buffers=4GB -c fsync=on -c synchronous_commit=on -c full_page_writes=on -c track_wal_io_timing=$TRACK_WAL_IO_TIMING -c checkpoint_timeout=30min -c max_wal_size=32GB -c min_wal_size=4GB" \
+	"-k $SOCKET_DIR -p $PORT -c max_connections=$MAX_CONNECTIONS -c shared_buffers=$SHARED_BUFFERS -c fsync=on -c synchronous_commit=on -c full_page_writes=on -c track_wal_io_timing=$TRACK_WAL_IO_TIMING -c checkpoint_timeout=30min -c max_wal_size=32GB -c min_wal_size=4GB" \
 	>"$OUTDIR/pgctl-start.log" 2>&1
 postgres_started=1
 "$PGBIN/createdb" -h "$SOCKET_DIR" -p "$PORT" -U postgres pgbench

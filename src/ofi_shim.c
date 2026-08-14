@@ -26,6 +26,22 @@
 #define FI_EPROTO EPROTO
 #endif
 
+/*
+ * FI_OPT_MAX_MSG_SIZE, FI_OPT_MAX_RMA_SIZE, and the standardized EFA
+ * emulation query options were added to the public headers in libfabric 2.0.
+ * Distribution images such as Ubuntu 24.04 still ship 1.x headers.  Keep the
+ * baseline MSG providers buildable there, but leave the query return codes at
+ * -FI_ENOSYS so strict EFA validation continues to fail closed instead of
+ * silently assuming capabilities that the installed provider cannot prove.
+ */
+#if FI_MAJOR_VERSION >= 2
+#define ZC_OFI_HAVE_ENDPOINT_LIMIT_OPTIONS 1
+#define ZC_OFI_HAVE_EFA_EMULATION_OPTIONS 1
+#else
+#define ZC_OFI_HAVE_ENDPOINT_LIMIT_OPTIONS 0
+#define ZC_OFI_HAVE_EFA_EMULATION_OPTIONS 0
+#endif
+
 #ifdef FI_EFA_WR_HIGH_PPS
 #define ZC_OFI_HAVE_EFA_WR_HIGH_PPS 1
 #else
@@ -1128,16 +1144,18 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
         return rc;
     }
 
+    ep->max_msg_size_query_rc = -FI_ENOSYS;
+    ep->max_rma_size_query_rc = -FI_ENOSYS;
+#if ZC_OFI_HAVE_ENDPOINT_LIMIT_OPTIONS
     size_t queried_size = 0;
     size_t queried_size_len = sizeof(queried_size);
-    ep->max_msg_size_query_rc = fi_getopt(
-        &ep->ep->fid, FI_OPT_ENDPOINT, FI_OPT_MAX_MSG_SIZE,
-        &queried_size, &queried_size_len);
-    if (ep->max_msg_size_query_rc == 0 && queried_size_len == sizeof(queried_size) &&
-        queried_size != 0) {
+    ep->max_msg_size_query_rc =
+        fi_getopt(&ep->ep->fid, FI_OPT_ENDPOINT, FI_OPT_MAX_MSG_SIZE,
+                  &queried_size, &queried_size_len);
+    if (ep->max_msg_size_query_rc == 0 &&
+        queried_size_len == sizeof(queried_size) && queried_size != 0) {
         ep->max_msg_size = queried_size;
     }
-    ep->max_rma_size_query_rc = -FI_ENODATA;
     if (caps & FI_RMA) {
         queried_size = 0;
         queried_size_len = sizeof(queried_size);
@@ -1149,6 +1167,7 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
             ep->max_rma_size = queried_size;
         }
     }
+#endif
 
     if (ep->strict_topology && efa_direct &&
         (ep->max_msg_size_query_rc != 0 || ep->max_msg_size == 0 ||
@@ -1164,6 +1183,7 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
     }
 
     if (efa_provider) {
+#if ZC_OFI_HAVE_EFA_EMULATION_OPTIONS
         bool emulated = false;
         size_t option_len = sizeof(emulated);
         ep->emulated_read_query_rc = fi_getopt(
@@ -1180,6 +1200,10 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
         if (ep->emulated_write_query_rc == 0) {
             ep->emulated_write = emulated;
         }
+#else
+        ep->emulated_read_query_rc = -FI_ENOSYS;
+        ep->emulated_write_query_rc = -FI_ENOSYS;
+#endif
         if (ep->strict_topology && (caps & FI_RMA) &&
             (ep->emulated_read_query_rc || ep->emulated_write_query_rc ||
              ep->emulated_read || ep->emulated_write)) {

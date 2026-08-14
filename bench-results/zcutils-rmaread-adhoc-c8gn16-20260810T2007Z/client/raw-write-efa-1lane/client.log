@@ -1,0 +1,7 @@
+zcofi-rma-write: provider=efa endpoint=rdm addr=172.31.42.46 base_service=31800 lanes=1 bytes_per_lane=33554432 extent_bytes=4096 workers=1 direct_rma_write=yes source_payload_pattern=fill:0x00 commit_doorbell=ofi-msg records_per_extent=1 timeout_ms=30000 busy_poll_iters=0 cq_sleep_ns=0 ofi_domain=efa_0-rdm
+zcofi-rma-write-worker: affinity_index=0 target_cpu=32 status=ok
+tcp-bench-connect-route-probe: peer=172.31.42.46:32800 local_socket=172.31.36.99:35040 probe_src=172.31.36.99 route_dev=ens50 route_src=172.31.36.99 route="172.31.42.46 from 172.31.36.99 dev ens50 uid 1000 \ cache"
+zcofi-control-client: addr=172.31.42.46:32800 local_addr_bytes=32 remote_addr_bytes=32
+zcofi-rma-write-lane: worker=0 lane=0 provider=efa endpoint=rdm addr=172.31.42.46 service=31800 control_port=32800 remote_addr=0x0000e91f9749e010 remote_key=0x0000000000200016 extent_bytes=4096 max_msg_size=18446744073709551615 inject_size=4096
+zcofi-rma-write-worker: worker=0 streams=1 payload_bytes=33554432 wire_bytes=33554496 extents=8192 logical_records=8192 acks=1 seconds=0.137446 payload_Gbitps=1.953 logical_iops=59601 thread_cpu_seconds=0.148233 cpu_wall_pct=107.8 target_cpu=32 affinity_applied=true start_cpu=32 end_cpu=32 voluntary_ctxt_switches=28 involuntary_ctxt_switches=1 migrations=0
+zcofi-rma-write-summary: payload_bytes=33554432 wire_bytes=33554496 extents=8192 logical_records=8192 doorbells=1 seconds=0.137446 payload_Gbitps=1.953 logical_iops=59601 voluntary_ctxt_switches=28 involuntary_ctxt_switches=1 migrations=0

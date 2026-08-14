@@ -1,0 +1,624 @@
+nvmet_target_ready=true nqn=nqn.2026-08.io.zcutils:zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvmet-target-setup'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvmet-target-setup'
+connecting to device: nvme1
+nvmet_client_ready=true device=/dev/nvme1n1 partuuid=ea91c428-74bb-485c-8b16-2d975854273b io_queues=2
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvmet-client-connect 2'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvmet-client-connect 2'
+leaf_ready=true tag=current-tcp-rw-w2-qd32 transport=tcp mode=rw lanes=2 qd=32 pid=50745
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-start current-tcp-rw-w2-qd32 tcp rw 2 32 current'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-start current-tcp-rw-w2-qd32 tcp rw 2 32 current'
+PERF NOTE: external WAL uses lane-inline transport (mode=rw); stable-owner is the measured high-IOPS write path
+scope=dedicated-adhoc honored=true manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+[13:26:19] loading placement-free shared-memory client edge
+classification=dedicated-adhoc-control
+coordination_scope=dedicated-adhoc
+bootstrap_manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+lane_count=2
+block_per_worker_qd=32 block_workers=2 block_aggregate_outstanding_depth=64
+topology_cpu_list=unrestricted
+coordinator_cpu=none
+lane=0 client_cpu=0 target_cpu=1 transport_cpu=inline kernel_cpu=2 leaf_cpu=none hctx_cpus=0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+lane=1 client_cpu=32 target_cpu=33 transport_cpu=inline kernel_cpu=34 leaf_cpu=none hctx_cpus=32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63
+hugepages_total=8192
+hugepages_free=8192
+hugepage_size_kib=2048
+memlock_kib=unlimited
+loadavg=0.00 0.57 1.14 1/807 45640
+coordination_honored=true
+external_nic_low_latency_confirmed=1 scope=client-and-leaf
+target_poll_us=1000
+target_busy_poll_us=1000
+target_busy_hysteresis_us=10000
+target_poll_clock_check_spins=64
+kernel_completion_poll_us=1000
+kernel_state_interval_ms=0
+block_ring_mode=normal sqpoll_cpu_list=none sqpoll_idle_ms=1000
+block_engine=uring-fixed fua_writes=0 write_completion=ordinary-device-ack
+block_latency_sample_rate=64
+block_ring_stats=1 block_wait_min_completions=1 block_cqe_spin=0 block_cqe_adaptive_spin=0 block_cqe_adaptive_spin_min=0 block_cqe_adaptive_spin_max=4096 block_cqe_adaptive_wait_ns=50000 block_cqe_hot_poll=1 block_cqe_hot_poll_progress_spins=4096
+shm_descriptor_entries_per_channel=128
+kernel_queues=2 kernel_queue_depth=32 kernel_pipeline_depth=32
+shm_sector_order_slots=65536
+shm_payload_entries_per_channel=4096
+writeback_batch_requested=4096 writeback_batch_effective=4096
+request_batch=1 request_batch_fill_us=0 request_batch_fill_min=32
+wal_lane_batch=1 representative_eligible=true
+wal_owner_dispatch=0 wal_owner_extent_records=256 wal_owner_worker_spins=65536 wal_owner_worker_adaptive_spin=1 wal_owner_worker_spin_min=4096 wal_owner_worker_adaptive_wait_ns=50000
+wal_owner_ingress=0 wal_owner_ingress_source=explicit wal_owner_count=2 wal_owner_cpu_list=none
+wal_owner_write_fill_us=0 wal_owner_write_fill_min=256 wal_owner_pipeline_batches=16 wal_owner_pipeline_refill_spins=256 wal_owner_mixed_hysteresis_us=10000
+wal_owner_debounce_us=2 wal_owner_backlog_low_records=16 wal_owner_backlog_high_records=256
+wal_owner_batch_records=2048 wal_owner_fragment_records=2 wal_owner_fragment_fill_us=500 wal_owner_queue_depth=128
+wal_owner_foreground_immediate_limit=1
+wal_owner_max_tx_iovecs=960
+wal_lane_window=32
+wal_split_transport=0 wal_transport_cpu_list=inline
+wal_transport_wait_policy=greedy
+transfer_payload_slots_requested=1 transfer_payload_slots_effective=1
+wal_extent_records=128 wal_extent_fill_us=20 wal_split_min_batch_records=64
+wal_compact_writes=1
+dirty_pressure_reserve=0
+remote_recv_spins=0 leaf_spin_reads=0 leaf_spin_policy=adaptive leaf_spin_budget=adaptive leaf_adaptive_spin_min=256 leaf_adaptive_spin_max=65536 leaf_adaptive_wait_ns=50000 leaf_adaptive_hysteresis_ns=10000000
+remote_recv_policy=adaptive remote_recv_adaptive_spin_min=0 remote_recv_adaptive_spin_max=65536 remote_recv_adaptive_wait_ns=50000 remote_recv_adaptive_hysteresis_ns=10000000
+remote_send_mode=blocking remote_send_ring_entries=256 remote_send_zc_required=1 allow_unsafe_send_zc=0
+remote_transport=tcp remote_ofi_provider=efa remote_ofi_endpoint=rdm ofi_domain=efa_0-rdm ofi_cq_sleep_ns=0 wal_ofi_message_bytes=65536 wal_ofi_hugetlb_confirmed=1 efa_use_device_rdma=1 shm_ofi_rma_reads=0 shm_ofi_rma_read_qd=32 rma_read_aggregate_outstanding_depth=64 leaf_ofi_rma_reads=0 shm_ofi_rma_writes=0 shm_ofi_rma_writes_required=0 shm_ofi_rma_write_qd=32 rma_write_aggregate_outstanding_depth=64 leaf_ofi_rma_writes=0 rma_write_delivery_complete=1
+rma_write_completion=delivery-cq-before-doorbell-result-hwm rma_write_pipeline_batches=16 rma_write_overlap_order=delivery-barrier end_to_end_zero_copy=no
+rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=0
+order_smoke_pairs=0
+shm_payload_slot_bytes=4096
+shm_lease_release_batch=1
+backend=wal-tcp local_leaf=0 leaf_target=zcmem:256M leaf_addr=172.31.39.213 leaf_port=29000 leaf_submit_mode=blocking leaf_allow_volatile_sync=1
+leaf_source_addr=kernel-route
+leaf_addrs=single-address leaf_source_addrs=single-source
+external_leaf_topology_artifact=/home/ubuntu/zcutils/bench-results/zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z/topologies/current-tcp-rw-w2-qd32.leaf-topology.log leaf_lane_to_worker_cpu=0:3,1:35 leaf_lane_to_nic=0:ens50,1:ens50
+hugetlb_preflight: free_pages=8192 required_pages=64 reason=one-hugepage-per-registered-slot
+[13:26:19] starting userspace shared target/fan; no placement decision exists in the kernel edge
+PERF WARNING: CPU governor is unchanged; record it before interpreting spread
+[13:26:19] running 4 repeated rw controls on the shared host
+repeat=1 target_context_switches=34 target_per_1k_logical_io=0.017 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=1 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=32 total_pipeline=64 wait_min_completions=1 ring_entries=64 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=4.226195 io_seconds=4.223453 slowest_worker_seconds=4.223453 total_cpu_seconds=8.415811 aggregate_cpu_percent=199.26 cpu_ns_per_op=4207.9 MiBps=1849.79 ops_per_sec=473546
+repeat=1 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=134348 all_min_ns=55076 all_p50_ns=133000 all_p95_ns=194000 all_p99_ns=244000 all_p999_ns=252000 all_max_ns=300816 read_count=15543 read_avg_ns=171396 read_min_ns=58316 read_p50_ns=188000 read_p95_ns=197000 read_p99_ns=247000 read_p999_ns=254000 read_max_ns=300816 write_count=15707 write_avg_ns=97687 write_min_ns=55076 write_p50_ns=71000 write_p95_ns=135000 write_p99_ns=189000 write_p999_ns=193000 write_max_ns=241734
+repeat=1 zcblockbench-ring: workers=2 submit_syscalls=125179 wait_cqe_calls=125181 wait_syscalls=131159 cqes_popped=2000000 try_pop_empty=250360 cqe_spin_loops=537352445 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=2 target_context_switches=18 target_per_1k_logical_io=0.009 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=2 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=32 total_pipeline=64 wait_min_completions=1 ring_entries=64 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=4.232932 io_seconds=4.230216 slowest_worker_seconds=4.230216 total_cpu_seconds=8.431871 aggregate_cpu_percent=199.32 cpu_ns_per_op=4215.9 MiBps=1846.83 ops_per_sec=472789
+repeat=2 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=134127 all_min_ns=55225 all_p50_ns=133000 all_p95_ns=194000 all_p99_ns=245000 all_p999_ns=253000 all_max_ns=315337 read_count=15543 read_avg_ns=171206 read_min_ns=63536 read_p50_ns=188000 read_p95_ns=198000 read_p99_ns=247000 read_p999_ns=257000 read_max_ns=315337 write_count=15707 write_avg_ns=97434 write_min_ns=55225 write_p50_ns=71000 write_p95_ns=136000 write_p99_ns=189000 write_p999_ns=194000 write_max_ns=295171
+repeat=2 zcblockbench-ring: workers=2 submit_syscalls=125054 wait_cqe_calls=125056 wait_syscalls=131251 cqes_popped=2000000 try_pop_empty=250110 cqe_spin_loops=537729152 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=3 target_context_switches=16 target_per_1k_logical_io=0.008 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=5 kernel_per_1k_logical_io=0.003
+repeat=3 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=32 total_pipeline=64 wait_min_completions=1 ring_entries=64 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=4.245150 io_seconds=4.242454 slowest_worker_seconds=4.242454 total_cpu_seconds=8.455372 aggregate_cpu_percent=199.30 cpu_ns_per_op=4227.7 MiBps=1841.51 ops_per_sec=471425
+repeat=3 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=134924 all_min_ns=55027 all_p50_ns=133000 all_p95_ns=194000 all_p99_ns=245000 all_p999_ns=252000 all_max_ns=307887 read_count=15543 read_avg_ns=172132 read_min_ns=61948 read_p50_ns=188000 read_p95_ns=199000 read_p99_ns=247000 read_p999_ns=256000 read_max_ns=307887 write_count=15707 write_avg_ns=98105 write_min_ns=55027 write_p50_ns=71000 write_p95_ns=136000 write_p99_ns=189000 write_p999_ns=193000 write_max_ns=241904
+repeat=3 zcblockbench-ring: workers=2 submit_syscalls=125371 wait_cqe_calls=125374 wait_syscalls=131888 cqes_popped=2000000 try_pop_empty=250746 cqe_spin_loops=540338622 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=4 target_context_switches=17 target_per_1k_logical_io=0.009 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=4 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=32 total_pipeline=64 wait_min_completions=1 ring_entries=64 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=4.245754 io_seconds=4.243034 slowest_worker_seconds=4.243034 total_cpu_seconds=8.451161 aggregate_cpu_percent=199.18 cpu_ns_per_op=4225.6 MiBps=1841.25 ops_per_sec=471361
+repeat=4 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=134985 all_min_ns=54943 all_p50_ns=133000 all_p95_ns=194000 all_p99_ns=245000 all_p999_ns=252000 all_max_ns=352366 read_count=15543 read_avg_ns=171900 read_min_ns=59981 read_p50_ns=188000 read_p95_ns=198000 read_p99_ns=247000 read_p999_ns=255000 read_max_ns=352366 write_count=15707 write_avg_ns=98456 write_min_ns=54943 write_p50_ns=119000 write_p95_ns=136000 write_p99_ns=189000 write_p999_ns=193000 write_max_ns=243945
+repeat=4 zcblockbench-ring: workers=2 submit_syscalls=125638 wait_cqe_calls=125640 wait_syscalls=131822 cqes_popped=2000000 try_pop_empty=251278 cqe_spin_loops=540068552 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+runs=4 min_iops=471361 mean_iops=472280 max_iops=473546 spread_pct=0.46
+zcnblk-shm-target-summary: backend=WalTcpLaneExtent remote_transport=tcp channels=2 requests=8000000 writes=4000448 reads=3999552 syncs=0 write_bytes=16385835008 read_bytes=16382164992 wall_seconds=17.231354 active_seconds=16.942840 active_descriptor_iops=472176 active_4k_equivalent_iops=472176 active_payload_Gibitps=14.41 kicks=435338 idle_polls=12 lease_releases=8000000 early_write_acks=4000448 fua_requests=0 polled_requests=0 ioprio_requests=8000000 registered_lease_requests=8000000 atomic_write_requests=0 write_lifetime_requests=0 dirty_read_hits=1399 dirty_read_refs=1399 dirty_pressure_events=451512 dirty_pressure_evictions=4000187 max_payload_slots_outstanding=63 remote_read_misses=3998153 completion_window_stalls=0 remote_batches=458651 avg_remote_batch_records=17.44 payload_ownership=submit-sequence-token-transfer payload_slots_free=8192/8192 completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order=hashed-sector-predecessor+lock-free-dirty-directory sync_boundary=remote-global-publication-hwm+all-lane-marker dirty_retention=transferred-page-reference-until-remote-sync-or-targeted-pressure-retire placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination=dirty-shared-slot-reference-or-remote-result-payload+shared-slot-copy kernel_payload_copies=one-per-direction writeback_materialization_copies=none-userspace;tcp-kernel-copy representative=true
+artifact=/home/ubuntu/zcutils/bench-results/zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z/client/current-tcp-rw-w2-qd32
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh zcnblk-run current-tcp-rw-w2-qd32 tcp rw 2 32 0 current'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh zcnblk-run current-tcp-rw-w2-qd32 tcp rw 2 32 0 current'
+leaf_stopped=true tag=current-tcp-rw-w2-qd32
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-stop current-tcp-rw-w2-qd32'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-stop current-tcp-rw-w2-qd32'
+repeat=1 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=32 total_pipeline=64 wait_min_completions=1 ring_entries=64 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=12.784482 io_seconds=12.781648 slowest_worker_seconds=12.781648 total_cpu_seconds=20.038686 aggregate_cpu_percent=156.78 cpu_ns_per_op=10019.3 MiBps=611.23 ops_per_sec=156474
+repeat=1 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=408181 all_min_ns=91653 all_p50_ns=419000 all_p95_ns=499000 all_p99_ns=524000 all_p999_ns=581000 all_max_ns=71829177 read_count=15543 read_avg_ns=409894 read_min_ns=91653 read_p50_ns=419000 read_p95_ns=499000 read_p99_ns=523000 read_p999_ns=569000 read_max_ns=71829177 write_count=15707 write_avg_ns=406485 write_min_ns=97724 write_p50_ns=419000 write_p95_ns=499000 write_p99_ns=526000 write_p999_ns=803000 write_max_ns=3623647
+repeat=2 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=32 total_pipeline=64 wait_min_completions=1 ring_entries=64 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=12.943836 io_seconds=12.941095 slowest_worker_seconds=12.941095 total_cpu_seconds=20.033004 aggregate_cpu_percent=154.80 cpu_ns_per_op=10016.5 MiBps=603.70 ops_per_sec=154546
+repeat=2 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=406303 all_min_ns=97273 all_p50_ns=418000 all_p95_ns=499000 all_p99_ns=521000 all_p999_ns=574000 all_max_ns=3719860 read_count=15543 read_avg_ns=406130 read_min_ns=100760 read_p50_ns=418000 read_p95_ns=500000 read_p99_ns=521000 read_p999_ns=572000 read_max_ns=3400471 write_count=15707 write_avg_ns=406475 write_min_ns=97273 write_p50_ns=418000 write_p95_ns=498000 write_p99_ns=522000 write_p999_ns=576000 write_max_ns=3719860
+repeat=3 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=32 total_pipeline=64 wait_min_completions=1 ring_entries=64 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=13.504507 io_seconds=13.501674 slowest_worker_seconds=13.501674 total_cpu_seconds=20.081580 aggregate_cpu_percent=148.73 cpu_ns_per_op=10040.8 MiBps=578.63 ops_per_sec=148130
+repeat=3 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=417274 all_min_ns=95684 all_p50_ns=417000 all_p95_ns=499000 all_p99_ns=522000 all_p999_ns=687000 all_max_ns=262909752 read_count=15543 read_avg_ns=424698 read_min_ns=97589 read_p50_ns=418000 read_p95_ns=499000 read_p99_ns=523000 read_p999_ns=2000000 read_max_ns=262909752 write_count=15707 write_avg_ns=409928 write_min_ns=95684 write_p50_ns=417000 write_p95_ns=499000 write_p99_ns=521000 write_p999_ns=576000 write_max_ns=68471960
+repeat=4 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=32 total_pipeline=64 wait_min_completions=1 ring_entries=64 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=12.923706 io_seconds=12.920874 slowest_worker_seconds=12.920874 total_cpu_seconds=20.036585 aggregate_cpu_percent=155.07 cpu_ns_per_op=10018.3 MiBps=604.64 ops_per_sec=154788
+repeat=4 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=412164 all_min_ns=101901 all_p50_ns=420000 all_p95_ns=499000 all_p99_ns=526000 all_p999_ns=589000 all_max_ns=158834961 read_count=15543 read_avg_ns=416705 read_min_ns=102283 read_p50_ns=420000 read_p95_ns=500000 read_p99_ns=527000 read_p999_ns=589000 read_max_ns=158834961 write_count=15707 write_avg_ns=407671 write_min_ns=101901 write_p50_ns=419000 write_p95_ns=499000 write_p99_ns=525000 write_p999_ns=2000000 write_max_ns=3318258
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvme-run current-nvmet-rw-w2-qd32-resume2 rw 2 32 0'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvme-run current-nvmet-rw-w2-qd32-resume2 rw 2 32 0'
+leaf_ready=true tag=current-efa-read-w2-qd64 transport=efa mode=read lanes=2 qd=64 pid=50798
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-start current-efa-read-w2-qd64 efa read 2 64 current'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-start current-efa-read-w2-qd64 efa read 2 64 current'
+PERF NOTE: external WAL uses lane-inline transport (mode=read); stable-owner is the measured high-IOPS write path
+scope=dedicated-adhoc honored=true manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+[13:27:30] loading placement-free shared-memory client edge
+classification=dedicated-adhoc-control
+coordination_scope=dedicated-adhoc
+bootstrap_manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+lane_count=2
+block_per_worker_qd=64 block_workers=2 block_aggregate_outstanding_depth=128
+topology_cpu_list=unrestricted
+coordinator_cpu=none
+lane=0 client_cpu=0 target_cpu=1 transport_cpu=inline kernel_cpu=2 leaf_cpu=none hctx_cpus=0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+lane=1 client_cpu=32 target_cpu=33 transport_cpu=inline kernel_cpu=34 leaf_cpu=none hctx_cpus=32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63
+hugepages_total=8192
+hugepages_free=8192
+hugepage_size_kib=2048
+memlock_kib=unlimited
+loadavg=2.11 1.15 1.31 1/805 46043
+coordination_honored=true
+external_nic_low_latency_confirmed=1 scope=client-and-leaf
+target_poll_us=1000
+target_busy_poll_us=1000
+target_busy_hysteresis_us=10000
+target_poll_clock_check_spins=64
+kernel_completion_poll_us=1000
+kernel_state_interval_ms=0
+block_ring_mode=normal sqpoll_cpu_list=none sqpoll_idle_ms=1000
+block_engine=uring-fixed fua_writes=0 write_completion=ordinary-device-ack
+block_latency_sample_rate=64
+block_ring_stats=1 block_wait_min_completions=1 block_cqe_spin=0 block_cqe_adaptive_spin=0 block_cqe_adaptive_spin_min=0 block_cqe_adaptive_spin_max=4096 block_cqe_adaptive_wait_ns=50000 block_cqe_hot_poll=1 block_cqe_hot_poll_progress_spins=4096
+shm_descriptor_entries_per_channel=128
+kernel_queues=2 kernel_queue_depth=64 kernel_pipeline_depth=64
+shm_sector_order_slots=65536
+shm_payload_entries_per_channel=4096
+writeback_batch_requested=4096 writeback_batch_effective=4096
+request_batch=1 request_batch_fill_us=0 request_batch_fill_min=32
+wal_lane_batch=1 representative_eligible=true
+wal_owner_dispatch=0 wal_owner_extent_records=256 wal_owner_worker_spins=65536 wal_owner_worker_adaptive_spin=1 wal_owner_worker_spin_min=4096 wal_owner_worker_adaptive_wait_ns=50000
+wal_owner_ingress=0 wal_owner_ingress_source=explicit wal_owner_count=2 wal_owner_cpu_list=none
+wal_owner_write_fill_us=0 wal_owner_write_fill_min=256 wal_owner_pipeline_batches=16 wal_owner_pipeline_refill_spins=256 wal_owner_mixed_hysteresis_us=10000
+wal_owner_debounce_us=2 wal_owner_backlog_low_records=16 wal_owner_backlog_high_records=256
+wal_owner_batch_records=2048 wal_owner_fragment_records=2 wal_owner_fragment_fill_us=500 wal_owner_queue_depth=128
+wal_owner_foreground_immediate_limit=1
+wal_owner_max_tx_iovecs=960
+wal_lane_window=64
+wal_split_transport=0 wal_transport_cpu_list=inline
+wal_transport_wait_policy=greedy
+transfer_payload_slots_requested=1 transfer_payload_slots_effective=1
+wal_extent_records=128 wal_extent_fill_us=20 wal_split_min_batch_records=64
+wal_compact_writes=1
+dirty_pressure_reserve=0
+remote_recv_spins=0 leaf_spin_reads=0 leaf_spin_policy=adaptive leaf_spin_budget=adaptive leaf_adaptive_spin_min=256 leaf_adaptive_spin_max=65536 leaf_adaptive_wait_ns=50000 leaf_adaptive_hysteresis_ns=10000000
+remote_recv_policy=adaptive remote_recv_adaptive_spin_min=0 remote_recv_adaptive_spin_max=65536 remote_recv_adaptive_wait_ns=50000 remote_recv_adaptive_hysteresis_ns=10000000
+remote_send_mode=blocking remote_send_ring_entries=256 remote_send_zc_required=1 allow_unsafe_send_zc=0
+remote_transport=ofi remote_ofi_provider=efa remote_ofi_endpoint=rdm ofi_domain=efa_0-rdm ofi_cq_sleep_ns=0 wal_ofi_message_bytes=65536 wal_ofi_hugetlb_confirmed=1 efa_use_device_rdma=1 shm_ofi_rma_reads=1 shm_ofi_rma_read_qd=64 rma_read_aggregate_outstanding_depth=128 leaf_ofi_rma_reads=1 shm_ofi_rma_writes=0 shm_ofi_rma_writes_required=0 shm_ofi_rma_write_qd=64 rma_write_aggregate_outstanding_depth=128 leaf_ofi_rma_writes=0 rma_write_delivery_complete=1
+rma_write_completion=delivery-cq-before-doorbell-result-hwm rma_write_pipeline_batches=16 rma_write_overlap_order=delivery-barrier end_to_end_zero_copy=no
+rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=0
+order_smoke_pairs=0
+shm_payload_slot_bytes=4096
+shm_lease_release_batch=1
+backend=wal-tcp local_leaf=0 leaf_target=zcmem:256M leaf_addr=172.31.39.213 leaf_port=29000 leaf_submit_mode=blocking leaf_allow_volatile_sync=1
+leaf_source_addr=kernel-route
+leaf_addrs=single-address leaf_source_addrs=single-source
+external_leaf_topology_artifact=/home/ubuntu/zcutils/bench-results/zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z/topologies/current-efa-read-w2-qd64.leaf-topology.log leaf_lane_to_worker_cpu=0:3,1:35 leaf_lane_to_nic=0:efa_0/efa_0-rdm,1:efa_0/efa_0-rdm
+hugetlb_preflight: free_pages=8192 required_pages=128 reason=one-hugepage-per-registered-slot
+[13:27:30] starting userspace shared target/fan; no placement decision exists in the kernel edge
+PERF WARNING: CPU governor is unchanged; record it before interpreting spread
+[13:27:30] running 4 repeated read controls on the shared host
+repeat=1 target_context_switches=135 target_per_1k_logical_io=0.068 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=10 kernel_per_1k_logical_io=0.005
+repeat=1 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=read workers=2 ops_per_worker=1000000 total_ops=2000000 reads=2000000 writes=0 read_percent=100 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.356581 io_seconds=3.351631 slowest_worker_seconds=3.351631 total_cpu_seconds=6.669225 aggregate_cpu_percent=198.98 cpu_ns_per_op=3334.6 MiBps=2330.95 ops_per_sec=596724
+repeat=1 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=213125 all_min_ns=194218 all_p50_ns=200000 all_p95_ns=266000 all_p99_ns=269000 all_p999_ns=271000 all_max_ns=13752960 read_count=31250 read_avg_ns=213125 read_min_ns=194218 read_p50_ns=200000 read_p95_ns=266000 read_p99_ns=269000 read_p999_ns=271000 read_max_ns=13752960 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=1 zcblockbench-ring: workers=2 submit_syscalls=99996 wait_cqe_calls=100000 wait_syscalls=100678 cqes_popped=2000000 try_pop_empty=199998 cqe_spin_loops=412477088 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=2 target_context_switches=29 target_per_1k_logical_io=0.015 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=3 kernel_per_1k_logical_io=0.002
+repeat=2 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=read workers=2 ops_per_worker=1000000 total_ops=2000000 reads=2000000 writes=0 read_percent=100 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.335749 io_seconds=3.330859 slowest_worker_seconds=3.330859 total_cpu_seconds=6.638191 aggregate_cpu_percent=199.29 cpu_ns_per_op=3319.1 MiBps=2345.49 ops_per_sec=600446
+repeat=2 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=212126 all_min_ns=118062 all_p50_ns=200000 all_p95_ns=267000 all_p99_ns=269000 all_p999_ns=271000 all_max_ns=327084 read_count=31250 read_avg_ns=212126 read_min_ns=118062 read_p50_ns=200000 read_p95_ns=267000 read_p99_ns=269000 read_p999_ns=271000 read_max_ns=327084 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=2 zcblockbench-ring: workers=2 submit_syscalls=99994 wait_cqe_calls=99998 wait_syscalls=99999 cqes_popped=2000000 try_pop_empty=199994 cqe_spin_loops=409695902 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=3 target_context_switches=40 target_per_1k_logical_io=0.020 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=5 kernel_per_1k_logical_io=0.003
+repeat=3 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=read workers=2 ops_per_worker=1000000 total_ops=2000000 reads=2000000 writes=0 read_percent=100 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.333482 io_seconds=3.328590 slowest_worker_seconds=3.328590 total_cpu_seconds=6.636993 aggregate_cpu_percent=199.39 cpu_ns_per_op=3318.5 MiBps=2347.09 ops_per_sec=600855
+repeat=3 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=212086 all_min_ns=172091 all_p50_ns=199000 all_p95_ns=267000 all_p99_ns=269000 all_p999_ns=271000 all_max_ns=4066357 read_count=31250 read_avg_ns=212086 read_min_ns=172091 read_p50_ns=199000 read_p95_ns=267000 read_p99_ns=269000 read_p999_ns=271000 read_max_ns=4066357 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=3 zcblockbench-ring: workers=2 submit_syscalls=99994 wait_cqe_calls=99998 wait_syscalls=100073 cqes_popped=2000000 try_pop_empty=199994 cqe_spin_loops=409999006 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=4 target_context_switches=23 target_per_1k_logical_io=0.011 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=4 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=read workers=2 ops_per_worker=1000000 total_ops=2000000 reads=2000000 writes=0 read_percent=100 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.334456 io_seconds=3.329584 slowest_worker_seconds=3.329584 total_cpu_seconds=6.637566 aggregate_cpu_percent=199.35 cpu_ns_per_op=3318.8 MiBps=2346.39 ops_per_sec=600676
+repeat=4 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=212094 all_min_ns=119016 all_p50_ns=200000 all_p95_ns=267000 all_p99_ns=269000 all_p999_ns=271000 all_max_ns=357064 read_count=31250 read_avg_ns=212094 read_min_ns=119016 read_p50_ns=200000 read_p95_ns=267000 read_p99_ns=269000 read_p999_ns=271000 read_max_ns=357064 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=4 zcblockbench-ring: workers=2 submit_syscalls=99994 wait_cqe_calls=99998 wait_syscalls=99999 cqes_popped=2000000 try_pop_empty=199994 cqe_spin_loops=409695902 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+runs=4 min_iops=596724 mean_iops=599675 max_iops=600855 spread_pct=0.69
+zcnblk-shm-target-summary: backend=WalTcpLaneExtent remote_transport=ofi channels=2 requests=8000000 writes=0 reads=8000000 syncs=0 write_bytes=0 read_bytes=32768000000 wall_seconds=13.620761 active_seconds=13.343929 active_descriptor_iops=599524 active_4k_equivalent_iops=599524 active_payload_Gibitps=18.30 kicks=6 idle_polls=12 lease_releases=8000000 early_write_acks=0 fua_requests=0 polled_requests=0 ioprio_requests=8000000 registered_lease_requests=8000000 atomic_write_requests=0 write_lifetime_requests=0 dirty_read_hits=0 dirty_read_refs=0 dirty_pressure_events=0 dirty_pressure_evictions=0 max_payload_slots_outstanding=64 remote_read_misses=8000000 completion_window_stalls=0 remote_batches=1623759 avg_remote_batch_records=4.93 payload_ownership=submit-sequence-token-transfer payload_slots_free=8192/8192 completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order=hashed-sector-predecessor+lock-free-dirty-directory sync_boundary=remote-global-publication-hwm+all-lane-marker dirty_retention=transferred-page-reference-until-remote-sync-or-targeted-pressure-retire placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination=dirty-shared-slot-reference-or-lane-local-rma-bounce+shared-slot-copy kernel_payload_copies=one-per-direction writeback_materialization_copies=one-userspace-ofi-message-gather;ofi-provider-copy representative=true
+zcnblk-shm-target-ofi-rma-queue: lane=0 per_lane_qd=64 slot_bytes=4096 registered_ring_bytes=262144 peak_in_flight=64 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=2361758 cq_batches=1540453 cq_completions=4000000 avg_cq_completions_per_batch=2.60 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+zcnblk-shm-target-ofi-rma-queue: lane=1 per_lane_qd=64 slot_bytes=4096 registered_ring_bytes=262144 peak_in_flight=64 final_in_flight=0 final_queued=0 final_batches=0 cq_poll_calls=2268843 cq_batches=1461208 cq_completions=4000000 avg_cq_completions_per_batch=2.74 post_eagain=0 completion=initiator-local-cq-data-visible buffer_policy=fixed-buffer-per-outstanding-operation retirement=fifo-batch-after-out-of-order-slot-copy
+artifact=/home/ubuntu/zcutils/bench-results/zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z/client/current-efa-read-w2-qd64
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh zcnblk-run current-efa-read-w2-qd64 efa read 2 64 0 current'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh zcnblk-run current-efa-read-w2-qd64 efa read 2 64 0 current'
+leaf_stopped=true tag=current-efa-read-w2-qd64
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-stop current-efa-read-w2-qd64'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-stop current-efa-read-w2-qd64'
+leaf_ready=true tag=current-tcp-read-w2-qd64 transport=tcp mode=read lanes=2 qd=64 pid=50843
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-start current-tcp-read-w2-qd64 tcp read 2 64 current'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-start current-tcp-read-w2-qd64 tcp read 2 64 current'
+PERF NOTE: external WAL uses lane-inline transport (mode=read); stable-owner is the measured high-IOPS write path
+scope=dedicated-adhoc honored=true manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+[13:27:45] loading placement-free shared-memory client edge
+classification=dedicated-adhoc-control
+coordination_scope=dedicated-adhoc
+bootstrap_manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+lane_count=2
+block_per_worker_qd=64 block_workers=2 block_aggregate_outstanding_depth=128
+topology_cpu_list=unrestricted
+coordinator_cpu=none
+lane=0 client_cpu=0 target_cpu=1 transport_cpu=inline kernel_cpu=2 leaf_cpu=none hctx_cpus=0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+lane=1 client_cpu=32 target_cpu=33 transport_cpu=inline kernel_cpu=34 leaf_cpu=none hctx_cpus=32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63
+hugepages_total=8192
+hugepages_free=8192
+hugepage_size_kib=2048
+memlock_kib=unlimited
+loadavg=3.42 1.49 1.42 1/806 46355
+coordination_honored=true
+external_nic_low_latency_confirmed=1 scope=client-and-leaf
+target_poll_us=1000
+target_busy_poll_us=1000
+target_busy_hysteresis_us=10000
+target_poll_clock_check_spins=64
+kernel_completion_poll_us=1000
+kernel_state_interval_ms=0
+block_ring_mode=normal sqpoll_cpu_list=none sqpoll_idle_ms=1000
+block_engine=uring-fixed fua_writes=0 write_completion=ordinary-device-ack
+block_latency_sample_rate=64
+block_ring_stats=1 block_wait_min_completions=1 block_cqe_spin=0 block_cqe_adaptive_spin=0 block_cqe_adaptive_spin_min=0 block_cqe_adaptive_spin_max=4096 block_cqe_adaptive_wait_ns=50000 block_cqe_hot_poll=1 block_cqe_hot_poll_progress_spins=4096
+shm_descriptor_entries_per_channel=128
+kernel_queues=2 kernel_queue_depth=64 kernel_pipeline_depth=64
+shm_sector_order_slots=65536
+shm_payload_entries_per_channel=4096
+writeback_batch_requested=4096 writeback_batch_effective=4096
+request_batch=1 request_batch_fill_us=0 request_batch_fill_min=32
+wal_lane_batch=1 representative_eligible=true
+wal_owner_dispatch=0 wal_owner_extent_records=256 wal_owner_worker_spins=65536 wal_owner_worker_adaptive_spin=1 wal_owner_worker_spin_min=4096 wal_owner_worker_adaptive_wait_ns=50000
+wal_owner_ingress=0 wal_owner_ingress_source=explicit wal_owner_count=2 wal_owner_cpu_list=none
+wal_owner_write_fill_us=0 wal_owner_write_fill_min=256 wal_owner_pipeline_batches=16 wal_owner_pipeline_refill_spins=256 wal_owner_mixed_hysteresis_us=10000
+wal_owner_debounce_us=2 wal_owner_backlog_low_records=16 wal_owner_backlog_high_records=256
+wal_owner_batch_records=2048 wal_owner_fragment_records=2 wal_owner_fragment_fill_us=500 wal_owner_queue_depth=128
+wal_owner_foreground_immediate_limit=1
+wal_owner_max_tx_iovecs=960
+wal_lane_window=64
+wal_split_transport=0 wal_transport_cpu_list=inline
+wal_transport_wait_policy=greedy
+transfer_payload_slots_requested=1 transfer_payload_slots_effective=1
+wal_extent_records=128 wal_extent_fill_us=20 wal_split_min_batch_records=64
+wal_compact_writes=1
+dirty_pressure_reserve=0
+remote_recv_spins=0 leaf_spin_reads=0 leaf_spin_policy=adaptive leaf_spin_budget=adaptive leaf_adaptive_spin_min=256 leaf_adaptive_spin_max=65536 leaf_adaptive_wait_ns=50000 leaf_adaptive_hysteresis_ns=10000000
+remote_recv_policy=adaptive remote_recv_adaptive_spin_min=0 remote_recv_adaptive_spin_max=65536 remote_recv_adaptive_wait_ns=50000 remote_recv_adaptive_hysteresis_ns=10000000
+remote_send_mode=blocking remote_send_ring_entries=256 remote_send_zc_required=1 allow_unsafe_send_zc=0
+remote_transport=tcp remote_ofi_provider=efa remote_ofi_endpoint=rdm ofi_domain=efa_0-rdm ofi_cq_sleep_ns=0 wal_ofi_message_bytes=65536 wal_ofi_hugetlb_confirmed=1 efa_use_device_rdma=1 shm_ofi_rma_reads=0 shm_ofi_rma_read_qd=64 rma_read_aggregate_outstanding_depth=128 leaf_ofi_rma_reads=0 shm_ofi_rma_writes=0 shm_ofi_rma_writes_required=0 shm_ofi_rma_write_qd=64 rma_write_aggregate_outstanding_depth=128 leaf_ofi_rma_writes=0 rma_write_delivery_complete=1
+rma_write_completion=delivery-cq-before-doorbell-result-hwm rma_write_pipeline_batches=16 rma_write_overlap_order=delivery-barrier end_to_end_zero_copy=no
+rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=0
+order_smoke_pairs=0
+shm_payload_slot_bytes=4096
+shm_lease_release_batch=1
+backend=wal-tcp local_leaf=0 leaf_target=zcmem:256M leaf_addr=172.31.39.213 leaf_port=29000 leaf_submit_mode=blocking leaf_allow_volatile_sync=1
+leaf_source_addr=kernel-route
+leaf_addrs=single-address leaf_source_addrs=single-source
+external_leaf_topology_artifact=/home/ubuntu/zcutils/bench-results/zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z/topologies/current-tcp-read-w2-qd64.leaf-topology.log leaf_lane_to_worker_cpu=0:3,1:35 leaf_lane_to_nic=0:ens50,1:ens50
+hugetlb_preflight: free_pages=8192 required_pages=128 reason=one-hugepage-per-registered-slot
+[13:27:45] starting userspace shared target/fan; no placement decision exists in the kernel edge
+PERF WARNING: CPU governor is unchanged; record it before interpreting spread
+[13:27:45] running 4 repeated read controls on the shared host
+repeat=1 target_context_switches=27 target_per_1k_logical_io=0.013 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=1 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=read workers=2 ops_per_worker=1000000 total_ops=2000000 reads=2000000 writes=0 read_percent=100 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.702900 io_seconds=3.697985 slowest_worker_seconds=3.697985 total_cpu_seconds=7.376391 aggregate_cpu_percent=199.47 cpu_ns_per_op=3688.2 MiBps=2112.64 ops_per_sec=540835
+repeat=1 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=235746 all_min_ns=186882 all_p50_ns=255000 all_p95_ns=265000 all_p99_ns=270000 all_p999_ns=325000 all_max_ns=393013 read_count=31250 read_avg_ns=235746 read_min_ns=186882 read_p50_ns=255000 read_p95_ns=265000 read_p99_ns=270000 read_p999_ns=325000 read_max_ns=393013 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=1 zcblockbench-ring: workers=2 submit_syscalls=113326 wait_cqe_calls=113332 wait_syscalls=113525 cqes_popped=2000000 try_pop_empty=226662 cqe_spin_loops=465111732 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=2 target_context_switches=12 target_per_1k_logical_io=0.006 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=2 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=read workers=2 ops_per_worker=1000000 total_ops=2000000 reads=2000000 writes=0 read_percent=100 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.701248 io_seconds=3.696280 slowest_worker_seconds=3.696280 total_cpu_seconds=7.374703 aggregate_cpu_percent=199.52 cpu_ns_per_op=3687.4 MiBps=2113.61 ops_per_sec=541084
+repeat=2 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=235691 all_min_ns=173524 all_p50_ns=255000 all_p95_ns=265000 all_p99_ns=270000 all_p999_ns=324000 all_max_ns=412777 read_count=31250 read_avg_ns=235691 read_min_ns=173524 read_p50_ns=255000 read_p95_ns=265000 read_p99_ns=270000 read_p999_ns=324000 read_max_ns=412777 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=2 zcblockbench-ring: workers=2 submit_syscalls=113272 wait_cqe_calls=113278 wait_syscalls=113464 cqes_popped=2000000 try_pop_empty=226554 cqe_spin_loops=464861822 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=3 target_context_switches=12 target_per_1k_logical_io=0.006 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=3 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=read workers=2 ops_per_worker=1000000 total_ops=2000000 reads=2000000 writes=0 read_percent=100 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.699858 io_seconds=3.694978 slowest_worker_seconds=3.694978 total_cpu_seconds=7.374124 aggregate_cpu_percent=199.57 cpu_ns_per_op=3687.1 MiBps=2114.36 ops_per_sec=541275
+repeat=3 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=235676 all_min_ns=177147 all_p50_ns=255000 all_p95_ns=265000 all_p99_ns=270000 all_p999_ns=325000 all_max_ns=404965 read_count=31250 read_avg_ns=235676 read_min_ns=177147 read_p50_ns=255000 read_p95_ns=265000 read_p99_ns=270000 read_p999_ns=325000 read_max_ns=404965 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=3 zcblockbench-ring: workers=2 submit_syscalls=113300 wait_cqe_calls=113305 wait_syscalls=113473 cqes_popped=2000000 try_pop_empty=226608 cqe_spin_loops=464898713 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=4 target_context_switches=11 target_per_1k_logical_io=0.005 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=4 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=read workers=2 ops_per_worker=1000000 total_ops=2000000 reads=2000000 writes=0 read_percent=100 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.700741 io_seconds=3.695810 slowest_worker_seconds=3.695810 total_cpu_seconds=7.377176 aggregate_cpu_percent=199.61 cpu_ns_per_op=3688.6 MiBps=2113.88 ops_per_sec=541153
+repeat=4 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=235774 all_min_ns=170210 all_p50_ns=255000 all_p95_ns=265000 all_p99_ns=270000 all_p999_ns=324000 all_max_ns=372941 read_count=31250 read_avg_ns=235774 read_min_ns=170210 read_p50_ns=255000 read_p95_ns=265000 read_p99_ns=270000 read_p999_ns=324000 read_max_ns=372941 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=4 zcblockbench-ring: workers=2 submit_syscalls=113375 wait_cqe_calls=113379 wait_syscalls=113586 cqes_popped=2000000 try_pop_empty=226756 cqe_spin_loops=465361635 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+runs=4 min_iops=540835 mean_iops=541087 max_iops=541275 spread_pct=0.08
+zcnblk-shm-target-summary: backend=WalTcpLaneExtent remote_transport=tcp channels=2 requests=8000000 writes=0 reads=8000000 syncs=0 write_bytes=0 read_bytes=32768000000 wall_seconds=15.086403 active_seconds=14.788530 active_descriptor_iops=540960 active_4k_equivalent_iops=540960 active_payload_Gibitps=16.51 kicks=0 idle_polls=23 lease_releases=8000000 early_write_acks=0 fua_requests=0 polled_requests=0 ioprio_requests=8000000 registered_lease_requests=8000000 atomic_write_requests=0 write_lifetime_requests=0 dirty_read_hits=0 dirty_read_refs=0 dirty_pressure_events=0 dirty_pressure_evictions=0 max_payload_slots_outstanding=64 remote_read_misses=8000000 completion_window_stalls=0 remote_batches=311331 avg_remote_batch_records=25.70 payload_ownership=submit-sequence-token-transfer payload_slots_free=8192/8192 completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order=hashed-sector-predecessor+lock-free-dirty-directory sync_boundary=remote-global-publication-hwm+all-lane-marker dirty_retention=transferred-page-reference-until-remote-sync-or-targeted-pressure-retire placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination=dirty-shared-slot-reference-or-remote-result-payload+shared-slot-copy kernel_payload_copies=one-per-direction writeback_materialization_copies=none-userspace;tcp-kernel-copy representative=true
+artifact=/home/ubuntu/zcutils/bench-results/zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z/client/current-tcp-read-w2-qd64
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh zcnblk-run current-tcp-read-w2-qd64 tcp read 2 64 0 current'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh zcnblk-run current-tcp-read-w2-qd64 tcp read 2 64 0 current'
+leaf_stopped=true tag=current-tcp-read-w2-qd64
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-stop current-tcp-read-w2-qd64'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-stop current-tcp-read-w2-qd64'
+repeat=1 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=read workers=2 ops_per_worker=1000000 total_ops=2000000 reads=2000000 writes=0 read_percent=100 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=12.104457 io_seconds=12.099483 slowest_worker_seconds=12.099483 total_cpu_seconds=18.124386 aggregate_cpu_percent=149.79 cpu_ns_per_op=9062.2 MiBps=645.69 ops_per_sec=165296
+repeat=1 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=773289 all_min_ns=241487 all_p50_ns=788000 all_p95_ns=890000 all_p99_ns=966000 all_p999_ns=3000000 all_max_ns=3949505 read_count=31250 read_avg_ns=773289 read_min_ns=241487 read_p50_ns=788000 read_p95_ns=890000 read_p99_ns=966000 read_p999_ns=3000000 read_max_ns=3949505 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=2 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=read workers=2 ops_per_worker=1000000 total_ops=2000000 reads=2000000 writes=0 read_percent=100 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=12.099024 io_seconds=12.094124 slowest_worker_seconds=12.094124 total_cpu_seconds=18.133529 aggregate_cpu_percent=149.94 cpu_ns_per_op=9066.8 MiBps=645.97 ops_per_sec=165370
+repeat=2 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=773263 all_min_ns=269768 all_p50_ns=789000 all_p95_ns=891000 all_p99_ns=968000 all_p999_ns=2000000 all_max_ns=4089576 read_count=31250 read_avg_ns=773263 read_min_ns=269768 read_p50_ns=789000 read_p95_ns=891000 read_p99_ns=968000 read_p999_ns=2000000 read_max_ns=4089576 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=3 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=read workers=2 ops_per_worker=1000000 total_ops=2000000 reads=2000000 writes=0 read_percent=100 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=12.102005 io_seconds=12.097090 slowest_worker_seconds=12.097090 total_cpu_seconds=18.128321 aggregate_cpu_percent=149.86 cpu_ns_per_op=9064.2 MiBps=645.82 ops_per_sec=165329
+repeat=3 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=772981 all_min_ns=276208 all_p50_ns=788000 all_p95_ns=888000 all_p99_ns=959000 all_p999_ns=2000000 all_max_ns=4178813 read_count=31250 read_avg_ns=772981 read_min_ns=276208 read_p50_ns=788000 read_p95_ns=888000 read_p99_ns=959000 read_p999_ns=2000000 read_max_ns=4178813 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
+repeat=4 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=read workers=2 ops_per_worker=1000000 total_ops=2000000 reads=2000000 writes=0 read_percent=100 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=12.119566 io_seconds=12.114694 slowest_worker_seconds=12.114694 total_cpu_seconds=18.141966 aggregate_cpu_percent=149.75 cpu_ns_per_op=9071.0 MiBps=644.88 ops_per_sec=165089
+repeat=4 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=774348 all_min_ns=284358 all_p50_ns=790000 all_p95_ns=892000 all_p99_ns=972000 all_p999_ns=3000000 all_max_ns=4026370 read_count=31250 read_avg_ns=774348 read_min_ns=284358 read_p50_ns=790000 read_p95_ns=892000 read_p99_ns=972000 read_p999_ns=3000000 read_max_ns=4026370 write_count=0 write_avg_ns=0 write_min_ns=0 write_p50_ns=0 write_p95_ns=0 write_p99_ns=0 write_p999_ns=0 write_max_ns=0
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvme-run current-nvmet-read-w2-qd64 read 2 64 0'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvme-run current-nvmet-read-w2-qd64 read 2 64 0'
+leaf_ready=true tag=current-tcp-write-w2-qd64 transport=tcp mode=write lanes=2 qd=64 pid=50891
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-start current-tcp-write-w2-qd64 tcp write 2 64 current'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-start current-tcp-write-w2-qd64 tcp write 2 64 current'
+scope=dedicated-adhoc honored=true manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+[13:28:49] loading placement-free shared-memory client edge
+classification=dedicated-adhoc-control
+coordination_scope=dedicated-adhoc
+bootstrap_manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+lane_count=2
+block_per_worker_qd=64 block_workers=2 block_aggregate_outstanding_depth=128
+topology_cpu_list=unrestricted
+coordinator_cpu=none
+lane=0 client_cpu=0 target_cpu=1 transport_cpu=inline kernel_cpu=2 leaf_cpu=none hctx_cpus=0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+lane=1 client_cpu=32 target_cpu=33 transport_cpu=inline kernel_cpu=34 leaf_cpu=none hctx_cpus=32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63
+owner=0 owner_cpu=18 source_hctx_lane=explicit numa_node=0
+owner=1 owner_cpu=50 source_hctx_lane=explicit numa_node=0
+hugepages_total=8192
+hugepages_free=8192
+hugepage_size_kib=2048
+memlock_kib=unlimited
+loadavg=3.78 2.04 1.62 1/808 46746
+coordination_honored=true
+external_nic_low_latency_confirmed=1 scope=client-and-leaf
+target_poll_us=1000
+target_busy_poll_us=1000
+target_busy_hysteresis_us=10000
+target_poll_clock_check_spins=64
+kernel_completion_poll_us=1000
+kernel_state_interval_ms=0
+block_ring_mode=normal sqpoll_cpu_list=none sqpoll_idle_ms=1000
+block_engine=uring-fixed fua_writes=0 write_completion=ordinary-device-ack
+block_latency_sample_rate=64
+block_ring_stats=1 block_wait_min_completions=1 block_cqe_spin=0 block_cqe_adaptive_spin=0 block_cqe_adaptive_spin_min=0 block_cqe_adaptive_spin_max=4096 block_cqe_adaptive_wait_ns=50000 block_cqe_hot_poll=1 block_cqe_hot_poll_progress_spins=4096
+shm_descriptor_entries_per_channel=128
+kernel_queues=2 kernel_queue_depth=64 kernel_pipeline_depth=64
+shm_sector_order_slots=65536
+shm_payload_entries_per_channel=4096
+writeback_batch_requested=4096 writeback_batch_effective=4096
+request_batch=1 request_batch_fill_us=0 request_batch_fill_min=32
+wal_lane_batch=1 representative_eligible=true
+wal_owner_dispatch=0 wal_owner_extent_records=256 wal_owner_worker_spins=65536 wal_owner_worker_adaptive_spin=1 wal_owner_worker_spin_min=4096 wal_owner_worker_adaptive_wait_ns=50000
+wal_owner_ingress=1 wal_owner_ingress_source=explicit wal_owner_count=2 wal_owner_cpu_list=18,50
+wal_owner_write_fill_us=0 wal_owner_write_fill_min=256 wal_owner_pipeline_batches=16 wal_owner_pipeline_refill_spins=256 wal_owner_mixed_hysteresis_us=10000
+wal_owner_debounce_us=2 wal_owner_backlog_low_records=16 wal_owner_backlog_high_records=256
+wal_owner_batch_records=2048 wal_owner_fragment_records=2 wal_owner_fragment_fill_us=500 wal_owner_queue_depth=128
+wal_owner_foreground_immediate_limit=1
+wal_owner_max_tx_iovecs=960
+wal_lane_window=64
+wal_split_transport=0 wal_transport_cpu_list=inline
+wal_transport_wait_policy=greedy
+transfer_payload_slots_requested=1 transfer_payload_slots_effective=1
+wal_extent_records=128 wal_extent_fill_us=20 wal_split_min_batch_records=64
+wal_compact_writes=1
+dirty_pressure_reserve=0
+remote_recv_spins=0 leaf_spin_reads=0 leaf_spin_policy=adaptive leaf_spin_budget=adaptive leaf_adaptive_spin_min=256 leaf_adaptive_spin_max=65536 leaf_adaptive_wait_ns=50000 leaf_adaptive_hysteresis_ns=10000000
+remote_recv_policy=adaptive remote_recv_adaptive_spin_min=0 remote_recv_adaptive_spin_max=65536 remote_recv_adaptive_wait_ns=50000 remote_recv_adaptive_hysteresis_ns=10000000
+remote_send_mode=blocking remote_send_ring_entries=256 remote_send_zc_required=1 allow_unsafe_send_zc=0
+remote_transport=tcp remote_ofi_provider=efa remote_ofi_endpoint=rdm ofi_domain=efa_0-rdm ofi_cq_sleep_ns=0 wal_ofi_message_bytes=65536 wal_ofi_hugetlb_confirmed=1 efa_use_device_rdma=1 shm_ofi_rma_reads=0 shm_ofi_rma_read_qd=64 rma_read_aggregate_outstanding_depth=128 leaf_ofi_rma_reads=0 shm_ofi_rma_writes=0 shm_ofi_rma_writes_required=0 shm_ofi_rma_write_qd=64 rma_write_aggregate_outstanding_depth=128 leaf_ofi_rma_writes=0 rma_write_delivery_complete=1
+rma_write_completion=delivery-cq-before-doorbell-result-hwm rma_write_pipeline_batches=16 rma_write_overlap_order=delivery-barrier end_to_end_zero_copy=no
+rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=0
+order_smoke_pairs=0
+shm_payload_slot_bytes=4096
+shm_lease_release_batch=1
+backend=wal-tcp local_leaf=0 leaf_target=zcmem:256M leaf_addr=172.31.39.213 leaf_port=29000 leaf_submit_mode=blocking leaf_allow_volatile_sync=1
+leaf_source_addr=kernel-route
+leaf_addrs=single-address leaf_source_addrs=single-source
+external_leaf_topology_artifact=/home/ubuntu/zcutils/bench-results/zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z/topologies/current-tcp-write-w2-qd64.leaf-topology.log leaf_lane_to_worker_cpu=0:3,1:35 leaf_lane_to_nic=0:ens50,1:ens50
+hugetlb_preflight: free_pages=8192 required_pages=128 reason=one-hugepage-per-registered-slot
+[13:28:49] starting userspace shared target/fan; no placement decision exists in the kernel edge
+PERF WARNING: CPU governor is unchanged; record it before interpreting spread
+[13:28:50] running 4 repeated write controls on the shared host
+repeat=1 target_context_switches=8329 target_per_1k_logical_io=4.165 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=1 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=write workers=2 ops_per_worker=1000000 total_ops=2000000 reads=0 writes=2000000 read_percent=0 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.494935 io_seconds=3.489944 slowest_worker_seconds=3.489944 total_cpu_seconds=6.969862 aggregate_cpu_percent=199.71 cpu_ns_per_op=3484.9 MiBps=2238.57 ops_per_sec=573075
+repeat=1 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=222744 all_min_ns=121734 all_p50_ns=201000 all_p95_ns=272000 all_p99_ns=418000 all_p999_ns=680000 all_max_ns=901994 read_count=0 read_avg_ns=0 read_min_ns=0 read_p50_ns=0 read_p95_ns=0 read_p99_ns=0 read_p999_ns=0 read_max_ns=0 write_count=31250 write_avg_ns=222744 write_min_ns=121734 write_p50_ns=201000 write_p95_ns=272000 write_p99_ns=418000 write_p999_ns=680000 write_max_ns=901994
+repeat=1 zcblockbench-ring: workers=2 submit_syscalls=102495 wait_cqe_calls=102499 wait_syscalls=105581 cqes_popped=2000000 try_pop_empty=204996 cqe_spin_loops=432562275 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=2 target_context_switches=8912 target_per_1k_logical_io=4.456 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=2 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=write workers=2 ops_per_worker=1000000 total_ops=2000000 reads=0 writes=2000000 read_percent=0 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.495647 io_seconds=3.490673 slowest_worker_seconds=3.490673 total_cpu_seconds=6.970135 aggregate_cpu_percent=199.68 cpu_ns_per_op=3485.1 MiBps=2238.11 ops_per_sec=572955
+repeat=2 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=222748 all_min_ns=123037 all_p50_ns=201000 all_p95_ns=272000 all_p99_ns=417000 all_p999_ns=633000 all_max_ns=942590 read_count=0 read_avg_ns=0 read_min_ns=0 read_p50_ns=0 read_p95_ns=0 read_p99_ns=0 read_p999_ns=0 read_max_ns=0 write_count=31250 write_avg_ns=222748 write_min_ns=123037 write_p50_ns=201000 write_p95_ns=272000 write_p99_ns=417000 write_p999_ns=633000 write_max_ns=942590
+repeat=2 zcblockbench-ring: workers=2 submit_syscalls=102435 wait_cqe_calls=102439 wait_syscalls=105366 cqes_popped=2000000 try_pop_empty=204876 cqe_spin_loops=431681575 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=3 target_context_switches=8532 target_per_1k_logical_io=4.266 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=3 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=write workers=2 ops_per_worker=1000000 total_ops=2000000 reads=0 writes=2000000 read_percent=0 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.496546 io_seconds=3.491631 slowest_worker_seconds=3.491631 total_cpu_seconds=6.970240 aggregate_cpu_percent=199.63 cpu_ns_per_op=3485.1 MiBps=2237.49 ops_per_sec=572798
+repeat=3 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=222742 all_min_ns=123335 all_p50_ns=201000 all_p95_ns=272000 all_p99_ns=418000 all_p999_ns=633000 all_max_ns=904941 read_count=0 read_avg_ns=0 read_min_ns=0 read_p50_ns=0 read_p95_ns=0 read_p99_ns=0 read_p999_ns=0 read_max_ns=0 write_count=31250 write_avg_ns=222742 write_min_ns=123335 write_p50_ns=201000 write_p95_ns=272000 write_p99_ns=418000 write_p999_ns=633000 write_max_ns=904941
+repeat=3 zcblockbench-ring: workers=2 submit_syscalls=102477 wait_cqe_calls=102481 wait_syscalls=105520 cqes_popped=2000000 try_pop_empty=204960 cqe_spin_loops=432312401 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=4 target_context_switches=8604 target_per_1k_logical_io=4.302 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=4 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=write workers=2 ops_per_worker=1000000 total_ops=2000000 reads=0 writes=2000000 read_percent=0 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.505883 io_seconds=3.500943 slowest_worker_seconds=3.500943 total_cpu_seconds=6.968434 aggregate_cpu_percent=199.04 cpu_ns_per_op=3484.2 MiBps=2231.54 ops_per_sec=571275
+repeat=4 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=222692 all_min_ns=117784 all_p50_ns=201000 all_p95_ns=272000 all_p99_ns=416000 all_p999_ns=643000 all_max_ns=899568 read_count=0 read_avg_ns=0 read_min_ns=0 read_p50_ns=0 read_p95_ns=0 read_p99_ns=0 read_p999_ns=0 read_max_ns=0 write_count=31250 write_avg_ns=222692 write_min_ns=117784 write_p50_ns=201000 write_p95_ns=272000 write_p99_ns=416000 write_p999_ns=643000 write_max_ns=899568
+repeat=4 zcblockbench-ring: workers=2 submit_syscalls=102347 wait_cqe_calls=102351 wait_syscalls=105242 cqes_popped=2000000 try_pop_empty=204700 cqe_spin_loops=431173583 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+runs=4 min_iops=571275 mean_iops=572526 max_iops=573075 spread_pct=0.31
+zcnblk-shm-target-summary: backend=WalTcpStableOwnerExtent remote_transport=tcp channels=2 requests=8000000 writes=8000000 reads=0 syncs=0 write_bytes=32768000000 read_bytes=0 wall_seconds=14.295984 active_seconds=13.977606 active_descriptor_iops=572344 active_4k_equivalent_iops=572344 active_payload_Gibitps=17.47 kicks=1408317 idle_polls=12 lease_releases=8000000 early_write_acks=8000000 fua_requests=0 polled_requests=0 ioprio_requests=8000000 registered_lease_requests=8000000 atomic_write_requests=0 write_lifetime_requests=0 dirty_read_hits=0 dirty_read_refs=0 dirty_pressure_events=4010398 dirty_pressure_evictions=7962573 max_payload_slots_outstanding=557 remote_read_misses=0 completion_window_stalls=0 remote_batches=185841 avg_remote_batch_records=43.05 payload_ownership=submit-sequence-token-transfer payload_slots_free=8192/8192 completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order=stable-extent-owner+sector-predecessor+lock-free-dirty-directory sync_boundary=remote-global-publication-hwm+all-lane-marker dirty_retention=transferred-page-reference-until-remote-sync-or-targeted-pressure-retire placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination=dirty-shared-slot-reference-or-remote-result-payload+shared-slot-copy kernel_payload_copies=one-per-direction writeback_materialization_copies=none-userspace;tcp-kernel-copy representative=true
+artifact=/home/ubuntu/zcutils/bench-results/zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z/client/current-tcp-write-w2-qd64
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh zcnblk-run current-tcp-write-w2-qd64 tcp write 2 64 0 current'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh zcnblk-run current-tcp-write-w2-qd64 tcp write 2 64 0 current'
+leaf_stopped=true tag=current-tcp-write-w2-qd64
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-stop current-tcp-write-w2-qd64'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-stop current-tcp-write-w2-qd64'
+repeat=1 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=write workers=2 ops_per_worker=1000000 total_ops=2000000 reads=0 writes=2000000 read_percent=0 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=13.221524 io_seconds=13.216396 slowest_worker_seconds=13.216396 total_cpu_seconds=21.368514 aggregate_cpu_percent=161.68 cpu_ns_per_op=10684.3 MiBps=591.12 ops_per_sec=151327
+repeat=1 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=835779 all_min_ns=300229 all_p50_ns=869000 all_p95_ns=945000 all_p99_ns=2000000 all_p999_ns=3000000 all_max_ns=191622100 read_count=0 read_avg_ns=0 read_min_ns=0 read_p50_ns=0 read_p95_ns=0 read_p99_ns=0 read_p999_ns=0 read_max_ns=0 write_count=31250 write_avg_ns=835779 write_min_ns=300229 write_p50_ns=869000 write_p95_ns=945000 write_p99_ns=2000000 write_p999_ns=3000000 write_max_ns=191622100
+repeat=2 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=write workers=2 ops_per_worker=1000000 total_ops=2000000 reads=0 writes=2000000 read_percent=0 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=13.135957 io_seconds=13.130833 slowest_worker_seconds=13.130833 total_cpu_seconds=21.403861 aggregate_cpu_percent=163.00 cpu_ns_per_op=10701.9 MiBps=594.97 ops_per_sec=152313
+repeat=2 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=832943 all_min_ns=307825 all_p50_ns=869000 all_p95_ns=946000 all_p99_ns=2000000 all_p999_ns=3000000 all_max_ns=172784885 read_count=0 read_avg_ns=0 read_min_ns=0 read_p50_ns=0 read_p95_ns=0 read_p99_ns=0 read_p999_ns=0 read_max_ns=0 write_count=31250 write_avg_ns=832943 write_min_ns=307825 write_p50_ns=869000 write_p95_ns=946000 write_p99_ns=2000000 write_p999_ns=3000000 write_max_ns=172784885
+repeat=3 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=write workers=2 ops_per_worker=1000000 total_ops=2000000 reads=0 writes=2000000 read_percent=0 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=13.388340 io_seconds=13.383282 slowest_worker_seconds=13.383282 total_cpu_seconds=21.425449 aggregate_cpu_percent=160.09 cpu_ns_per_op=10712.7 MiBps=583.75 ops_per_sec=149440
+repeat=3 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=842082 all_min_ns=298256 all_p50_ns=867000 all_p95_ns=950000 all_p99_ns=2000000 all_p999_ns=3000000 all_max_ns=241643949 read_count=0 read_avg_ns=0 read_min_ns=0 read_p50_ns=0 read_p95_ns=0 read_p99_ns=0 read_p999_ns=0 read_max_ns=0 write_count=31250 write_avg_ns=842082 write_min_ns=298256 write_p50_ns=867000 write_p95_ns=950000 write_p99_ns=2000000 write_p999_ns=3000000 write_max_ns=241643949
+repeat=4 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=write workers=2 ops_per_worker=1000000 total_ops=2000000 reads=0 writes=2000000 read_percent=0 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=12.945591 io_seconds=12.940511 slowest_worker_seconds=12.940511 total_cpu_seconds=21.421891 aggregate_cpu_percent=165.54 cpu_ns_per_op=10710.9 MiBps=603.72 ops_per_sec=154553
+repeat=4 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=827254 all_min_ns=281176 all_p50_ns=870000 all_p95_ns=947000 all_p99_ns=2000000 all_p999_ns=3000000 all_max_ns=4069283 read_count=0 read_avg_ns=0 read_min_ns=0 read_p50_ns=0 read_p95_ns=0 read_p99_ns=0 read_p999_ns=0 read_max_ns=0 write_count=31250 write_avg_ns=827254 write_min_ns=281176 write_p50_ns=870000 write_p95_ns=947000 write_p99_ns=2000000 write_p999_ns=3000000 write_max_ns=4069283
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvme-run current-nvmet-write-w2-qd64 write 2 64 0'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvme-run current-nvmet-write-w2-qd64 write 2 64 0'
+leaf_ready=true tag=current-tcp-rw-w2-qd64 transport=tcp mode=rw lanes=2 qd=64 pid=50939
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-start current-tcp-rw-w2-qd64 tcp rw 2 64 current'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-start current-tcp-rw-w2-qd64 tcp rw 2 64 current'
+PERF NOTE: external WAL uses lane-inline transport (mode=rw); stable-owner is the measured high-IOPS write path
+scope=dedicated-adhoc honored=true manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+[13:29:58] loading placement-free shared-memory client edge
+classification=dedicated-adhoc-control
+coordination_scope=dedicated-adhoc
+bootstrap_manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+lane_count=2
+block_per_worker_qd=64 block_workers=2 block_aggregate_outstanding_depth=128
+topology_cpu_list=unrestricted
+coordinator_cpu=none
+lane=0 client_cpu=0 target_cpu=1 transport_cpu=inline kernel_cpu=2 leaf_cpu=none hctx_cpus=0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+lane=1 client_cpu=32 target_cpu=33 transport_cpu=inline kernel_cpu=34 leaf_cpu=none hctx_cpus=32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63
+hugepages_total=8192
+hugepages_free=8192
+hugepage_size_kib=2048
+memlock_kib=unlimited
+loadavg=3.64 2.50 1.82 1/807 47168
+coordination_honored=true
+external_nic_low_latency_confirmed=1 scope=client-and-leaf
+target_poll_us=1000
+target_busy_poll_us=1000
+target_busy_hysteresis_us=10000
+target_poll_clock_check_spins=64
+kernel_completion_poll_us=1000
+kernel_state_interval_ms=0
+block_ring_mode=normal sqpoll_cpu_list=none sqpoll_idle_ms=1000
+block_engine=uring-fixed fua_writes=0 write_completion=ordinary-device-ack
+block_latency_sample_rate=64
+block_ring_stats=1 block_wait_min_completions=1 block_cqe_spin=0 block_cqe_adaptive_spin=0 block_cqe_adaptive_spin_min=0 block_cqe_adaptive_spin_max=4096 block_cqe_adaptive_wait_ns=50000 block_cqe_hot_poll=1 block_cqe_hot_poll_progress_spins=4096
+shm_descriptor_entries_per_channel=128
+kernel_queues=2 kernel_queue_depth=64 kernel_pipeline_depth=64
+shm_sector_order_slots=65536
+shm_payload_entries_per_channel=4096
+writeback_batch_requested=4096 writeback_batch_effective=4096
+request_batch=1 request_batch_fill_us=0 request_batch_fill_min=32
+wal_lane_batch=1 representative_eligible=true
+wal_owner_dispatch=0 wal_owner_extent_records=256 wal_owner_worker_spins=65536 wal_owner_worker_adaptive_spin=1 wal_owner_worker_spin_min=4096 wal_owner_worker_adaptive_wait_ns=50000
+wal_owner_ingress=0 wal_owner_ingress_source=explicit wal_owner_count=2 wal_owner_cpu_list=none
+wal_owner_write_fill_us=0 wal_owner_write_fill_min=256 wal_owner_pipeline_batches=16 wal_owner_pipeline_refill_spins=256 wal_owner_mixed_hysteresis_us=10000
+wal_owner_debounce_us=2 wal_owner_backlog_low_records=16 wal_owner_backlog_high_records=256
+wal_owner_batch_records=2048 wal_owner_fragment_records=2 wal_owner_fragment_fill_us=500 wal_owner_queue_depth=128
+wal_owner_foreground_immediate_limit=1
+wal_owner_max_tx_iovecs=960
+wal_lane_window=64
+wal_split_transport=0 wal_transport_cpu_list=inline
+wal_transport_wait_policy=greedy
+transfer_payload_slots_requested=1 transfer_payload_slots_effective=1
+wal_extent_records=128 wal_extent_fill_us=20 wal_split_min_batch_records=64
+wal_compact_writes=1
+dirty_pressure_reserve=0
+remote_recv_spins=0 leaf_spin_reads=0 leaf_spin_policy=adaptive leaf_spin_budget=adaptive leaf_adaptive_spin_min=256 leaf_adaptive_spin_max=65536 leaf_adaptive_wait_ns=50000 leaf_adaptive_hysteresis_ns=10000000
+remote_recv_policy=adaptive remote_recv_adaptive_spin_min=0 remote_recv_adaptive_spin_max=65536 remote_recv_adaptive_wait_ns=50000 remote_recv_adaptive_hysteresis_ns=10000000
+remote_send_mode=blocking remote_send_ring_entries=256 remote_send_zc_required=1 allow_unsafe_send_zc=0
+remote_transport=tcp remote_ofi_provider=efa remote_ofi_endpoint=rdm ofi_domain=efa_0-rdm ofi_cq_sleep_ns=0 wal_ofi_message_bytes=65536 wal_ofi_hugetlb_confirmed=1 efa_use_device_rdma=1 shm_ofi_rma_reads=0 shm_ofi_rma_read_qd=64 rma_read_aggregate_outstanding_depth=128 leaf_ofi_rma_reads=0 shm_ofi_rma_writes=0 shm_ofi_rma_writes_required=0 shm_ofi_rma_write_qd=64 rma_write_aggregate_outstanding_depth=128 leaf_ofi_rma_writes=0 rma_write_delivery_complete=1
+rma_write_completion=delivery-cq-before-doorbell-result-hwm rma_write_pipeline_batches=16 rma_write_overlap_order=delivery-barrier end_to_end_zero_copy=no
+rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=0
+order_smoke_pairs=0
+shm_payload_slot_bytes=4096
+shm_lease_release_batch=1
+backend=wal-tcp local_leaf=0 leaf_target=zcmem:256M leaf_addr=172.31.39.213 leaf_port=29000 leaf_submit_mode=blocking leaf_allow_volatile_sync=1
+leaf_source_addr=kernel-route
+leaf_addrs=single-address leaf_source_addrs=single-source
+external_leaf_topology_artifact=/home/ubuntu/zcutils/bench-results/zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z/topologies/current-tcp-rw-w2-qd64.leaf-topology.log leaf_lane_to_worker_cpu=0:3,1:35 leaf_lane_to_nic=0:ens50,1:ens50
+hugetlb_preflight: free_pages=8192 required_pages=128 reason=one-hugepage-per-registered-slot
+[13:29:58] starting userspace shared target/fan; no placement decision exists in the kernel edge
+PERF WARNING: CPU governor is unchanged; record it before interpreting spread
+[13:29:58] running 4 repeated rw controls on the shared host
+repeat=1 target_context_switches=25 target_per_1k_logical_io=0.013 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=1 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.370419 io_seconds=3.365441 slowest_worker_seconds=3.365441 total_cpu_seconds=6.727781 aggregate_cpu_percent=199.91 cpu_ns_per_op=3363.9 MiBps=2321.39 ops_per_sec=594276
+repeat=1 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=214817 all_min_ns=69403 all_p50_ns=201000 all_p95_ns=270000 all_p99_ns=326000 all_p999_ns=337000 all_max_ns=487625 read_count=15543 read_avg_ns=248890 read_min_ns=132973 read_p50_ns=266000 read_p95_ns=271000 read_p99_ns=333000 read_p999_ns=338000 read_max_ns=487625 write_count=15707 write_avg_ns=181099 write_min_ns=69403 write_p50_ns=199000 write_p95_ns=204000 write_p99_ns=206000 write_p999_ns=263000 write_max_ns=418424
+repeat=1 zcblockbench-ring: workers=2 submit_syscalls=100799 wait_cqe_calls=100803 wait_syscalls=100880 cqes_popped=2000000 try_pop_empty=201604 cqe_spin_loops=413305283 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=2 target_context_switches=11 target_per_1k_logical_io=0.005 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=2 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.373706 io_seconds=3.368772 slowest_worker_seconds=3.368772 total_cpu_seconds=6.733627 aggregate_cpu_percent=199.88 cpu_ns_per_op=3366.8 MiBps=2319.09 ops_per_sec=593688
+repeat=2 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=214847 all_min_ns=67647 all_p50_ns=201000 all_p95_ns=270000 all_p99_ns=324000 all_p999_ns=337000 all_max_ns=404104 read_count=15543 read_avg_ns=248851 read_min_ns=132667 read_p50_ns=266000 read_p95_ns=271000 read_p99_ns=331000 read_p999_ns=338000 read_max_ns=404104 write_count=15707 write_avg_ns=181197 write_min_ns=67647 write_p50_ns=199000 write_p95_ns=204000 write_p99_ns=207000 write_p999_ns=265000 write_max_ns=362051
+repeat=2 zcblockbench-ring: workers=2 submit_syscalls=100846 wait_cqe_calls=100852 wait_syscalls=100923 cqes_popped=2000000 try_pop_empty=201702 cqe_spin_loops=413481460 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=3 target_context_switches=11 target_per_1k_logical_io=0.005 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=3 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.372921 io_seconds=3.368002 slowest_worker_seconds=3.368002 total_cpu_seconds=6.733917 aggregate_cpu_percent=199.94 cpu_ns_per_op=3367.0 MiBps=2319.62 ops_per_sec=593824
+repeat=3 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=215086 all_min_ns=64394 all_p50_ns=201000 all_p95_ns=270000 all_p99_ns=326000 all_p999_ns=337000 all_max_ns=428385 read_count=15543 read_avg_ns=249044 read_min_ns=128489 read_p50_ns=266000 read_p95_ns=272000 read_p99_ns=332000 read_p999_ns=338000 read_max_ns=428385 write_count=15707 write_avg_ns=181483 write_min_ns=64394 write_p50_ns=199000 write_p95_ns=204000 write_p99_ns=206000 write_p999_ns=264000 write_max_ns=324814
+repeat=3 zcblockbench-ring: workers=2 submit_syscalls=100843 wait_cqe_calls=100847 wait_syscalls=100920 cqes_popped=2000000 try_pop_empty=201692 cqe_spin_loops=413469167 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+repeat=4 target_context_switches=12 target_per_1k_logical_io=0.006 leaf_context_switches=0 leaf_per_1k_logical_io=0.000 kernel_context_switches=4 kernel_per_1k_logical_io=0.002
+repeat=4 zcblockbench-result: target=/dev/zcnblk0 engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=3.374735 io_seconds=3.369805 slowest_worker_seconds=3.369805 total_cpu_seconds=6.736319 aggregate_cpu_percent=199.90 cpu_ns_per_op=3368.2 MiBps=2318.38 ops_per_sec=593506
+repeat=4 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=214955 all_min_ns=66280 all_p50_ns=201000 all_p95_ns=270000 all_p99_ns=326000 all_p999_ns=338000 all_max_ns=436699 read_count=15543 read_avg_ns=248748 read_min_ns=130689 read_p50_ns=266000 read_p95_ns=272000 read_p99_ns=333000 read_p999_ns=338000 read_max_ns=436699 write_count=15707 write_avg_ns=181515 write_min_ns=66280 write_p50_ns=199000 write_p95_ns=204000 write_p99_ns=206000 write_p999_ns=264000 write_max_ns=313899
+repeat=4 zcblockbench-ring: workers=2 submit_syscalls=100867 wait_cqe_calls=100871 wait_syscalls=100958 cqes_popped=2000000 try_pop_empty=201740 cqe_spin_loops=413624839 cqe_adaptive_grows=0 cqe_adaptive_shrinks=0 cqe_adaptive_spin_max_seen=0 cqe_final_spin_max=0
+runs=4 min_iops=593506 mean_iops=593824 max_iops=594276 spread_pct=0.13
+zcnblk-shm-target-summary: backend=WalTcpLaneExtent remote_transport=tcp channels=2 requests=8000000 writes=4000448 reads=3999552 syncs=0 write_bytes=16385835008 read_bytes=16382164992 wall_seconds=13.773408 active_seconds=13.473367 active_descriptor_iops=593764 active_4k_equivalent_iops=593764 active_payload_Gibitps=18.12 kicks=279484 idle_polls=16 lease_releases=8000000 early_write_acks=4000448 fua_requests=0 polled_requests=0 ioprio_requests=8000000 registered_lease_requests=8000000 atomic_write_requests=0 write_lifetime_requests=0 dirty_read_hits=2457 dirty_read_refs=2457 dirty_pressure_events=330442 dirty_pressure_evictions=4000105 max_payload_slots_outstanding=102 remote_read_misses=3997095 completion_window_stalls=0 remote_batches=335287 avg_remote_batch_records=23.85 payload_ownership=submit-sequence-token-transfer payload_slots_free=8192/8192 completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order=hashed-sector-predecessor+lock-free-dirty-directory sync_boundary=remote-global-publication-hwm+all-lane-marker dirty_retention=transferred-page-reference-until-remote-sync-or-targeted-pressure-retire placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination=dirty-shared-slot-reference-or-remote-result-payload+shared-slot-copy kernel_payload_copies=one-per-direction writeback_materialization_copies=none-userspace;tcp-kernel-copy representative=true
+artifact=/home/ubuntu/zcutils/bench-results/zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z/client/current-tcp-rw-w2-qd64
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh zcnblk-run current-tcp-rw-w2-qd64 tcp rw 2 64 0 current'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh zcnblk-run current-tcp-rw-w2-qd64 tcp rw 2 64 0 current'
+leaf_stopped=true tag=current-tcp-rw-w2-qd64
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-stop current-tcp-rw-w2-qd64'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-stop current-tcp-rw-w2-qd64'
+repeat=1 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=12.864033 io_seconds=12.858886 slowest_worker_seconds=12.858886 total_cpu_seconds=20.321920 aggregate_cpu_percent=158.04 cpu_ns_per_op=10161.0 MiBps=607.56 ops_per_sec=155534
+repeat=1 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=821986 all_min_ns=297816 all_p50_ns=845000 all_p95_ns=936000 all_p99_ns=2000000 all_p999_ns=3000000 all_max_ns=4104872 read_count=15543 read_avg_ns=820405 read_min_ns=297816 read_p50_ns=845000 read_p95_ns=936000 read_p99_ns=1000000 read_p999_ns=2000000 read_max_ns=4104872 write_count=15707 write_avg_ns=823550 write_min_ns=301761 write_p50_ns=844000 write_p95_ns=937000 write_p99_ns=2000000 write_p999_ns=3000000 write_max_ns=4001364
+repeat=2 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=12.828893 io_seconds=12.823801 slowest_worker_seconds=12.823801 total_cpu_seconds=20.288102 aggregate_cpu_percent=158.21 cpu_ns_per_op=10144.1 MiBps=609.22 ops_per_sec=155960
+repeat=2 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=819748 all_min_ns=301291 all_p50_ns=843000 all_p95_ns=935000 all_p99_ns=1000000 all_p999_ns=3000000 all_max_ns=4371809 read_count=15543 read_avg_ns=820873 read_min_ns=304060 read_p50_ns=843000 read_p95_ns=936000 read_p99_ns=2000000 read_p999_ns=3000000 read_max_ns=4227034 write_count=15707 write_avg_ns=818635 write_min_ns=301291 write_p50_ns=843000 write_p95_ns=934000 write_p99_ns=998000 write_p999_ns=3000000 write_max_ns=4371809
+repeat=3 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=12.857235 io_seconds=12.852311 slowest_worker_seconds=12.852311 total_cpu_seconds=20.296460 aggregate_cpu_percent=157.92 cpu_ns_per_op=10148.2 MiBps=607.87 ops_per_sec=155614
+repeat=3 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=821945 all_min_ns=299365 all_p50_ns=847000 all_p95_ns=939000 all_p99_ns=2000000 all_p999_ns=2000000 all_max_ns=4197141 read_count=15543 read_avg_ns=822092 read_min_ns=302983 read_p50_ns=847000 read_p95_ns=939000 read_p99_ns=2000000 read_p999_ns=2000000 read_max_ns=4067404 write_count=15707 write_avg_ns=821800 write_min_ns=299365 write_p50_ns=846000 write_p95_ns=939000 write_p99_ns=2000000 write_p999_ns=3000000 write_max_ns=4197141
+repeat=4 zcblockbench-result: target=PARTUUID=ea91c428-74bb-485c-8b16-2d975854273b engine=uring-fixed mode=rw workers=2 ops_per_worker=1000000 total_ops=2000000 reads=999888 writes=1000112 read_percent=50 fua_writes=false write_completion=ordinary-device-ack chunk_bytes=4096 region_bytes_per_worker=67108864 pipeline_per_worker=64 total_pipeline=128 wait_min_completions=1 ring_entries=128 ring_mode=normal cqe=16 iopoll=off registered_ring=false buffers=hugetlb pin_workers=true wall_seconds=12.857443 io_seconds=12.852002 slowest_worker_seconds=12.852002 total_cpu_seconds=20.259203 aggregate_cpu_percent=157.63 cpu_ns_per_op=10129.6 MiBps=607.88 ops_per_sec=155618
+repeat=4 zcblockbench-latency: clock=monotonic submission_to_completion=true sample_rate=64 all_count=31250 all_avg_ns=821593 all_min_ns=290044 all_p50_ns=846000 all_p95_ns=938000 all_p99_ns=2000000 all_p999_ns=3000000 all_max_ns=4171306 read_count=15543 read_avg_ns=822449 read_min_ns=297339 read_p50_ns=847000 read_p95_ns=939000 read_p99_ns=2000000 read_p999_ns=3000000 read_max_ns=4171306 write_count=15707 write_avg_ns=820746 write_min_ns=290044 write_p50_ns=846000 write_p95_ns=937000 write_p99_ns=2000000 write_p999_ns=3000000 write_max_ns=4166717
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvme-run current-nvmet-rw-w2-qd64 rw 2 64 0'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvme-run current-nvmet-rw-w2-qd64 rw 2 64 0'
+leaf_ready=true tag=current-efa-read-w2-qd128 transport=efa mode=read lanes=2 qd=128 pid=50990
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-start current-efa-read-w2-qd128 efa read 2 128 current'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-start current-efa-read-w2-qd128 efa read 2 128 current'
+PERF NOTE: external WAL uses lane-inline transport (mode=read); stable-owner is the measured high-IOPS write path
+scope=dedicated-adhoc honored=true manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+[13:31:04] loading placement-free shared-memory client edge
+classification=dedicated-adhoc-control
+coordination_scope=dedicated-adhoc
+bootstrap_manifest=/home/ubuntu/.local/state/zcutils/adhoc-bootstrap.env
+lane_count=2
+block_per_worker_qd=128 block_workers=2 block_aggregate_outstanding_depth=256
+topology_cpu_list=unrestricted
+coordinator_cpu=none
+lane=0 client_cpu=0 target_cpu=1 transport_cpu=inline kernel_cpu=2 leaf_cpu=none hctx_cpus=0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+lane=1 client_cpu=32 target_cpu=33 transport_cpu=inline kernel_cpu=34 leaf_cpu=none hctx_cpus=32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63
+hugepages_total=8192
+hugepages_free=8192
+hugepage_size_kib=2048
+memlock_kib=unlimited
+loadavg=3.50 2.76 1.97 1/809 47573
+coordination_honored=true
+external_nic_low_latency_confirmed=1 scope=client-and-leaf
+target_poll_us=1000
+target_busy_poll_us=1000
+target_busy_hysteresis_us=10000
+target_poll_clock_check_spins=64
+kernel_completion_poll_us=1000
+kernel_state_interval_ms=0
+block_ring_mode=normal sqpoll_cpu_list=none sqpoll_idle_ms=1000
+block_engine=uring-fixed fua_writes=0 write_completion=ordinary-device-ack
+block_latency_sample_rate=64
+block_ring_stats=1 block_wait_min_completions=16 block_cqe_spin=0 block_cqe_adaptive_spin=0 block_cqe_adaptive_spin_min=0 block_cqe_adaptive_spin_max=4096 block_cqe_adaptive_wait_ns=50000 block_cqe_hot_poll=1 block_cqe_hot_poll_progress_spins=4096
+shm_descriptor_entries_per_channel=128
+kernel_queues=2 kernel_queue_depth=128 kernel_pipeline_depth=128
+shm_sector_order_slots=65536
+shm_payload_entries_per_channel=4096
+writeback_batch_requested=4096 writeback_batch_effective=4096
+request_batch=1 request_batch_fill_us=0 request_batch_fill_min=32
+wal_lane_batch=1 representative_eligible=true
+wal_owner_dispatch=0 wal_owner_extent_records=256 wal_owner_worker_spins=65536 wal_owner_worker_adaptive_spin=1 wal_owner_worker_spin_min=4096 wal_owner_worker_adaptive_wait_ns=50000
+wal_owner_ingress=0 wal_owner_ingress_source=explicit wal_owner_count=2 wal_owner_cpu_list=none
+wal_owner_write_fill_us=0 wal_owner_write_fill_min=256 wal_owner_pipeline_batches=16 wal_owner_pipeline_refill_spins=256 wal_owner_mixed_hysteresis_us=10000
+wal_owner_debounce_us=2 wal_owner_backlog_low_records=16 wal_owner_backlog_high_records=256
+wal_owner_batch_records=2048 wal_owner_fragment_records=2 wal_owner_fragment_fill_us=500 wal_owner_queue_depth=128
+wal_owner_foreground_immediate_limit=1
+wal_owner_max_tx_iovecs=960
+wal_lane_window=128
+wal_split_transport=0 wal_transport_cpu_list=inline
+wal_transport_wait_policy=greedy
+transfer_payload_slots_requested=1 transfer_payload_slots_effective=1
+wal_extent_records=128 wal_extent_fill_us=20 wal_split_min_batch_records=64
+wal_compact_writes=1
+dirty_pressure_reserve=0
+remote_recv_spins=0 leaf_spin_reads=0 leaf_spin_policy=adaptive leaf_spin_budget=adaptive leaf_adaptive_spin_min=256 leaf_adaptive_spin_max=65536 leaf_adaptive_wait_ns=50000 leaf_adaptive_hysteresis_ns=10000000
+remote_recv_policy=adaptive remote_recv_adaptive_spin_min=0 remote_recv_adaptive_spin_max=65536 remote_recv_adaptive_wait_ns=50000 remote_recv_adaptive_hysteresis_ns=10000000
+remote_send_mode=blocking remote_send_ring_entries=256 remote_send_zc_required=1 allow_unsafe_send_zc=0
+remote_transport=ofi remote_ofi_provider=efa remote_ofi_endpoint=rdm ofi_domain=efa_0-rdm ofi_cq_sleep_ns=0 wal_ofi_message_bytes=65536 wal_ofi_hugetlb_confirmed=1 efa_use_device_rdma=1 shm_ofi_rma_reads=1 shm_ofi_rma_read_qd=128 rma_read_aggregate_outstanding_depth=256 leaf_ofi_rma_reads=1 shm_ofi_rma_writes=0 shm_ofi_rma_writes_required=0 shm_ofi_rma_write_qd=128 rma_write_aggregate_outstanding_depth=256 leaf_ofi_rma_writes=0 rma_write_delivery_complete=1
+rma_write_completion=delivery-cq-before-doorbell-result-hwm rma_write_pipeline_batches=16 rma_write_overlap_order=delivery-barrier end_to_end_zero_copy=no
+rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=0
+order_smoke_pairs=0
+shm_payload_slot_bytes=4096
+shm_lease_release_batch=1
+backend=wal-tcp local_leaf=0 leaf_target=zcmem:256M leaf_addr=172.31.39.213 leaf_port=29000 leaf_submit_mode=blocking leaf_allow_volatile_sync=1
+leaf_source_addr=kernel-route
+leaf_addrs=single-address leaf_source_addrs=single-source
+external_leaf_topology_artifact=/home/ubuntu/zcutils/bench-results/zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z/topologies/current-efa-read-w2-qd128.leaf-topology.log leaf_lane_to_worker_cpu=0:3,1:35 leaf_lane_to_nic=0:efa_0/efa_0-rdm,1:efa_0/efa_0-rdm
+hugetlb_preflight: free_pages=8192 required_pages=256 reason=one-hugepage-per-registered-slot
+[13:31:04] starting userspace shared target/fan; no placement decision exists in the kernel edge
+PERF WARNING: CPU governor is unchanged; record it before interpreting spread
+zcnblk-shm-block-bench: ERROR: target did not publish its PID file
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh zcnblk-run current-efa-read-w2-qd128 efa read 2 128 0 current'
+Traceback (most recent call last):
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1753, in <module>
+    main()
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1749, in main
+    args.func(args)
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1514, in remote_exec
+    run_checked(cmd, args.dry_run)
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1130, in run_checked
+    subprocess.run(cmd, check=True)
+  File "/home/rob/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['ssh', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2', '-o', 'TCPKeepAlive=yes', '-o', 'ControlMaster=auto', '-o', 'ControlPersist=600', '-o', 'ControlPath=/tmp/zcutils-blockmatrix-%C', '-i', '/home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519', 'ubuntu@18.222.147.252', 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh zcnblk-run current-efa-read-w2-qd128 efa read 2 128 0 current']' returned non-zero exit status 1.
+zcutils-block-matrix-node: refusing to stop pid=50990 comm=zcnblk-wal-leaf; expected zcnblk-wal-lea
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-stop current-efa-read-w2-qd128'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-stop current-efa-read-w2-qd128'
+Traceback (most recent call last):
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1753, in <module>
+    main()
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1749, in main
+    args.func(args)
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1514, in remote_exec
+    run_checked(cmd, args.dry_run)
+  File "/home/rob/spot-helper/ec2_perf_spot.py", line 1130, in run_checked
+    subprocess.run(cmd, check=True)
+  File "/home/rob/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['ssh', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2', '-o', 'TCPKeepAlive=yes', '-o', 'ControlMaster=auto', '-o', 'ControlPersist=600', '-o', 'ControlPath=/tmp/zcutils-blockmatrix-%C', '-i', '/home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519', 'ubuntu@3.134.116.54', 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh leaf-stop current-efa-read-w2-qd128']' returned non-zero exit status 1.
+nvmet_client_disconnected=true
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvmet-client-disconnect'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvmet-client-disconnect'
+nvmet_target_cleaned=true
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@18.222.147.252 'URING_NODE_INDEX=1 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvmet-target-cleanup'
++ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o TCPKeepAlive=yes -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=/tmp/zcutils-blockmatrix-%C -i /home/rob/robsSecretStore/aws/adhocMasterKeypair-20260523-ed25519 ubuntu@3.134.116.54 'URING_NODE_INDEX=2 URING_RUN_ID=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z URING_PRIVATE_IPS=172.31.36.28,172.31.39.213 /home/ubuntu/zcutils-block-matrix-node.sh nvmet-target-cleanup'

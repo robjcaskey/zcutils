@@ -10,8 +10,11 @@
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
+#include <linux/file.h>
+#include <linux/fcntl.h>
 #include <linux/highmem.h>
 #include <linux/hash.h>
+#include <linux/hugetlb.h>
 #include <linux/in.h>
 #include <linux/inet.h>
 #include <linux/jiffies.h>
@@ -28,12 +31,15 @@
 #include <linux/overflow.h>
 #include <linux/poll.h>
 #include <linux/random.h>
+#include <linux/sched/mm.h>
 #include <linux/slab.h>
 #include <linux/scatterlist.h>
 #include <linux/socket.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
+#include <linux/topology.h>
 #include <linux/uaccess.h>
+#include <linux/version.h>
 #include <linux/vmalloc.h>
 #include <linux/wait.h>
 #include <crypto/aead.h>
@@ -173,6 +179,11 @@ static bool hctx_affinity = true;
 module_param(hctx_affinity, bool, 0444);
 MODULE_PARM_DESC(hctx_affinity, "Map blk-mq hardware queues directly to target connections when possible");
 
+static int hctx_numa_node = NUMA_NO_NODE;
+module_param(hctx_numa_node, int, 0444);
+MODULE_PARM_DESC(hctx_numa_node,
+		 "Distribute every blk-mq hardware queue across CPUs on this NUMA node; -2 splits queues evenly across NUMA nodes; -1 preserves the kernel default map");
+
 static bool pin_threads;
 module_param(pin_threads, bool, 0444);
 MODULE_PARM_DESC(pin_threads, "Pin zcnblk connection kthreads to CPUs selected by pin_base_cpu/pin_cpu_count/pin_stride");
@@ -269,8 +280,14 @@ struct zcnblk_conn {
 
 struct zcnblk_shm_state {
 	void *region;
+	void *fallback_region;
 	size_t region_bytes;
 	struct zcnblk_shm_header *header;
+	struct file *arena_file;
+	struct folio **arena_folios;
+	unsigned long arena_nr_folios;
+	bool external_hugetlb;
+	struct mutex arena_lock;
 	struct miscdevice misc;
 	wait_queue_head_t poll_wait;
 	atomic_t daemon_open;
@@ -306,6 +323,7 @@ static_assert(sizeof(struct zcnblk_shm_request) == ZCNBLK_SHM_DESC_BYTES);
 static_assert(sizeof(struct zcnblk_shm_completion) == ZCNBLK_SHM_DESC_BYTES);
 static_assert(sizeof(struct zcnblk_shm_io_contract) ==
 	      ZCNBLK_SHM_IO_CONTRACT_BYTES);
+static_assert(sizeof(struct zcnblk_shm_arena_import) == 32);
 
 static bool zcnblk_shm_enabled(void)
 {
@@ -1351,13 +1369,15 @@ static int zcnblk_debugfs_state_show(struct seq_file *m, void *unused)
 		return 0;
 	}
 	seq_printf(m,
-		   "shm=1 daemon_online=%llu daemon_generation=%llu global_submit_sequence=%llu ring_entries=%u payload_entries=%u transfer_payload_slots=%u\n",
+		   "shm=1 daemon_online=%llu daemon_generation=%llu global_submit_sequence=%llu ring_entries=%u payload_entries=%u transfer_payload_slots=%u arena_backing=%s region_bytes=%zu\n",
 		   smp_load_acquire(&dev->shm->header->daemon_online),
 		   READ_ONCE(dev->shm->header->daemon_generation),
 		   READ_ONCE(dev->shm->header->global_submit_sequence),
 		   dev->shm->header->ring_entries,
 		   dev->shm->header->payload_entries,
-		   dev->shm->transfer_payload_slots);
+		   dev->shm->transfer_payload_slots,
+		   dev->shm->external_hugetlb ? "external-hugetlb" : "vmalloc-user",
+		   dev->shm->region_bytes);
 
 	for (conn_id = 0; conn_id < dev->total_conns; conn_id++) {
 		struct zcnblk_conn *conn = &dev->conns[conn_id];
@@ -2430,13 +2450,230 @@ static blk_status_t zcnblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 	return BLK_STS_OK;
 }
 
+static void zcnblk_map_queues(struct blk_mq_tag_set *set)
+{
+	struct blk_mq_queue_map *qmap = &set->map[HCTX_TYPE_DEFAULT];
+	unsigned int local_cpus;
+	unsigned int local_index = 0;
+	unsigned int cpu;
+
+	if (hctx_numa_node == NUMA_NO_NODE) {
+		blk_mq_map_queues(qmap);
+		return;
+	}
+	if (hctx_numa_node == -2) {
+		unsigned int node_count = 0;
+		int node;
+
+		for (node = 0; node < nr_node_ids; node++)
+			if (!cpumask_empty(cpumask_of_node(node)))
+				node_count++;
+		for_each_possible_cpu(cpu) {
+			unsigned int node_rank = 0;
+			unsigned int node_cpus;
+			unsigned int node_index = 0;
+			unsigned int queue_begin;
+			unsigned int queue_end;
+			unsigned int queue;
+			unsigned int peer;
+			int cpu_node = cpu_to_node(cpu);
+
+			for (node = 0; node < cpu_node; node++)
+				if (!cpumask_empty(cpumask_of_node(node)))
+					node_rank++;
+			node_cpus = cpumask_weight(cpumask_of_node(cpu_node));
+			for_each_cpu(peer, cpumask_of_node(cpu_node)) {
+				if (peer == cpu)
+					break;
+				node_index++;
+			}
+			queue_begin = div_u64((u64)node_rank * qmap->nr_queues,
+					      node_count);
+			queue_end = div_u64((u64)(node_rank + 1) *
+					    qmap->nr_queues, node_count);
+			if (queue_end <= queue_begin) {
+				queue = min(queue_begin, qmap->nr_queues - 1);
+			} else {
+				queue = queue_begin +
+					div_u64((u64)node_index *
+						(queue_end - queue_begin), node_cpus);
+				if (queue >= queue_end)
+					queue = queue_end - 1;
+			}
+			qmap->mq_map[cpu] = qmap->queue_offset + queue;
+		}
+		return;
+	}
+
+	local_cpus = cpumask_weight(cpumask_of_node(hctx_numa_node));
+	for_each_possible_cpu(cpu) {
+		unsigned int queue = 0;
+
+		if (cpu_to_node(cpu) == hctx_numa_node) {
+			queue = div_u64((u64)local_index * qmap->nr_queues,
+					local_cpus);
+			if (queue >= qmap->nr_queues)
+				queue = qmap->nr_queues - 1;
+			local_index++;
+		}
+		qmap->mq_map[cpu] = qmap->queue_offset + queue;
+	}
+}
+
 static const struct blk_mq_ops zcnblk_mq_ops = {
 	.queue_rq = zcnblk_queue_rq,
+	.map_queues = zcnblk_map_queues,
 };
 
 static const struct block_device_operations zcnblk_fops = {
 	.owner = THIS_MODULE,
 };
+
+static int zcnblk_shm_import_hugetlb_arena(
+	struct zcnblk_shm_state *shm,
+	const struct zcnblk_shm_arena_import *import)
+{
+	struct zcnblk_shm_header *new_header;
+	struct folio **folios = NULL;
+	struct page **pages = NULL;
+	struct file *file = NULL;
+	void *new_region = NULL;
+	unsigned long page_count;
+	unsigned long page_index = 0;
+	unsigned long i;
+	pgoff_t first_offset = 0;
+	long nr_folios = 0;
+	long seals;
+	u64 old_region_bytes;
+	int ret = 0;
+
+	if (import->magic != ZCNBLK_SHM_MAGIC ||
+	    import->version != ZCNBLK_SHM_VERSION ||
+	    import->flags != ZCNBLK_SHM_ARENA_IMPORT_F_HUGETLB ||
+	    import->fd < 0 || import->reserved ||
+	    !PAGE_ALIGNED(import->region_bytes) ||
+	    import->region_bytes > SIZE_MAX ||
+	    import->region_bytes < shm->region_bytes)
+		return -EINVAL;
+	if (import->region_bytes >> PAGE_SHIFT > UINT_MAX)
+		return -E2BIG;
+
+	mutex_lock(&shm->arena_lock);
+	if (shm->external_hugetlb ||
+	    smp_load_acquire(&shm->header->daemon_online) ||
+	    atomic64_read(&shm->submit_sequence)) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+
+	file = fget(import->fd);
+	if (!file) {
+		ret = -EBADF;
+		goto out_unlock;
+	}
+	if (!is_file_hugepages(file) ||
+	    !IS_ALIGNED(import->region_bytes,
+			 huge_page_size(hstate_file(file))) ||
+	    i_size_read(file_inode(file)) != import->region_bytes) {
+		ret = -EINVAL;
+		goto out_file;
+	}
+	seals = READ_ONCE(HUGETLBFS_I(file_inode(file))->seals);
+	if ((seals & (F_SEAL_SHRINK | F_SEAL_GROW)) !=
+	    (F_SEAL_SHRINK | F_SEAL_GROW) ||
+	    seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE)) {
+		ret = -EINVAL;
+		goto out_file;
+	}
+
+	page_count = import->region_bytes >> PAGE_SHIFT;
+	folios = kvmalloc_array(page_count, sizeof(*folios), GFP_KERNEL);
+	if (!folios) {
+		ret = -ENOMEM;
+		goto out_file;
+	}
+	nr_folios = memfd_pin_folios(file, 0, import->region_bytes - 1,
+				      folios, page_count, &first_offset);
+	if (nr_folios <= 0) {
+		ret = nr_folios ? nr_folios : -EINVAL;
+		nr_folios = 0;
+		goto out_folios;
+	}
+	if (first_offset) {
+		ret = -EINVAL;
+		goto out_unpin;
+	}
+
+	pages = kvmalloc_array(page_count, sizeof(*pages), GFP_KERNEL);
+	if (!pages) {
+		ret = -ENOMEM;
+		goto out_unpin;
+	}
+	for (i = 0; i < nr_folios && page_index < page_count; i++) {
+		unsigned long subpage;
+		unsigned long folio_pages;
+
+		if (!folio_test_hugetlb(folios[i])) {
+			ret = -EINVAL;
+			goto out_pages;
+		}
+		folio_pages = folio_nr_pages(folios[i]);
+		for (subpage = 0;
+		     subpage < folio_pages && page_index < page_count;
+		     subpage++)
+			pages[page_index++] = folio_page(folios[i], subpage);
+	}
+	if (page_index != page_count) {
+		ret = -EINVAL;
+		goto out_pages;
+	}
+	new_region = vmap(pages, page_count, VM_MAP, PAGE_KERNEL);
+	if (!new_region) {
+		ret = -ENOMEM;
+		goto out_pages;
+	}
+
+	old_region_bytes = shm->region_bytes;
+	memcpy(new_region, shm->region, old_region_bytes);
+	new_header = new_region;
+	new_header->region_bytes = import->region_bytes;
+	new_header->reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] |=
+		ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_IMPORT |
+		ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_ACTIVE;
+
+	/*
+	 * Connection kthreads exist before the userspace daemon imports its
+	 * arena.  Keep the original vmalloc mapping alive until those kthreads
+	 * have been stopped at module teardown: a reader may have loaded the old
+	 * region pointer immediately before this one-time backing swap.
+	 */
+	shm->fallback_region = shm->region;
+	shm->region = new_region;
+	shm->region_bytes = import->region_bytes;
+	shm->header = new_header;
+	shm->arena_file = file;
+	shm->arena_folios = folios;
+	shm->arena_nr_folios = nr_folios;
+	shm->external_hugetlb = true;
+	new_region = NULL;
+	file = NULL;
+	folios = NULL;
+	ret = 0;
+
+out_pages:
+	kvfree(pages);
+out_unpin:
+	if (ret && nr_folios > 0)
+		unpin_folios(folios, nr_folios);
+out_folios:
+	kvfree(folios);
+out_file:
+	if (file)
+		fput(file);
+out_unlock:
+	mutex_unlock(&shm->arena_lock);
+	return ret;
+}
 
 static int zcnblk_shm_ctl_open(struct inode *inode, struct file *file)
 {
@@ -2486,6 +2723,13 @@ static long zcnblk_shm_ctl_ioctl(struct file *file, unsigned int cmd,
 		if (copy_to_user(argp, shm->header, sizeof(*shm->header)))
 			return -EFAULT;
 		return 0;
+	case ZCNBLK_SHM_IOC_IMPORT_ARENA: {
+		struct zcnblk_shm_arena_import import;
+
+		if (copy_from_user(&import, argp, sizeof(import)))
+			return -EFAULT;
+		return zcnblk_shm_import_hugetlb_arena(shm, &import);
+	}
 	case ZCNBLK_SHM_IOC_ATTACH: {
 		struct zcnblk_shm_attach attach;
 
@@ -2530,13 +2774,78 @@ static long zcnblk_shm_ctl_ioctl(struct file *file, unsigned int cmd,
 static int zcnblk_shm_ctl_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct zcnblk_shm_state *shm = file->private_data;
+	struct file *arena_file = NULL;
+	struct file *control_file;
 	unsigned long len = vma->vm_end - vma->vm_start;
+	int ret;
 
 	if (!shm)
 		return -ENODEV;
 	if (vma->vm_pgoff || len != shm->region_bytes)
 		return -EINVAL;
-	return remap_vmalloc_range(vma, shm->region, 0);
+	mutex_lock(&shm->arena_lock);
+	if (shm->external_hugetlb)
+		arena_file = get_file(shm->arena_file);
+	mutex_unlock(&shm->arena_lock);
+	if (!arena_file)
+		return remap_vmalloc_range(vma, shm->region, 0);
+
+	/* Replace the control-file VMA backing with the retained HugeTLB memfd. */
+	control_file = vma->vm_file;
+	vma->vm_file = arena_file;
+	ret = vfs_mmap(arena_file, vma);
+	if (ret) {
+		vma->vm_file = control_file;
+		fput(arena_file);
+		return ret;
+	}
+	fput(control_file);
+	return 0;
+}
+
+static unsigned long zcnblk_shm_ctl_get_unmapped_area(
+	struct file *file, unsigned long addr, unsigned long len,
+	unsigned long pgoff, unsigned long flags)
+{
+	struct zcnblk_shm_state *shm = file->private_data;
+	struct file *arena_file = NULL;
+	unsigned long area;
+
+	if (!shm)
+		return -ENODEV;
+	mutex_lock(&shm->arena_lock);
+	if (shm->external_hugetlb)
+		arena_file = get_file(shm->arena_file);
+	mutex_unlock(&shm->arena_lock);
+	if (!arena_file) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 19, 0)
+		return mm_get_unmapped_area(file, addr, len, pgoff, flags);
+#else
+		return mm_get_unmapped_area(current->mm, file, addr, len,
+					    pgoff, flags);
+#endif
+	}
+
+	/*
+	 * The control file redirects mmap to the imported hugetlbfs file.  Its
+	 * address selection must be redirected too: the generic character-device
+	 * allocator may return a base-page-aligned hole whose PMD already contains
+	 * regular PTEs, which cannot host a HugeTLB mapping.
+	 */
+	if (arena_file->f_op->get_unmapped_area)
+		area = arena_file->f_op->get_unmapped_area(
+			arena_file, addr, len, pgoff, flags);
+	else {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 19, 0)
+		area = mm_get_unmapped_area(
+			arena_file, addr, len, pgoff, flags);
+#else
+		area = mm_get_unmapped_area(
+			current->mm, arena_file, addr, len, pgoff, flags);
+#endif
+	}
+	fput(arena_file);
+	return area;
 }
 
 static __poll_t zcnblk_shm_ctl_poll(struct file *file, poll_table *wait)
@@ -2569,6 +2878,7 @@ static const struct file_operations zcnblk_shm_ctl_fops = {
 	.release = zcnblk_shm_ctl_release,
 	.unlocked_ioctl = zcnblk_shm_ctl_ioctl,
 	.compat_ioctl = compat_ptr_ioctl,
+	.get_unmapped_area = zcnblk_shm_ctl_get_unmapped_area,
 	.mmap = zcnblk_shm_ctl_mmap,
 	.poll = zcnblk_shm_ctl_poll,
 	.llseek = noop_llseek,
@@ -2660,6 +2970,7 @@ static int zcnblk_shm_layout_init(struct zcnblk_dev *dev)
 	if (!shm)
 		return -ENOMEM;
 	dev->shm = shm;
+	mutex_init(&shm->arena_lock);
 	shm->sector_predecessors = kvcalloc(shm_sector_order_slots,
 					    sizeof(*shm->sector_predecessors),
 					    GFP_KERNEL);
@@ -2767,7 +3078,8 @@ static int zcnblk_shm_layout_init(struct zcnblk_dev *dev)
 		ZCNBLK_SHM_CAP_READ_PAYLOAD_REF |
 		ZCNBLK_SHM_CAP_REQUEST_WAKE_ARMED |
 		ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED |
-		ZCNBLK_SHM_CAP_IO_CONTRACT_SIDECAR;
+		ZCNBLK_SHM_CAP_IO_CONTRACT_SIDECAR |
+		ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_IMPORT;
 	hdr->reserved[ZCNBLK_SHM_HEADER_IO_FEATURES] =
 		ZCNBLK_SHM_IO_FEATURE_ALL;
 	if (shm_ordering_epochs)
@@ -2811,7 +3123,15 @@ static void zcnblk_shm_layout_destroy(struct zcnblk_dev *dev)
 	shm = dev->shm;
 	if (shm->registered)
 		misc_deregister(&shm->misc);
-	vfree(shm->region);
+	if (shm->external_hugetlb) {
+		vunmap(shm->region);
+		unpin_folios(shm->arena_folios, shm->arena_nr_folios);
+		kvfree(shm->arena_folios);
+		fput(shm->arena_file);
+		vfree(shm->fallback_region);
+	} else {
+		vfree(shm->region);
+	}
 	kvfree(shm->sector_predecessors);
 	kfree(shm);
 	dev->shm = NULL;
@@ -3091,6 +3411,13 @@ static int __init zcnblk_init(void)
 		pr_err("zcnblk: shard_affinity rejected; userspace target/gateway owns shard placement\n");
 		return -EINVAL;
 	}
+	if (hctx_numa_node != NUMA_NO_NODE && hctx_numa_node != -2 &&
+	    (hctx_numa_node < 0 || hctx_numa_node >= nr_node_ids ||
+	     cpumask_empty(cpumask_of_node(hctx_numa_node)))) {
+		pr_err("zcnblk: hctx_numa_node=%d has no possible CPUs\n",
+		       hctx_numa_node);
+		return -EINVAL;
+	}
 	if (!zcnblk_shm_enabled() && remote_port_base > U16_MAX - lanes)
 		return -EINVAL;
 	if (blk_validate_block_size(logical_block_size))
@@ -3194,14 +3521,14 @@ static int __init zcnblk_init(void)
 				    &zcnblk_debugfs_state_fops);
 	}
 
-	pr_info("zcnblk: /dev/%s transport=%s remote=%s remote_ips=%s remote_count=%u port_base=%u lanes=%u connections_per_lane=%u total_conns=%u shards=%u bytes=%llu frame=%u queues=%u depth=%u pipeline_depth=%u batch_depth=%u batch_fill_timeout_us=%u fill_timeout_ms=%u write_acks=%d null_backend=%d null_read_zero=%d hctx_affinity=%d pin_threads=%d pin_base_cpu=%u pin_cpu_count=%u pin_stride=%u shard_affinity=%d encryption=%s aes_frame=%u publish_delay_ms=%u shm_ring_entries=%u shm_payload_entries=%u shm_region_bytes=%zu shm_poll_us=%u placement_owner=userspace block_client_placement=no\n",
+	pr_info("zcnblk: /dev/%s transport=%s remote=%s remote_ips=%s remote_count=%u port_base=%u lanes=%u connections_per_lane=%u total_conns=%u shards=%u bytes=%llu frame=%u queues=%u depth=%u pipeline_depth=%u batch_depth=%u batch_fill_timeout_us=%u fill_timeout_ms=%u write_acks=%d null_backend=%d null_read_zero=%d hctx_affinity=%d hctx_numa_node=%d pin_threads=%d pin_base_cpu=%u pin_cpu_count=%u pin_stride=%u shard_affinity=%d encryption=%s aes_frame=%u publish_delay_ms=%u shm_ring_entries=%u shm_payload_entries=%u shm_region_bytes=%zu shm_poll_us=%u placement_owner=userspace block_client_placement=no\n",
 		ZCNBLK_DISK_NAME, transport, remote_ip, remote_ips ? remote_ips : "-", zcnblk_remote_addr_count,
 		remote_port_base, lanes, connections_per_lane,
 		total_conns, shard_count, capacity_bytes, max_frame_bytes,
 		nr_queues, queue_depth, pipeline_depth,
 		batch_depth, batch_fill_timeout_us, fill_timeout_ms, write_acks,
 		null_backend, null_read_zero,
-		hctx_affinity, pin_threads, pin_base_cpu, pin_cpu_count, pin_stride,
+		hctx_affinity, hctx_numa_node, pin_threads, pin_base_cpu, pin_cpu_count, pin_stride,
 		shard_affinity,
 		zcnblk_crypto_enabled(zcnblk_dev) ? "aes-256-gcm" : "none",
 		aes256_gcm_frame_bytes, publish_delay_ms,

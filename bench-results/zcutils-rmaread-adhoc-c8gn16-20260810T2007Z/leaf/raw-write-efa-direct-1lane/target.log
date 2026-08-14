@@ -1,0 +1,3 @@
+zcofi-rma-target: provider=efa endpoint=rdm bind=172.31.42.46 base_service=31810 lanes=1 bytes_per_lane=33554432 extent_bytes=4096 workers=1 direct_rma_target=yes lane_local_registered_arenas=yes commit_doorbell=ofi-msg records_per_extent=1 timeout_ms=30000 busy_poll_iters=0 cq_sleep_ns=0 ofi_domain=efa_0-rdm
+zcofi-rma-target-worker: affinity_index=0 target_cpu=32 status=ok
+Error: Custom { kind: Other, error: "zc_ofi_open_rma provider=efa endpoint=rdm node=172.31.42.46 service=31810 server=yes domain=efa_0-rdm failed rc=-61: fi_getinfo provider=efa endpoint=rdm node=172.31.42.46 service=31810 server=1 query_node=auto query_service=auto flags=0 rc=-61 (No data available)" }

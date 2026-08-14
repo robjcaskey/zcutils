@@ -6,7 +6,7 @@
 #include <linux/types.h>
 
 #define ZCNBLK_SHM_MAGIC 0x31304d48534e435aULL /* "ZCNSHM01" */
-#define ZCNBLK_SHM_VERSION 5U
+#define ZCNBLK_SHM_VERSION 6U
 #define ZCNBLK_SHM_DESC_BYTES 64U
 #define ZCNBLK_SHM_IO_CONTRACT_BYTES 16U
 
@@ -25,6 +25,8 @@
 #define ZCNBLK_SHM_CAP_ORDERING_EPOCH (1ULL << 5)
 #define ZCNBLK_SHM_CAP_ORDERING_VECTOR (1ULL << 6)
 #define ZCNBLK_SHM_CAP_IO_CONTRACT_SIDECAR (1ULL << 7)
+#define ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_IMPORT (1ULL << 8)
+#define ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_ACTIVE (1ULL << 9)
 
 #define ZCNBLK_SHM_IO_FEATURE_FUA (1ULL << 0)
 #define ZCNBLK_SHM_IO_FEATURE_POLLED_COMPLETION (1ULL << 1)
@@ -49,6 +51,7 @@
 #define ZCNBLK_SHM_CQE_REF_CHANNEL_MASK 0xffffff00U
 
 #define ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS (1U << 0)
+#define ZCNBLK_SHM_ARENA_IMPORT_F_HUGETLB (1U << 0)
 
 /* header.reserved[] assignments for capability extensions. */
 #define ZCNBLK_SHM_HEADER_CAPABILITIES 0U
@@ -171,11 +174,27 @@ struct zcnblk_shm_attach {
 	__u32 flags;
 };
 
+/*
+ * Import a sealed HugeTLB memfd as the shared request/payload arena.  The
+ * kernel keeps its own file reference and long-term folio pins, so subsequent
+ * control-device mmap calls can recover the same arena after a daemon restart.
+ */
+struct zcnblk_shm_arena_import {
+	__u64 magic;
+	__u32 version;
+	__u32 flags;
+	__s32 fd;
+	__u32 reserved;
+	__u64 region_bytes;
+};
+
 #define ZCNBLK_SHM_IOC_MAGIC 0xbc
 #define ZCNBLK_SHM_IOC_ATTACH \
 	_IOW(ZCNBLK_SHM_IOC_MAGIC, 1, struct zcnblk_shm_attach)
 #define ZCNBLK_SHM_IOC_KICK _IOW(ZCNBLK_SHM_IOC_MAGIC, 2, __u32)
 #define ZCNBLK_SHM_IOC_GET_INFO \
 	_IOR(ZCNBLK_SHM_IOC_MAGIC, 3, struct zcnblk_shm_header)
+#define ZCNBLK_SHM_IOC_IMPORT_ARENA \
+	_IOW(ZCNBLK_SHM_IOC_MAGIC, 4, struct zcnblk_shm_arena_import)
 
 #endif /* ZCNBLK_SHM_ABI_H */

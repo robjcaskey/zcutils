@@ -1,0 +1,2969 @@
+diff --git a/build.rs b/build.rs
+index f8c96d7c..61293ba1 100644
+--- a/build.rs
++++ b/build.rs
+@@ -6,7 +6,10 @@ fn main() {
+     println!("cargo:rerun-if-changed=src/ofi_shim.c");
+     println!("cargo:rustc-check-cfg=cfg(zc_has_libfabric)");
+ 
+-    let include_dir = ["/usr/include", "/opt/amazon/efa/include"]
++    // Prefer the provider's matching headers and library when the AWS EFA
++    // stack is installed.  Ubuntu's distro libfabric can be older than EFA's
++    // userspace provider and lacks the endpoint options used by the shim.
++    let include_dir = ["/opt/amazon/efa/include", "/usr/include"]
+         .into_iter()
+         .find(|dir| Path::new(dir).join("rdma/fabric.h").exists());
+     let Some(include_dir) = include_dir else {
+@@ -14,11 +17,11 @@ fn main() {
+         return;
+     };
+     let lib_dir = [
++        "/opt/amazon/efa/lib",
+         "/usr/lib",
+         "/usr/lib64",
+         "/usr/lib/aarch64-linux-gnu",
+         "/usr/lib/x86_64-linux-gnu",
+-        "/opt/amazon/efa/lib",
+     ]
+     .into_iter()
+     .find(|dir| Path::new(dir).join("libfabric.so").exists());
+diff --git a/docs/zcutils-commands.md b/docs/zcutils-commands.md
+index e90643a1..b6c7f8d0 100644
+--- a/docs/zcutils-commands.md
++++ b/docs/zcutils-commands.md
+@@ -97,8 +97,8 @@ of fixed 4 KiB buffers, one stable buffer per outstanding operation. Set
+ `URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD` to the per-lane ring depth (1 by
+ default, maximum 1024). Reads are posted independently, CQ entries are drained
+ in batches, and out-of-order slot completions are copied into their owned
+-shared block slots before request batches retire in FIFO order. The full shared
+-mapping is deliberately not registered: EFA provider behavior must be measured
++shared block slots before request batches retire in FIFO order. The RMA-read
++path deliberately does not register the full shared mapping: EFA provider behavior must be measured
+ for MR size and subrange access, and the kernel client still owns no placement
+ decision. Startup and summary logs state the lane QD, registered ring bytes,
+ peak in-flight reads, batched-CQ yield, local-CQ completion semantics, and copy
+@@ -106,6 +106,54 @@ time. Reads from a leaf that does not advertise the feature retain the framed
+ result-payload path; sync/FUA and RMA-to-framed transitions drain outstanding
+ reads before using the explicit message/HWM contract.
+ 
++The shared-block WAL path also has an OFI RMA write-payload mode. Enable it on
++the initiator with `URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES=1` and on the terminal
++`zcmem` leaf with `URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES=1`. The hello
++exchange advertises one final-memory window per owner lane. Before the hot path,
++each initiator endpoint registers the complete shared mapping once as an
++`FI_WRITE` source. A write batch then performs RMA directly from leased shared
++slots to the chosen leaf offsets and sends only its descriptor table as a
++metadata doorbell; there is no payload gather into the OFI message buffer.
++
++This mode has stricter ordering rules than framed payloads:
++
++- `URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS=1` is mandatory so logical extents
++  have stable userspace owners. Placement remains outside the kernel block
++  client.
++- `URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES=1` is mandatory. A lane cannot
++  expose a second direct-to-final-memory batch until the first doorbell result
++  retires. Disjoint runs inside one batch may use
++  `URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD`; overlapping runs are separated by a
++  delivery-completion barrier so input order is preserved.
++- `URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1` is the default and is required
++  by the WAL path. The shim posts `FI_DELIVERY_COMPLETE`; only after every CQE
++  is reaped may it send the doorbell. The leaf validates metadata, performs any
++  requested sync/FUA action, and returns a result HWM. A local transmit CQE
++  without delivery semantics is not sufficient.
++- Set `URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED=1` for attributable
++  benchmarks. Otherwise an unnegotiated window or a busy lane may retain the
++  compatible framed-message fallback.
++
++Startup preflight accounts for the full shared mapping once per initiator OFI
++domain and the full leaf window once per leaf endpoint. Logs report RMA bytes,
++doorbells, queue occupancy, CQ batching, completion semantics, and the copy
++ledger. This removes the userspace message-payload gather and leaf receive copy;
++it is not end-to-end PostgreSQL zero copy because the filesystem/block edge
++still copies into the shared slot. `scripts/zcnblk-shm-block-bench.sh` exposes
++the same variables for correctness and QD curves. `scripts/zcnblk-pgbench.sh`
++uses `WAL_TRANSPORT=tcp|ofi`; keep owner count, owner/ingress/leaf CPU maps,
++pipeline depth, database settings, and workload parameters identical for a
++matched TCP-versus-EFA comparison.
++
++The current client shared arena is still allocated with `vmalloc_user()` and
++mapped with `remap_vmalloc_range()`. Reserving HugeTLB pages does not change
++that source backing. Both block and PostgreSQL harnesses therefore warn and
++mark RMA-write measurements non-representative unless
++`URING_PLAY_ZCNBLK_SHM_RMA_SOURCE_HUGETLB_CONFIRMED=1` (block) or
++`OFI_RMA_SOURCE_HUGETLB_CONFIRMED=1` (PostgreSQL) is supplied after an actual
++external-HugeTLB arena ABI is implemented and verified. The terminal `zcmem`
++leaf can independently use its existing explicit HugeTLB mapping.
++
+ `scripts/zcnblk-shm-rma-qd-ladder.sh` drives QD1/2/4/8/16 with at least three
+ repeats per point. A representative run requires an executable
+ `RMA_QD_RAW_RUNNER` for matched raw RMA RTT samples and either
+@@ -135,6 +183,8 @@ The main controls are:
+   WAL sends, so that transport-ceiling path does not silently collapse to QD1;
+ - `URING_PLAY_OFI_RMA_READ_QD` and `URING_PLAY_OFI_RMA_WRITE_QD` for one-sided
+   operation rings;
++- `URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1` to require remote-delivery
++  CQ semantics for write operations that precede a WAL doorbell;
+ - `URING_PLAY_OFI_CQ_SIZE` for both CQs, or
+   `URING_PLAY_OFI_TX_CQ_SIZE`/`URING_PLAY_OFI_RX_CQ_SIZE` separately;
+ - `URING_PLAY_OFI_CQ_BATCH` and `URING_PLAY_OFI_CQ_HEADROOM` for CQ progress
+@@ -185,6 +235,10 @@ Read and write are the default modes; add `write-high-pps` through
+ flag, because a representative unavailable request is intentionally fatal.
+ Raw random access is enabled with `URING_PLAY_OFI_RMA_ACCESS_PATTERN=random`
+ and a reproducible optional `URING_PLAY_OFI_RMA_RANDOM_SEED`.
++RMA writes now default to `URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1`, so
++new write matrices label and derive their ceiling from post-to-delivery-CQ
++latency. Set it explicitly to `0` only for a source-reusable local-CQ transport
++control; the WAL RMA payload path rejects that weaker completion semantic.
+ 
+ In `URING_PLAY_TOPOLOGY_STRICT=1` or `URING_PLAY_TOPOLOGY_FATAL=1`, sleeping
+ CQ progress, insufficient rings/CQs, hot MR churn, missing worker/CPU or
+diff --git a/scripts/zcnblk-pgbench.sh b/scripts/zcnblk-pgbench.sh
+index a30b3ac5..75b3fb09 100755
+--- a/scripts/zcnblk-pgbench.sh
++++ b/scripts/zcnblk-pgbench.sh
+@@ -21,10 +21,28 @@ LEAF_PORT="${LEAF_PORT:-29000}"
+ LEAF_HOST="${LEAF_HOST:-127.0.0.1}"
+ LEAF_SOURCE_ADDR="${LEAF_SOURCE_ADDR:-}"
+ START_LOCAL_LEAF="${START_LOCAL_LEAF:-1}"
++EXTERNAL_LEAF_TOPOLOGY_ARTIFACT="${EXTERNAL_LEAF_TOPOLOGY_ARTIFACT:-}"
++WAL_TRANSPORT="${WAL_TRANSPORT:-tcp}"
++OFI_PROVIDER="${OFI_PROVIDER:-efa}"
++OFI_ENDPOINT="${OFI_ENDPOINT:-rdm}"
++OFI_DOMAIN="${OFI_DOMAIN:-${URING_PLAY_OFI_DOMAIN:-}}"
++OFI_CONTROL_PORT_OFFSET="${OFI_CONTROL_PORT_OFFSET:-1000}"
++OFI_CQ_SLEEP_NS="${OFI_CQ_SLEEP_NS:-0}"
++OFI_MESSAGE_BYTES="${OFI_MESSAGE_BYTES:-1048576}"
++OFI_RMA_READS="${OFI_RMA_READS:-0}"
++OFI_RMA_WRITE_QD="${OFI_RMA_WRITE_QD:-16}"
++OFI_RMA_DELIVERY_COMPLETE="${OFI_RMA_DELIVERY_COMPLETE:-1}"
++OFI_HUGETLB_CONFIRMED="${OFI_HUGETLB_CONFIRMED:-0}"
++OFI_RMA_SOURCE_HUGETLB_CONFIRMED="${OFI_RMA_SOURCE_HUGETLB_CONFIRMED:-0}"
++LEAF_ZCMEM_HUGETLB="${LEAF_ZCMEM_HUGETLB:-0}"
+ KERNEL_QUEUES="${KERNEL_QUEUES:-2}"
+ TARGET_CPU_LIST="${TARGET_CPU_LIST:-1,9}"
+ KTHREAD_CPU_LIST="${KTHREAD_CPU_LIST:-2,10}"
+ LEAF_CPU_LIST="${LEAF_CPU_LIST:-3,11}"
++OWNER_INGRESS="${OWNER_INGRESS:-1}"
++OWNER_COUNT="${OWNER_COUNT:-2}"
++OWNER_CPU_LIST="${OWNER_CPU_LIST:-18,26}"
++OWNER_PIPELINE_BATCHES="${OWNER_PIPELINE_BATCHES:-1}"
+ POSTGRES_CPU_LIST="${POSTGRES_CPU_LIST:-4-7,12-15,20-23,28-31}"
+ PGBENCH_CPU_LIST="${PGBENCH_CPU_LIST:-0,8,16,24}"
+ SYNC_COORDINATOR_CPU="${SYNC_COORDINATOR_CPU:-17}"
+@@ -58,6 +76,41 @@ env_true() {
+ 	esac
+ }
+ 
++case "$WAL_TRANSPORT" in
++	tcp)
++		OFI_RMA_WRITES="${OFI_RMA_WRITES:-0}"
++		OFI_RMA_WRITES_REQUIRED="${OFI_RMA_WRITES_REQUIRED:-0}"
++		;;
++	ofi)
++		OFI_RMA_WRITES="${OFI_RMA_WRITES:-1}"
++		OFI_RMA_WRITES_REQUIRED="${OFI_RMA_WRITES_REQUIRED:-1}"
++		;;
++	*) die 'WAL_TRANSPORT must be tcp or ofi' ;;
++esac
++if [ "$WAL_TRANSPORT" = tcp ] && env_true "$OFI_RMA_WRITES"; then
++	die 'OFI_RMA_WRITES cannot be enabled for the TCP transport'
++fi
++if [ "$WAL_TRANSPORT" = ofi ] && [ -n "$LEAF_SOURCE_ADDR" ]; then
++	die 'LEAF_SOURCE_ADDR is TCP-only; select EFA locality with OFI_DOMAIN'
++fi
++if env_true "$OFI_RMA_WRITES"; then
++	env_true "$OWNER_INGRESS" || die 'RMA writes require OWNER_INGRESS=1'
++	[ "$OWNER_PIPELINE_BATCHES" -eq 1 ] || die 'RMA writes require OWNER_PIPELINE_BATCHES=1'
++	env_true "$OFI_RMA_DELIVERY_COMPLETE" || die 'RMA writes require OFI_RMA_DELIVERY_COMPLETE=1'
++	env_true "$OFI_RMA_WRITES_REQUIRED" || die 'RMA benchmark runs require OFI_RMA_WRITES_REQUIRED=1'
++fi
++[ "$KERNEL_QUEUES" -eq 2 ] || die 'this matched harness currently requires KERNEL_QUEUES=2'
++[ "$OWNER_COUNT" -eq 2 ] || die 'this matched harness currently requires OWNER_COUNT=2'
++[ "$REPEATS" -ge 3 ] || die 'representative PostgreSQL transport comparisons require REPEATS>=3'
++IFS=, read -r -a target_cpus <<<"$TARGET_CPU_LIST"
++IFS=, read -r -a kthread_cpus <<<"$KTHREAD_CPU_LIST"
++IFS=, read -r -a leaf_cpus <<<"$LEAF_CPU_LIST"
++IFS=, read -r -a owner_cpus <<<"$OWNER_CPU_LIST"
++[ "${#target_cpus[@]}" -eq 2 ] || die 'TARGET_CPU_LIST must name exactly two individual CPUs'
++[ "${#kthread_cpus[@]}" -eq 2 ] || die 'KTHREAD_CPU_LIST must name exactly two individual CPUs'
++[ "${#leaf_cpus[@]}" -eq 2 ] || die 'LEAF_CPU_LIST must name exactly two individual CPUs'
++[ "${#owner_cpus[@]}" -eq 2 ] || die 'OWNER_CPU_LIST must name exactly two individual CPUs'
++
+ cpu_lists_intersect() {
+ 	local first="$1" second="$2"
+ 	awk -v first="$first" -v second="$second" '
+@@ -151,7 +204,7 @@ case "$COORDINATION_SCOPE" in
+ 
+ 		perf_result="$($COORD_BIN request --owner codex:zcutils-pgbench-hwm --mode soft-exclusive \
+ 			--sensitivity critical --priority 65 --ttl 3600 \
+-			--resource "cpu=0-31;memory-bandwidth=*;port=$LEAF_PORT-$((LEAF_PORT + 1)),$PORT" \
++			--resource "cpu=0-31;memory-bandwidth=*;nic=*;port=$LEAF_PORT-$((LEAF_PORT + 1)),$((LEAF_PORT + OFI_CONTROL_PORT_OFFSET))-$((LEAF_PORT + OFI_CONTROL_PORT_OFFSET + 1)),$PORT" \
+ 			--note 'two-lane topology-explicit durable PostgreSQL benchmark')"
+ 		printf '%s\n' "$perf_result" | tee -a "$OUTDIR/coordination.log"
+ 		perf_token="$(token_from_result "$perf_result")"
+@@ -182,6 +235,7 @@ preflight_warnings=0
+ warn_preflight() {
+ 	printf 'zcnblk-pgbench: WARNING: %s\n' "$*" | tee -a "$OUTDIR/preflight.log" >&2
+ 	preflight_warnings=$((preflight_warnings + 1))
++	topology_representative=0
+ }
+ if [ "$coord_honored" != true ]; then
+ 	topology_representative=0
+@@ -193,6 +247,40 @@ fi
+ if [ "$memlock_kib" != unlimited ] && [ "$memlock_kib" -lt 1048576 ]; then
+ 	warn_preflight "memlock headroom is only ${memlock_kib} KiB; registered/fixed-buffer fast paths need a larger limit."
+ fi
++if [ "$WAL_TRANSPORT" = ofi ]; then
++	[ "$OFI_CQ_SLEEP_NS" -eq 0 ] || warn_preflight "OFI CQ polling sleeps for ${OFI_CQ_SLEEP_NS} ns; low-latency transport comparison requires zero."
++	if [ "$OFI_PROVIDER" = efa ] && [ -z "$OFI_DOMAIN" ]; then
++		warn_preflight 'EFA domain/NIC mapping is implicit; set OFI_DOMAIN before treating results as representative.'
++	fi
++	env_true "$OFI_HUGETLB_CONFIRMED" || warn_preflight 'OFI registered-buffer HugeTLB policy is not confirmed.'
++	if env_true "$OFI_RMA_WRITES" && ! env_true "$OFI_RMA_SOURCE_HUGETLB_CONFIRMED"; then
++		warn_preflight 'The registered RMA source is the vmalloc_user/remap_vmalloc_range shared arena, not an explicit HugeTLB mapping; reserve pages for the leaf, but do not classify this client source path as HugeTLB-backed.'
++	fi
++	if [ "$START_LOCAL_LEAF" = 1 ] && ! env_true "$LEAF_ZCMEM_HUGETLB"; then
++		warn_preflight 'The local RMA leaf window is not MAP_HUGETLB-backed.'
++	fi
++fi
++external_leaf_cpu_map=
++external_leaf_nic_map=
++if [ "$START_LOCAL_LEAF" != 1 ]; then
++	if [ -z "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" ] || [ ! -r "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" ]; then
++		warn_preflight 'External leaf topology evidence is missing; set EXTERNAL_LEAF_TOPOLOGY_ARTIFACT to the copied leaf-host artifact.'
++	else
++		cp "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" "$OUTDIR/external-leaf-topology.log"
++		external_leaf_cpu_map="$(sed -n 's/^lane_to_worker_cpu=//p' "$OUTDIR/external-leaf-topology.log" | head -n 1)"
++		external_leaf_nic_map="$(sed -n 's/^lane_to_nic=//p' "$OUTDIR/external-leaf-topology.log" | head -n 1)"
++		[ -n "$external_leaf_cpu_map" ] || warn_preflight 'External leaf topology artifact lacks lane_to_worker_cpu mapping.'
++		if [ "$WAL_TRANSPORT" = ofi ] && [ -z "$external_leaf_nic_map" ]; then
++			warn_preflight 'External EFA leaf topology artifact lacks lane_to_nic mapping.'
++		fi
++	fi
++fi
++if ! env_true "$OWNER_INGRESS"; then
++	warn_preflight 'Stable userspace owner ingress is disabled; this run is not topology-matched to the RMA path.'
++fi
++if [ "$OWNER_PIPELINE_BATCHES" -ne 1 ]; then
++	warn_preflight 'Owner pipeline depth is not one; completion semantics are not matched to the RMA overwrite-safety contract.'
++fi
+ if [ "$preflight_warnings" -ne 0 ] &&
+ 	(env_true "${URING_PLAY_TOPOLOGY_STRICT:-0}" || env_true "${URING_PLAY_TOPOLOGY_FATAL:-0}"); then
+ 	die 'strict topology preflight rejected this benchmark before representative numbers were printed'
+@@ -230,19 +318,38 @@ sudo -n chown postgres:postgres "$SOCKET_DIR"
+ 
+ if [ "$START_LOCAL_LEAF" = 1 ]; then
+ 	env URING_PLAY_PIN_CPU_LIST="$LEAF_CPU_LIST" URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1 \
++		URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT="$WAL_TRANSPORT" \
++		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_PROVIDER="$OFI_PROVIDER" \
++		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ENDPOINT="$OFI_ENDPOINT" \
++		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS="$OFI_RMA_READS" \
++		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES="$OFI_RMA_WRITES" \
++		URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_HUGETLB="$LEAF_ZCMEM_HUGETLB" \
++		URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED="$OFI_HUGETLB_CONFIRMED" \
++		URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$OFI_MESSAGE_BYTES" \
++		URING_PLAY_OFI_DOMAIN="$OFI_DOMAIN" \
++		URING_PLAY_OFI_CONTROL_PORT_OFFSET="$OFI_CONTROL_PORT_OFFSET" \
++		URING_PLAY_OFI_CQ_SLEEP_NS="$OFI_CQ_SLEEP_NS" \
++		URING_PLAY_OFI_RMA_WRITE_QD="$OFI_RMA_WRITE_QD" \
++		URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE="$OFI_RMA_DELIVERY_COMPLETE" \
++		FI_EFA_USE_DEVICE_RDMA=1 \
+ 		URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN=1 \
+ 		URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC=1 \
+ 		"$LEAF" "zcmem:$LEAF_SIZE" "$LEAF_HOST" "$LEAF_PORT" 2 1 4096 2 true blocking \
+ 		>"$OUTDIR/leaf.log" 2>&1 &
+ 	leaf_pid=$!
+ 	for _ in $(seq 1 200); do
+-		listeners="$(ss -H -ltn | awk -v first=":$LEAF_PORT" -v second=":$((LEAF_PORT + 1))" \
++		if [ "$WAL_TRANSPORT" = ofi ]; then
++			ready_port="$((LEAF_PORT + OFI_CONTROL_PORT_OFFSET))"
++		else
++			ready_port="$LEAF_PORT"
++		fi
++		listeners="$(ss -H -ltn | awk -v first=":$ready_port" -v second=":$((ready_port + 1))" \
+ 			'$4 ~ first"$" || $4 ~ second"$" {count++} END {print count + 0}')"
+ 		[ "$listeners" -eq 2 ] && break
+ 		[ -r "/proc/$leaf_pid/comm" ] || die 'leaf exited during startup'
+ 		sleep 0.05
+ 	done
+-	[ "${listeners:-0}" -eq 2 ] || die 'leaf did not open both lane listeners'
++	[ "${listeners:-0}" -eq 2 ] || die 'leaf did not open both lane/control listeners'
+ fi
+ 
+ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$OUTDIR/target.pid" \
+@@ -255,7 +362,10 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$OUTDIR/target.pid" \
+ 	URING_PLAY_ZCNBLK_SHM_VECTOR_HWM="$VECTOR_HWM" \
+ 	URING_PLAY_ZCNBLK_SHM_WAL_DEBUG_STATE="$WAL_DEBUG_STATE" \
+ 	URING_PLAY_ZCNBLK_SHM_WAL_OWNER_DISPATCH=0 \
+-	URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS=0 \
++	URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS="$OWNER_INGRESS" \
++	URING_PLAY_ZCNBLK_SHM_OWNER_COUNT="$OWNER_COUNT" \
++	URING_PLAY_ZCNBLK_SHM_OWNER_CPU_LIST="$OWNER_CPU_LIST" \
++	URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES="$OWNER_PIPELINE_BATCHES" \
+ 	URING_PLAY_ZCNBLK_SHM_WAL_LANE_WINDOW=4 \
+ 	URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1 \
+ 	URING_PLAY_ZCNBLK_SHM_REMOTE_RECV_POLICY=adaptive \
+@@ -266,6 +376,21 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$OUTDIR/target.pid" \
+ 	URING_PLAY_ZCNBLK_SHM_DIRTY_PRESSURE_RESERVE=0 \
+ 	URING_PLAY_ZCNBLK_SHM_LEAF_ADDR="$LEAF_HOST:$LEAF_PORT" \
+ 	URING_PLAY_ZCNBLK_SHM_LEAF_SOURCE_ADDR="$LEAF_SOURCE_ADDR" \
++	URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT="$WAL_TRANSPORT" \
++	URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER="$OFI_PROVIDER" \
++	URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_ENDPOINT="$OFI_ENDPOINT" \
++	URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS="$OFI_RMA_READS" \
++	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES="$OFI_RMA_WRITES" \
++	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED="$OFI_RMA_WRITES_REQUIRED" \
++	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD="$OFI_RMA_WRITE_QD" \
++	URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED="$OFI_HUGETLB_CONFIRMED" \
++	URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$OFI_MESSAGE_BYTES" \
++	URING_PLAY_OFI_DOMAIN="$OFI_DOMAIN" \
++	URING_PLAY_OFI_CONTROL_PORT_OFFSET="$OFI_CONTROL_PORT_OFFSET" \
++	URING_PLAY_OFI_CQ_SLEEP_NS="$OFI_CQ_SLEEP_NS" \
++	URING_PLAY_OFI_RMA_WRITE_QD="$OFI_RMA_WRITE_QD" \
++	URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE="$OFI_RMA_DELIVERY_COMPLETE" \
++	FI_EFA_USE_DEVICE_RDMA=1 \
+ 	URING_PLAY_ROUTE_PROBE="${URING_PLAY_ROUTE_PROBE:-0}" \
+ 	URING_PLAY_EXPECT_ROUTE_DEV="${URING_PLAY_EXPECT_ROUTE_DEV:-}" \
+ 	URING_PLAY_EXPECT_ROUTE_SRC="${URING_PLAY_EXPECT_ROUTE_SRC:-}" \
+@@ -277,9 +402,35 @@ target_job_pid=$!
+ for _ in $(seq 1 200); do [ -s "$OUTDIR/target.pid" ] && break; sleep 0.05; done
+ [ -s "$OUTDIR/target.pid" ] || die 'target did not publish its PID'
+ target_pid="$(cat "$OUTDIR/target.pid")"
++[ -r "/proc/$target_pid/comm" ] || die 'target exited immediately after publishing its PID'
++if [ "$WAL_TRANSPORT" = ofi ]; then
++	for _ in $(seq 1 200); do
++		provider_ready=0
++		delivery_ready=0
++		windows_ready=0
++		grep -q "zcofi-endpoint-profile: provider=$OFI_PROVIDER " "$OUTDIR/target.log" && provider_ready=1
++		grep -q 'rma_write_delivery_complete=1' "$OUTDIR/target.log" && delivery_ready=1
++		if env_true "$OFI_RMA_WRITES"; then
++			rma_windows="$(grep -c '^zcnblk-shm-target-ofi-rma-write-window: lane=.* completion=initiator-delivery-cq-before-doorbell' "$OUTDIR/target.log" || true)"
++			[ "$rma_windows" -eq "$OWNER_COUNT" ] && windows_ready=1
++		else
++			windows_ready=1
++		fi
++		[ "$provider_ready" -eq 1 ] && [ "$delivery_ready" -eq 1 ] && [ "$windows_ready" -eq 1 ] && break
++		[ -r "/proc/$target_pid/comm" ] || die 'target exited during OFI negotiation'
++		sleep 0.05
++	done
++	grep -q "zcofi-endpoint-profile: provider=$OFI_PROVIDER " "$OUTDIR/target.log" || \
++		die "target did not report the requested OFI provider $OFI_PROVIDER"
++	grep -q 'rma_write_delivery_complete=1' "$OUTDIR/target.log" || \
++		die 'target OFI profile did not confirm remote-delivery RMA write completions'
++	if env_true "$OFI_RMA_WRITES"; then
++		rma_windows="$(grep -c '^zcnblk-shm-target-ofi-rma-write-window: lane=.* completion=initiator-delivery-cq-before-doorbell' "$OUTDIR/target.log" || true)"
++		[ "$rma_windows" -eq "$OWNER_COUNT" ] || \
++			die "RMA write-window negotiation covered $rma_windows lanes, expected $OWNER_COUNT"
++	fi
++fi
+ 
+-IFS=, read -r -a kthread_cpus <<<"$KTHREAD_CPU_LIST"
+-[ "${#kthread_cpus[@]}" -eq 2 ] || die 'KTHREAD_CPU_LIST must name exactly two CPUs'
+ for lane in 0 1; do
+ 	name="zcnblk-shm-$lane-0"
+ 	pid="$(ps -e -o pid=,comm= | awk -v name="$name" '$2 == name {print $1}')"
+@@ -292,15 +443,34 @@ for lane in 0 1; do
+ 	sudo -n taskset -pc "$cpu" "$pid" >>"$OUTDIR/kthreads.log"
+ done
+ 
++if [ "$START_LOCAL_LEAF" = 1 ]; then
++	leaf_cpu_map="0:${leaf_cpus[0]},1:${leaf_cpus[1]}"
++	leaf_nic_map="0:${OFI_DOMAIN:-tcp-route},1:${OFI_DOMAIN:-tcp-route}"
++else
++	leaf_cpu_map="${external_leaf_cpu_map:-missing-see-external-leaf-topology.log}"
++	leaf_nic_map="${external_leaf_nic_map:-missing-see-external-leaf-topology.log}"
++fi
+ {
+ 	printf 'classification=%s\ncoordination_honored=%s\n' \
+ 		"$([ "$START_LOCAL_LEAF" = 1 ] && printf local-shared-system || printf remote-userspace-leaf)" \
+ 		"$coord_honored"
+ 	printf 'leaf_host=%s leaf_port=%s leaf_source_addr=%s local_leaf=%s\n' \
+ 		"$LEAF_HOST" "$LEAF_PORT" "${LEAF_SOURCE_ADDR:-kernel-route}" "$START_LOCAL_LEAF"
++	printf 'wal_transport=%s ofi_provider=%s ofi_endpoint=%s ofi_domain=%s ofi_cq_sleep_ns=%s ofi_message_bytes=%s\n' \
++		"$WAL_TRANSPORT" "$OFI_PROVIDER" "$OFI_ENDPOINT" "${OFI_DOMAIN:-implicit}" "$OFI_CQ_SLEEP_NS" "$OFI_MESSAGE_BYTES"
++	printf 'rma_writes=%s rma_writes_required=%s rma_write_qd_per_owner=%s rma_delivery_complete=%s rma_reads=%s\n' \
++		"$OFI_RMA_WRITES" "$OFI_RMA_WRITES_REQUIRED" "$OFI_RMA_WRITE_QD" "$OFI_RMA_DELIVERY_COMPLETE" "$OFI_RMA_READS"
++	printf 'rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=%s\n' \
++		"$OFI_RMA_SOURCE_HUGETLB_CONFIRMED"
+ 	printf 'topology_representative=%s preflight_warnings=%s\n' "$topology_representative" "$preflight_warnings"
+-	printf 'kernel_queues=%s target_cpus=%s kthread_cpus=%s leaf_cpus=%s\n' \
+-		"$KERNEL_QUEUES" "$TARGET_CPU_LIST" "$KTHREAD_CPU_LIST" "$LEAF_CPU_LIST"
++	printf 'kernel_queues=%s target_cpus=%s kthread_cpus=%s leaf_cpus=%s owner_cpus=%s owner_count=%s owner_pipeline_batches=%s\n' \
++		"$KERNEL_QUEUES" "$TARGET_CPU_LIST" "$KTHREAD_CPU_LIST" "$LEAF_CPU_LIST" "$OWNER_CPU_LIST" "$OWNER_COUNT" "$OWNER_PIPELINE_BATCHES"
++	printf 'lane_to_kthread_cpu=0:%s,1:%s lane_to_ingress_worker_cpu=0:%s,1:%s owner_lane_to_worker_cpu=0:%s,1:%s leaf_lane_to_worker_cpu=%s\n' \
++		"${kthread_cpus[0]}" "${kthread_cpus[1]}" "${target_cpus[0]}" "${target_cpus[1]}" \
++		"${owner_cpus[0]}" "${owner_cpus[1]}" "$leaf_cpu_map"
++	printf 'leaf_lane_to_nic=%s external_leaf_topology_artifact=%s\n' \
++		"$leaf_nic_map" "${EXTERNAL_LEAF_TOPOLOGY_ARTIFACT:-local-leaf}"
++	printf 'placement_owner=separate-userspace-stable-extent-owner block_client_placement=no owner_ingress=%s\n' "$OWNER_INGRESS"
+ 	printf 'lane0_hctx=%s\n' "$(cat /sys/block/zcnblk0/mq/0/cpu_list)"
+ 	printf 'lane1_hctx=%s\n' "$(cat /sys/block/zcnblk0/mq/1/cpu_list)"
+ 	printf 'postgres_connection0_hctxs=%s postgres_connection1_hctxs=%s\n' \
+@@ -313,6 +483,13 @@ done
+ 	else
+ 		printf 'write_completion=local-dirty-lease-admission; sync_completion=remote-volatile-global-hwm\n'
+ 	fi
++	if env_true "$OFI_RMA_WRITES"; then
++		printf 'transport_write_payload_completion=initiator-delivery-cq-before-metadata-doorbell; remote_write_ack=doorbell-result-hwm; sync_fua=leaf-after-doorbell\n'
++		printf 'copy_ledger=postgres-kernel-filesystem+one-block-edge-copy-to-shared-slot+registered-shared-slot-rma-direct-to-leaf-memory+metadata-doorbell-only; end_to_end_zero_copy=no\n'
++	else
++		printf 'transport_write_payload_completion=message-send-before-remote-result; remote_write_ack=message-result-hwm; sync_fua=leaf-after-message-payload\n'
++		printf 'copy_ledger=postgres-kernel-filesystem+one-block-edge-copy-to-shared-slot+userspace-transport-message-gather+transport-provider-copy-to-leaf-memory; end_to_end_zero_copy=no\n'
++	fi
+ 	printf 'hugepages_total=%s memlock_kib=%s loadavg=%s\n' \
+ 		"$hugepages_total" "$memlock_kib" "$(cat /proc/loadavg)"
+ 	cat "$OUTDIR/preflight.log"
+@@ -388,4 +565,31 @@ postgres_started=0
+ sudo -n cp "$MOUNTPOINT/postgres.log" "$OUTDIR/postgres.log"
+ sudo -n chown "$(id -u):$(id -g)" "$OUTDIR/postgres.log"
+ 
+-awk '/^latency average|^tps =/{print FILENAME ": " $0}' "$OUTDIR"/rep*.log
++printf 'repeat\ttransport\ttps\tlatency_ms\n' >"$OUTDIR/pgbench-repeats.tsv"
++for rep in $(seq 1 "$REPEATS"); do
++	tps="$(awk '/^tps =/{print $3; exit}' "$OUTDIR/rep$rep.log")"
++	latency_ms="$(awk '/^latency average =/{print $4; exit}' "$OUTDIR/rep$rep.log")"
++	[ -n "$tps" ] && [ -n "$latency_ms" ] || die "repeat $rep lacks pgbench TPS or latency output"
++	printf '%s\t%s\t%s\t%s\n' "$rep" "$WAL_TRANSPORT" "$tps" "$latency_ms" >>"$OUTDIR/pgbench-repeats.tsv"
++done
++awk -F '\t' -v transport="$WAL_TRANSPORT" '
++	NR == 1 { next }
++	NR == 2 { min_tps=max_tps=$3; min_latency=max_latency=$4 }
++	{
++		count++
++		total_tps += $3
++		total_latency += $4
++		if ($3 < min_tps) min_tps=$3
++		if ($3 > max_tps) max_tps=$3
++		if ($4 < min_latency) min_latency=$4
++		if ($4 > max_latency) max_latency=$4
++	}
++	END {
++		mean_tps=total_tps/count
++		mean_latency=total_latency/count
++		printf "zcnblk-pgbench-summary: transport=%s repeats=%d mean_tps=%.3f min_tps=%.3f max_tps=%.3f spread_pct=%.3f mean_latency_ms=%.3f min_latency_ms=%.3f max_latency_ms=%.3f\n",
++			transport, count, mean_tps, min_tps, max_tps,
++			(max_tps-min_tps)*100/mean_tps,
++			mean_latency, min_latency, max_latency
++	}
++' "$OUTDIR/pgbench-repeats.tsv" | tee "$OUTDIR/summary.log"
+diff --git a/scripts/zcnblk-shm-block-bench.sh b/scripts/zcnblk-shm-block-bench.sh
+index 75acffab..9b7ba539 100755
+--- a/scripts/zcnblk-shm-block-bench.sh
++++ b/scripts/zcnblk-shm-block-bench.sh
+@@ -57,6 +57,7 @@ SIZE_MIB="${SIZE_MIB:-$((LANES * 128))}"
+ REGION_BYTES_PER_WORKER="${REGION_BYTES_PER_WORKER:-67108864}"
+ BACKEND="${BACKEND:-memory}"
+ START_LOCAL_LEAF="${START_LOCAL_LEAF:-$([ "$BACKEND" = wal-tcp ] && printf 1 || printf 0)}"
++EXTERNAL_LEAF_TOPOLOGY_ARTIFACT="${EXTERNAL_LEAF_TOPOLOGY_ARTIFACT:-}"
+ MODE="${MODE:-rw}"
+ READ_PERCENT="${READ_PERCENT:-50}"
+ if [ -z "${SHM_PAYLOAD_ENTRIES+x}" ]; then
+@@ -110,6 +111,17 @@ EFA_USE_DEVICE_RDMA="${FI_EFA_USE_DEVICE_RDMA:-0}"
+ SHM_OFI_RMA_READS="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS:-0}"
+ SHM_OFI_RMA_READ_QD="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD:-1}"
+ LEAF_OFI_RMA_READS="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS:-$SHM_OFI_RMA_READS}"
++SHM_OFI_RMA_WRITES="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES:-0}"
++SHM_OFI_RMA_WRITES_REQUIRED="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED:-$SHM_OFI_RMA_WRITES}"
++SHM_OFI_RMA_WRITE_QD="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD:-${URING_PLAY_OFI_RMA_WRITE_QD:-1}}"
++LEAF_OFI_RMA_WRITES="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES:-$SHM_OFI_RMA_WRITES}"
++OFI_RMA_WRITE_DELIVERY_COMPLETE="${URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE:-1}"
++OFI_RMA_SOURCE_HUGETLB_CONFIRMED="${URING_PLAY_ZCNBLK_SHM_RMA_SOURCE_HUGETLB_CONFIRMED:-0}"
++OFI_CONTROL_PORT_OFFSET="${URING_PLAY_OFI_CONTROL_PORT_OFFSET:-1000}"
++LEAF_TRANSPORT="${URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT:-$REMOTE_TRANSPORT}"
++LEAF_OFI_PROVIDER="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_PROVIDER:-$REMOTE_OFI_PROVIDER}"
++LEAF_OFI_ENDPOINT="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ENDPOINT:-$REMOTE_OFI_ENDPOINT}"
++LEAF_ZCMEM_HUGETLB="${URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_HUGETLB:-0}"
+ LEAF_SPIN_READS="${URING_PLAY_ZCNBLK_WAL_LEAF_SPIN_READS:-0}"
+ if [ -n "${URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN+x}" ]; then
+ 	LEAF_ADAPTIVE_SPIN="$URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN"
+@@ -295,6 +307,21 @@ join_comma() {
+ 	printf '%s' "$*"
+ }
+ 
++leaf_listener_count() {
++	local base="$LEAF_PORT"
++	if [ "$LEAF_TRANSPORT" != tcp ]; then
++		base=$((base + OFI_CONTROL_PORT_OFFSET))
++	fi
++	ss -H -ltn | awk -v base="$base" -v lanes="$LANES" '
++		{
++			port=$4
++			sub(/^.*:/, "", port)
++			if (port + 0 >= base && port + 0 < base + lanes) seen[port]=1
++		}
++		END { for (port in seen) count++; print count + 0 }
++	'
++}
++
+ cpu_numa_node() {
+ 	local cpu="$1" node_path
+ 	for node_path in "/sys/devices/system/cpu/cpu$cpu"/node[0-9]*; do
+@@ -395,6 +422,9 @@ trap cleanup EXIT INT TERM
+ 
+ [ "$LANES" -gt 0 ] || die "LANES must be positive"
+ [ "$REPEATS" -gt 0 ] || die "REPEATS must be positive"
++if [ "$REPRESENTATIVE" = 1 ] && [ "$REPEATS" -lt 3 ]; then
++	die "representative block measurements require REPEATS>=3"
++fi
+ [[ "$EXTERNAL_NIC_LOW_LATENCY_CONFIRMED" =~ ^[01]$ ]] || \
+ 	die "URING_PLAY_EXTERNAL_NIC_LOW_LATENCY_CONFIRMED must be zero or one"
+ [[ "$SHM_RING_ENTRIES" =~ ^[0-9]+$ ]] && [ "$SHM_RING_ENTRIES" -gt 0 ] || \
+@@ -533,6 +563,50 @@ if [ "$SHM_OFI_RMA_READS" = 1 ]; then
+ 		[ "$REPRESENTATIVE" != 1 ] || die "representative OFI RMA runs require wal_lane_window >= rma_read_qd"
+ 	fi
+ fi
++if [ "$REMOTE_TRANSPORT" = ofi ] || [ "$REMOTE_TRANSPORT" = rdm ] || [ "$REMOTE_TRANSPORT" = efa ]; then
++	[ -z "$LEAF_SOURCE_ADDR" ] && [ -z "$LEAF_SOURCE_ADDRS" ] || \
++		die "OFI WAL transport uses URING_PLAY_OFI_DOMAIN; leaf source-address binding is TCP-only"
++fi
++[[ "$SHM_OFI_RMA_WRITE_QD" =~ ^[0-9]+$ ]] && [ "$SHM_OFI_RMA_WRITE_QD" -gt 0 ] && \
++	[ "$SHM_OFI_RMA_WRITE_QD" -le 1024 ] || \
++	die "URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD must be in 1..=1024"
++if [ "$SHM_OFI_RMA_WRITES" = 1 ]; then
++	[ "$REMOTE_TRANSPORT" = ofi ] || [ "$REMOTE_TRANSPORT" = rdm ] || [ "$REMOTE_TRANSPORT" = efa ] || \
++		die "OFI RMA writes require URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT=ofi"
++	[ "$WAL_OWNER_INGRESS" = 1 ] || die "OFI RMA writes require stable WAL owner ingress"
++	[ "$WAL_OWNER_PIPELINE_BATCHES" -eq 1 ] || \
++		die "OFI RMA writes require URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES=1"
++	[ "$OFI_RMA_WRITE_DELIVERY_COMPLETE" = 1 ] || \
++		die "OFI RMA writes require URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1"
++	if [ "$OFI_RMA_SOURCE_HUGETLB_CONFIRMED" != 1 ]; then
++		printf 'PERF WARNING: the registered RMA source is the vmalloc_user/remap_vmalloc_range shared arena, not an explicit HugeTLB mapping; this run cannot be classified as a HugeTLB-backed RMA source path\n' >&2
++		if [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
++			[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; then
++			die "representative/strict RMA write runs require an explicit HugeTLB-backed shared-arena ABI"
++		fi
++	fi
++	if [ "$REPRESENTATIVE" = 1 ]; then
++		[ "$SHM_OFI_RMA_WRITES_REQUIRED" = 1 ] || \
++			die "representative RMA write runs must forbid message-payload fallback"
++		[ "$MODE" = write ] || die "representative RMA write attribution currently requires MODE=write"
++	fi
++fi
++if [ "$START_LOCAL_LEAF" = 1 ] && [ "$BACKEND" = wal-tcp ] && \
++	[ "$LEAF_TRANSPORT" != "$REMOTE_TRANSPORT" ]; then
++	die "local leaf transport $LEAF_TRANSPORT does not match remote transport $REMOTE_TRANSPORT"
++fi
++if [ "$BACKEND" = wal-tcp ] && [ "$START_LOCAL_LEAF" != 1 ] && \
++	{ [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
++		[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; }; then
++	[ -n "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" ] && [ -r "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" ] || \
++		die "representative/strict external WAL runs require EXTERNAL_LEAF_TOPOLOGY_ARTIFACT"
++	grep -q '^lane_to_worker_cpu=' "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" || \
++		die "external leaf topology artifact lacks lane_to_worker_cpu mapping"
++	if [ "$REMOTE_TRANSPORT" = ofi ] || [ "$REMOTE_TRANSPORT" = rdm ] || [ "$REMOTE_TRANSPORT" = efa ]; then
++		grep -q '^lane_to_nic=' "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" || \
++			die "external EFA leaf topology artifact lacks lane_to_nic mapping"
++	fi
++fi
+ if [ "$START_LOCAL_LEAF" = 1 ] && [ "$LEAF_SPIN_READS" != 1 ] && [ "$LEAF_ADAPTIVE_SPIN" != 1 ]; then
+ 	printf 'PERF WARNING: WAL leaf receive spinning is disabled; blocking once or more per network batch adds avoidable context switches. Enable URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN=1 for high-IOPS controls\n' >&2
+ 	[ "$REPRESENTATIVE" != 1 ] || die "representative local WAL leaf runs require adaptive or fixed receive spinning"
+@@ -550,6 +624,13 @@ command -v sudo >/dev/null || die "sudo is required"
+ sudo -n true || die "passwordless sudo is required for the block client edge"
+ [ ! -e /dev/zcnblk0 ] || die "/dev/zcnblk0 already exists; another owner may be using it"
+ mkdir -p "$OUTDIR"
++external_leaf_cpu_map=none
++external_leaf_nic_map=none
++if [ -n "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" ] && [ -r "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" ]; then
++	cp "$EXTERNAL_LEAF_TOPOLOGY_ARTIFACT" "$OUTDIR/external-leaf-topology.log"
++	external_leaf_cpu_map="$(sed -n 's/^lane_to_worker_cpu=//p' "$OUTDIR/external-leaf-topology.log" | head -n 1)"
++	external_leaf_nic_map="$(sed -n 's/^lane_to_nic=//p' "$OUTDIR/external-leaf-topology.log" | head -n 1)"
++fi
+ 
+ case "$COORDINATION_SCOPE" in
+ 	shared-host)
+@@ -936,12 +1017,18 @@ fi
+ 	printf 'remote_send_mode=%s remote_send_ring_entries=%s remote_send_zc_required=%s allow_unsafe_send_zc=%s\n' \
+ 		"$REMOTE_SEND_MODE" "$REMOTE_SEND_RING_ENTRIES" "$REMOTE_SEND_ZC_REQUIRED" \
+ 		"$ALLOW_UNSAFE_SEND_ZC"
+-	printf 'remote_transport=%s remote_ofi_provider=%s remote_ofi_endpoint=%s ofi_domain=%s ofi_cq_sleep_ns=%s wal_ofi_message_bytes=%s wal_ofi_hugetlb_confirmed=%s efa_use_device_rdma=%s shm_ofi_rma_reads=%s shm_ofi_rma_read_qd=%s rma_aggregate_outstanding_depth=%s leaf_ofi_rma_reads=%s\n' \
++	printf 'remote_transport=%s remote_ofi_provider=%s remote_ofi_endpoint=%s ofi_domain=%s ofi_cq_sleep_ns=%s wal_ofi_message_bytes=%s wal_ofi_hugetlb_confirmed=%s efa_use_device_rdma=%s shm_ofi_rma_reads=%s shm_ofi_rma_read_qd=%s rma_read_aggregate_outstanding_depth=%s leaf_ofi_rma_reads=%s shm_ofi_rma_writes=%s shm_ofi_rma_writes_required=%s shm_ofi_rma_write_qd=%s rma_write_aggregate_outstanding_depth=%s leaf_ofi_rma_writes=%s rma_write_delivery_complete=%s\n' \
+ 		"$REMOTE_TRANSPORT" "$REMOTE_OFI_PROVIDER" "$REMOTE_OFI_ENDPOINT" \
+ 		"${OFI_DOMAIN:-auto}" "$OFI_CQ_SLEEP_NS" "$WAL_OFI_MESSAGE_BYTES" \
+ 		"$WAL_OFI_HUGETLB_CONFIRMED" "$EFA_USE_DEVICE_RDMA" \
+ 		"$SHM_OFI_RMA_READS" "$SHM_OFI_RMA_READ_QD" "$((LANES * SHM_OFI_RMA_READ_QD))" \
+-		"$LEAF_OFI_RMA_READS"
++		"$LEAF_OFI_RMA_READS" "$SHM_OFI_RMA_WRITES" "$SHM_OFI_RMA_WRITES_REQUIRED" \
++		"$SHM_OFI_RMA_WRITE_QD" "$((LANES * SHM_OFI_RMA_WRITE_QD))" \
++		"$LEAF_OFI_RMA_WRITES" "$OFI_RMA_WRITE_DELIVERY_COMPLETE"
++	printf 'rma_write_completion=delivery-cq-before-doorbell-result-hwm rma_write_pipeline_batches=%s rma_write_overlap_order=delivery-barrier end_to_end_zero_copy=no\n' \
++		"$WAL_OWNER_PIPELINE_BATCHES"
++	printf 'rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=%s\n' \
++		"$OFI_RMA_SOURCE_HUGETLB_CONFIRMED"
+ 	printf 'order_smoke_pairs=%s\n' "$ORDER_SMOKE_PAIRS"
+ 	printf 'shm_payload_slot_bytes=%s\n' "$MAX_FRAME_BYTES"
+ 	printf 'shm_lease_release_batch=%s\n' "$LEASE_RELEASE_BATCH"
+@@ -950,6 +1037,9 @@ fi
+ 	printf 'leaf_source_addr=%s\n' "${LEAF_SOURCE_ADDR:-kernel-route}"
+ 	printf 'leaf_addrs=%s leaf_source_addrs=%s\n' \
+ 		"${LEAF_ADDRS:-single-address}" "${LEAF_SOURCE_ADDRS:-single-source}"
++	printf 'external_leaf_topology_artifact=%s leaf_lane_to_worker_cpu=%s leaf_lane_to_nic=%s\n' \
++		"${EXTERNAL_LEAF_TOPOLOGY_ARTIFACT:-local-leaf}" \
++		"$external_leaf_cpu_map" "$external_leaf_nic_map"
+ } | tee "$OUTDIR/topology.log"
+ ps -eLo pid,tid,psr,pcpu,comm --sort=-pcpu | head -n 80 >"$OUTDIR/process-noise.before" || true
+ 
+@@ -982,10 +1072,12 @@ fi
+ 
+ if [ "$START_LOCAL_LEAF" = 1 ]; then
+ 	command -v ss >/dev/null || die "ss is required to validate the local WAL leaf listener"
+-	ss -H -ltn | awk -v port=":$LEAF_PORT" '$4 ~ port "$" { found=1 } END { exit found ? 0 : 1 }' && \
+-		die "TCP port $LEAF_PORT is already listening"
++	[ "$(leaf_listener_count)" -eq 0 ] || die "one or more WAL leaf lane/control ports are already listening"
+ 	log "starting terminal userspace WAL leaf on cpu $leaf_cpu_list"
+ 	env URING_PLAY_PIN_CPU_LIST="$leaf_cpu_list" URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1 \
++		URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT="$LEAF_TRANSPORT" \
++		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_PROVIDER="$LEAF_OFI_PROVIDER" \
++		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ENDPOINT="$LEAF_OFI_ENDPOINT" \
+ 		URING_PLAY_ZCNBLK_WAL_LEAF_SPIN_READS="$LEAF_SPIN_READS" \
+ 		URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN="$LEAF_ADAPTIVE_SPIN" \
+ 		URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_SPIN_MIN="$LEAF_ADAPTIVE_SPIN_MIN" \
+@@ -994,16 +1086,26 @@ if [ "$START_LOCAL_LEAF" = 1 ]; then
+ 		URING_PLAY_ZCNBLK_WAL_LEAF_ADAPTIVE_HYSTERESIS_NS="$LEAF_ADAPTIVE_HYSTERESIS_NS" \
+ 		URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC="$LEAF_ALLOW_VOLATILE_SYNC" \
+ 		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS="$LEAF_OFI_RMA_READS" \
++		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES="$LEAF_OFI_RMA_WRITES" \
++		URING_PLAY_ZCNBLK_WAL_LEAF_ZCMEM_HUGETLB="$LEAF_ZCMEM_HUGETLB" \
++		URING_PLAY_OFI_DOMAIN="$OFI_DOMAIN" \
++		URING_PLAY_OFI_CONTROL_PORT_OFFSET="$OFI_CONTROL_PORT_OFFSET" \
++		URING_PLAY_OFI_CQ_SLEEP_NS="$OFI_CQ_SLEEP_NS" \
++		URING_PLAY_OFI_RMA_WRITE_QD="$SHM_OFI_RMA_WRITE_QD" \
++		URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE="$OFI_RMA_WRITE_DELIVERY_COMPLETE" \
++		URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$WAL_OFI_MESSAGE_BYTES" \
++		URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED="$WAL_OFI_HUGETLB_CONFIRMED" \
++		FI_EFA_USE_DEVICE_RDMA="$EFA_USE_DEVICE_RDMA" \
+ 		"$LEAF_BIN" "$LEAF_TARGET" "$LEAF_ADDR" "$LEAF_PORT" "$LANES" 1 4096 "$LANES" true "$LEAF_SUBMIT_MODE" \
+ 		>"$OUTDIR/leaf.log" 2>&1 &
+ 	leaf_pid=$!
+ 	for _ in $(seq 1 100); do
+-		ss -H -ltn | awk -v port=":$LEAF_PORT" '$4 ~ port "$" { found=1 } END { exit !found }' && break
++		[ "$(leaf_listener_count)" -eq "$LANES" ] && break
+ 		[ -e "/proc/$leaf_pid" ] || die "WAL leaf exited before listening; see $OUTDIR/leaf.log"
+ 		sleep 0.05
+ 	done
+-	ss -H -ltn | awk -v port=":$LEAF_PORT" '$4 ~ port "$" { found=1 } END { exit !found }' || \
+-		die "WAL leaf did not listen on $LEAF_ADDR:$LEAF_PORT"
++	[ "$(leaf_listener_count)" -eq "$LANES" ] || \
++		die "WAL leaf did not open all $LANES lane/control listeners"
+ fi
+ 
+ log "starting userspace shared target/fan; no placement decision exists in the kernel edge"
+@@ -1060,8 +1162,13 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
+ 	URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_ENDPOINT="$REMOTE_OFI_ENDPOINT" \
+ 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS="$SHM_OFI_RMA_READS" \
+ 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD="$SHM_OFI_RMA_READ_QD" \
++	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES="$SHM_OFI_RMA_WRITES" \
++	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED="$SHM_OFI_RMA_WRITES_REQUIRED" \
++	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD="$SHM_OFI_RMA_WRITE_QD" \
+ 	URING_PLAY_OFI_DOMAIN="$OFI_DOMAIN" \
+ 	URING_PLAY_OFI_CQ_SLEEP_NS="$OFI_CQ_SLEEP_NS" \
++	URING_PLAY_OFI_RMA_WRITE_QD="$SHM_OFI_RMA_WRITE_QD" \
++	URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE="$OFI_RMA_WRITE_DELIVERY_COMPLETE" \
+ 	URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$WAL_OFI_MESSAGE_BYTES" \
+ 	URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED="$WAL_OFI_HUGETLB_CONFIRMED" \
+ 	FI_EFA_USE_DEVICE_RDMA="$EFA_USE_DEVICE_RDMA" \
+@@ -1091,6 +1198,17 @@ done
+ [ -s "$pid_file" ] || die "target did not publish its PID file"
+ target_pid="$(cat "$pid_file")"
+ [[ "$target_pid" =~ ^[0-9]+$ ]] || die "invalid target PID: $target_pid"
++if [ "$SHM_OFI_RMA_WRITES" = 1 ]; then
++	for _ in $(seq 1 200); do
++		rma_windows="$(grep -c '^zcnblk-shm-target-ofi-rma-write-window: lane=.* completion=initiator-delivery-cq-before-doorbell' "$OUTDIR/target.log" || true)"
++		[ "$rma_windows" -eq "$WAL_OWNER_COUNT" ] && break
++		[ -r "/proc/$target_pid/comm" ] || die "target exited during RMA write-window negotiation"
++		sleep 0.05
++	done
++	rma_windows="$(grep -c '^zcnblk-shm-target-ofi-rma-write-window: lane=.* completion=initiator-delivery-cq-before-doorbell' "$OUTDIR/target.log" || true)"
++	[ "$rma_windows" -eq "$WAL_OWNER_COUNT" ] || \
++		die "RMA write-window negotiation covered $rma_windows owners, expected $WAL_OWNER_COUNT"
++fi
+ 
+ declare -A kthread_pid_by_name=()
+ for _ in $(seq 1 100); do
+diff --git a/scripts/zcofi-rma-queue-matrix.sh b/scripts/zcofi-rma-queue-matrix.sh
+index c9bc4a9b..74b811ac 100755
+--- a/scripts/zcofi-rma-queue-matrix.sh
++++ b/scripts/zcofi-rma-queue-matrix.sh
+@@ -8,6 +8,7 @@ LOW_QDS="${ZCOFI_RMA_MATRIX_LOW_QDS:-1,2,4,8,16}"
+ SATURATION_QDS="${ZCOFI_RMA_MATRIX_SATURATION_QDS:-32,64,128,256}"
+ REPEATS="${ZCOFI_RMA_MATRIX_REPEATS:-3}"
+ REPRESENTATIVE="${ZCOFI_RMA_MATRIX_REPRESENTATIVE:-1}"
++WRITE_DELIVERY_COMPLETE="${URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE:-1}"
+ TOPOLOGY_ARTIFACT="${ZCOFI_RMA_MATRIX_TOPOLOGY_ARTIFACT:-}"
+ OUTROOT="${OUTROOT:-$ROOT/bench-results/zcofi-rma-queue-matrix-$(date -u +%Y%m%dT%H%M%SZ)}"
+ 
+@@ -22,6 +23,8 @@ die() {
+ 	die "ZCOFI_RMA_MATRIX_REPEATS must be at least 3"
+ [[ "$REPRESENTATIVE" =~ ^[01]$ ]] || \
+ 	die "ZCOFI_RMA_MATRIX_REPRESENTATIVE must be zero or one"
++[[ "$WRITE_DELIVERY_COMPLETE" =~ ^[01]$ ]] || \
++	die "URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE must be zero or one"
+ 
+ IFS=',' read -r -a modes <<<"$MODES"
+ IFS=',' read -r -a low_qds <<<"$LOW_QDS"
+@@ -80,9 +83,11 @@ fi
+ printf 'modes=%s low_qds=%s saturation_qds=%s repeats=%s representative=%s\n' \
+ 	"$MODES" "$LOW_QDS" "$SATURATION_QDS" "$REPEATS" "$REPRESENTATIVE" \
+ 	| tee "$OUTROOT/matrix-topology.log"
+-printf 'lane_to_worker_cpu=%s ofi_domain=%s efa_iface=%s cq_sleep_ns=%s completion_semantics=read:data-visible-local-cq,write:source-reusable-local-cq remote_admission=separate durability=separate\n' \
++printf 'lane_to_worker_cpu=%s ofi_domain=%s efa_iface=%s cq_sleep_ns=%s rma_write_delivery_complete=%s completion_semantics=read:data-visible-local-cq,write:%s remote_admission=separate durability=separate\n' \
+ 	"${URING_PLAY_PIN_CPU_LIST:-unreported}" "${URING_PLAY_OFI_DOMAIN:-unreported}" \
+ 	"${FI_EFA_IFACE:-unreported}" "${URING_PLAY_OFI_CQ_SLEEP_NS:-50000}" \
++	"$WRITE_DELIVERY_COMPLETE" \
++	"$([ "$WRITE_DELIVERY_COMPLETE" = 1 ] && printf delivery-cq-remote-visible || printf source-reusable-local-cq)" \
+ 	| tee -a "$OUTROOT/matrix-topology.log"
+ : >"$OUTROOT/matrix-summary.log"
+ 
+@@ -104,13 +109,23 @@ run_point() {
+ 			;;
+ 		write)
+ 			summary_prefix='zcofi-rma-write-summary:'
+-			expected_completion='initiator-local-cq-source-reusable'
+-			expected_rtt_semantics='rma-write-post-to-initiator-local-cq-source-reusable'
++			if [ "$WRITE_DELIVERY_COMPLETE" = 1 ]; then
++				expected_completion='initiator-delivery-cq-remote-visible'
++				expected_rtt_semantics='rma-write-post-to-initiator-delivery-cq-remote-visible'
++			else
++				expected_completion='initiator-local-cq-source-reusable'
++				expected_rtt_semantics='rma-write-post-to-initiator-local-cq-source-reusable'
++			fi
+ 			;;
+ 		write-high-pps)
+ 			summary_prefix='zcofi-rma-write-summary:'
+-			expected_completion='initiator-local-cq-source-reusable'
+-			expected_rtt_semantics='rma-write-post-to-initiator-local-cq-source-reusable'
++			if [ "$WRITE_DELIVERY_COMPLETE" = 1 ]; then
++				expected_completion='initiator-delivery-cq-remote-visible'
++				expected_rtt_semantics='rma-write-post-to-initiator-delivery-cq-remote-visible'
++			else
++				expected_completion='initiator-local-cq-source-reusable'
++				expected_rtt_semantics='rma-write-post-to-initiator-local-cq-source-reusable'
++			fi
+ 			high_pps=1
+ 			;;
+ 	esac
+@@ -118,11 +133,12 @@ run_point() {
+ 	: >"$point_dir/repeats.log"
+ 	for ((rep = 1; rep <= REPEATS; rep++)); do
+ 		local log="$point_dir/rep$rep.log"
+-		env \
++			env \
+ 			URING_PLAY_TOPOLOGY_STRICT="$REPRESENTATIVE" \
+ 			URING_PLAY_OFI_RMA_ACCESS_PATTERN="$access" \
+ 			URING_PLAY_OFI_RMA_READ_QD="$qd" \
+ 			URING_PLAY_OFI_RMA_WRITE_QD="$qd" \
++			URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE="$WRITE_DELIVERY_COMPLETE" \
+ 			URING_PLAY_OFI_EFA_WRITE_HIGH_PPS="$high_pps" \
+ 			"$RUNNER" "$mode" "$qd" "$rep" "$point_dir" 2>&1 | tee "$log"
+ 		local summary
+diff --git a/src/lib.rs b/src/lib.rs
+index b9758da4..aefae547 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -11167,9 +11167,15 @@ impl ZcOfiEndpoint {
+     }
+ 
+     fn rma_register_write_buffer(&mut self, buf: &[u8]) -> io::Result<()> {
+-        let rc = unsafe {
+-            zc_ofi_rma_register_write_buffer(self.raw, buf.as_ptr().cast::<c_void>(), buf.len())
+-        };
++        unsafe { self.rma_register_write_buffer_raw(buf.as_ptr(), buf.len()) }
++    }
++
++    unsafe fn rma_register_write_buffer_raw(
++        &mut self,
++        buf: *const u8,
++        len: usize,
++    ) -> io::Result<()> {
++        let rc = unsafe { zc_ofi_rma_register_write_buffer(self.raw, buf.cast::<c_void>(), len) };
+         if rc != 0 {
+             return Err(zcofi_error_from_endpoint(
+                 self,
+@@ -11663,6 +11669,17 @@ impl ZcOfiEndpoint {
+         ))
+     }
+ 
++    unsafe fn rma_register_write_buffer_raw(
++        &mut self,
++        _buf: *const u8,
++        _len: usize,
++    ) -> io::Result<()> {
++        Err(io::Error::new(
++            io::ErrorKind::Unsupported,
++            "zcutils was built without libfabric headers",
++        ))
++    }
++
+     fn rma_write_queue_init(&mut self, _depth: usize) -> io::Result<()> {
+         Err(io::Error::new(
+             io::ErrorKind::Unsupported,
+@@ -12156,6 +12173,44 @@ impl ZcOfiMessageStream {
+         self.endpoint.rma_read_queue_init(depth)
+     }
+ 
++    unsafe fn register_rma_write_buffer_raw(
++        &mut self,
++        source: *const u8,
++        len: usize,
++    ) -> io::Result<()> {
++        unsafe { self.endpoint.rma_register_write_buffer_raw(source, len) }
++    }
++
++    fn configure_rma_write_queue(&mut self, depth: usize) -> io::Result<()> {
++        self.endpoint.rma_write_queue_init(depth)
++    }
++
++    /// `source` must remain allocated and immutable until `slot` is returned
++    /// by `poll_rma_writes`.
++    unsafe fn post_rma_write_raw(
++        &mut self,
++        source: *const u8,
++        len: usize,
++        remote_addr: u64,
++        remote_key: u64,
++        slot: usize,
++        user_data: u64,
++    ) -> io::Result<bool> {
++        unsafe {
++            self.endpoint
++                .rma_write_post_raw(source, len, remote_addr, remote_key, slot, user_data)
++        }
++    }
++
++    fn poll_rma_writes(
++        &mut self,
++        out_slots: &mut [usize],
++        out_user_data: &mut [u64],
++        wait: bool,
++    ) -> io::Result<usize> {
++        self.endpoint.rma_write_poll(out_slots, out_user_data, wait)
++    }
++
+     /// `target` must remain valid and exclusively assigned to `slot` until
+     /// `poll_rma_reads` returns that slot.
+     unsafe fn post_rma_read_raw(
+@@ -13882,6 +13937,11 @@ fn zcofi_rma_write_worker(
+     let stream_count = specs.len();
+     let pattern = SendPayloadPattern::from_env(extent_bytes)?;
+     let access_mode = ZcOfiRmaAccessMode::from_env()?;
++    let write_completion = if env_enabled_or("URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE", true) {
++        "initiator-delivery-cq-remote-visible"
++    } else {
++        "initiator-local-cq-source-reusable"
++    };
+     let extents_per_lane = bytes_per_lane / extent_bytes;
+     let buffer_bytes = queue_depth.checked_mul(extent_bytes).ok_or_else(|| {
+         io::Error::new(
+@@ -13924,7 +13984,7 @@ fn zcofi_rma_write_worker(
+         ep.rma_register_write_buffer(&buffer)?;
+         ep.rma_write_queue_init(queue_depth)?;
+         println!(
+-            "zcofi-rma-write-lane: worker={worker} lane={} provider={} endpoint={} addr={} service={} control_port={} remote_addr=0x{:016x} remote_key=0x{:016x} extent_bytes={} queue_depth={} registered_buffer_bytes={} validation_digest=0x{validation_digest:016x} max_msg_size={} max_rma_size={} inject_size={} completion=initiator-local-cq-source-reusable cq_processing=batched access_pattern={} permutation_start={} permutation_stride={}",
++            "zcofi-rma-write-lane: worker={worker} lane={} provider={} endpoint={} addr={} service={} control_port={} remote_addr=0x{:016x} remote_key=0x{:016x} extent_bytes={} queue_depth={} registered_buffer_bytes={} validation_digest=0x{validation_digest:016x} max_msg_size={} max_rma_size={} inject_size={} completion={write_completion} cq_processing=batched access_pattern={} permutation_start={} permutation_stride={}",
+             spec.lane,
+             provider.as_str(),
+             endpoint.as_str(),
+@@ -14596,6 +14656,17 @@ fn zcofi_rma_write(
+     let endpoint = libfabric_endpoint_pingpong(endpoint)?;
+     zcwal_validate_extent_shape(bytes_per_lane, extent_bytes)?;
+     let access_mode = ZcOfiRmaAccessMode::from_env()?;
++    let delivery_complete = env_enabled_or("URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE", true);
++    let completion_semantics = if delivery_complete {
++        "initiator-delivery-cq-remote-visible"
++    } else {
++        "initiator-local-cq-source-reusable"
++    };
++    let raw_rtt_semantics = if delivery_complete {
++        "rma-write-post-to-initiator-delivery-cq-remote-visible"
++    } else {
++        "rma-write-post-to-initiator-local-cq-source-reusable"
++    };
+     let queue_depth = match env::var("URING_PLAY_OFI_RMA_WRITE_QD") {
+         Ok(value) => value.parse::<usize>().map_err(|error| {
+             io::Error::new(
+@@ -14678,10 +14749,11 @@ fn zcofi_rma_write(
+          per_lane_qd={queue_depth} aggregate_outstanding_depth={aggregate_outstanding_depth} \
+          per_worker_qd_min={per_worker_qd_min} per_worker_qd_max={per_worker_qd_max} \
+          worker_lane_map={worker_lane_map} worker_lane_scheduling=event-driven-interleave access_pattern={} \
+-         source_payload_pattern={} commit_doorbell=ofi-msg records_per_extent={} \
++         source_payload_pattern={} commit_doorbell=ofi-msg completion={} records_per_extent={} \
+          timeout_ms={} busy_poll_iters={} cq_sleep_ns={} ofi_domain={}",
+         access_mode.label(),
+         SendPayloadPattern::from_env(extent_bytes)?.label(),
++        completion_semantics,
+         extent_bytes / ZC_WAL_RECORD_SIZE,
+         zcofi_timeout_ms(),
+         env_usize_or("URING_PLAY_OFI_BUSY_POLL_ITERS", 0),
+@@ -14768,7 +14840,7 @@ fn zcofi_rma_write(
+         operation_iops * 100.0 / matching_theoretical_iops
+     };
+     println!(
+-        "zcofi-rma-write-summary: payload_bytes={} wire_bytes={} extents={} logical_records={} doorbells={} seconds={secs:.6} payload_Gbitps={:.3} operation_iops={operation_iops:.0} measured_raw_transport_rtt_us={average_local_cq_completion_us:.3} raw_rtt_semantics=rma-write-post-to-initiator-local-cq-source-reusable matching_theoretical_iops={matching_theoretical_iops:.0} actual_theoretical_efficiency_pct={efficiency_pct:.2} completion=initiator-local-cq-source-reusable access_pattern={} per_lane_qd={queue_depth} per_worker_qd_min={per_worker_qd_min} per_worker_qd_max={per_worker_qd_max} workers={workers} lanes={lanes} aggregate_outstanding_depth={aggregate_outstanding_depth} cq_poll_calls={cq_poll_calls} cq_batches={cq_batches} cq_completions={cq_completions} cq_batch_avg={:.3} post_eagain={post_eagain} peak_outstanding={peak_outstanding} {} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
++        "zcofi-rma-write-summary: payload_bytes={} wire_bytes={} extents={} logical_records={} doorbells={} seconds={secs:.6} payload_Gbitps={:.3} operation_iops={operation_iops:.0} measured_raw_transport_rtt_us={average_local_cq_completion_us:.3} raw_rtt_semantics={raw_rtt_semantics} matching_theoretical_iops={matching_theoretical_iops:.0} actual_theoretical_efficiency_pct={efficiency_pct:.2} completion={completion_semantics} access_pattern={} per_lane_qd={queue_depth} per_worker_qd_min={per_worker_qd_min} per_worker_qd_max={per_worker_qd_max} workers={workers} lanes={lanes} aggregate_outstanding_depth={aggregate_outstanding_depth} cq_poll_calls={cq_poll_calls} cq_batches={cq_batches} cq_completions={cq_completions} cq_batch_avg={:.3} post_eagain={post_eagain} peak_outstanding={peak_outstanding} {} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
+         total.payload_bytes,
+         total.wire_bytes,
+         total.extents,
+@@ -32919,7 +32991,7 @@ fn zcnblk_read_fan(
+ }
+ 
+ const ZCNBLK_FAN_WAL_MAGIC: &[u8; 8] = b"ZCFANW1\0";
+-const ZCNBLK_FAN_WAL_VERSION: u16 = 3;
++const ZCNBLK_FAN_WAL_VERSION: u16 = 4;
+ const ZCNBLK_FAN_WAL_MIN_VERSION: u16 = 2;
+ const ZCNBLK_FAN_WAL_HEADER_LEN: usize = 128;
+ const ZCNBLK_FAN_WAL_OP_HELLO: u16 = 1;
+@@ -32939,6 +33011,8 @@ const ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH: u16 = 1 << 0;
+ const ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT: u16 = 1 << 1;
+ const ZCNBLK_FAN_WAL_FLAG_IO_CONTRACT_NEGOTIATION: u16 = 1 << 2;
+ const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW: u16 = 1 << 3;
++const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW: u16 = 1 << 4;
++const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD: u16 = 1 << 5;
+ const ZCNBLK_FAN_WAL_COMPACT_WRITE_EXTENT_LEN: usize = 48;
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+@@ -33561,6 +33635,35 @@ fn zcnblk_fan_wal_write_leaf_batch_payload<W: Write + ?Sized>(
+     }
+ }
+ 
++fn zcnblk_fan_wal_write_rma_payload_doorbell<W: Write + ?Sized>(
++    stream: &mut W,
++    frame: ZcnblkFanWalFrame,
++    descriptor_bytes: &[u8],
++) -> io::Result<()> {
++    if frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD == 0 {
++        return Err(io::Error::new(
++            io::ErrorKind::InvalidInput,
++            "RMA WAL doorbell is missing the RMA payload flag",
++        ));
++    }
++    if !matches!(
++        frame.op,
++        ZCNBLK_FAN_WAL_OP_WRITE_BATCH
++            | ZCNBLK_FAN_WAL_OP_REQUEST_BATCH
++            | ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH
++    ) || descriptor_bytes.is_empty()
++        || descriptor_bytes.len() > frame.payload_len as usize
++    {
++        return Err(io::Error::new(
++            io::ErrorKind::InvalidInput,
++            "invalid RMA WAL payload doorbell shape",
++        ));
++    }
++    let header = frame.encode();
++    let mut parts = [IoSlice::new(&header), IoSlice::new(descriptor_bytes)];
++    tcp_write_all_vectored(stream, &mut parts, "RMA WAL payload doorbell")
++}
++
+ fn zcnblk_fan_wal_write_owned_leaf_batch_payload(
+     stream: &mut TcpStream,
+     batch: &ZcnblkFanWalOwnedLeafBatch,
+@@ -41530,7 +41633,6 @@ fn zcnblk_fan_wal_send_early_cached_read_responses_from_parts(
+     )? {
+         return Ok(());
+     }
+-
+     let mut response_headers =
+         Vec::with_capacity(cached_read_indices.len() * ZCNBLK_FRAME_HEADER_LEN);
+     let mut response_payload_len = 0usize;
+@@ -50176,6 +50278,8 @@ struct ZcnblkWalLeafStats {
+     heap_payload_descriptor_bytes: usize,
+     heap_payload_data_bytes: usize,
+     direct_memory_recv_bytes: usize,
++    rma_write_payload_bytes: usize,
++    rma_write_doorbells: usize,
+     memfd_payload_bytes: usize,
+     lease_submit_bytes: usize,
+     memfd_lease_submit_bytes: usize,
+@@ -50212,6 +50316,8 @@ struct ZcnblkWalLeafStreamStats {
+     heap_payload_descriptor_bytes: usize,
+     heap_payload_data_bytes: usize,
+     direct_memory_recv_bytes: usize,
++    rma_write_payload_bytes: usize,
++    rma_write_doorbells: usize,
+     memfd_payload_bytes: usize,
+     lease_submit_bytes: usize,
+     memfd_lease_submit_bytes: usize,
+@@ -51177,6 +51283,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
+     {
+         return Ok(false);
+     }
++    let rma_payload = batch.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0;
+     let count = batch.segment_count as usize;
+     if count == 0 {
+         return Err(io::Error::new(
+@@ -51224,7 +51331,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
+         if frame.io_contract()?.atomic_write {
+             return Err(io::Error::new(
+                 io::ErrorKind::Unsupported,
+-                "atomic WAL writes cannot use the direct-memory receive layout",
++                "atomic WAL writes cannot use the direct-memory/RMA payload layout",
+             ));
+         }
+         let len = frame.payload_len as usize;
+@@ -51279,7 +51386,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
+     stats.phase_decode = stats.phase_decode.saturating_add(decode_started.elapsed());
+ 
+     let data_recv_started = Instant::now();
+-    if !direct_iovecs.is_empty() {
++    if !rma_payload && !direct_iovecs.is_empty() {
+         stream.recv_iovecs(&mut direct_iovecs, spin_reads, spin_budget, false)?;
+     }
+     recv_elapsed = recv_elapsed.saturating_add(data_recv_started.elapsed());
+@@ -51288,16 +51395,27 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
+         .saturating_add(payload_read_started.elapsed());
+     stats.phase_payload_alloc = stats.phase_payload_alloc.saturating_add(alloc_elapsed);
+     stats.phase_payload_recv = stats.phase_payload_recv.saturating_add(recv_elapsed);
+-    stats.payload_read_bytes = stats.payload_read_bytes.saturating_add(payload_len);
++    stats.payload_read_bytes = stats.payload_read_bytes.saturating_add(if rma_payload {
++        descriptor_bytes_len
++    } else {
++        payload_len
++    });
+     stats.heap_payload_bytes = stats
+         .heap_payload_bytes
+         .saturating_add(descriptor_bytes_len);
+     stats.heap_payload_descriptor_bytes = stats
+         .heap_payload_descriptor_bytes
+         .saturating_add(descriptor_bytes_len);
+-    stats.direct_memory_recv_bytes = stats
+-        .direct_memory_recv_bytes
+-        .saturating_add(write_payload_len);
++    if rma_payload {
++        stats.rma_write_payload_bytes = stats
++            .rma_write_payload_bytes
++            .saturating_add(write_payload_len);
++        stats.rma_write_doorbells = stats.rma_write_doorbells.saturating_add(1);
++    } else {
++        stats.direct_memory_recv_bytes = stats
++            .direct_memory_recv_bytes
++            .saturating_add(write_payload_len);
++    }
+     stats.write_submit_runs = stats.write_submit_runs.saturating_add(submit_runs);
+     stats.max_write_submit_run_frames = stats.max_write_submit_run_frames.max(max_run_records);
+ 
+@@ -51342,7 +51460,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
+              desc_queue={} desc_preferred_worker={} desc_preferred_cpu={} \
+              desc_numa_node={} leaf_target_cpu={} leaf_numa_node={} \
+              leaf_affinity_applied={} result_ranges={} incoming_cpu={} \
+-             payload_destination=direct-memory-scatter",
++            payload_destination={}",
+             meta.lane,
+             batch.branch_id,
+             count,
+@@ -51357,6 +51475,11 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
+             affinity.applied,
+             result_ranges,
+             current_cpu(),
++            if rma_payload {
++                "rma-preplaced-leaf-memory"
++            } else {
++                "direct-memory-scatter"
++            },
+         );
+         *logged_descriptor_topology = true;
+     }
+@@ -51413,6 +51536,12 @@ fn zcnblk_wal_leaf_process_request_batch(
+     )? {
+         return Ok(());
+     }
++    if batch.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0 {
++        return Err(io::Error::new(
++            io::ErrorKind::Unsupported,
++            "RMA request payload doorbells require a range-result zcmem leaf",
++        ));
++    }
+     let count = batch.segment_count as usize;
+     if count == 0 {
+         return Err(io::Error::new(
+@@ -51971,6 +52100,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
+     {
+         return Ok(false);
+     }
++    let rma_payload = batch.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0;
+     let record_count = batch.segment_count as usize;
+     let extent_count = batch.segment_index as usize;
+     if record_count == 0 || extent_count == 0 {
+@@ -52105,7 +52235,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
+         if frame.io_contract()?.atomic_write {
+             return Err(io::Error::new(
+                 io::ErrorKind::Unsupported,
+-                "atomic WAL writes cannot use the direct compact receive layout",
++                "atomic WAL writes cannot use the direct compact/RMA payload layout",
+             ));
+         }
+         writes.push(ZcnblkWalLeafPendingWrite {
+@@ -52127,23 +52257,36 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
+     stats.phase_decode = stats.phase_decode.saturating_add(decode_started.elapsed());
+ 
+     let data_recv_started = Instant::now();
+-    stream.recv_iovecs(&mut direct_iovecs, spin_reads, spin_budget, true)?;
++    if !rma_payload {
++        stream.recv_iovecs(&mut direct_iovecs, spin_reads, spin_budget, true)?;
++    }
+     recv_elapsed = recv_elapsed.saturating_add(data_recv_started.elapsed());
+     stats.phase_payload_read = stats
+         .phase_payload_read
+         .saturating_add(payload_read_started.elapsed());
+     stats.phase_payload_alloc = stats.phase_payload_alloc.saturating_add(alloc_elapsed);
+     stats.phase_payload_recv = stats.phase_payload_recv.saturating_add(recv_elapsed);
+-    stats.payload_read_bytes = stats.payload_read_bytes.saturating_add(payload_len);
++    stats.payload_read_bytes = stats.payload_read_bytes.saturating_add(if rma_payload {
++        descriptor_bytes_len
++    } else {
++        payload_len
++    });
+     stats.heap_payload_bytes = stats
+         .heap_payload_bytes
+         .saturating_add(descriptor_bytes_len);
+     stats.heap_payload_descriptor_bytes = stats
+         .heap_payload_descriptor_bytes
+         .saturating_add(descriptor_bytes_len);
+-    stats.direct_memory_recv_bytes = stats
+-        .direct_memory_recv_bytes
+-        .saturating_add(write_payload_len);
++    if rma_payload {
++        stats.rma_write_payload_bytes = stats
++            .rma_write_payload_bytes
++            .saturating_add(write_payload_len);
++        stats.rma_write_doorbells = stats.rma_write_doorbells.saturating_add(1);
++    } else {
++        stats.direct_memory_recv_bytes = stats
++            .direct_memory_recv_bytes
++            .saturating_add(write_payload_len);
++    }
+     stats.write_submit_runs = stats.write_submit_runs.saturating_add(submit_runs);
+     stats.max_write_submit_run_frames = stats.max_write_submit_run_frames.max(max_run_records);
+     zcnblk_wal_leaf_finish_fua(backend, &writes, allow_volatile_sync)?;
+@@ -52157,7 +52300,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
+              first_leaf_offset={} first_payload_len={} desc_preferred_cpu={} \
+              desc_numa_node={} leaf_target_cpu={} leaf_numa_node={} \
+              leaf_affinity_applied={} result_ranges={} incoming_cpu={} \
+-             payload_destination=direct-memory-scatter",
++             payload_destination={}",
+             meta.lane,
+             batch.branch_id,
+             record_count,
+@@ -52172,6 +52315,11 @@ fn zcnblk_wal_leaf_try_direct_memory_write_extent_batch(
+             affinity.applied,
+             result_ranges,
+             current_cpu(),
++            if rma_payload {
++                "rma-preplaced-leaf-memory"
++            } else {
++                "direct-memory-scatter"
++            },
+         );
+         *logged_descriptor_topology = true;
+     }
+@@ -52233,6 +52381,12 @@ fn zcnblk_wal_leaf_process_write_extent_batch(
+     )? {
+         return Ok(());
+     }
++    if batch.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0 {
++        return Err(io::Error::new(
++            io::ErrorKind::Unsupported,
++            "RMA compact-write doorbells require a range-result zcmem leaf",
++        ));
++    }
+     let record_count = batch.segment_count as usize;
+     let extent_count = batch.segment_index as usize;
+     if record_count == 0 || extent_count == 0 {
+@@ -52604,6 +52758,13 @@ fn zcnblk_wal_leaf_process_write_batch(
+             ),
+         ));
+     }
++    let rma_payload = batch.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0;
++    if rma_payload && (!result_ranges || !matches!(backend, ZcnblkWalLeafBackend::Memory { .. })) {
++        return Err(io::Error::new(
++            io::ErrorKind::Unsupported,
++            "RMA write-batch doorbells require range results and a zcmem leaf",
++        ));
++    }
+     let (leaf_preferred_cpu, leaf_numa_node) = zcnblk_fan_wal_local_topology_hints(affinity);
+     let mut writes = Vec::with_capacity(count);
+     let mut payload_log = Vec::new();
+@@ -52614,7 +52775,90 @@ fn zcnblk_wal_leaf_process_write_batch(
+     let mut heap_payload_bytes = 0usize;
+     let mut heap_payload_descriptor_bytes = 0usize;
+     let mut heap_payload_data_bytes = 0usize;
+-    if batch.payload_len > 0 {
++    if rma_payload {
++        let payload_read_started = Instant::now();
++        let descriptor_bytes_len =
++            count
++                .checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN)
++                .ok_or_else(|| {
++                    io::Error::new(
++                        io::ErrorKind::InvalidData,
++                        "zcnblk-wal-leaf descriptor byte count overflow",
++                    )
++                })?;
++        let logical_payload_len = batch.payload_len as usize;
++        if logical_payload_len < descriptor_bytes_len {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidData,
++                "RMA write-batch doorbell is shorter than its descriptor table",
++            ));
++        }
++        let alloc_started = Instant::now();
++        let mut descriptors = vec![0u8; descriptor_bytes_len];
++        payload_alloc_elapsed = payload_alloc_elapsed.saturating_add(alloc_started.elapsed());
++        let recv_started = Instant::now();
++        stream.recv_exact_mode(&mut descriptors, spin_reads, spin_budget)?;
++        payload_recv_elapsed = payload_recv_elapsed.saturating_add(recv_started.elapsed());
++        payload_read_elapsed = payload_read_elapsed.saturating_add(payload_read_started.elapsed());
++        heap_payload_bytes = heap_payload_bytes.saturating_add(descriptor_bytes_len);
++        heap_payload_descriptor_bytes =
++            heap_payload_descriptor_bytes.saturating_add(descriptor_bytes_len);
++        let expected_payload_len = logical_payload_len - descriptor_bytes_len;
++        let decode_started = Instant::now();
++        let mut decoded_payload_len = 0usize;
++        let mut submit_runs = 0usize;
++        let mut current_run_records = 0usize;
++        let mut max_run_records = 0usize;
++        let mut last_write_end = None::<u64>;
++        for descriptor in descriptors.chunks_exact(ZCNBLK_FAN_WAL_HEADER_LEN) {
++            let frame = zcnblk_fan_wal_decode_frame_slice(descriptor)?;
++            zcnblk_wal_leaf_validate_write_batch_descriptor(batch, frame, negotiated_features)?;
++            if frame.io_contract()?.atomic_write {
++                return Err(io::Error::new(
++                    io::ErrorKind::Unsupported,
++                    "atomic WAL writes cannot use the RMA payload layout",
++                ));
++            }
++            let payload_len = frame.payload_len as usize;
++            backend.validate_range(frame.leaf_offset, payload_len)?;
++            decoded_payload_len =
++                decoded_payload_len
++                    .checked_add(payload_len)
++                    .ok_or_else(|| {
++                        io::Error::new(io::ErrorKind::InvalidData, "RMA write payload overflow")
++                    })?;
++            if last_write_end == Some(frame.leaf_offset) {
++                current_run_records = current_run_records.saturating_add(1);
++            } else {
++                submit_runs = submit_runs.saturating_add(1);
++                current_run_records = 1;
++            }
++            max_run_records = max_run_records.max(current_run_records);
++            last_write_end = frame.leaf_offset.checked_add(u64::from(frame.payload_len));
++            writes.push(ZcnblkWalLeafPendingWrite {
++                frame,
++                payload_offset: 0,
++                payload_len,
++                record_count: 1,
++                submit_mode: io_mode.adapter_for_frame(frame),
++            });
++        }
++        if decoded_payload_len != expected_payload_len {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidData,
++                format!(
++                    "RMA write-batch payload mismatch descriptors={descriptor_bytes_len} writes={decoded_payload_len} frame_payload={logical_payload_len}"
++                ),
++            ));
++        }
++        stats.rma_write_payload_bytes = stats
++            .rma_write_payload_bytes
++            .saturating_add(decoded_payload_len);
++        stats.rma_write_doorbells = stats.rma_write_doorbells.saturating_add(1);
++        stats.write_submit_runs = stats.write_submit_runs.saturating_add(submit_runs);
++        stats.max_write_submit_run_frames = stats.max_write_submit_run_frames.max(max_run_records);
++        decode_elapsed = decode_elapsed.saturating_add(decode_started.elapsed());
++    } else if batch.payload_len > 0 {
+         let payload_read_started = Instant::now();
+         let (batch_payload, alloc_elapsed, recv_elapsed) =
+             stream.read_payload_measured(batch, spin_reads, spin_budget)?;
+@@ -52758,7 +53002,8 @@ fn zcnblk_wal_leaf_process_write_batch(
+                  stream_lane={} branch={} records={} batch_payload_bytes={} desc_lane={} \
+                  desc_queue={} desc_preferred_worker={} desc_preferred_cpu={} \
+                  desc_numa_node={} leaf_target_cpu={} leaf_numa_node={} \
+-                 leaf_affinity_applied={} result_ranges={} incoming_cpu={}",
++                 leaf_affinity_applied={} result_ranges={} incoming_cpu={} \
++                 payload_destination={}",
+                 meta.lane,
+                 batch.branch_id,
+                 count,
+@@ -52772,22 +53017,29 @@ fn zcnblk_wal_leaf_process_write_batch(
+                 leaf_numa_node,
+                 affinity.applied,
+                 result_ranges,
+-                current_cpu()
++                current_cpu(),
++                if rma_payload {
++                    "rma-preplaced-leaf-memory"
++                } else {
++                    "heap-payload-copy"
++                }
+             );
+         }
+         *logged_descriptor_topology = true;
+     }
+ 
+     let submit_started = Instant::now();
+-    let mut completed = vec![false; writes.len()];
++    let mut completed = vec![rma_payload; writes.len()];
+     let payload_log = Arc::new(payload_log);
+-    if !zcnblk_wal_leaf_write_contiguous_lease_runs(
+-        backend,
+-        &writes,
+-        Arc::clone(&payload_log),
+-        &mut completed,
+-        stats,
+-    )? {
++    if !rma_payload
++        && !zcnblk_wal_leaf_write_contiguous_lease_runs(
++            backend,
++            &writes,
++            Arc::clone(&payload_log),
++            &mut completed,
++            stats,
++        )?
++    {
+         zcnblk_wal_leaf_write_contiguous_runs(
+             backend,
+             ring,
+@@ -53015,6 +53267,7 @@ fn zcnblk_wal_leaf_process_stream(
+     let mut logged_descriptor_topology = false;
+     let mut result_ranges = false;
+     let mut negotiated_features = 0u32;
++    let mut rma_writes_negotiated = false;
+     let mut stream_plan = ZcPlanRuntime::default();
+     let result_ranges_configured = zcnblk_fan_wal_result_ranges_enabled();
+     let (leaf_preferred_cpu, leaf_numa_node) = zcnblk_fan_wal_local_topology_hints(affinity);
+@@ -53089,31 +53342,43 @@ fn zcnblk_wal_leaf_process_stream(
+                         ..ZcnblkFanWalFrame::default()
+                     }
+                     .with_hello_features(negotiated_features)?;
+-                    let rma_requested = frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW != 0;
+-                    if rma_requested
+-                        && env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false)
++                    let rma_read_requested =
++                        frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW != 0;
++                    let rma_write_requested =
++                        frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW != 0;
++                    let rma_read_enabled = rma_read_requested
++                        && env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false);
++                    let rma_write_enabled = rma_write_requested
++                        && env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES", false);
++                    if (rma_read_enabled || rma_write_enabled)
++                        && let Some((window_ptr, window_len)) = backend.ofi_rma_read_window()
+                     {
+-                        if let Some((window_ptr, window_len)) = backend.ofi_rma_read_window() {
+-                            // The backend Arc keeps this arena mapped until the stream is
+-                            // dropped. Per-record ordering gates protect CPU writes while
+-                            // libfabric holds the registration; no Rust reference spanning
+-                            // those concurrent raw-memory operations is created here.
+-                            let (window_addr, window_key) =
+-                                unsafe { stream.register_rma_target(window_ptr, window_len)? };
++                        // The backend Arc keeps this arena mapped until the stream is
++                        // dropped. Userspace owner routing keeps a logical range on one
++                        // lane, and the RMA write sender admits one unacknowledged
++                        // doorbell per lane. No Rust reference spans the concurrent raw
++                        // memory operation.
++                        let (window_addr, window_key) =
++                            unsafe { stream.register_rma_target(window_ptr, window_len)? };
++                        if rma_read_enabled {
+                             hello_ack.flags |= ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW;
+-                            hello_ack.logical_offset = window_addr;
+-                            hello_ack.leaf_offset = window_key;
+-                            hello_ack.sync_epoch = u64::try_from(window_len).map_err(|_| {
+-                                io::Error::new(
+-                                    io::ErrorKind::InvalidData,
+-                                    "OFI RMA leaf window length exceeds u64",
+-                                )
+-                            })?;
+-                            println!(
+-                                "zcnblk-wal-leaf-ofi-rma-read-window: worker={worker} slot={stream_slot} lane={} bytes={window_len} addr={window_addr:#x} key={window_key:#x} completion=initiator-local-cq-data-visible durability=not-applicable",
+-                                meta.lane,
+-                            );
+                         }
++                        if rma_write_enabled {
++                            hello_ack.flags |= ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW;
++                            rma_writes_negotiated = true;
++                        }
++                        hello_ack.logical_offset = window_addr;
++                        hello_ack.leaf_offset = window_key;
++                        hello_ack.sync_epoch = u64::try_from(window_len).map_err(|_| {
++                            io::Error::new(
++                                io::ErrorKind::InvalidData,
++                                "OFI RMA leaf window length exceeds u64",
++                            )
++                        })?;
++                        println!(
++                            "zcnblk-wal-leaf-ofi-rma-window: worker={worker} slot={stream_slot} lane={} bytes={window_len} addr={window_addr:#x} key={window_key:#x} read_enabled={rma_read_enabled} write_enabled={rma_write_enabled} read_completion=initiator-local-cq-data-visible write_local_completion=initiator-delivery-cq write_remote_completion=doorbell-result-hwm write_sync_fua=leaf-after-doorbell",
++                            meta.lane,
++                        );
+                     }
+                     zcnblk_fan_wal_write_frame(&mut stream, hello_ack, &[])?;
+                     println!(
+@@ -53140,6 +53405,14 @@ fn zcnblk_wal_leaf_process_stream(
+             }
+             ZCNBLK_FAN_WAL_OP_WRITE_BATCH => {
+                 zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "write batch")?;
++                if frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0
++                    && !rma_writes_negotiated
++                {
++                    return Err(io::Error::new(
++                        io::ErrorKind::PermissionDenied,
++                        "zcnblk-wal-leaf received an RMA write doorbell without a negotiated write window",
++                    ));
++                }
+                 zcnblk_wal_leaf_process_write_batch(
+                     &mut stream,
+                     backend.as_ref(),
+@@ -53161,6 +53434,14 @@ fn zcnblk_wal_leaf_process_stream(
+             }
+             ZCNBLK_FAN_WAL_OP_REQUEST_BATCH => {
+                 zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "request batch")?;
++                if frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0
++                    && !rma_writes_negotiated
++                {
++                    return Err(io::Error::new(
++                        io::ErrorKind::PermissionDenied,
++                        "zcnblk-wal-leaf received an RMA write doorbell without a negotiated write window",
++                    ));
++                }
+                 zcnblk_wal_leaf_process_request_batch(
+                     &mut stream,
+                     backend.as_ref(),
+@@ -53182,6 +53463,14 @@ fn zcnblk_wal_leaf_process_stream(
+             }
+             ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH => {
+                 zcnblk_wal_leaf_validate_frame_plan(stream_plan, frame, "write extent batch")?;
++                if frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0
++                    && !rma_writes_negotiated
++                {
++                    return Err(io::Error::new(
++                        io::ErrorKind::PermissionDenied,
++                        "zcnblk-wal-leaf received an RMA write doorbell without a negotiated write window",
++                    ));
++                }
+                 zcnblk_wal_leaf_process_write_extent_batch(
+                     &mut stream,
+                     backend.as_ref(),
+@@ -53380,6 +53669,8 @@ fn zcnblk_wal_leaf_worker(
+     let mut heap_payload_descriptor_bytes = 0usize;
+     let mut heap_payload_data_bytes = 0usize;
+     let mut direct_memory_recv_bytes = 0usize;
++    let mut rma_write_payload_bytes = 0usize;
++    let mut rma_write_doorbells = 0usize;
+     let mut memfd_payload_bytes = 0usize;
+     let mut lease_submit_bytes = 0usize;
+     let mut memfd_lease_submit_bytes = 0usize;
+@@ -53437,6 +53728,9 @@ fn zcnblk_wal_leaf_worker(
+             heap_payload_data_bytes.saturating_add(stats.heap_payload_data_bytes);
+         direct_memory_recv_bytes =
+             direct_memory_recv_bytes.saturating_add(stats.direct_memory_recv_bytes);
++        rma_write_payload_bytes =
++            rma_write_payload_bytes.saturating_add(stats.rma_write_payload_bytes);
++        rma_write_doorbells = rma_write_doorbells.saturating_add(stats.rma_write_doorbells);
+         memfd_payload_bytes = memfd_payload_bytes.saturating_add(stats.memfd_payload_bytes);
+         lease_submit_bytes = lease_submit_bytes.saturating_add(stats.lease_submit_bytes);
+         memfd_lease_submit_bytes =
+@@ -53507,6 +53801,8 @@ fn zcnblk_wal_leaf_worker(
+         heap_payload_descriptor_bytes,
+         heap_payload_data_bytes,
+         direct_memory_recv_bytes,
++        rma_write_payload_bytes,
++        rma_write_doorbells,
+         memfd_payload_bytes,
+         lease_submit_bytes,
+         memfd_lease_submit_bytes,
+@@ -53571,6 +53867,28 @@ fn zcnblk_wal_leaf(
+         ));
+     }
+     let result_ranges_configured = zcnblk_fan_wal_result_ranges_enabled();
++    let rma_writes_enabled =
++        direct_ofi && env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES", false);
++    if rma_writes_enabled {
++        if !matches!(backend.as_ref(), ZcnblkWalLeafBackend::Memory { .. }) {
++            return Err(io::Error::new(
++                io::ErrorKind::Unsupported,
++                "OFI RMA write payloads require a zcmem leaf so the negotiated window is final userspace media",
++            ));
++        }
++        if !result_ranges_configured {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "OFI RMA write payloads require URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1",
++            ));
++        }
++        if !env_enabled_or("URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE", true) {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "OFI RMA write payloads require URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1 before the metadata doorbell may be sent",
++            ));
++        }
++    }
+     let ring_entries = u32::try_from(
+         env_usize_or("URING_PLAY_ZCNBLK_WAL_LEAF_RING_ENTRIES", 64).max(1),
+     )
+@@ -53689,7 +54007,7 @@ fn zcnblk_wal_leaf(
+                     "OFI message pool size overflow",
+                 )
+             })?;
+-        if env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false) {
++        if env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false) || rma_writes_enabled {
+             let rma_registered_bytes = usize::try_from(backend.device_bytes())
+                 .ok()
+                 .and_then(|bytes| bytes.checked_mul(total_connections))
+@@ -53708,8 +54026,9 @@ fn zcnblk_wal_leaf(
+                     )
+                 })?;
+             println!(
+-                "zcnblk-wal-leaf-ofi-rma-preflight: connections={total_connections} window_bytes={} estimated_per_endpoint_domain_registered_bytes={rma_registered_bytes} memlock_accounting=conservative-full-window-per-connection",
++                "zcnblk-wal-leaf-ofi-rma-preflight: connections={total_connections} window_bytes={} estimated_per_endpoint_domain_registered_bytes={rma_registered_bytes} memlock_accounting=conservative-full-window-per-connection read_enabled={} write_enabled={rma_writes_enabled} write_local_completion=delivery-cq-before-doorbell write_remote_completion=result-hwm",
+                 backend.device_bytes(),
++                env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false),
+             );
+         }
+         if let Some(limit) = memlock_rlimit_bytes()? {
+@@ -53847,6 +54166,8 @@ fn zcnblk_wal_leaf(
+             );
+             let rma_reads_enabled =
+                 env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", false);
++            let rma_writes_enabled =
++                env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES", false);
+             handles.reserve(ports);
+             for lane in 0..ports {
+                 let backend = Arc::clone(&backend);
+@@ -53861,7 +54182,7 @@ fn zcnblk_wal_leaf(
+                         &bind,
+                         port,
+                         true,
+-                        rma_reads_enabled,
++                        rma_reads_enabled || rma_writes_enabled,
+                     )?;
+                     let accepted = ZcnblkWalLeafAccepted {
+                         meta: TcpBenchStreamMeta {
+@@ -53909,6 +54230,8 @@ fn zcnblk_wal_leaf(
+     let mut total_heap_payload_descriptor_bytes = 0usize;
+     let mut total_heap_payload_data_bytes = 0usize;
+     let mut total_direct_memory_recv_bytes = 0usize;
++    let mut total_rma_write_payload_bytes = 0usize;
++    let mut total_rma_write_doorbells = 0usize;
+     let mut total_memfd_payload_bytes = 0usize;
+     let mut total_lease_submit_bytes = 0usize;
+     let mut total_memfd_lease_submit_bytes = 0usize;
+@@ -53933,7 +54256,8 @@ fn zcnblk_wal_leaf(
+             "zcnblk-wal-leaf-worker: worker={} streams={} read_bytes={} write_bytes={} \
+              payload_read_bytes={} heap_payload_bytes={} \
+              heap_payload_descriptor_bytes={} heap_payload_data_bytes={} \
+-             direct_memory_recv_bytes={} \
++             direct_memory_recv_bytes={} rma_write_payload_bytes={} \
++             rma_write_doorbells={} \
+              memfd_payload_bytes={} \
+              lease_submit_bytes={} memfd_lease_submit_bytes={} copy_submit_bytes={} \
+              result_records={} result_batches={} result_range_batches={} \
+@@ -53955,6 +54279,8 @@ fn zcnblk_wal_leaf(
+             stats.heap_payload_descriptor_bytes,
+             stats.heap_payload_data_bytes,
+             stats.direct_memory_recv_bytes,
++            stats.rma_write_payload_bytes,
++            stats.rma_write_doorbells,
+             stats.memfd_payload_bytes,
+             stats.lease_submit_bytes,
+             stats.memfd_lease_submit_bytes,
+@@ -54002,6 +54328,10 @@ fn zcnblk_wal_leaf(
+             total_heap_payload_data_bytes.saturating_add(stats.heap_payload_data_bytes);
+         total_direct_memory_recv_bytes =
+             total_direct_memory_recv_bytes.saturating_add(stats.direct_memory_recv_bytes);
++        total_rma_write_payload_bytes =
++            total_rma_write_payload_bytes.saturating_add(stats.rma_write_payload_bytes);
++        total_rma_write_doorbells =
++            total_rma_write_doorbells.saturating_add(stats.rma_write_doorbells);
+         total_memfd_payload_bytes =
+             total_memfd_payload_bytes.saturating_add(stats.memfd_payload_bytes);
+         total_lease_submit_bytes =
+@@ -54076,6 +54406,9 @@ fn zcnblk_wal_leaf(
+          heap_payload_descriptor_bytes={total_heap_payload_descriptor_bytes} \
+          heap_payload_data_bytes={total_heap_payload_data_bytes} \
+          direct_memory_recv_bytes={total_direct_memory_recv_bytes} \
++         rma_write_payload_bytes={total_rma_write_payload_bytes} \
++         rma_write_doorbells={total_rma_write_doorbells} \
++         rma_write_completion=delivery-cq-before-doorbell-result-hwm \
+          memfd_payload_bytes={total_memfd_payload_bytes} \
+          lease_submit_bytes={total_lease_submit_bytes} \
+          memfd_lease_submit_bytes={total_memfd_lease_submit_bytes} \
+@@ -62240,6 +62573,38 @@ EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_grou
+         );
+     }
+ 
++    #[test]
++    fn zcnblk_fan_wal_rma_doorbell_sends_metadata_only() {
++        let descriptor = ZcnblkFanWalFrame {
++            op: ZCNBLK_FAN_WAL_OP_WRITE_DESC,
++            lane_id: 0,
++            lane_count: 1,
++            payload_len: 4096,
++            logical_len: 4096,
++            ..ZcnblkFanWalFrame::default()
++        }
++        .encode();
++        let frame = ZcnblkFanWalFrame {
++            op: ZCNBLK_FAN_WAL_OP_REQUEST_BATCH,
++            flags: ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT
++                | ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD,
++            lane_id: 0,
++            lane_count: 1,
++            segment_count: 1,
++            payload_len: (ZCNBLK_FAN_WAL_HEADER_LEN + 4096) as u32,
++            ..ZcnblkFanWalFrame::default()
++        };
++        let mut wire = Vec::new();
++        zcnblk_fan_wal_write_rma_payload_doorbell(&mut wire, frame, &descriptor).unwrap();
++        assert_eq!(wire.len(), ZCNBLK_FAN_WAL_HEADER_LEN * 2);
++        let wire_header: &[u8; ZCNBLK_FAN_WAL_HEADER_LEN] =
++            wire[..ZCNBLK_FAN_WAL_HEADER_LEN].try_into().unwrap();
++        let decoded = ZcnblkFanWalFrame::decode(wire_header).unwrap();
++        assert_eq!(decoded.payload_len, frame.payload_len);
++        assert_ne!(decoded.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD, 0);
++        assert_eq!(&wire[ZCNBLK_FAN_WAL_HEADER_LEN..], descriptor.as_slice());
++    }
++
+     #[test]
+     fn zcnblk_fan_wal_request_round_trips_all_io_contract_fields() {
+         let contract = ZcnblkWalIoContract {
+diff --git a/src/ofi_shim.c b/src/ofi_shim.c
+index 32b7bef2..d8fd7471 100644
+--- a/src/ofi_shim.c
++++ b/src/ofi_shim.c
+@@ -155,6 +155,7 @@ struct zc_ofi_endpoint {
+     int max_msg_size_query_rc;
+     int max_rma_size_query_rc;
+     int selective_completion;
++    int rma_write_delivery_complete;
+     int fatal_rc;
+     int mr_local;
+     int mr_virt_addr;
+@@ -487,7 +488,8 @@ int zc_ofi_format_profile(struct zc_ofi_endpoint *ep, char *buf,
+         "efa_write_high_pps_verified=%d "
+         "tx_cq_size=%zu tx_cq_required=%zu "
+         "rx_cq_size=%zu rx_cq_required=%zu tx_cq_batch=%zu rx_cq_batch=%zu "
+-        "cq_headroom=%zu cq_sleep_ns=%ld strict_topology=%d selective_completion=%d",
++        "cq_headroom=%zu cq_sleep_ns=%ld strict_topology=%d selective_completion=%d "
++        "rma_write_delivery_complete=%d",
+         provider, fabric, domain, device,
+         ep->info->ep_attr ? ep->info->ep_attr->type : FI_EP_UNSPEC,
+         FI_MAJOR(ep->requested_api_version), FI_MINOR(ep->requested_api_version),
+@@ -509,7 +511,8 @@ int zc_ofi_format_profile(struct zc_ofi_endpoint *ep, char *buf,
+         ep->rx_cq_state.configured_size, ep->rx_cq_required,
+         ep->tx_cq_state.batch_capacity, ep->rx_cq_state.batch_capacity,
+         ep->cq_headroom, ep->cq_sleep_ns,
+-        ep->strict_topology, ep->selective_completion);
++        ep->strict_topology, ep->selective_completion,
++        ep->rma_write_delivery_complete);
+     return zc_ofi_finish_format(ep, buf, capacity, written,
+                                 "zc_ofi_format_profile");
+ }
+@@ -539,6 +542,7 @@ int zc_ofi_format_stats(struct zc_ofi_endpoint *ep, char *buf,
+         "inject_posts=%llu fatal_rc=%d efa_write_high_pps_available=%d "
+         "efa_write_high_pps_effective=%d "
+         "efa_write_high_pps_verified=%d efa_write_high_pps_fallbacks=%llu "
++        "rma_write_delivery_complete=%d "
+         "tx_cq_avg_cqes_per_nonempty=%.2f rx_cq_avg_cqes_per_nonempty=%.2f",
+         ep->send_ring.depth, ep->send_ring.active,
+         ep->send_ring.provider_inflight, ep->send_ring.peak_active,
+@@ -605,6 +609,7 @@ int zc_ofi_format_stats(struct zc_ofi_endpoint *ep, char *buf,
+         ep->efa_write_high_pps_effective,
+         ep->efa_write_high_pps_verified,
+         (unsigned long long)ep->efa_write_high_pps_fallbacks,
++        ep->rma_write_delivery_complete,
+         ep->tx_cq_state.nonempty_polls
+             ? (double)ep->tx_cq_state.entries_read /
+                   (double)ep->tx_cq_state.nonempty_polls
+@@ -819,6 +824,8 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
+                           zc_ofi_env_enabled("URING_PLAY_TOPOLOGY_FATAL");
+     ep->selective_completion =
+         zc_ofi_env_enabled("URING_PLAY_OFI_SELECTIVE_COMPLETION");
++    ep->rma_write_delivery_complete =
++        zc_ofi_env_u64("URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE", 1) != 0;
+     if (ep->efa_write_high_pps_requested &&
+         !ZC_OFI_HAVE_EFA_WR_HIGH_PPS) {
+         if (ep->strict_topology) {
+@@ -1936,7 +1943,8 @@ static int zc_ofi_write_post_call(struct zc_ofi_endpoint *ep,
+                                   const void *buf, size_t len, void *desc,
+                                   uint64_t remote_addr, uint64_t remote_key,
+                                   void *context) {
+-    if (!ep->efa_write_high_pps_effective && !ep->selective_completion) {
++    if (!ep->efa_write_high_pps_effective && !ep->selective_completion &&
++        !ep->rma_write_delivery_complete) {
+         return (int)fi_write(ep->ep, buf, len, desc, ep->peer_addr,
+                              remote_addr, remote_key, context);
+     }
+@@ -1972,6 +1980,12 @@ static int zc_ofi_write_post_call(struct zc_ofi_endpoint *ep,
+          * does not then produce the CQE required to recycle this slot. */
+         flags |= FI_COMPLETION;
+     }
++    if (ep->rma_write_delivery_complete) {
++        /* The WAL metadata doorbell may only be sent after the remote payload
++         * is visible at the leaf. A transmit-completion-only CQE is not a
++         * remote-delivery guarantee. */
++        flags |= FI_COMPLETION | FI_DELIVERY_COMPLETE;
++    }
+     int rc = (int)fi_writemsg(ep->ep, &message, flags);
+     if (!rc && ep->efa_write_high_pps_effective) {
+         return 0;
+@@ -1988,11 +2002,15 @@ static int zc_ofi_write_post_call(struct zc_ofi_endpoint *ep,
+     }
+     ep->efa_write_high_pps_effective = 0;
+     ep->efa_write_high_pps_fallbacks++;
+-    if (!ep->selective_completion) {
++    if (!ep->selective_completion && !ep->rma_write_delivery_complete) {
+         return (int)fi_write(ep->ep, buf, len, desc, ep->peer_addr,
+                              remote_addr, remote_key, context);
+     }
+-    return (int)fi_writemsg(ep->ep, &message, FI_COMPLETION);
++    uint64_t fallback_flags = FI_COMPLETION;
++    if (ep->rma_write_delivery_complete) {
++        fallback_flags |= FI_DELIVERY_COMPLETE;
++    }
++    return (int)fi_writemsg(ep->ep, &message, fallback_flags);
+ }
+ 
+ int zc_ofi_rma_write_post(struct zc_ofi_endpoint *ep, const void *buf,
+diff --git a/src/zcnblk_shm_target.rs b/src/zcnblk_shm_target.rs
+index be72bc74..79df17d8 100644
+--- a/src/zcnblk_shm_target.rs
++++ b/src/zcnblk_shm_target.rs
+@@ -2,6 +2,7 @@ use super::{
+     IORING_CQE_F_MORE, IORING_CQE_F_NOTIF, IORING_NOTIF_USAGE_ZC_COPIED, IORING_OP_SEND_ZC,
+     RawRing, SendZcBatchAttempts, UringSendMode, ZCNBLK_FAN_WAL_COMPACT_WRITE_EXTENT_LEN,
+     ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT, ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW,
++    ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD, ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW,
+     ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH, ZCNBLK_FAN_WAL_HEADER_LEN, ZCNBLK_FAN_WAL_OP_EOF,
+     ZCNBLK_FAN_WAL_OP_HELLO, ZCNBLK_FAN_WAL_OP_HELLO_ACK, ZCNBLK_FAN_WAL_OP_READ_DESC,
+     ZCNBLK_FAN_WAL_OP_REQUEST_BATCH, ZCNBLK_FAN_WAL_OP_RESULT, ZCNBLK_FAN_WAL_OP_RESULT_BATCH,
+@@ -14,6 +15,7 @@ use super::{
+     socket_bench_buffer_bytes, validate_uring_send_mode_location, zc_topology_issue,
+     zcnblk_fan_wal_decode_frame_slice, zcnblk_fan_wal_recv_exact_spin_then_block,
+     zcnblk_fan_wal_write_frame, zcnblk_fan_wal_write_leaf_batch_payload,
++    zcnblk_fan_wal_write_rma_payload_doorbell,
+ };
+ use crate::wal_contract::{
+     ZCNBLK_WAL_FEATURE_ALL, ZCNBLK_WAL_FEATURE_ATOMIC_WRITE, ZCNBLK_WAL_FEATURE_BATCH_SUBMISSION,
+@@ -455,6 +457,67 @@ impl RemoteWalStream {
+         }
+     }
+ 
++    unsafe fn register_rma_write_buffer_raw(
++        &mut self,
++        source: *const u8,
++        len: usize,
++    ) -> io::Result<()> {
++        match self {
++            Self::Ofi(stream) => unsafe { stream.register_rma_write_buffer_raw(source, len) },
++            Self::Tcp(_) => Err(io::Error::new(
++                io::ErrorKind::Unsupported,
++                "OFI RMA write-buffer registration requested for TCP",
++            )),
++        }
++    }
++
++    fn configure_rma_write_queue(&mut self, depth: usize) -> io::Result<()> {
++        match self {
++            Self::Ofi(stream) => stream.configure_rma_write_queue(depth),
++            Self::Tcp(_) => Err(io::Error::new(
++                io::ErrorKind::Unsupported,
++                "OFI RMA write queue requested for TCP",
++            )),
++        }
++    }
++
++    /// `source` remains owned by its shared payload lease until this slot is
++    /// returned by `poll_rma_writes`.
++    unsafe fn post_rma_write_raw(
++        &mut self,
++        source: *const u8,
++        len: usize,
++        remote_addr: u64,
++        remote_key: u64,
++        slot: usize,
++        user_data: u64,
++    ) -> io::Result<bool> {
++        match self {
++            Self::Ofi(stream) => unsafe {
++                stream.post_rma_write_raw(source, len, remote_addr, remote_key, slot, user_data)
++            },
++            Self::Tcp(_) => Err(io::Error::new(
++                io::ErrorKind::Unsupported,
++                "OFI RMA write post requested for TCP",
++            )),
++        }
++    }
++
++    fn poll_rma_writes(
++        &mut self,
++        out_slots: &mut [usize],
++        out_user_data: &mut [u64],
++        wait: bool,
++    ) -> io::Result<usize> {
++        match self {
++            Self::Ofi(stream) => stream.poll_rma_writes(out_slots, out_user_data, wait),
++            Self::Tcp(_) => Err(io::Error::new(
++                io::ErrorKind::Unsupported,
++                "OFI RMA write poll requested for TCP",
++            )),
++        }
++    }
++
+     /// `target` remains owned by `slot` until `poll_rma_reads` returns it.
+     unsafe fn post_rma_read_raw(
+         &mut self,
+@@ -543,6 +606,11 @@ struct RemoteWalLeaf {
+     negotiated_features: u32,
+     rma_read_window: Option<RemoteWalRmaReadWindow>,
+     rma_read_queue: Option<RemoteWalRmaReadQueue>,
++    rma_write_window: Option<RemoteWalRmaReadWindow>,
++    rma_write_queue: Option<RemoteWalRmaWriteQueue>,
++    rma_write_required: bool,
++    request_batches_pending: usize,
++    rma_write_doorbell_pending: bool,
+     target_cpu: Option<usize>,
+     write_batches: u64,
+     write_records: u64,
+@@ -578,6 +646,10 @@ struct RemoteWalLeaf {
+     rma_read_calls: u64,
+     rma_read_time: Duration,
+     rma_read_copy_time: Duration,
++    rma_write_batches: u64,
++    rma_write_calls: u64,
++    rma_write_bytes: u64,
++    rma_write_time: Duration,
+ }
+ 
+ #[derive(Clone, Copy)]
+@@ -626,6 +698,76 @@ struct RemoteWalRmaReadQueue {
+     post_eagain: u64,
+ }
+ 
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++struct RemoteWalRmaWriteRun {
++    source_offset: usize,
++    remote_offset: u64,
++    len: usize,
++}
++
++struct RemoteWalRmaActiveWrite {
++    token: u64,
++    remote_offset: u64,
++    remote_end: u64,
++}
++
++struct RemoteWalRmaWriteQueue {
++    depth: usize,
++    free_slots: Vec<usize>,
++    active: Vec<Option<RemoteWalRmaActiveWrite>>,
++    completion_slots: Vec<usize>,
++    completion_tokens: Vec<u64>,
++    next_token: u64,
++    peak_in_flight: usize,
++    cq_polls: u64,
++    cq_batches: u64,
++    cq_completions: u64,
++    post_eagain: u64,
++}
++
++fn validate_remote_wal_rma_write_runs(
++    mapping_len: usize,
++    window: RemoteWalRmaReadWindow,
++    runs: &[RemoteWalRmaWriteRun],
++) -> io::Result<()> {
++    for run in runs {
++        if run.len == 0 {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidData,
++                "OFI RMA write run must not be empty",
++            ));
++        }
++        let source_end = run.source_offset.checked_add(run.len).ok_or_else(|| {
++            io::Error::new(io::ErrorKind::InvalidData, "OFI RMA source range overflow")
++        })?;
++        if source_end > mapping_len {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidData,
++                "OFI RMA source range exceeds the registered shared mapping",
++            ));
++        }
++        let remote_len = u64::try_from(run.len).map_err(|_| {
++            io::Error::new(io::ErrorKind::InvalidData, "OFI RMA write length overflow")
++        })?;
++        let remote_end = run.remote_offset.checked_add(remote_len).ok_or_else(|| {
++            io::Error::new(io::ErrorKind::InvalidData, "OFI RMA write range overflow")
++        })?;
++        if remote_end > window.len {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidData,
++                format!(
++                    "OFI RMA write range offset={} len={} exceeds negotiated window bytes={}",
++                    run.remote_offset, run.len, window.len
++                ),
++            ));
++        }
++        window.addr.checked_add(run.remote_offset).ok_or_else(|| {
++            io::Error::new(io::ErrorKind::InvalidData, "OFI RMA write address overflow")
++        })?;
++    }
++    Ok(())
++}
++
+ #[derive(Default)]
+ struct RemoteWalRmaProgress {
+     completions: usize,
+@@ -945,9 +1087,172 @@ impl RemoteWalRmaReadQueue {
+     }
+ }
+ 
++impl RemoteWalRmaWriteQueue {
++    fn new(depth: usize) -> io::Result<Self> {
++        if !(1..=65_536).contains(&depth) {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                format!("OFI RMA write queue depth must be in 1..=65536, got {depth}"),
++            ));
++        }
++        Ok(Self {
++            depth,
++            free_slots: (0..depth).rev().collect(),
++            active: (0..depth).map(|_| None).collect(),
++            completion_slots: vec![0; depth],
++            completion_tokens: vec![0; depth],
++            next_token: 1,
++            peak_in_flight: 0,
++            cq_polls: 0,
++            cq_batches: 0,
++            cq_completions: 0,
++            post_eagain: 0,
++        })
++    }
++
++    fn write_batch(
++        &mut self,
++        stream: &mut RemoteWalStream,
++        mapping: &Mapping,
++        window: RemoteWalRmaReadWindow,
++        runs: &[RemoteWalRmaWriteRun],
++    ) -> io::Result<()> {
++        if runs.is_empty() {
++            return Ok(());
++        }
++        if self.free_slots.len() != self.depth || self.active.iter().any(Option::is_some) {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidData,
++                "OFI RMA write queue was not idle at payload-batch admission",
++            ));
++        }
++        // Validate the complete batch before the first post. Once libfabric
++        // accepts an RMA write, the registered shared-mapping lease must stay
++        // live until its delivery CQE; a later deterministic range error must
++        // therefore never strand an already-posted prefix of the batch.
++        validate_remote_wal_rma_write_runs(mapping.len, window, runs)?;
++        let timeout = Duration::from_millis(
++            env::var("URING_PLAY_OFI_TIMEOUT_MS")
++                .ok()
++                .and_then(|value| value.parse::<u64>().ok())
++                .unwrap_or(30_000)
++                .max(1),
++        );
++        let started = Instant::now();
++        let mut next_run = 0usize;
++        let mut in_flight = 0usize;
++        while next_run < runs.len() || in_flight != 0 {
++            let mut posted = 0usize;
++            while next_run < runs.len() {
++                let run = runs[next_run];
++                let source = mapping.slice(run.source_offset, run.len)?;
++                let remote_end = run.remote_offset + run.len as u64;
++                // A delivery CQE is an ordering barrier for overlapping ranges.
++                // Preserve input order while still allowing disjoint payload runs
++                // to occupy the configured RMA queue concurrently.
++                if self.active.iter().flatten().any(|active| {
++                    run.remote_offset < active.remote_end && active.remote_offset < remote_end
++                }) {
++                    break;
++                }
++                let Some(slot) = self.free_slots.pop() else {
++                    break;
++                };
++                let remote_addr = window.addr + run.remote_offset;
++                let token = self.next_token;
++                self.next_token = self.next_token.wrapping_add(1).max(1);
++                let accepted = unsafe {
++                    stream.post_rma_write_raw(
++                        source.as_ptr(),
++                        source.len(),
++                        remote_addr,
++                        window.key,
++                        slot,
++                        token,
++                    )?
++                };
++                if !accepted {
++                    self.post_eagain = self.post_eagain.saturating_add(1);
++                    self.free_slots.push(slot);
++                    break;
++                }
++                self.active[slot] = Some(RemoteWalRmaActiveWrite {
++                    token,
++                    remote_offset: run.remote_offset,
++                    remote_end,
++                });
++                in_flight += 1;
++                self.peak_in_flight = self.peak_in_flight.max(in_flight);
++                next_run += 1;
++                posted += 1;
++            }
++            if in_flight == 0 {
++                if started.elapsed() >= timeout {
++                    return Err(io::Error::new(
++                        io::ErrorKind::TimedOut,
++                        "OFI RMA write queue could not post before timeout",
++                    ));
++                }
++                if posted == 0 {
++                    thread::yield_now();
++                }
++                continue;
++            }
++            self.cq_polls = self.cq_polls.saturating_add(1);
++            let completed = stream.poll_rma_writes(
++                &mut self.completion_slots,
++                &mut self.completion_tokens,
++                true,
++            )?;
++            if completed != 0 {
++                self.cq_batches = self.cq_batches.saturating_add(1);
++            }
++            for index in 0..completed {
++                let slot = self.completion_slots[index];
++                let token = self.completion_tokens[index];
++                let active = self
++                    .active
++                    .get_mut(slot)
++                    .and_then(Option::take)
++                    .ok_or_else(|| {
++                        io::Error::new(
++                            io::ErrorKind::InvalidData,
++                            format!("OFI RMA write completion returned inactive slot={slot}"),
++                        )
++                    })?;
++                if active.token != token {
++                    return Err(io::Error::new(
++                        io::ErrorKind::InvalidData,
++                        format!(
++                            "OFI RMA write completion token mismatch slot={slot} expected={} actual={token}",
++                            active.token
++                        ),
++                    ));
++                }
++                self.free_slots.push(slot);
++                in_flight = in_flight.checked_sub(1).ok_or_else(|| {
++                    io::Error::new(
++                        io::ErrorKind::InvalidData,
++                        "OFI RMA write in-flight underflow",
++                    )
++                })?;
++            }
++            self.cq_completions = self.cq_completions.saturating_add(completed as u64);
++            if completed == 0 && started.elapsed() >= timeout {
++                return Err(io::Error::new(
++                    io::ErrorKind::TimedOut,
++                    "OFI RMA write queue made no completion progress before timeout",
++                ));
++            }
++        }
++        Ok(())
++    }
++}
++
+ struct SharedPayloadPlan {
+     source_iovecs: u64,
+     runs: Vec<(usize, usize)>,
++    rma_runs: Vec<RemoteWalRmaWriteRun>,
+     max_run_bytes: u64,
+ }
+ 
+@@ -1489,15 +1794,19 @@ impl RemoteWalUringTx {
+ }
+ 
+ fn shared_payload_plan(
+-    payloads: impl IntoIterator<Item = (usize, usize)>,
++    payloads: impl IntoIterator<Item = (usize, u64, usize)>,
+ ) -> io::Result<SharedPayloadPlan> {
+     let mut source_iovecs = 0u64;
+     let mut runs = Vec::<(usize, usize)>::new();
++    let mut rma_runs = Vec::<RemoteWalRmaWriteRun>::new();
+     let mut max_run_bytes = 0u64;
+-    for (offset, len) in payloads {
++    for (offset, remote_offset, len) in payloads {
+         let end = offset.checked_add(len).ok_or_else(|| {
+             io::Error::new(io::ErrorKind::InvalidData, "shared payload range overflow")
+         })?;
++        remote_offset.checked_add(len as u64).ok_or_else(|| {
++            io::Error::new(io::ErrorKind::InvalidData, "remote payload range overflow")
++        })?;
+         source_iovecs = source_iovecs.saturating_add(1);
+         if let Some((run_offset, run_len)) = runs.last_mut()
+             && run_offset.checked_add(*run_len) == Some(offset)
+@@ -1506,15 +1815,30 @@ fn shared_payload_plan(
+                 io::Error::new(io::ErrorKind::InvalidData, "shared payload run overflow")
+             })?;
+             max_run_bytes = max_run_bytes.max(*run_len as u64);
+-            continue;
++        } else {
++            runs.push((offset, len));
++            max_run_bytes = max_run_bytes.max(len as u64);
+         }
+-        runs.push((offset, len));
+-        max_run_bytes = max_run_bytes.max(len as u64);
+         debug_assert_eq!(end, offset + len);
++        if let Some(run) = rma_runs.last_mut()
++            && run.source_offset.checked_add(run.len) == Some(offset)
++            && run.remote_offset.checked_add(run.len as u64) == Some(remote_offset)
++        {
++            run.len = run.len.checked_add(len).ok_or_else(|| {
++                io::Error::new(io::ErrorKind::InvalidData, "RMA payload run overflow")
++            })?;
++        } else {
++            rma_runs.push(RemoteWalRmaWriteRun {
++                source_offset: offset,
++                remote_offset,
++                len,
++            });
++        }
+     }
+     Ok(SharedPayloadPlan {
+         source_iovecs,
+         runs,
++        rma_runs,
+         max_run_bytes,
+     })
+ }
+@@ -1625,6 +1949,7 @@ impl RemoteWalLeaf {
+         let transport = env::var("URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT")
+             .unwrap_or_else(|_| "tcp".to_string());
+         let rma_reads_enabled = env_enabled_or("URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS", false);
++        let rma_writes_enabled = env_enabled_or("URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES", false);
+         let (mut stream, address, tcp_nodelay, quickack) = match transport.as_str() {
+             "tcp" => {
+                 let tcp = match source_ip {
+@@ -1661,7 +1986,7 @@ impl RemoteWalLeaf {
+                     &node,
+                     socket_address.port(),
+                     false,
+-                    rma_reads_enabled,
++                    rma_reads_enabled || rma_writes_enabled,
+                 )?;
+                 let message_bytes = ofi.message_bytes();
+                 let address = format!("ofi://{node}:{}", socket_address.port());
+@@ -1681,6 +2006,7 @@ impl RemoteWalLeaf {
+             }
+         };
+         let rma_reads_requested = matches!(stream, RemoteWalStream::Ofi(_)) && rma_reads_enabled;
++        let rma_writes_requested = matches!(stream, RemoteWalStream::Ofi(_)) && rma_writes_enabled;
+         let hello = ZcnblkFanWalFrame {
+             op: ZCNBLK_FAN_WAL_OP_HELLO,
+             flags: ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH
+@@ -1688,6 +2014,11 @@ impl RemoteWalLeaf {
+                     ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW
+                 } else {
+                     0
++                }
++                | if rma_writes_requested {
++                    ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW
++                } else {
++                    0
+                 },
+             lane_id,
+             lane_count,
+@@ -1740,6 +2071,39 @@ impl RemoteWalLeaf {
+             }
+             None
+         };
++        let rma_write_required =
++            env_enabled_or("URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED", false);
++        let rma_write_window = if hello_ack.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW != 0 {
++            if !rma_writes_requested || hello_ack.sync_epoch == 0 {
++                return Err(io::Error::new(
++                    io::ErrorKind::InvalidData,
++                    "remote WAL leaf returned an invalid unsolicited OFI RMA write window",
++                ));
++            }
++            let window = RemoteWalRmaReadWindow {
++                addr: hello_ack.logical_offset,
++                key: hello_ack.leaf_offset,
++                len: hello_ack.sync_epoch,
++            };
++            eprintln!(
++                "zcnblk-shm-target-ofi-rma-write-window: lane={lane_id} bytes={} addr={:#x} key={:#x} completion=initiator-delivery-cq-before-doorbell remote_ack=doorbell-result-hwm sync_fua=leaf-after-doorbell",
++                window.len, window.addr, window.key,
++            );
++            Some(window)
++        } else {
++            if rma_writes_requested {
++                eprintln!(
++                    "zcnblk-shm-target-ofi-rma-write-window: lane={lane_id} negotiated=no fallback=message-payload"
++                );
++                if rma_write_required {
++                    return Err(io::Error::new(
++                        io::ErrorKind::Unsupported,
++                        "OFI RMA write payloads are required but the remote leaf did not negotiate a write window",
++                    ));
++                }
++            }
++            None
++        };
+         eprintln!(
+             "zcnblk-shm-target-remote-contract: lane={lane_id} requested={ZCNBLK_WAL_FEATURE_ALL:#x} negotiated={negotiated_features:#x}"
+         );
+@@ -1818,6 +2182,28 @@ impl RemoteWalLeaf {
+                 queue.buffer.len(),
+             );
+         }
++        let rma_write_qd = env::var("URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITE_QD")
++            .or_else(|_| env::var("URING_PLAY_OFI_RMA_WRITE_QD"))
++            .unwrap_or_else(|_| "1".to_string())
++            .parse::<usize>()
++            .map_err(|error| {
++                io::Error::new(
++                    io::ErrorKind::InvalidInput,
++                    format!("invalid OFI RMA write queue depth: {error}"),
++                )
++            })?;
++        let mut rma_write_queue = if rma_write_window.is_some() {
++            Some(RemoteWalRmaWriteQueue::new(rma_write_qd)?)
++        } else {
++            None
++        };
++        if let Some(queue) = rma_write_queue.as_mut() {
++            stream.configure_rma_write_queue(queue.depth)?;
++            eprintln!(
++                "zcnblk-shm-target-ofi-rma-write-queue: lane={lane_id} per_lane_qd={} source_registration=deferred-whole-shared-mapping completion=delivery-complete-before-doorbell pipeline=one-unacknowledged-doorbell-per-lane",
++                queue.depth,
++            );
++        }
+         Ok(Self {
+             stream,
+             mapping: None,
+@@ -1827,6 +2213,11 @@ impl RemoteWalLeaf {
+             negotiated_features,
+             rma_read_window,
+             rma_read_queue,
++            rma_write_window,
++            rma_write_queue,
++            rma_write_required,
++            request_batches_pending: 0,
++            rma_write_doorbell_pending: false,
+             target_cpu: None,
+             write_batches: 0,
+             write_records: 0,
+@@ -1862,10 +2253,27 @@ impl RemoteWalLeaf {
+             rma_read_calls: 0,
+             rma_read_time: Duration::ZERO,
+             rma_read_copy_time: Duration::ZERO,
++            rma_write_batches: 0,
++            rma_write_calls: 0,
++            rma_write_bytes: 0,
++            rma_write_time: Duration::ZERO,
+         })
+     }
+ 
+     fn attach_mapping(&mut self, mapping: Arc<Mapping>) -> io::Result<()> {
++        if self.rma_write_window.is_some() {
++            // Register the mapping once, before any post. Payload leases keep
++            // source ranges stable through local delivery completion and the
++            // later remote result HWM keeps block-slot reuse ordered.
++            unsafe {
++                self.stream
++                    .register_rma_write_buffer_raw(mapping.ptr.cast_const(), mapping.len)?;
++            }
++            eprintln!(
++                "zcnblk-shm-target-ofi-rma-write-source: lane={} registered_bytes={} registration_scope=whole-shared-mapping hot_registration=no",
++                self.lane_id, mapping.len,
++            );
++        }
+         self.mapping = Some(mapping);
+         Ok(())
+     }
+@@ -2011,14 +2419,87 @@ impl RemoteWalLeaf {
+         );
+     }
+ 
++    fn report_rma_write_queue(&self) {
++        let Some(queue) = self.rma_write_queue.as_ref() else {
++            return;
++        };
++        eprintln!(
++            "zcnblk-shm-target-ofi-rma-write-summary: lane={} per_lane_qd={} batches={} operations={} bytes={} seconds={:.6} avg_operation_us={:.3} peak_in_flight={} final_active={} cq_poll_calls={} cq_batches={} cq_completions={} avg_cq_completions_per_batch={:.2} post_eagain={} source=registered-shared-slot-lease destination=remote-leaf-memory-window local_completion=delivery-complete remote_completion=doorbell-result-hwm sync_fua=leaf-after-doorbell",
++            self.lane_id,
++            queue.depth,
++            self.rma_write_batches,
++            self.rma_write_calls,
++            self.rma_write_bytes,
++            self.rma_write_time.as_secs_f64(),
++            self.rma_write_time.as_secs_f64() * 1_000_000.0 / self.rma_write_calls.max(1) as f64,
++            queue.peak_in_flight,
++            queue.active.iter().filter(|entry| entry.is_some()).count(),
++            queue.cq_polls,
++            queue.cq_batches,
++            queue.cq_completions,
++            queue.cq_completions as f64 / queue.cq_batches.max(1) as f64,
++            queue.post_eagain,
++        );
++    }
++
+     fn send_batch_payload(
+         &mut self,
+         tx: &mut RemoteWalTxContext,
+         mapping: &Mapping,
+-        frame: ZcnblkFanWalFrame,
++        mut frame: ZcnblkFanWalFrame,
+         descriptors: Vec<u8>,
+         payload_plan: &SharedPayloadPlan,
+-    ) -> io::Result<()> {
++        rma_eligible: bool,
++    ) -> io::Result<bool> {
++        if rma_eligible && self.rma_write_window.is_some() && !payload_plan.rma_runs.is_empty() {
++            if self.request_batches_pending != 0 || self.rma_write_doorbell_pending {
++                if self.rma_write_required {
++                    return Err(io::Error::new(
++                        io::ErrorKind::WouldBlock,
++                        "OFI RMA write payload requires one unacknowledged doorbell per lane; set the userspace transport pipeline depth to 1",
++                    ));
++                }
++            } else {
++                let attached = self.mapping.as_ref().ok_or_else(|| {
++                    io::Error::new(
++                        io::ErrorKind::InvalidData,
++                        "OFI RMA write sender has no registered shared mapping lease",
++                    )
++                })?;
++                if !std::ptr::eq(Arc::as_ptr(attached), mapping) {
++                    return Err(io::Error::new(
++                        io::ErrorKind::InvalidData,
++                        "OFI RMA write sender mapping mismatch",
++                    ));
++                }
++                let window = self.rma_write_window.expect("RMA write window was checked");
++                let started = Instant::now();
++                self.rma_write_queue
++                    .as_mut()
++                    .ok_or_else(|| {
++                        io::Error::new(
++                            io::ErrorKind::InvalidData,
++                            "OFI RMA write window has no operation queue",
++                        )
++                    })?
++                    .write_batch(&mut self.stream, mapping, window, &payload_plan.rma_runs)?;
++                self.rma_write_time = self.rma_write_time.saturating_add(started.elapsed());
++                self.rma_write_batches = self.rma_write_batches.saturating_add(1);
++                self.rma_write_calls = self
++                    .rma_write_calls
++                    .saturating_add(payload_plan.rma_runs.len() as u64);
++                self.rma_write_bytes = self.rma_write_bytes.saturating_add(
++                    payload_plan
++                        .rma_runs
++                        .iter()
++                        .map(|run| run.len as u64)
++                        .sum::<u64>(),
++                );
++                frame.flags |= ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD;
++                zcnblk_fan_wal_write_rma_payload_doorbell(&mut self.stream, frame, &descriptors)?;
++                return Ok(true);
++            }
++        }
+         match self.send_mode {
+             RemoteWalSendMode::Blocking => {
+                 let mut payloads = Vec::with_capacity(payload_plan.runs.len());
+@@ -2030,7 +2511,7 @@ impl RemoteWalLeaf {
+                     frame,
+                     &descriptors,
+                     &payloads,
+-                )
++                )?;
+             }
+             RemoteWalSendMode::SendZcVectorized => {
+                 if payload_plan.runs.is_empty() {
+@@ -2043,7 +2524,7 @@ impl RemoteWalLeaf {
+                     self.control_writev_batches = self.control_writev_batches.saturating_add(1);
+                     tx.pending_batches
+                         .push_back(RemoteWalPendingTx::BlockingControl);
+-                    return Ok(());
++                    return Ok(false);
+                 }
+                 let attached = self.mapping.as_ref().ok_or_else(|| {
+                     io::Error::new(
+@@ -2071,9 +2552,9 @@ impl RemoteWalLeaf {
+                 uring.wait_transmitted(batch_id)?;
+                 tx.pending_batches
+                     .push_back(RemoteWalPendingTx::SendZc(batch_id));
+-                Ok(())
+             }
+         }
++        Ok(false)
+     }
+ 
+     fn finish_next_send_batch(&mut self, tx: &mut RemoteWalTxContext) -> io::Result<()> {
+@@ -2131,6 +2612,20 @@ impl RemoteWalLeaf {
+         self.stream.recv_exact(&mut self.recv_wait, out)
+     }
+ 
++    fn finish_request_batch_tracking(&mut self) -> io::Result<()> {
++        self.request_batches_pending =
++            self.request_batches_pending.checked_sub(1).ok_or_else(|| {
++                io::Error::new(
++                    io::ErrorKind::InvalidData,
++                    "remote WAL result arrived without a pending request batch",
++                )
++            })?;
++        if self.rma_write_doorbell_pending {
++            self.rma_write_doorbell_pending = false;
++        }
++        Ok(())
++    }
++
+     fn request_frame(
+         &self,
+         write: &PendingWalWrite,
+@@ -2199,8 +2694,11 @@ impl RemoteWalLeaf {
+                 io::Error::new(io::ErrorKind::InvalidData, "WAL batch payload overflow")
+             })
+         })?;
+-        let payload_plan =
+-            shared_payload_plan(writes.iter().map(|write| (write.payload_offset, write.len)))?;
++        let payload_plan = shared_payload_plan(
++            writes
++                .iter()
++                .map(|write| (write.payload_offset, write.offset, write.len)),
++        )?;
+         let mut descriptors = Vec::with_capacity(descriptor_len);
+         for write in writes {
+             descriptors.extend_from_slice(
+@@ -2226,7 +2724,8 @@ impl RemoteWalLeaf {
+             })?,
+             ..ZcnblkFanWalFrame::default()
+         };
+-        self.send_batch_payload(tx, mapping, batch, descriptors, &payload_plan)?;
++        let _used_rma =
++            self.send_batch_payload(tx, mapping, batch, descriptors, &payload_plan, true)?;
+         self.write_payload_iovecs = self
+             .write_payload_iovecs
+             .saturating_add(payload_plan.source_iovecs);
+@@ -2370,12 +2869,14 @@ impl RemoteWalLeaf {
+         tx: &mut RemoteWalTxContext,
+         mapping: &Mapping,
+         requests: &[PendingRemoteRead],
+-    ) -> io::Result<()> {
+-        let payload_plan = shared_payload_plan(
+-            requests
+-                .iter()
+-                .map(|request| (request.payload_offset, request.request.len as usize)),
+-        )?;
++    ) -> io::Result<bool> {
++        let payload_plan = shared_payload_plan(requests.iter().map(|request| {
++            (
++                request.payload_offset,
++                request.request.offset,
++                request.request.len as usize,
++            )
++        }))?;
+         let (descriptors, write_payload_len, original_descriptor_len) =
+             compact_write_batch_descriptors(self.lane_id, requests)?;
+         let descriptor_len = descriptors.len();
+@@ -2424,7 +2925,8 @@ impl RemoteWalLeaf {
+             zcnblk_op: ZCNBLK_OP_WRITE,
+             ..ZcnblkFanWalFrame::default()
+         };
+-        self.send_batch_payload(tx, mapping, batch, descriptors, &payload_plan)?;
++        let used_rma =
++            self.send_batch_payload(tx, mapping, batch, descriptors, &payload_plan, true)?;
+         self.write_payload_iovecs = self
+             .write_payload_iovecs
+             .saturating_add(payload_plan.source_iovecs);
+@@ -2444,7 +2946,7 @@ impl RemoteWalLeaf {
+         self.wire_descriptor_bytes = self
+             .wire_descriptor_bytes
+             .saturating_add(descriptor_len as u64);
+-        Ok(())
++        Ok(used_rma)
+     }
+ 
+     fn send_request_batch(
+@@ -2460,7 +2962,21 @@ impl RemoteWalLeaf {
+         let result = self.send_request_batch_inner(tx, mapping, requests);
+         self.request_send_calls = self.request_send_calls.saturating_add(1);
+         self.request_send_time = self.request_send_time.saturating_add(started.elapsed());
+-        result
++        let used_rma = result?;
++        self.request_batches_pending = self
++            .request_batches_pending
++            .checked_add(1)
++            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "request batch overflow"))?;
++        if used_rma {
++            if self.rma_write_doorbell_pending {
++                return Err(io::Error::new(
++                    io::ErrorKind::InvalidData,
++                    "multiple OFI RMA write doorbells became pending on one lane",
++                ));
++            }
++            self.rma_write_doorbell_pending = true;
++        }
++        Ok(())
+     }
+ 
+     fn send_request_batch_inner(
+@@ -2468,9 +2984,9 @@ impl RemoteWalLeaf {
+         tx: &mut RemoteWalTxContext,
+         mapping: &Mapping,
+         requests: &[PendingRemoteRead],
+-    ) -> io::Result<()> {
++    ) -> io::Result<bool> {
+         if requests.is_empty() {
+-            return Ok(());
++            return Ok(false);
+         }
+         if self.compact_writes
+             && requests
+@@ -2485,7 +3001,13 @@ impl RemoteWalLeaf {
+             requests
+                 .iter()
+                 .filter(|request| request.request.op == ZCNBLK_SHM_OP_WRITE)
+-                .map(|request| (request.payload_offset, request.request.len as usize)),
++                .map(|request| {
++                    (
++                        request.payload_offset,
++                        request.request.offset,
++                        request.request.len as usize,
++                    )
++                }),
+         )?;
+         let mut descriptors = Vec::with_capacity(descriptor_len);
+         for request in requests {
+@@ -2542,7 +3064,11 @@ impl RemoteWalLeaf {
+             })?,
+             ..ZcnblkFanWalFrame::default()
+         };
+-        self.send_batch_payload(tx, mapping, batch, descriptors, &payload_plan)?;
++        let rma_eligible = requests
++            .iter()
++            .all(|request| request.request.op == ZCNBLK_SHM_OP_WRITE);
++        let used_rma =
++            self.send_batch_payload(tx, mapping, batch, descriptors, &payload_plan, rma_eligible)?;
+         self.write_payload_iovecs = self
+             .write_payload_iovecs
+             .saturating_add(payload_plan.source_iovecs);
+@@ -2561,7 +3087,7 @@ impl RemoteWalLeaf {
+         self.wire_descriptor_bytes = self
+             .wire_descriptor_bytes
+             .saturating_add(descriptor_len as u64);
+-        Ok(())
++        Ok(used_rma)
+     }
+ 
+     fn recv_request_batch_into(
+@@ -2631,6 +3157,7 @@ impl RemoteWalLeaf {
+             self.write_batches += 1;
+             self.write_records += requests.len() as u64;
+             self.write_bytes += write_payload_len as u64;
++            self.finish_request_batch_tracking()?;
+             return Ok(());
+         }
+         let expected_result_len =
+@@ -2736,10 +3263,20 @@ impl RemoteWalLeaf {
+             self.write_records += write_records;
+             self.write_bytes += write_payload_len as u64;
+         }
++        self.finish_request_batch_tracking()?;
+         Ok(())
+     }
+ 
+     fn sync(&mut self, submit_sequence: u64) -> io::Result<()> {
++        if self.request_batches_pending != 0 || self.rma_write_doorbell_pending {
++            return Err(io::Error::new(
++                io::ErrorKind::WouldBlock,
++                format!(
++                    "remote WAL sync cannot pass {} unacknowledged request batch(es)",
++                    self.request_batches_pending
++                ),
++            ));
++        }
+         let started = Instant::now();
+         let frame = ZcnblkFanWalFrame {
+             op: ZCNBLK_FAN_WAL_OP_SYNC,
+@@ -9143,6 +9680,10 @@ impl SharedTarget {
+             .remote_leaves
+             .iter()
+             .any(|remote| remote.rma_read_window.is_some());
++        let rma_write_negotiated = self
++            .remote_leaves
++            .iter()
++            .any(|remote| remote.rma_write_window.is_some());
+         let read_payload_destination = match (self.dirty_read_payload_refs, rma_read_negotiated) {
+             (true, true) => "dirty-shared-slot-reference-or-lane-local-rma-bounce+shared-slot-copy",
+             (false, true) => "dirty-shared-slot-copy-or-lane-local-rma-bounce+shared-slot-copy",
+@@ -9151,7 +9692,9 @@ impl SharedTarget {
+             }
+             (false, false) => "dirty-shared-slot-copy-or-remote-result-payload+shared-slot-copy",
+         };
+-        let transport_copy_contract = if remote_transport == "ofi" {
++        let transport_copy_contract = if rma_write_negotiated {
++            "registered-shared-slot-rma-direct-to-leaf-memory;no-userspace-payload-gather;metadata-doorbell-only"
++        } else if remote_transport == "ofi" {
+             "one-userspace-ofi-message-gather;ofi-provider-copy"
+         } else {
+             "none-userspace;tcp-kernel-copy"
+@@ -9323,11 +9866,16 @@ impl SharedTarget {
+             } else {
+                 "remote-result-payload+shared-slot-copy"
+             };
+-            let rma_completion = if rma_read_negotiated {
++            let rma_read_completion = if rma_read_negotiated {
+                 "initiator-local-cq-data-visible"
+             } else {
+                 "not-negotiated"
+             };
++            let rma_write_completion = if rma_write_negotiated {
++                "initiator-delivery-cq-before-doorbell-result-hwm"
++            } else {
++                "not-negotiated"
++            };
+             let sync_count = self
+                 .remote_leaves
+                 .iter()
+@@ -9368,7 +9916,7 @@ impl SharedTarget {
+                     )
+                 });
+             eprintln!(
+-                "zcnblk-shm-target-remote-leaf-summary: address={} lanes={} transport={} send_mode={} recv_policy={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} fan_stage=userspace placement=single-leaf write_batches={} write_records={} write_bytes={} compact_write_batches={} request_descriptor_bytes={} wire_descriptor_bytes={} descriptor_bytes_saved={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} avg_write_iovecs_per_batch={:.2} avg_write_tx_iovecs_per_batch={:.2} avg_write_run_bytes={:.0} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} rma_read_calls={} rma_read_seconds={:.6} avg_rma_read_us={:.3} rma_read_copy_seconds={:.6} avg_rma_read_copy_us={:.3} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} payload_source=shared-slot-coalesced-iovec read_payload_destination={} rma_completion={} result_contract=fifo-mixed-request-batch+global-sync-epoch",
++                "zcnblk-shm-target-remote-leaf-summary: address={} lanes={} transport={} send_mode={} recv_policy={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} fan_stage=userspace placement=single-leaf write_batches={} write_records={} write_bytes={} compact_write_batches={} request_descriptor_bytes={} wire_descriptor_bytes={} descriptor_bytes_saved={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} avg_write_iovecs_per_batch={:.2} avg_write_tx_iovecs_per_batch={:.2} avg_write_run_bytes={:.0} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} rma_read_calls={} rma_read_seconds={:.6} avg_rma_read_us={:.3} rma_read_copy_seconds={:.6} avg_rma_read_copy_us={:.3} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} payload_source=shared-slot-coalesced-iovec read_payload_destination={} rma_read_completion={} rma_write_completion={} result_contract=fifo-mixed-request-batch+global-sync-epoch",
+                 first.address,
+                 self.remote_leaves.len(),
+                 first.stream.transport_label(),
+@@ -9406,10 +9954,12 @@ impl SharedTarget {
+                 send_zc_notifications,
+                 send_zc_copied_notifications,
+                 read_payload_destination,
+-                rma_completion,
++                rma_read_completion,
++                rma_write_completion,
+             );
+             for remote in &self.remote_leaves {
+                 remote.report_rma_read_queue();
++                remote.report_rma_write_queue();
+                 let (incoming_cpu, incoming_napi_id) = remote.stream.locality();
+                 eprintln!(
+                     "zcnblk-shm-target-remote-timing: lane={} target_cpu={} incoming_cpu={} incoming_napi_id={} tcp_nodelay={} quickack={} recv_policy={} recv_spin_budget={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} rma_read_calls={} rma_read_seconds={:.6} avg_rma_read_us={:.3} rma_read_copy_seconds={:.6} avg_rma_read_copy_us={:.3} sync_calls={} sync_seconds={:.6} avg_sync_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
+@@ -9955,31 +10505,38 @@ impl SharedTarget {
+             .remote_leaves
+             .iter()
+             .any(|remote| remote.rma_read_window.is_some());
++        let rma_write_negotiated = self
++            .remote_leaves
++            .iter()
++            .any(|remote| remote.rma_write_window.is_some());
+         let remote_read_source = if rma_read_negotiated {
+             "lane-local-rma-bounce+shared-slot-copy"
+         } else {
+             "remote-result-payload+shared-slot-copy"
+         };
+-        let (sync_boundary, write_ingress, dirty_read_source, writeback_copy_count) =
+-            match self.backend {
+-                BackendMode::WalMemory => (
+-                    "materialize-prior-writes",
+-                    "shared-slot-reference",
+-                    "shared-slot-reference",
+-                    "one-per-dirty-write",
+-                ),
+-                BackendMode::WalTcp => (
+-                    "remote-leaf-hwm",
+-                    "shared-slot-reference",
+-                    remote_read_source,
+-                    if remote_transport == "ofi" {
+-                        "one-userspace-ofi-message-gather;ofi-provider-copy"
+-                    } else {
+-                        "none-userspace;tcp-kernel-copy"
+-                    },
+-                ),
+-                _ => ("request-order", "immediate-copy", "reduced-memory", "none"),
+-            };
++        let (sync_boundary, write_ingress, dirty_read_source, writeback_copy_count) = match self
++            .backend
++        {
++            BackendMode::WalMemory => (
++                "materialize-prior-writes",
++                "shared-slot-reference",
++                "shared-slot-reference",
++                "one-per-dirty-write",
++            ),
++            BackendMode::WalTcp => (
++                "remote-leaf-hwm",
++                "shared-slot-reference",
++                remote_read_source,
++                if rma_write_negotiated {
++                    "registered-shared-slot-rma-direct-to-leaf-memory;no-userspace-payload-gather;metadata-doorbell-only"
++                } else if remote_transport == "ofi" {
++                    "one-userspace-ofi-message-gather;ofi-provider-copy"
++                } else {
++                    "none-userspace;tcp-kernel-copy"
++                },
++            ),
++            _ => ("request-order", "immediate-copy", "reduced-memory", "none"),
++        };
+         eprintln!(
+             "zcnblk-shm-target-summary: backend={:?} remote_transport={remote_transport} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={elapsed:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} fua_requests={} polled_requests={} ioprio_requests={} registered_lease_requests={} atomic_write_requests={} write_lifetime_requests={} lease_release_batch={} writeback_batch={} writeback_batches={} writeback_writes={} writeback_bytes={} durable_submit_hwm={} pending_writes={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} completion_order=global-fifo data_order=per-sector+sync-hwm sync_contract={} sync_boundary={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress={} dirty_read_source={} kernel_payload_copies=one-per-direction writeback_materialization_copies={}",
+             self.backend,
+@@ -10092,11 +10649,16 @@ impl SharedTarget {
+             } else {
+                 "remote-result-payload+shared-slot-copy"
+             };
+-            let rma_completion = if rma_read_negotiated {
++            let rma_read_completion = if rma_read_negotiated {
+                 "initiator-local-cq-data-visible"
+             } else {
+                 "not-negotiated"
+             };
++            let rma_write_completion = if rma_write_negotiated {
++                "initiator-delivery-cq-before-doorbell-result-hwm"
++            } else {
++                "not-negotiated"
++            };
+             let syncs = self
+                 .remote_leaves
+                 .iter()
+@@ -10137,7 +10699,7 @@ impl SharedTarget {
+                     )
+                 });
+             eprintln!(
+-                "zcnblk-shm-target-remote-leaf-summary: address={} lanes={} transport={} send_mode={} recv_policy={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} fan_stage=userspace placement=single-leaf write_batches={} write_records={} write_bytes={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} avg_write_iovecs_per_batch={:.2} avg_write_tx_iovecs_per_batch={:.2} avg_write_run_bytes={:.0} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} rma_read_calls={} rma_read_seconds={:.6} avg_rma_read_us={:.3} rma_read_copy_seconds={:.6} avg_rma_read_copy_us={:.3} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} payload_source=shared-slot-coalesced-iovec read_payload_destination={} rma_completion={} result_contract=range-hwm+fifo-read-batch",
++                "zcnblk-shm-target-remote-leaf-summary: address={} lanes={} transport={} send_mode={} recv_policy={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} fan_stage=userspace placement=single-leaf write_batches={} write_records={} write_bytes={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} avg_write_iovecs_per_batch={:.2} avg_write_tx_iovecs_per_batch={:.2} avg_write_run_bytes={:.0} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} rma_read_calls={} rma_read_seconds={:.6} avg_rma_read_us={:.3} rma_read_copy_seconds={:.6} avg_rma_read_copy_us={:.3} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} payload_source=shared-slot-coalesced-iovec read_payload_destination={} rma_read_completion={} rma_write_completion={} result_contract=range-hwm+fifo-read-batch",
+                 first.address,
+                 self.remote_leaves.len(),
+                 first.stream.transport_label(),
+@@ -10171,10 +10733,12 @@ impl SharedTarget {
+                 send_zc_notifications,
+                 send_zc_copied_notifications,
+                 read_payload_destination,
+-                rma_completion,
++                rma_read_completion,
++                rma_write_completion,
+             );
+             for remote in &self.remote_leaves {
+                 remote.report_rma_read_queue();
++                remote.report_rma_write_queue();
+                 let (incoming_cpu, incoming_napi_id) = remote.stream.locality();
+                 eprintln!(
+                     "zcnblk-shm-target-remote-lane: lane={} lane_count={} target_cpu={} incoming_cpu={} incoming_napi_id={} send_mode={} recv_policy={} recv_spin_budget={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} write_batches={} write_records={} write_bytes={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} rma_read_calls={} rma_read_seconds={:.6} avg_rma_read_us={:.3} rma_read_copy_seconds={:.6} avg_rma_read_copy_us={:.3} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} tcp_nodelay={} quickack={} request_send_calls={} request_send_seconds={:.6} avg_request_send_us={:.3} result_recv_calls={} result_recv_seconds={:.6} avg_result_recv_us={:.3} result_header_seconds={:.6} result_descriptor_seconds={:.6} result_payload_seconds={:.6}",
+@@ -10337,6 +10901,43 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
+             ),
+         ));
+     }
++    let rma_writes_requested =
++        direct_ofi && env_enabled_or("URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES", false);
++    if rma_writes_requested {
++        if !env_enabled_or("URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE", true) {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "OFI RMA WAL writes require URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1 so payload delivery precedes the metadata doorbell",
++            ));
++        }
++        if !env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS", false) {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "OFI RMA WAL writes require stable userspace owner ingress; set URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS=1",
++            ));
++        }
++        let pipeline_batches = env::var("URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES")
++            .ok()
++            .map(|value| value.parse::<usize>())
++            .transpose()
++            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
++            .unwrap_or(16)
++            .max(1);
++        if pipeline_batches != 1 {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                format!(
++                    "OFI RMA WAL writes require exactly one unacknowledged payload doorbell per owner lane; set URING_PLAY_ZCNBLK_SHM_OWNER_PIPELINE_BATCHES=1, got {pipeline_batches}"
++                ),
++            ));
++        }
++        if !env_enabled_or("URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED", false) {
++            zc_topology_issue(
++                "zcnblk-shm-target",
++                "RMA writes may silently fall back to message payloads; set URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED=1 for an attributable benchmark",
++            )?;
++        }
++    }
+     let poll_us = args
+         .next()
+         .map(|value| value.parse::<u64>())
+@@ -10437,7 +11038,8 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
+             .transpose()
+             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+             .unwrap_or(1024 * 1024);
+-        let mut estimated_registered_bytes = (target.header.channels as usize)
++        let endpoint_count = target.remote_leaves.len();
++        let mut estimated_registered_bytes = endpoint_count
+             .checked_mul(message_bytes)
+             .and_then(|bytes| bytes.checked_mul(2))
+             .ok_or_else(|| {
+@@ -10447,7 +11049,7 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
+                 )
+             })?;
+         if env_enabled_or("URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS", false) {
+-            let rma_registered_bytes = (target.header.channels as usize)
++            let rma_registered_bytes = endpoint_count
+                 .checked_mul(target.header.slot_bytes as usize)
+                 .ok_or_else(|| {
+                     io::Error::new(
+@@ -10465,7 +11067,29 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
+                 })?;
+             eprintln!(
+                 "zcnblk-shm-target-ofi-rma-preflight: lanes={} lane_local_buffer_bytes={} estimated_per_lane_domain_registered_bytes={} registration_scope=lane-local-fixed-bounce shared_mapping_registered=no",
+-                target.header.channels, target.header.slot_bytes, rma_registered_bytes,
++                endpoint_count, target.header.slot_bytes, rma_registered_bytes,
++            );
++        }
++        if rma_writes_requested {
++            let rma_write_registered_bytes = endpoint_count
++                .checked_mul(target.mapping.len)
++                .ok_or_else(|| {
++                    io::Error::new(
++                        io::ErrorKind::InvalidInput,
++                        "OFI RMA shared-mapping registration size overflow",
++                    )
++                })?;
++            estimated_registered_bytes = estimated_registered_bytes
++                .checked_add(rma_write_registered_bytes)
++                .ok_or_else(|| {
++                    io::Error::new(
++                        io::ErrorKind::InvalidInput,
++                        "OFI total registration size overflow",
++                    )
++                })?;
++            eprintln!(
++                "zcnblk-shm-target-ofi-rma-write-preflight: owner_lanes={endpoint_count} shared_mapping_bytes={} estimated_per_endpoint_domain_registered_bytes={rma_write_registered_bytes} registration_scope=whole-shared-mapping shared_mapping_registered=yes source_lease=until-delivery-cq remote_range_reuse=after-result-hwm overlap_order=delivery-barrier",
++                target.mapping.len,
+             );
+         }
+         if let Some(limit) = memlock_rlimit_bytes()? {
+@@ -10836,6 +11460,61 @@ mod tests {
+         assert!(queue.pending.is_empty());
+     }
+ 
++    #[test]
++    fn rma_write_batch_validates_every_range_before_posting() {
++        let window = RemoteWalRmaReadWindow {
++            addr: 0x1000,
++            key: 7,
++            len: 16_384,
++        };
++        let valid = [
++            RemoteWalRmaWriteRun {
++                source_offset: 0,
++                remote_offset: 4096,
++                len: 4096,
++            },
++            RemoteWalRmaWriteRun {
++                source_offset: 8192,
++                remote_offset: 12_288,
++                len: 4096,
++            },
++        ];
++        validate_remote_wal_rma_write_runs(16_384, window, &valid).unwrap();
++
++        let invalid = |source_offset, remote_offset, len| {
++            [RemoteWalRmaWriteRun {
++                source_offset,
++                remote_offset,
++                len,
++            }]
++        };
++        assert!(validate_remote_wal_rma_write_runs(16_384, window, &invalid(0, 0, 0)).is_err());
++        assert!(
++            validate_remote_wal_rma_write_runs(16_384, window, &invalid(usize::MAX, 0, 2),)
++                .is_err()
++        );
++        assert!(
++            validate_remote_wal_rma_write_runs(16_384, window, &invalid(12_288, 0, 8192)).is_err()
++        );
++        assert!(
++            validate_remote_wal_rma_write_runs(16_384, window, &invalid(0, u64::MAX, 2)).is_err()
++        );
++        assert!(
++            validate_remote_wal_rma_write_runs(16_384, window, &invalid(0, 12_288, 8192)).is_err()
++        );
++        assert!(
++            validate_remote_wal_rma_write_runs(
++                16_384,
++                RemoteWalRmaReadWindow {
++                    addr: u64::MAX - 1024,
++                    ..window
++                },
++                &invalid(0, 4096, 4096),
++            )
++            .is_err()
++        );
++    }
++
+     impl ZcnblkFanWalSharedLeaseSource for TestSharedLease {
+         fn payload_slice(&self, start: usize, len: usize) -> io::Result<&[u8]> {
+             self.0.get(start..start + len).ok_or_else(|| {
+@@ -11056,22 +11735,50 @@ mod tests {
+         let empty = shared_payload_plan([]).unwrap();
+         assert_eq!(empty.source_iovecs, 0);
+         assert!(empty.runs.is_empty());
++        assert!(empty.rma_runs.is_empty());
+         assert_eq!(empty.max_run_bytes, 0);
+-        let payloads = [(0, 4096), (4096, 4096), (12_288, 4096), (16_384, 8192)];
++        let payloads = [
++            (0, 0, 4096),
++            (4096, 4096, 4096),
++            (12_288, 20_480, 4096),
++            (16_384, 24_576, 8192),
++        ];
+         let plan = shared_payload_plan(payloads).unwrap();
+         assert_eq!(plan.source_iovecs, 4);
+         assert_eq!(plan.runs, vec![(0, 8192), (12_288, 12_288)]);
++        assert_eq!(
++            plan.rma_runs,
++            vec![
++                RemoteWalRmaWriteRun {
++                    source_offset: 0,
++                    remote_offset: 0,
++                    len: 8192,
++                },
++                RemoteWalRmaWriteRun {
++                    source_offset: 12_288,
++                    remote_offset: 20_480,
++                    len: 12_288,
++                },
++            ]
++        );
+         assert_eq!(plan.max_run_bytes, 12_288);
+-        assert!(shared_payload_plan([(usize::MAX, 2)]).is_err());
++        assert!(shared_payload_plan([(usize::MAX, 0, 2)]).is_err());
++        assert!(shared_payload_plan([(0, u64::MAX, 2)]).is_err());
+     }
+ 
+     #[test]
+     fn shared_payload_plan_preserves_wire_bytes() {
+         let backing = (0u8..64).collect::<Vec<_>>();
+-        let payloads = [(0usize, 4usize), (4, 4), (12, 4), (16, 8), (32, 4)];
++        let payloads = [
++            (0usize, 100u64, 4usize),
++            (4, 104, 4),
++            (12, 200, 4),
++            (16, 204, 8),
++            (32, 300, 4),
++        ];
+         let expected = payloads
+             .iter()
+-            .flat_map(|&(offset, len)| backing[offset..offset + len].iter().copied())
++            .flat_map(|&(offset, _, len)| backing[offset..offset + len].iter().copied())
+             .collect::<Vec<_>>();
+         let plan = shared_payload_plan(payloads).unwrap();
+         let actual = plan

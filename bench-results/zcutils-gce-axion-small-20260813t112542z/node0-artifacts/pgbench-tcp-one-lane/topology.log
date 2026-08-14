@@ -1,0 +1,22 @@
+classification=remote-userspace-leaf
+coordination_honored=true
+leaf_host=10.128.0.6 leaf_port=29000 leaf_source_addr=10.128.0.5 local_leaf=0
+wal_transport=tcp ofi_provider=efa ofi_endpoint=rdm ofi_domain=implicit ofi_cq_sleep_ns=0 ofi_message_bytes=1048576
+rma_writes=0 rma_writes_required=0 rma_write_qd_per_owner=16 rma_write_min_qd=16 rma_write_qd_scope=per-owner-payload-operations block_qd_coupled=no rma_delivery_complete=1 rma_reads=0 rma_write_owner_mode=placement multi_endpoint_confirmed=0
+rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=0
+topology_representative=0 preflight_warnings=1
+lane_count=1 kernel_queues=1 target_cpus=1 kthread_cpus=2 leaf_cpus=0 owner_cpus=3 owner_count=1 owner_pipeline_batches=1 sector_order_slots=524288
+lane_to_kthread_cpu=0:2 lane_to_ingress_worker_cpu=0:1 owner_lane_to_worker_cpu=0:3 leaf_lane_to_worker_cpu=0:0
+leaf_lane_to_nic=0:enp0s0 external_leaf_topology_artifact=/home/rob/zcutils/bench-results/zcutils-gce-axion-small-20260813t112542z/external-leaf-topology-pgbench.env
+placement_owner=separate-userspace-stable-extent-owner block_client_placement=no owner_ingress=0
+lane0_hctx=0, 1, 2, 3
+postgres_connection0_hctxs=0
+sync_coordinator_cpu=1
+postgres_cpus=0,3
+pgbench_cpus=3
+scale=10 clients=16 jobs=2 duration=10 repeats=3 warmup_seconds=5 builtin=tpcb-like track_wal_io_timing=on vector_hwm=1 ordering_epochs=1 max_connections=64 shared_buffers=512MB
+write_completion=local-dirty-lease-admission; sync_completion=remote-volatile-leaf-hwm
+transport_write_payload_completion=message-send-before-remote-result; remote_write_ack=message-result-hwm; sync_fua=leaf-after-message-payload
+copy_ledger=postgres-kernel-filesystem+one-block-edge-copy-to-shared-slot+userspace-transport-message-gather+transport-provider-copy-to-leaf-memory; end_to_end_zero_copy=no
+hugepages_total=1024 memlock_kib=unlimited loadavg=0.07 0.85 0.69 1/186 17365
+zcnblk-pgbench: WARNING: Stable userspace owner ingress is disabled; this run is not topology-matched to the RMA path.

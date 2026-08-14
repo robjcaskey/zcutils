@@ -1,0 +1,57 @@
+c[?7l[2J[0mSeaBIOS (version 1.16.3-debian-1.16.3-2)
+Booting from ROM..c[?7l[2J[    0.020473] RDSEED32 is broken. Disabling the corresponding CPUID bit.
+[zcnblk-wal-vm] uname
+Linux (none) 7.2.0-rc1-io-slots-nvme #nvme1 SMP PREEMPT_DYNAMIC Thu Jul 16 08:07:47 EDT 2026 x86_64 GNU/Linux
+HugePages_Total:      16
+[zcnblk-wal-vm] starting userspace memory leaf
+[zcnblk-wal-vm] loading ABI-v6 client module inside guest
+[zcnblk-wal-vm] starting shared-memory onramp
+[    1.214435] kernel BUG at mm/hugetlb.c:7035!
+[    1.214951] Oops: invalid opcode: 0000 [#1] SMP NOPTI
+[    1.215421] CPU: 2 UID: 0 PID: 105 Comm: zcnblk-shm-targ Tainted: G           OE       7.2.0-rc1-io-slots-nvme #nvme1 PREEMPT(lazy) 
+[    1.216500] Tainted: [O]=OOT_MODULE, [E]=UNSIGNED_MODULE
+[    1.216992] Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS 1.16.3-debian-1.16.3-2 04/01/2014
+[    1.217860] RIP: 0010:huge_pte_alloc+0x224/0x230
+[    1.218298] Code: 48 89 c3 e9 69 ff ff ff 4c 89 ea 48 89 c6 4c 89 f7 e8 c0 3d f9 ff 85 c0 75 a0 48 8b 3b e9 50 fe ff ff a8 80 0f 85 6d ff ff ff <0f> 0b 0f 0b 0f 1f 84 00 00 00 00 00 90 90 90 90 90 90 90 90 90 90
+[    1.219992] RSP: 0000:ffffcf7e803cfda8 EFLAGS: 00010246
+[    1.220483] RAX: 0000000000000067 RBX: ffff8f2e4611d1b8 RCX: 000fffffc0000000
+[    1.221141] RDX: 00000000062d7067 RSI: 00007f2086e00000 RDI: 0000000000000000
+[    1.221799] RBP: 0000000000200000 R08: 00000000000007ff R09: 0000000000000000
+[    1.222456] R10: ffffcf7e803cfe38 R11: 0000000000000001 R12: ffff8f2e498f4c00
+[    1.223112] R13: 00000000000001b8 R14: ffff8f2e46223a00 R15: 00000000000001b0
+[    1.223779] FS:  00007f20874fa880(0000) GS:ffff8f2f0bf5a000(0000) knlGS:0000000000000000
+[    1.224525] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[    1.225064] CR2: 00007f2086ef8000 CR3: 0000000006262000 CR4: 0000000000750ef0
+[    1.225728] PKRU: 55555554
+[    1.225994] Call Trace:
+[    1.226243]  <TASK>
+[    1.226462]  hugetlb_fault+0xdd/0x730
+[    1.226813]  handle_mm_fault+0x2b4/0x2e0
+[    1.227186]  do_user_addr_fault+0x211/0x670
+[    1.227594]  exc_page_fault+0x80/0x1a0
+[    1.227955]  asm_exc_page_fault+0x26/0x30
+[    1.228344] RIP: 0033:0x56476ad34b14
+[    1.228687] Code: 01 00 00 48 8b 97 70 01 00 00 48 ff c0 48 89 d6 66 0f 1f 44 00 00 48 ff c8 74 5d 48 39 d6 72 72 48 3b 71 18 73 55 48 8b 79 10 <48> 83 3c 37 00 75 30 48 83 7c 37 40 00 75 28 48 83 bc 37 80 00 00
+[    1.230371] RSP: 002b:00007ffd64f9a528 EFLAGS: 00010287
+[    1.230863] RAX: 0000000000000001 RBX: 0000000000000001 RCX: 00005647a81ef9d0
+[    1.231535] RDX: 0000000000001000 RSI: 0000000000001000 RDI: 00007f2086ef7000
+[    1.232201] RBP: 0000000000000020 R08: 00000000ffffffff R09: 0000000000000000
+[    1.232871] R10: fff8fffffffefffe R11: 5f58414d5f52454e R12: 00007f20877fa340
+[    1.233534] R13: 00000000000003e8 R14: 00007ffd64f9b8f0 R15: 0000000000000003
+[    1.234193]  </TASK>
+[    1.234412] Modules linked in: zcnblk_client_mod(OE) aead
+[    1.234936] ---[ end trace 0000000000000000 ]---
+[    1.235401] RIP: 0010:huge_pte_alloc+0x224/0x230
+[    1.235844] Code: 48 89 c3 e9 69 ff ff ff 4c 89 ea 48 89 c6 4c 89 f7 e8 c0 3d f9 ff 85 c0 75 a0 48 8b 3b e9 50 fe ff ff a8 80 0f 85 6d ff ff ff <0f> 0b 0f 0b 0f 1f 84 00 00 00 00 00 90 90 90 90 90 90 90 90 90 90
+[    1.237511] RSP: 0000:ffffcf7e803cfda8 EFLAGS: 00010246
+[    1.237990] RAX: 0000000000000067 RBX: ffff8f2e4611d1b8 RCX: 000fffffc0000000
+[    1.238646] RDX: 00000000062d7067 RSI: 00007f2086e00000 RDI: 0000000000000000
+[    1.239293] RBP: 0000000000200000 R08: 00000000000007ff R09: 0000000000000000
+[    1.239948] R10: ffffcf7e803cfe38 R11: 0000000000000001 R12: ffff8f2e498f4c00
+[    1.240641] R13: 00000000000001b8 R14: ffff8f2e46223a00 R15: 00000000000001b0
+[    1.241294] FS:  00007f20874fa880(0000) GS:ffff8f2f0bf5a000(0000) knlGS:0000000000000000
+[    1.242026] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[    1.242568] CR2: 00007f2086ef8000 CR3: 0000000006262000 CR4: 0000000000750ef0
+[    1.243221] PKRU: 55555554
+[    1.243492] Kernel panic - not syncing: Fatal exception
+[    1.244115] Kernel Offset: 0x2d000000 from 0xffffffff81000000 (relocation range: 0xffffffff80000000-0xffffffffbfffffff)

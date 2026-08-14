@@ -1,0 +1,151 @@
+source_commit=117ad8ad run_id=zcutils-rmadirect-single-replacement-20260812T2333Z node_index=1
+client_ip=172.31.32.223 leaf_ip=172.31.45.166 peer_ip=172.31.45.166 route_interface=ens50 route_source=172.31.32.223
+kernel=6.17.0-1019-aws memlock_kib=unlimited
+hugepages_total=7041
+hugepages_free=7041
+hugepagesize=2048
+# FI_PREFER_SYSCONFIG: Boolean (0/1, on/off, true/false, yes/no)
+# Prefer system configured variables when loading the environment and variables are defined in both the system config (libfabric.conf) and in runtime environment. (default: false)
+
+# FI_LOG_INTERVAL: Integer
+# Delay in ms between rate limited log messages (default 2000)
+
+# FI_LOG_LEVEL: String
+# Specify logging level: warn, trace, info, debug (default: warn)
+
+# FI_LOG_PROV: String
+# Specify specific provider to log (default: all)
+
+# FI_LOG_SUBSYS: String
+# Specify specific subsystem to log (default: all)
+
+# FI_PERF_CNTR: String
+# Performance counter to analyze (default: cpu_instr). Options: cpu_instr, cpu_cycles.
+
+# FI_HOOK: String
+# Intercept calls to underlying provider and apply the specified functionality to them.  Hook option: perf (gather performance data)
+
+# FI_HMEM: String
+# List of hmem interfaces to attempt to initialize (default: all available interfaces)
+
+# FI_HMEM_CUDA_USE_GDRCOPY: Boolean (0/1, on/off, true/false, yes/no)
+# Use gdrcopy to copy data to/from CUDA GPU memory. If libfabric is not compiled with gdrcopy support, this variable is not checked. (default: true)
+
+# FI_HMEM_CUDA_USE_DMABUF: Boolean (0/1, on/off, true/false, yes/no)
+# Use dma-buf for sharing buffer with hardware. (default:true)
+
+# FI_HMEM_DISABLE_P2P: Boolean (0/1, on/off, true/false, yes/no)
+# Disable peer to peer support between device memory and network devices. (default: no).
+
+# FI_MR_CACHE_MAX_SIZE: size_t
+# Defines the total number of bytes for all memory regions that may be tracked by the MR cache. Setting this will reduce the amount of memory not actively in use that may be registered. (default: total memory / number of cpu cores / 2)
+
+# FI_MR_CACHE_MAX_COUNT: size_t
+# Defines the total number of memory regions that may be store in the cache.  Setting this will reduce the number of registered regions, regardless of their size, stored in the cache.  Setting this to zero will disable MR caching.  (default: 1024)
+
+# FI_MR_CACHE_MONITOR: String
+# Define a default memory registration monitor. The monitor checks for virtual to physical memory address changes.  Options are: userfaultfd, memhooks kdreg2, and disabled.  Userfaultfd is a Linux kernel feature. Memhooks operates by intercepting memory allocation and free calls. kdreg2 is a supplied as a loadable Linux kernel module. Userfaultfd is the default if available on the system. 'disabled' option disables memory caching.
+
+# FI_MR_CUDA_CACHE_MONITOR_ENABLED: Boolean (0/1, on/off, true/false, yes/no)
+# Enable or disable the CUDA cache memory monitor.Enabled by default.
+
+# FI_MR_ROCR_CACHE_MONITOR_ENABLED: Boolean (0/1, on/off, true/false, yes/no)
+# Enable or disable the ROCR cache memory monitor. Enabled by default.
+
+# FI_MR_ZE_CACHE_MONITOR_ENABLED: Boolean (0/1, on/off, true/false, yes/no)
+# Enable or disable the oneAPI Level Zero cache memory monitor.  Enabled by default.
+
+# FI_PROVIDER: String
+# Only use specified provider (default: all available)
+
+# FI_FORK_UNSAFE: Boolean (0/1, on/off, true/false, yes/no)
+# Whether use of fork() may be unsafe for some providers (default: no). Setting this to yes could improve performance at the expense of making fork() potentially unsafe
+
+# FI_UNIVERSE_SIZE: size_t
+# Defines the maximum number of processes that will be used by distribute OFI application. The provider uses this to optimize resource allocations (default: provider specific)
+
+# FI_AV_REMOVE_CLEANUP: Boolean (0/1, on/off, true/false, yes/no)
+# When true, release any underlying resources, such as hidden connections when removing an entry from an AV.  This can help save resources on AV entries that reference a peer which is no longer active.  However, it may abruptly terminate data transfers from peers that are active at the time their address is removed from the local AV.  (default: false)
+
+# FI_OFFLOAD_COLL_PROVIDER: String
+# The name of a colective offload provider (default: 			empty - no provider)
+
+# FI_PROVIDER_PATH: String
+# Search for providers in specific path.  Path is specified similar to dir1:dir2:dir3.  If the path starts with @, loaded providers are given preference based on discovery order, rather than version. Optionally any of the dir can be replaced with + followed by the full path to a provider library, which specifies a preferred provider.  If registered successfully, a preferred provider has priority over other providers with the same name. (default: /opt/amazon/efa/lib/libfabric)
+
+# FI_SHM_SAR_THRESHOLD: size_t
+# shm: Max size to use for alternate SAR protocol if CMA 			 is not available before switching to mmap protocol 			 Default: SIZE_MAX (18446744073709551615)
+
+# FI_SHM_TX_SIZE: size_t
+# shm: Max number of outstanding tx operations 			 Default: 1024
+
+# FI_SHM_RX_SIZE: size_t
+# shm: Max number of outstanding rx operations 			 Default: 1024
+
+# FI_SHM_DISABLE_CMA: Boolean (0/1, on/off, true/false, yes/no)
+# shm: Manually disables CMA. Default: false
+CPU NODE SOCKET CORE ONLINE
+  0    0      0    0    yes
+  1    0      0    1    yes
+  2    0      0    2    yes
+  3    0      0    3    yes
+  4    0      0    4    yes
+  5    0      0    5    yes
+  6    0      0    6    yes
+  7    0      0    7    yes
+  8    0      0    8    yes
+  9    0      0    9    yes
+ 10    0      0   10    yes
+ 11    0      0   11    yes
+ 12    0      0   12    yes
+ 13    0      0   13    yes
+ 14    0      0   14    yes
+ 15    0      0   15    yes
+ 16    0      0   16    yes
+ 17    0      0   17    yes
+ 18    0      0   18    yes
+ 19    0      0   19    yes
+ 20    0      0   20    yes
+ 21    0      0   21    yes
+ 22    0      0   22    yes
+ 23    0      0   23    yes
+ 24    0      0   24    yes
+ 25    0      0   25    yes
+ 26    0      0   26    yes
+ 27    0      0   27    yes
+ 28    0      0   28    yes
+ 29    0      0   29    yes
+ 30    0      0   30    yes
+ 31    0      0   31    yes
+ 32    0      0   32    yes
+ 33    0      0   33    yes
+ 34    0      0   34    yes
+ 35    0      0   35    yes
+ 36    0      0   36    yes
+ 37    0      0   37    yes
+ 38    0      0   38    yes
+ 39    0      0   39    yes
+ 40    0      0   40    yes
+ 41    0      0   41    yes
+ 42    0      0   42    yes
+ 43    0      0   43    yes
+ 44    0      0   44    yes
+ 45    0      0   45    yes
+ 46    0      0   46    yes
+ 47    0      0   47    yes
+ 48    0      0   48    yes
+ 49    0      0   49    yes
+ 50    0      0   50    yes
+ 51    0      0   51    yes
+ 52    0      0   52    yes
+ 53    0      0   53    yes
+ 54    0      0   54    yes
+ 55    0      0   55    yes
+ 56    0      0   56    yes
+ 57    0      0   57    yes
+ 58    0      0   58    yes
+ 59    0      0   59    yes
+ 60    0      0   60    yes
+ 61    0      0   61    yes
+ 62    0      0   62    yes
+ 63    0      0   63    yes

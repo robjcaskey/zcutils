@@ -1,0 +1,11 @@
+Created [https://www.googleapis.com/compute/v1/projects/rob-adhoc-81326/global/networks/zcutils-h4d-rdma-20260813t115943z-falcon].
+NAME                                      SUBNET_MODE  BGP_ROUTING_MODE  IPV4_RANGE  GATEWAY_IPV4  INTERNAL_IPV6_RANGE
+zcutils-h4d-rdma-20260813t115943z-falcon  CUSTOM       REGIONAL
+
+Instances on this network will not be reachable until firewall rules
+are created. As an example, you can allow all internal traffic between
+instances as well as SSH, RDP, and ICMP by running:
+
+$ gcloud compute firewall-rules create <FIREWALL_NAME> --network zcutils-h4d-rdma-20260813t115943z-falcon --allow tcp,udp,icmp --source-ranges <IP_RANGE>
+$ gcloud compute firewall-rules create <FIREWALL_NAME> --network zcutils-h4d-rdma-20260813t115943z-falcon --allow tcp:22,tcp:3389,icmp
+

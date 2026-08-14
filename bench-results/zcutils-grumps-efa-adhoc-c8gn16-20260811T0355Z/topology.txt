@@ -1,0 +1,16 @@
+run_id=zcutils-grumps-efa-adhoc-c8gn16-20260811T0355Z
+captured_utc=2026-08-11T04:05Z
+region=us-east-2 az=us-east-2c instance_type=c8gn.16xlarge nodes=2 architecture=arm64
+node0_private=172.31.36.39 node1_private=172.31.41.175
+node0_numa_nodes=1 node0_cpus=0-63 node1_numa_nodes=1 node1_cpus=0-63
+lane=0 worker=0 client_cpu=2 target_cpu=2 numa=0 domain=efa_0-rdm efa_iface=efa_0 ena_route_iface=ens50
+lane_to_worker_cpu=w0:[lane0]->cpu2 lane_to_nic=lane0->efa_0/efa_0-rdm aggregate_mapping_declared=yes
+hugepages_total=1024 hugepages_free=1024 hugepage_size_kib=2048 memlock=unlimited
+cq_sleep_ns=0 busy_poll_iters=100000 cpu_pinning=enabled workers=1 lanes=1
+provider=efa provider_version=2.4.0amzn5.0 api=2.0 device_rdma_requested=1
+efa_profile=fabric:efa,domain:efa_0-rdm efa_direct_profile=fabric:efa-direct,domain:efa_0-rdm
+raw_send_recv_baseline=fi_pingpong provider:efa fabric:efa domain:efa_0-rdm size:4096 iterations:10000 repeats:3 integrity:on
+raw_send_recv_usec_per_transfer_min=13.73 mean=13.733 max=13.74 spread_pct=0.073 derived_round_trip_us_mean=27.466 raw_send_recv_mxfers_per_sec=0.07
+coordination_mode=soft-exclusive coordination_resource=cloud:aws-us-east-2c-c8gn16x2,network-egress:* coordination_token=l18caa3fef768075b-44c56 coordination_honored=true
+completion_semantics=rma-read:data-visible-at-initiator-local-cq,rma-write:source-reusable-at-initiator-local-cq,remote-application-ack:separate,sync-fua-durability:separate
+representative_scope=dedicated-two-host-EFA-pair repeat_requirement=3

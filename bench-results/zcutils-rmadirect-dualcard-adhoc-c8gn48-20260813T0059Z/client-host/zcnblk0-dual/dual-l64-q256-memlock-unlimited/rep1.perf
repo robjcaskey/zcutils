@@ -1,0 +1,18 @@
+# started on Thu Aug 13 02:14:32 2026
+
+
+ Performance counter stats for 'env URING_PLAY_PIN_CPU_LIST=0,3,6,9,12,15,18,21,24,27,30,33,36,39,42,45,48,51,54,57,60,63,66,69,72,75,78,81,84,87,90,93,96,99,102,105,108,111,114,117,120,123,126,129,132,135,138,141,144,147,150,153,156,159,162,165,168,171,174,177,180,183,186,189 URING_PLAY_TOPOLOGY_STRICT=0 URING_PLAY_BLOCKBENCH_RING_STATS=1 URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS=64 URING_PLAY_CQE_SPIN=0 URING_PLAY_CQE_ADAPTIVE_SPIN=0 URING_PLAY_CQE_ADAPTIVE_SPIN_MIN=0 URING_PLAY_CQE_ADAPTIVE_SPIN_MAX=4096 URING_PLAY_CQE_ADAPTIVE_WAIT_NS=50000 URING_PLAY_CQE_HOT_POLL=0 URING_PLAY_CQE_HOT_POLL_PROGRESS_SPINS=4096 /home/ubuntu/zcutils/target/release/zcblockbench /dev/zcnblk0 --engine uring-fixed --mode read --workers 64 --ops-per-worker 100000 --bs 4096 --iodepth 256 --region-bytes-per-worker 67108864 --read-percent 100 --ring-entries 512 --ring-mode normal --sqpoll-idle-ms 1000 --buffer-mode hugetlb --pin true':
+
+       26456866381      task-clock                       #    5.658 CPUs utilized             
+             97833      context-switches                 #    3.698 K/sec                     
+                57      cpu-migrations                   #    2.154 /sec                      
+       62543109176      cycles                           #    2.364 GHz                       
+       36353548737      instructions                     #    0.58  insn per cycle            
+         365278909      cache-misses                                                          
+
+       4.676081956 seconds time elapsed
+
+       0.834122000 seconds user
+      25.598477000 seconds sys
+
+

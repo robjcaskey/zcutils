@@ -1,0 +1,30 @@
+PERF WARNING: memlock 8192 KiB is below the registered-memory estimate 33792 KiB
+PERF WARNING: no free hugetlb pages are visible
+rdma_preflight_kind=rxe strict=0 fatal=0 problems=2
+rdma_device=rxe_zc_c netdev=zcrxec0 provider=verbs;ofi_rxd ofi_domain=rxe_zc_c-dgram pci_bdf=unreported driver=unreported numa_node=unreported
+endpoint_count=4 cq_owner_count=4 owner_cpus=0,2,4,6 irq_cpus=unreported hctx_cpus=not-applicable block_mode=0
+lane=0 endpoint=0 qp=0 cq=0 owner=0 owner_cpu=0 ownership=single-post-and-poll-thread
+lane=1 endpoint=1 qp=1 cq=1 owner=1 owner_cpu=2 ownership=single-post-and-poll-thread
+lane=2 endpoint=2 qp=2 cq=2 owner=2 owner_cpu=4 ownership=single-post-and-poll-thread
+lane=3 endpoint=3 qp=3 cq=3 owner=3 owner_cpu=6 ownership=single-post-and-poll-thread
+provider_tx_queue_requested=136 provider_rx_queue_requested=8 tx_cq_requested=200 rx_cq_requested=72 cq_headroom=64 runtime_returned_capacity_check=required
+hugepages_total=0 hugepages_free=0 hugepage_size_kib=2048 memlock_kib=8192 registered_bytes_estimate=34603008
+cpu_governors=powersave irqbalance=inactive cq_sleep_ns=0 fi_more=0 fi_more_burst=64
+cqe_size=unreported cqe_compression=unreported cq_moderation_period=unreported cq_moderation_count=unreported cq_configuration_verified=0
+verbs_device=unreported verbs_iface=unreported verbs_gid_index=unreported irq_affinity_confirmed=0 irq_colocation_confirmed=0
+queue_model=mlx5-sq-64B-WQEBB-and-power-of-two-buffer;rq-power-of-two-WQE-and-WR-count;cq-64B-or-128B-CQE;one-owner-per-QP-CQ
+completion_semantics=read:data-visible-local-cq;write:configured-local-or-delivery-cq;remote-ack:separate;sync-fua:separate;durability:terminal-media-only
+coordination_token=l18cad140a34ef62b-ce04e coordination_honored=true shared_system=yes
+rdma_link=link rxe_zc_c/1 state ACTIVE physical_state LINK_UP netdev zcrxec0 
+fi_info_provider: verbs;ofi_rxd
+fi_info_fabric: IB-0xfe80000000000000
+fi_info_domain: rxe_zc_c-dgram
+fi_info_type: FI_EP_RDM
+fi_info_protocol: FI_PROTO_RXD
+fi_info_provider: verbs;ofi_rxd
+fi_info_fabric: IB-0xfe80000000000000
+fi_info_domain: rxe_zc_t-dgram
+fi_info_type: FI_EP_RDM
+fi_info_protocol: FI_PROTO_RXD
+mlx5_completion_vectors=0
+rdma_preflight_final_problems=2 representative_ready=no

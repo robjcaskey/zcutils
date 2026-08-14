@@ -57,6 +57,7 @@ SHM_RING_ENTRIES="${SHM_RING_ENTRIES:-128}"
 KERNEL_QUEUE_DEPTH="${KERNEL_QUEUE_DEPTH:-$IODEPTH}"
 KERNEL_PIPELINE_DEPTH="${KERNEL_PIPELINE_DEPTH:-$SHM_RING_ENTRIES}"
 KERNEL_QUEUES="${KERNEL_QUEUES:-$LANES}"
+HCTX_NUMA_NODE="${HCTX_NUMA_NODE:--1}"
 SIZE_MIB="${SIZE_MIB:-$((LANES * 128))}"
 REGION_BYTES_PER_WORKER="${REGION_BYTES_PER_WORKER:-67108864}"
 BACKEND="${BACKEND:-memory}"
@@ -98,6 +99,14 @@ KERNEL_POLL_US="${KERNEL_POLL_US:-$POLL_US}"
 LEASE_RELEASE_BATCH="${LEASE_RELEASE_BATCH:-1}"
 MAX_FRAME_BYTES="${MAX_FRAME_BYTES:-4096}"
 BUFFER_MODE="${BUFFER_MODE:-small-pages}"
+if [ -n "${URING_PLAY_ZCNBLK_SHM_ARENA_BACKING+x}" ]; then
+SHM_ARENA_BACKING="$URING_PLAY_ZCNBLK_SHM_ARENA_BACKING"
+elif [ "$BUFFER_MODE" = hugetlb ]; then
+	SHM_ARENA_BACKING=hugetlb
+else
+	SHM_ARENA_BACKING=vmalloc
+fi
+SHM_ARENA_CPU_LIST="${URING_PLAY_ZCNBLK_SHM_ARENA_CPU_LIST:-}"
 LEAF_ADDR="${LEAF_ADDR:-127.0.0.1}"
 LEAF_PORT="${LEAF_PORT:-29000}"
 LEAF_SOURCE_ADDR="${LEAF_SOURCE_ADDR:-}"
@@ -107,11 +116,14 @@ LEAF_SUBMIT_MODE="${LEAF_SUBMIT_MODE:-blocking}"
 REMOTE_TRANSPORT="${URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT:-tcp}"
 REMOTE_OFI_PROVIDER="${URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER:-efa}"
 REMOTE_OFI_ENDPOINT="${URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_ENDPOINT:-rdm}"
+SHM_OFI_DOMAINS="${URING_PLAY_ZCNBLK_SHM_OFI_DOMAINS:-}"
 OFI_DOMAIN="${URING_PLAY_OFI_DOMAIN:-}"
 OFI_CQ_SLEEP_NS="${URING_PLAY_OFI_CQ_SLEEP_NS:-50000}"
 WAL_OFI_MESSAGE_BYTES="${URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES:-1048576}"
 WAL_OFI_HUGETLB_CONFIRMED="${URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED:-0}"
 EFA_USE_DEVICE_RDMA="${FI_EFA_USE_DEVICE_RDMA:-0}"
+EFA_IFACE="${FI_EFA_IFACE:-}"
+OFI_EFA_FABRIC="${URING_PLAY_OFI_EFA_FABRIC:-}"
 SHM_OFI_RMA_READS="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS:-0}"
 SHM_OFI_RMA_READ_QD="${URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD:-1}"
 LEAF_OFI_RMA_READS="${URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS:-$SHM_OFI_RMA_READS}"
@@ -180,9 +192,10 @@ if [ -n "${URING_PLAY_ZCNBLK_SHM_WAL_OWNER_INGRESS+x}" ]; then
 	WAL_OWNER_INGRESS_SOURCE=explicit
 elif [ "$BACKEND" = wal-tcp ] && [ "$START_LOCAL_LEAF" != 1 ] && \
 	[ "$REPRESENTATIVE" = 1 ] && [ "$MODE" = write ]; then
-	# Stable-owner fixes the representative external-WAL write regression.
-	# Read and mixed traffic retain lane-inline ingress because stable-owner
-	# adds an avoidable dispatch stage to their remote-read completion path.
+	# Stable-owner fixes the representative external-WAL write regression.  It
+	# also supports negotiated RMA reads, including mixed batches, but keep the
+	# automatic policy scoped to the measured write case until an owner-count
+	# sweep proves a broader default.
 	WAL_OWNER_INGRESS=1
 	WAL_OWNER_INGRESS_SOURCE=auto-representative-external-write
 elif [ "$BACKEND" = wal-tcp ] && [ "$START_LOCAL_LEAF" != 1 ] && \
@@ -293,6 +306,7 @@ else
 	WAL_EXTENT_FILL_US=0
 fi
 WAL_SPLIT_MIN_BATCH_RECORDS="${URING_PLAY_ZCNBLK_SHM_WAL_SPLIT_MIN_BATCH_RECORDS:-64}"
+WAL_FOREGROUND_READ_IMMEDIATE="${URING_PLAY_ZCNBLK_SHM_WAL_FOREGROUND_READ_IMMEDIATE:-1}"
 if [ -n "${URING_PLAY_ZCNBLK_SHM_WAL_COMPACT_WRITES+x}" ]; then
 	WAL_COMPACT_WRITES="$URING_PLAY_ZCNBLK_SHM_WAL_COMPACT_WRITES"
 elif [ "$BACKEND" = wal-tcp ]; then
@@ -494,6 +508,10 @@ fi
 	die "URING_PLAY_EXTERNAL_NIC_LOW_LATENCY_CONFIRMED must be zero or one"
 [[ "$BLOCK_FUA_WRITES" =~ ^[01]$ ]] || \
 	die "URING_PLAY_BLOCKBENCH_FUA_WRITES must be zero or one"
+case "$SHM_ARENA_BACKING" in
+vmalloc|hugetlb|auto) ;;
+*) die "URING_PLAY_ZCNBLK_SHM_ARENA_BACKING must be vmalloc, hugetlb, or auto" ;;
+esac
 if [ "$BLOCK_FUA_WRITES" = 1 ] && [ "$MODE" = read ]; then
 	die "URING_PLAY_BLOCKBENCH_FUA_WRITES=1 requires a write or mixed workload"
 fi
@@ -503,6 +521,7 @@ fi
 	die "KERNEL_QUEUE_DEPTH must be a positive integer"
 [[ "$KERNEL_PIPELINE_DEPTH" =~ ^[0-9]+$ ]] && [ "$KERNEL_PIPELINE_DEPTH" -gt 0 ] || \
 	die "KERNEL_PIPELINE_DEPTH must be a positive integer"
+[[ "$HCTX_NUMA_NODE" =~ ^-?[0-9]+$ ]] || die "HCTX_NUMA_NODE must be an integer"
 [ "$KERNEL_PIPELINE_DEPTH" -le "$SHM_RING_ENTRIES" ] || \
 	die "KERNEL_PIPELINE_DEPTH must not exceed SHM_RING_ENTRIES"
 [[ "$POLL_CLOCK_CHECK_SPINS" =~ ^[0-9]+$ ]] && [ "$POLL_CLOCK_CHECK_SPINS" -gt 0 ] || \
@@ -626,6 +645,8 @@ esac
 	die "WAL owner max tx iovecs must be in 1..=1022"
 [[ "$WAL_LANE_WINDOW" =~ ^[0-9]+$ ]] && [ "$WAL_LANE_WINDOW" -gt 0 ] || \
 	die "WAL lane window must be a positive integer"
+[[ "$WAL_FOREGROUND_READ_IMMEDIATE" =~ ^[01]$ ]] || \
+	die "WAL foreground read immediate must be zero or one"
 [[ "$SHM_OFI_RMA_READ_QD" =~ ^[0-9]+$ ]] && [ "$SHM_OFI_RMA_READ_QD" -gt 0 ] && \
 	[ "$SHM_OFI_RMA_READ_QD" -le 1024 ] || \
 	die "URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD must be in 1..=1024"
@@ -633,8 +654,7 @@ if [ "$SHM_OFI_RMA_READS" = 1 ]; then
 	[ "$REMOTE_TRANSPORT" = ofi ] || [ "$REMOTE_TRANSPORT" = rdm ] || [ "$REMOTE_TRANSPORT" = efa ] || \
 		die "OFI RMA reads require URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT=ofi"
 	if [ "$WAL_OWNER_INGRESS" = 1 ]; then
-		printf 'PERF WARNING: stable-owner ingress does not use the lane-local OFI RMA read queue\n' >&2
-		[ "$REPRESENTATIVE" != 1 ] || die "representative OFI RMA read runs require WAL owner ingress disabled"
+		printf 'PERF NOTE: stable-owner OFI reads use the owner endpoint RMA queue and place completions directly in request-owned shared slots\n' >&2
 	fi
 	if [ "$WAL_LANE_WINDOW" -lt "$SHM_OFI_RMA_READ_QD" ]; then
 		printf 'PERF WARNING: wal_lane_window=%s is below rma_read_qd=%s and caps lane overlap\n' \
@@ -687,11 +707,11 @@ if [ "$SHM_OFI_RMA_WRITES" = 1 ]; then
 			die "representative/strict RMA write runs require rma_write_qd >= $SHM_OFI_RMA_WRITE_MIN_QD"
 		fi
 	fi
-	if [ "$OFI_RMA_SOURCE_HUGETLB_CONFIRMED" != 1 ]; then
-		printf 'PERF WARNING: the registered RMA source is the vmalloc_user/remap_vmalloc_range shared arena, not an explicit HugeTLB mapping; this run cannot be classified as a HugeTLB-backed RMA source path\n' >&2
+	if [ "$SHM_ARENA_BACKING" != hugetlb ]; then
+		printf 'PERF WARNING: requested shared-arena backing is %s, not explicit external HugeTLB; this run cannot be classified as a HugeTLB-backed RMA source path\n' "$SHM_ARENA_BACKING" >&2
 		if [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
 			[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; then
-			die "representative/strict RMA write runs require an explicit HugeTLB-backed shared-arena ABI"
+			die "representative/strict RMA write runs require URING_PLAY_ZCNBLK_SHM_ARENA_BACKING=hugetlb"
 		fi
 	fi
 	if [ "$REPRESENTATIVE" = 1 ]; then
@@ -757,8 +777,15 @@ case "$COORDINATION_SCOPE" in
 			die "bootstrap manifest does not prove dedicated adhoc ownership"
 		grep -qx 'coordination_honored=true' "$BOOTSTRAP_MANIFEST" || \
 			die "bootstrap manifest does not honor dedicated coordination"
-		grep -Eq '^instance_id=i-[0-9a-f]+$' "$BOOTSTRAP_MANIFEST" || \
-			die "bootstrap manifest does not identify an EC2 instance"
+		if grep -q '^cloud_provider=' "$BOOTSTRAP_MANIFEST"; then
+			grep -Eq '^cloud_provider=(ec2|gce)$' "$BOOTSTRAP_MANIFEST" || \
+				die "bootstrap manifest does not identify a supported cloud provider"
+			grep -Eq '^instance_id=(i-[0-9a-f]+|[0-9]+)$' "$BOOTSTRAP_MANIFEST" || \
+				die "bootstrap manifest does not identify an EC2 or GCE instance"
+		else
+			grep -Eq '^instance_id=i-[0-9a-f]+$' "$BOOTSTRAP_MANIFEST" || \
+				die "legacy bootstrap manifest does not identify an EC2 instance"
+		fi
 		printf 'scope=dedicated-adhoc honored=true manifest=%s\n' "$BOOTSTRAP_MANIFEST" | \
 			tee -a "$OUTDIR/coordination.log"
 		;;
@@ -790,7 +817,8 @@ sudo -n insmod "$MODULE" transport=shm lanes="$LANES" connections_per_lane=1 \
 	shm_sector_order_slots="$SECTOR_ORDER_SLOTS" \
 	max_frame_bytes="$MAX_FRAME_BYTES" \
 	pipeline_depth="$KERNEL_PIPELINE_DEPTH" shm_ring_entries="$SHM_RING_ENTRIES" \
-	shm_payload_entries="$SHM_PAYLOAD_ENTRIES" shm_poll_us="$KERNEL_POLL_US" pin_threads=0
+	shm_payload_entries="$SHM_PAYLOAD_ENTRIES" shm_poll_us="$KERNEL_POLL_US" \
+	hctx_numa_node="$HCTX_NUMA_NODE" pin_threads=0
 for _ in $(seq 1 100); do
 	[ -e /dev/zcnblk0 ] && [ -e /dev/zcnblk-shmctl ] && break
 	sleep 0.05
@@ -1070,8 +1098,8 @@ fi
 		"$BLOCK_CQE_ADAPTIVE_SPIN_MIN" "$BLOCK_CQE_ADAPTIVE_SPIN_MAX" \
 		"$BLOCK_CQE_ADAPTIVE_WAIT_NS" "$BLOCK_CQE_HOT_POLL" "$BLOCK_CQE_HOT_POLL_PROGRESS_SPINS"
 	printf 'shm_descriptor_entries_per_channel=%s\n' "$SHM_RING_ENTRIES"
-	printf 'kernel_queues=%s kernel_queue_depth=%s kernel_pipeline_depth=%s\n' \
-		"$KERNEL_QUEUES" "$KERNEL_QUEUE_DEPTH" "$KERNEL_PIPELINE_DEPTH"
+	printf 'kernel_queues=%s kernel_queue_depth=%s kernel_pipeline_depth=%s hctx_numa_node=%s\n' \
+		"$KERNEL_QUEUES" "$KERNEL_QUEUE_DEPTH" "$KERNEL_PIPELINE_DEPTH" "$HCTX_NUMA_NODE"
 	printf 'shm_sector_order_slots=%s\n' "$SECTOR_ORDER_SLOTS"
 	printf 'shm_payload_entries_per_channel=%s\n' "$SHM_PAYLOAD_ENTRIES"
 	safe_writeback_limit=$((SHM_PAYLOAD_ENTRIES - SHM_RING_ENTRIES))
@@ -1116,6 +1144,7 @@ fi
 		"$TRANSFER_SLOTS" "$effective_transfer_slots"
 	printf 'wal_extent_records=%s wal_extent_fill_us=%s wal_split_min_batch_records=%s\n' \
 		"$WAL_EXTENT_RECORDS" "$WAL_EXTENT_FILL_US" "$WAL_SPLIT_MIN_BATCH_RECORDS"
+	printf 'wal_foreground_read_immediate=%s\n' "$WAL_FOREGROUND_READ_IMMEDIATE"
 	printf 'wal_compact_writes=%s\n' "$WAL_COMPACT_WRITES"
 	printf 'dirty_pressure_reserve=%s\n' "$DIRTY_PRESSURE_RESERVE"
 	printf 'remote_recv_spins=%s leaf_spin_reads=%s leaf_spin_policy=%s leaf_spin_budget=%s leaf_adaptive_spin_min=%s leaf_adaptive_spin_max=%s leaf_adaptive_wait_ns=%s leaf_adaptive_hysteresis_ns=%s\n' \
@@ -1131,9 +1160,9 @@ fi
 	printf 'remote_send_mode=%s remote_send_ring_entries=%s remote_send_zc_required=%s allow_unsafe_send_zc=%s\n' \
 		"$REMOTE_SEND_MODE" "$REMOTE_SEND_RING_ENTRIES" "$REMOTE_SEND_ZC_REQUIRED" \
 		"$ALLOW_UNSAFE_SEND_ZC"
-	printf 'remote_transport=%s remote_ofi_provider=%s remote_ofi_endpoint=%s ofi_domain=%s ofi_cq_sleep_ns=%s wal_ofi_message_bytes=%s wal_ofi_hugetlb_confirmed=%s efa_use_device_rdma=%s shm_ofi_rma_reads=%s shm_ofi_rma_read_qd=%s rma_read_aggregate_outstanding_depth=%s leaf_ofi_rma_reads=%s shm_ofi_rma_writes=%s shm_ofi_rma_writes_required=%s shm_ofi_rma_write_qd=%s rma_write_aggregate_outstanding_depth=%s leaf_ofi_rma_writes=%s rma_write_delivery_complete=%s rma_write_more=%s rma_write_more_burst=%s\n' \
+	printf 'remote_transport=%s remote_ofi_provider=%s remote_ofi_endpoint=%s ofi_domain=%s lane_ofi_domains=%s ofi_cq_sleep_ns=%s wal_ofi_message_bytes=%s wal_ofi_hugetlb_confirmed=%s efa_use_device_rdma=%s shm_ofi_rma_reads=%s shm_ofi_rma_read_qd=%s rma_read_aggregate_outstanding_depth=%s leaf_ofi_rma_reads=%s shm_ofi_rma_writes=%s shm_ofi_rma_writes_required=%s shm_ofi_rma_write_qd=%s rma_write_aggregate_outstanding_depth=%s leaf_ofi_rma_writes=%s rma_write_delivery_complete=%s rma_write_more=%s rma_write_more_burst=%s\n' \
 		"$REMOTE_TRANSPORT" "$REMOTE_OFI_PROVIDER" "$REMOTE_OFI_ENDPOINT" \
-		"${OFI_DOMAIN:-auto}" "$OFI_CQ_SLEEP_NS" "$WAL_OFI_MESSAGE_BYTES" \
+		"${OFI_DOMAIN:-auto}" "${SHM_OFI_DOMAINS:-single-domain}" "$OFI_CQ_SLEEP_NS" "$WAL_OFI_MESSAGE_BYTES" \
 		"$WAL_OFI_HUGETLB_CONFIRMED" "$EFA_USE_DEVICE_RDMA" \
 		"$SHM_OFI_RMA_READS" "$SHM_OFI_RMA_READ_QD" "$((LANES * SHM_OFI_RMA_READ_QD))" \
 		"$LEAF_OFI_RMA_READS" "$SHM_OFI_RMA_WRITES" "$SHM_OFI_RMA_WRITES_REQUIRED" \
@@ -1151,8 +1180,8 @@ fi
 	printf 'remote_stream_count=%s remote_stream_scope=%s\n' \
 		"$REMOTE_STREAM_COUNT" \
 		"$([ "$WAL_OWNER_INGRESS" = 1 ] && printf stable-userspace-owners || printf ingress-lanes)"
-	printf 'rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=%s\n' \
-		"$OFI_RMA_SOURCE_HUGETLB_CONFIRMED"
+	printf 'rma_source_backing_requested=%s legacy_hugetlb_confirmation=%s actual_backing=validated-from-target-log-before-benchmark\n' \
+		"$SHM_ARENA_BACKING" "$OFI_RMA_SOURCE_HUGETLB_CONFIRMED"
 	printf 'order_smoke_pairs=%s\n' "$ORDER_SMOKE_PAIRS"
 	printf 'shm_payload_slot_bytes=%s\n' "$MAX_FRAME_BYTES"
 	printf 'shm_lease_release_batch=%s\n' "$LEASE_RELEASE_BATCH"
@@ -1167,17 +1196,30 @@ fi
 } | tee "$OUTDIR/topology.log"
 ps -eLo pid,tid,psr,pcpu,comm --sort=-pcpu | head -n 80 >"$OUTDIR/process-noise.before" || true
 
+block_hugepages=0
 if [ "$BUFFER_MODE" != hugetlb ]; then
 	printf 'PERF WARNING: BUFFER_MODE=%s; this is not a hugetlb representative run\n' "$BUFFER_MODE" | tee -a "$OUTDIR/preflight.log" >&2
 	[ "$REPRESENTATIVE" != 1 ] || die "representative runs require BUFFER_MODE=hugetlb"
 else
-	hugepages_free="$(awk '/HugePages_Free:/{print $2}' /proc/meminfo)"
-	required_hugepages=$((LANES * IODEPTH))
-	printf 'hugetlb_preflight: free_pages=%s required_pages=%s reason=one-hugepage-per-registered-slot\n' \
-		"$hugepages_free" "$required_hugepages" | tee -a "$OUTDIR/preflight.log"
-	if [ "$hugepages_free" -lt "$required_hugepages" ]; then
-		die "hugetlb needs at least $required_hugepages free pages for $LANES workers x iodepth $IODEPTH; found $hugepages_free"
-	fi
+	block_hugepages=$((LANES * IODEPTH))
+fi
+arena_hugepages=0
+hugepage_bytes=$(( $(awk '/Hugepagesize:/{print $2}' /proc/meminfo) * 1024 ))
+if [ "$SHM_ARENA_BACKING" = hugetlb ]; then
+	arena_payload_bytes=$((LANES * SHM_PAYLOAD_ENTRIES * MAX_FRAME_BYTES))
+	arena_metadata_bytes=$((6 * 4096 + LANES * (320 + SHM_RING_ENTRIES * (64 + 64 + 16) + SHM_PAYLOAD_ENTRIES * 8)))
+	arena_hugepages=$(( (arena_payload_bytes + arena_metadata_bytes + hugepage_bytes - 1) / hugepage_bytes ))
+fi
+leaf_hugepages=0
+if [ "$START_LOCAL_LEAF" = 1 ] && [ "$LEAF_ZCMEM_HUGETLB" = 1 ]; then
+	leaf_hugepages=$(( (SIZE_MIB * 1024 * 1024 + hugepage_bytes - 1) / hugepage_bytes ))
+fi
+required_hugepages=$((block_hugepages + arena_hugepages + leaf_hugepages))
+hugepages_free="$(awk '/HugePages_Free:/{print $2}' /proc/meminfo)"
+printf 'hugetlb_preflight: free_pages=%s required_pages=%s block_buffer_pages=%s shared_arena_pages=%s local_leaf_pages=%s\n' \
+	"$hugepages_free" "$required_hugepages" "$block_hugepages" "$arena_hugepages" "$leaf_hugepages" | tee -a "$OUTDIR/preflight.log"
+if [ "$hugepages_free" -lt "$required_hugepages" ]; then
+	die "hugetlb needs at least $required_hugepages free pages (block=$block_hugepages arena=$arena_hugepages local_leaf=$leaf_hugepages); found $hugepages_free"
 fi
 if [ "$SET_GOVERNOR" = performance ]; then
 	governor_paths=(/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor)
@@ -1222,7 +1264,9 @@ if [ "$START_LOCAL_LEAF" = 1 ]; then
 		URING_PLAY_OFI_RMA_WRITE_MORE_BURST="$OFI_RMA_WRITE_MORE_BURST" \
 		URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$WAL_OFI_MESSAGE_BYTES" \
 		URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED="$WAL_OFI_HUGETLB_CONFIRMED" \
+		FI_EFA_IFACE="$EFA_IFACE" \
 		FI_EFA_USE_DEVICE_RDMA="$EFA_USE_DEVICE_RDMA" \
+		URING_PLAY_OFI_EFA_FABRIC="$OFI_EFA_FABRIC" \
 		"$LEAF_BIN" "$LEAF_TARGET" "$LEAF_ADDR" "$LEAF_PORT" "$LANES" 1 4096 "$LANES" true "$LEAF_SUBMIT_MODE" \
 		>"$OUTDIR/leaf.log" 2>&1 &
 	leaf_pid=$!
@@ -1236,7 +1280,15 @@ if [ "$START_LOCAL_LEAF" = 1 ]; then
 fi
 
 log "starting userspace shared target/fan; no placement decision exists in the kernel edge"
-sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
+target_priv=(sudo -n env)
+if [ "${TARGET_MEMLOCK_UNLIMITED:-0}" = 1 ]; then
+	command -v prlimit >/dev/null || die "TARGET_MEMLOCK_UNLIMITED=1 requires prlimit"
+	target_priv=(sudo -n prlimit --memlock=unlimited -- env)
+fi
+"${target_priv[@]}" URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
+	URING_PLAY_ZCNBLK_SHM_ARENA_BACKING="$SHM_ARENA_BACKING" \
+	URING_PLAY_ZCNBLK_SHM_ARENA_CPU_LIST="$SHM_ARENA_CPU_LIST" \
+	URING_PLAY_ZCNBLK_SHM_ARENA_CPU="${target_cpus[0]}" \
 	URING_PLAY_TOPOLOGY_REPRESENTATIVE="$REPRESENTATIVE" \
 	URING_PLAY_ZCNBLK_SHM_POLL_CLOCK_CHECK_SPINS="$POLL_CLOCK_CHECK_SPINS" \
 	URING_PLAY_ZCNBLK_SHM_COORDINATOR_CPU="$coordinator_cpu" \
@@ -1287,6 +1339,7 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
 	URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT="$REMOTE_TRANSPORT" \
 	URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER="$REMOTE_OFI_PROVIDER" \
 	URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_ENDPOINT="$REMOTE_OFI_ENDPOINT" \
+	URING_PLAY_ZCNBLK_SHM_OFI_DOMAINS="$SHM_OFI_DOMAINS" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS="$SHM_OFI_RMA_READS" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD="$SHM_OFI_RMA_READ_QD" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES="$SHM_OFI_RMA_WRITES" \
@@ -1303,10 +1356,13 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
 	URING_PLAY_OFI_RMA_WRITE_MORE_BURST="$OFI_RMA_WRITE_MORE_BURST" \
 	URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES="$WAL_OFI_MESSAGE_BYTES" \
 	URING_PLAY_ZCNBLK_WAL_OFI_HUGETLB_CONFIRMED="$WAL_OFI_HUGETLB_CONFIRMED" \
+	FI_EFA_IFACE="$EFA_IFACE" \
 	FI_EFA_USE_DEVICE_RDMA="$EFA_USE_DEVICE_RDMA" \
+	URING_PLAY_OFI_EFA_FABRIC="$OFI_EFA_FABRIC" \
 	URING_PLAY_ZCNBLK_SHM_WAL_EXTENT_RECORDS="$WAL_EXTENT_RECORDS" \
 	URING_PLAY_ZCNBLK_SHM_WAL_EXTENT_FILL_US="$WAL_EXTENT_FILL_US" \
 	URING_PLAY_ZCNBLK_SHM_WAL_SPLIT_MIN_BATCH_RECORDS="$WAL_SPLIT_MIN_BATCH_RECORDS" \
+	URING_PLAY_ZCNBLK_SHM_WAL_FOREGROUND_READ_IMMEDIATE="$WAL_FOREGROUND_READ_IMMEDIATE" \
 	URING_PLAY_ZCNBLK_SHM_WAL_COMPACT_WRITES="$WAL_COMPACT_WRITES" \
 	URING_PLAY_ZCNBLK_SHM_DIRTY_PRESSURE_RESERVE="$DIRTY_PRESSURE_RESERVE" \
 	URING_PLAY_ZCNBLK_SHM_WAL_DEBUG_STATE="$WAL_DEBUG_STATE" \
@@ -1323,13 +1379,20 @@ sudo -n env URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
 	"$target_cpu_list" "$POLL_US" "$BUSY_POLL_US" "$BUSY_HYSTERESIS_US" \
 	>"$OUTDIR/target.log" 2>&1 &
 target_job_pid=$!
-for _ in $(seq 1 100); do
+for _ in $(seq 1 "${TARGET_READY_ATTEMPTS:-100}"); do
 	[ -s "$pid_file" ] && break
 	sleep 0.05
 done
 [ -s "$pid_file" ] || die "target did not publish its PID file"
 target_pid="$(cat "$pid_file")"
 [[ "$target_pid" =~ ^[0-9]+$ ]] || die "invalid target PID: $target_pid"
+arena_line="$(grep '^zcnblk-shm-target-shared-arena:' "$OUTDIR/target.log" | tail -n 1 || true)"
+[ -n "$arena_line" ] || die "target did not report the shared-arena backing before benchmarking"
+printf 'actual_%s\n' "$arena_line" | tee -a "$OUTDIR/topology.log"
+if [ "$SHM_ARENA_BACKING" = hugetlb ]; then
+	grep -q ' backing=external-hugetlb-memfd .* import_active=true ' <<<"$arena_line" || \
+		die "target did not activate the required external HugeTLB shared arena"
+fi
 if [ "$SHM_OFI_RMA_WRITES" = 1 ]; then
 	for _ in $(seq 1 200); do
 		rma_windows="$(grep -c '^zcnblk-shm-target-ofi-rma-write-window: lane=.* completion=initiator-delivery-cq-before-doorbell' "$OUTDIR/target.log" || true)"

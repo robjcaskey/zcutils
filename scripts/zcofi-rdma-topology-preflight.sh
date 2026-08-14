@@ -78,7 +78,7 @@ validate_cpu_csv() {
 }
 
 command -v rdma >/dev/null 2>&1 || die "rdma-core's rdma command is required"
-[[ "$KIND" =~ ^(mlx5|rxe)$ ]] || die "ZCOFI_RDMA_PREFLIGHT_KIND must be mlx5 or rxe"
+[[ "$KIND" =~ ^(mlx5|irdma|rxe)$ ]] || die "ZCOFI_RDMA_PREFLIGHT_KIND must be mlx5, irdma, or rxe"
 [[ "$STRICT" =~ ^[01]$ ]] || die "URING_PLAY_TOPOLOGY_STRICT must be zero or one"
 [[ "$FATAL" =~ ^[01]$ ]] || die "URING_PLAY_TOPOLOGY_FATAL must be zero or one"
 [[ "$BLOCK_MODE" =~ ^[01]$ ]] || die "ZCOFI_RDMA_BLOCK_MODE must be zero or one"
@@ -212,6 +212,9 @@ fi
 if [ "$KIND" = mlx5 ] && [ "$driver" != mlx5_core ]; then
 	issue "ConnectX run requires mlx5_core; selected driver is $driver"
 fi
+if [ "$KIND" = irdma ] && [ "$driver" != irdma ] && [ "$driver" != idpf ]; then
+	issue "Cloud IRDMA run requires the IDPF/iRDMA driver stack; selected RDMA driver is $driver"
+fi
 if [ "$KIND" = rxe ] && [[ "$RDMA_DEVICE" != rxe* ]]; then
 	issue "Soft-RoCE rehearsal expected an rxe* RDMA device, got ${RDMA_DEVICE:-unreported}"
 fi
@@ -239,10 +242,12 @@ if [ -n "$RDMA_DEVICE" ] && [ -d "$port_path" ]; then
 	fi
 fi
 
+if [ "$KIND" = mlx5 ] || [ "$KIND" = irdma ]; then
+	[ -d "$port_path" ] || issue "selected hardware RDMA port does not exist: $RDMA_DEVICE/$RDMA_PORT"
+	[[ "$port_state" == *ACTIVE* ]] || issue "selected hardware RDMA port is not ACTIVE: $port_state"
+	[[ "$numa_node" =~ ^[0-9]+$ ]] || issue "selected hardware RDMA device has no usable NUMA node: $numa_node"
+fi
 if [ "$KIND" = mlx5 ]; then
-	[ -d "$port_path" ] || issue "selected mlx5 port does not exist: $RDMA_DEVICE/$RDMA_PORT"
-	[[ "$port_state" == *ACTIVE* ]] || issue "selected mlx5 port is not ACTIVE: $port_state"
-	[[ "$numa_node" =~ ^[0-9]+$ ]] || issue "selected mlx5 device has no usable NUMA node: $numa_node"
 	[[ "$CQE_SIZE" =~ ^(64|128)$ ]] || issue "set ZCOFI_RDMA_CQE_SIZE to the verified mlx5 CQE size (64 or 128)"
 	[[ "$CQE_COMPRESSION" =~ ^(enabled|disabled|unsupported)$ ]] || \
 		issue "set ZCOFI_RDMA_CQE_COMPRESSION to enabled, disabled, or unsupported"
@@ -252,22 +257,22 @@ if [ "$KIND" = mlx5 ]; then
 		issue "set ZCOFI_RDMA_CQ_MODERATION_COUNT to the verified CQ count"
 	[ "$CQ_CONFIGURATION_VERIFIED" = 1 ] || \
 		issue "verify CQE size/compression/moderation, then set ZCOFI_RDMA_CQ_CONFIGURATION_VERIFIED=1"
-	if [[ "$PROVIDER" == *verbs* ]]; then
-		[ -n "$VERBS_DEVICE" ] || issue "verbs hardware run requires FI_VERBS_DEVICE_NAME"
-		[ -n "$VERBS_IFACE" ] || issue "verbs hardware run requires FI_VERBS_IFACE"
-		[[ "$VERBS_GID_INDEX" =~ ^[0-9]+$ ]] || issue "verbs hardware run requires numeric FI_VERBS_GID_IDX"
-		[ -z "$VERBS_DEVICE" ] || [ "$VERBS_DEVICE" = "$RDMA_DEVICE" ] || \
-			issue "FI_VERBS_DEVICE_NAME=$VERBS_DEVICE does not match ZCOFI_RDMA_DEVICE=$RDMA_DEVICE"
-		[ -z "$VERBS_IFACE" ] || [ "$VERBS_IFACE" = "$NETDEV" ] || \
-			issue "FI_VERBS_IFACE=$VERBS_IFACE does not match ZCOFI_RDMA_NETDEV=$NETDEV"
-		if [[ "$VERBS_GID_INDEX" =~ ^[0-9]+$ ]]; then
-			[ "$selected_gid" != unreported ] || issue "selected GID index $VERBS_GID_INDEX is unreadable on $RDMA_DEVICE/$RDMA_PORT"
-			if [[ "$selected_gid" =~ ^(0+:)+0+$ ]]; then
-				issue "selected GID index $VERBS_GID_INDEX is all zero"
-			fi
-			[ "$selected_gid_netdev" = unreported ] || [ "$selected_gid_netdev" = "$NETDEV" ] || \
-				issue "selected GID index $VERBS_GID_INDEX maps to netdev $selected_gid_netdev, not $NETDEV"
+fi
+if { [ "$KIND" = mlx5 ] || [ "$KIND" = irdma ]; } && [[ "$PROVIDER" == *verbs* ]]; then
+	[ -n "$VERBS_DEVICE" ] || issue "verbs hardware run requires FI_VERBS_DEVICE_NAME"
+	[ -n "$VERBS_IFACE" ] || issue "verbs hardware run requires FI_VERBS_IFACE"
+	[[ "$VERBS_GID_INDEX" =~ ^[0-9]+$ ]] || issue "verbs hardware run requires numeric FI_VERBS_GID_IDX"
+	[ -z "$VERBS_DEVICE" ] || [ "$VERBS_DEVICE" = "$RDMA_DEVICE" ] || \
+		issue "FI_VERBS_DEVICE_NAME=$VERBS_DEVICE does not match ZCOFI_RDMA_DEVICE=$RDMA_DEVICE"
+	[ -z "$VERBS_IFACE" ] || [ "$VERBS_IFACE" = "$NETDEV" ] || \
+		issue "FI_VERBS_IFACE=$VERBS_IFACE does not match ZCOFI_RDMA_NETDEV=$NETDEV"
+	if [[ "$VERBS_GID_INDEX" =~ ^[0-9]+$ ]]; then
+		[ "$selected_gid" != unreported ] || issue "selected GID index $VERBS_GID_INDEX is unreadable on $RDMA_DEVICE/$RDMA_PORT"
+		if [[ "$selected_gid" =~ ^(0+:)+0+$ ]]; then
+			issue "selected GID index $VERBS_GID_INDEX is all zero"
 		fi
+		[ "$selected_gid_netdev" = unreported ] || [ "$selected_gid_netdev" = "$NETDEV" ] || \
+			issue "selected GID index $VERBS_GID_INDEX maps to netdev $selected_gid_netdev, not $NETDEV"
 	fi
 fi
 
@@ -291,7 +296,7 @@ for cpu in "${owner_cpu_array[@]}"; do
 			owner_core_set[$core_key]="$cpu"
 		fi
 	fi
-	if [ "$KIND" = mlx5 ] && [[ "$numa_node" =~ ^[0-9]+$ ]]; then
+	if { [ "$KIND" = mlx5 ] || [ "$KIND" = irdma ]; } && [[ "$numa_node" =~ ^[0-9]+$ ]]; then
 		cpu_node_path="$(find "/sys/devices/system/cpu/cpu$cpu" -mindepth 1 -maxdepth 1 -name 'node*' -print -quit 2>/dev/null || true)"
 		if [ -n "$cpu_node_path" ]; then
 			cpu_node="${cpu_node_path##*node}"
@@ -322,7 +327,7 @@ fi
 
 governors="$(find /sys/devices/system/cpu/cpufreq -name scaling_governor -type f -exec cat {} + 2>/dev/null | sort -u | paste -sd, -)"
 [ -n "$governors" ] || governors=unreported
-if [ "$KIND" = mlx5 ] && [ "$governors" != performance ]; then
+if [ "$KIND" != rxe ] && [ "$governors" != performance ]; then
 	issue "CPU governors are $governors, not uniformly performance"
 fi
 
@@ -331,11 +336,11 @@ if command -v systemctl >/dev/null 2>&1; then
 	irqbalance_state="$(systemctl is-active irqbalance 2>/dev/null || true)"
 	[ -n "$irqbalance_state" ] || irqbalance_state=inactive
 fi
-if [ "$KIND" = mlx5 ] && [ "$irqbalance_state" = active ] && \
+if [ "$KIND" != rxe ] && [ "$irqbalance_state" = active ] && \
 	[ "$IRQ_AFFINITY_CONFIRMED" != 1 ]; then
 	issue "irqbalance is active; set and verify IRQ affinity, then export ZCOFI_RDMA_IRQ_AFFINITY_CONFIRMED=1"
 fi
-if [ "$KIND" = mlx5 ] && [ -z "$IRQ_CPUS" ]; then
+if [ "$KIND" != rxe ] && [ -z "$IRQ_CPUS" ]; then
 	issue "set ZCOFI_RDMA_IRQ_CPU_LIST and keep completion vectors off CQ-owner CPUs unless the measured topology intentionally co-locates them"
 fi
 
@@ -388,6 +393,8 @@ printf 'verbs_device=%s verbs_iface=%s verbs_gid_index=%s irq_affinity_confirmed
 	"$IRQ_COLOCATION_CONFIRMED"
 if [ "$KIND" = mlx5 ]; then
 	printf 'queue_model=mlx5-sq-64B-WQEBB-and-power-of-two-buffer;rq-power-of-two-WQE-and-WR-count;cq-64B-or-128B-CQE;one-owner-per-QP-CQ\n'
+elif [ "$KIND" = irdma ]; then
+	printf 'queue_model=irdma-reliable-connection;idpf-netdev;one-owner-per-QP-CQ;hardware-capacities-runtime-reported\n'
 else
 	printf 'queue_model=rxe-software-semantic-rehearsal;hardware-WQEBB-UAR-CQE-IRQ-behavior=not-exercised;one-owner-per-endpoint-CQ\n'
 fi

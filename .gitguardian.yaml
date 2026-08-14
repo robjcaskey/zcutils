@@ -1,0 +1,14 @@
+# Generated benchmark artifacts contain high-entropy, short-lived test tokens,
+# captured command lines, synthetic payload identifiers, and machine metadata.
+# They are non-production measurements and are not credential sources. Keep
+# source, scripts, documentation, and repository configuration fully scanned.
+version: 2
+
+secret:
+  ignored_paths:
+    - 'bench-results/**'
+    - '**/perf.data'
+    - '**/*.perf.data'
+    - '**/*.perf'
+  show_secrets: false
+  ignore_known_secrets: false

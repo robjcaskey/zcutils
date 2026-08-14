@@ -1,0 +1,29 @@
+pgbench (16.14 (Ubuntu 16.14-0ubuntu0.24.04.1))
+starting vacuum...end.
+progress: 5.0 s, 6123.2 tps, lat 2.593 ms stddev 0.987, 0 failed
+progress: 10.0 s, 6167.7 tps, lat 2.582 ms stddev 0.935, 0 failed
+transaction type: <builtin: TPC-B (sort of)>
+scaling factor: 10
+query mode: prepared
+number of clients: 16
+number of threads: 2
+maximum number of tries: 1
+duration: 10 s
+number of transactions actually processed: 61470
+number of failed transactions: 0 (0.000%)
+latency average = 2.589 ms
+latency stddev = 0.965 ms
+initial connection time = 11.627 ms
+tps = 6146.784248 (without initial connection time)
+statement latencies in milliseconds and failures:
+         0.000           0  \set aid random(1, 100000 * :scale)
+         0.000           0  \set bid random(1, 1 * :scale)
+         0.000           0  \set tid random(1, 10 * :scale)
+         0.000           0  \set delta random(-5000, 5000)
+         0.230           0  BEGIN;
+         0.237           0  UPDATE pgbench_accounts SET abalance = abalance + :delta WHERE aid = :aid;
+         0.237           0  SELECT abalance FROM pgbench_accounts WHERE aid = :aid;
+         0.346           0  UPDATE pgbench_tellers SET tbalance = tbalance + :delta WHERE tid = :tid;
+         0.731           0  UPDATE pgbench_branches SET bbalance = bbalance + :delta WHERE bid = :bid;
+         0.235           0  INSERT INTO pgbench_history (tid, bid, aid, delta, mtime) VALUES (:tid, :bid, :aid, :delta, CURRENT_TIMESTAMP);
+         0.570           0  END;

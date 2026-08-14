@@ -1,0 +1,4 @@
+zcofi-rma-target-lane-map: lane=0 worker=0 cpu=2 domain=efa_0-rdm scheduling=one-worker-per-lane aggregate_mapping_declared=yes
+zcofi-rma-target: provider=efa-direct endpoint=rdm bind=auto base_service=27001 lanes=1 bytes_per_lane=1048576 extent_bytes=4096 workers=1 direct_rma_target=yes lane_local_registered_arenas=yes commit_doorbell=ofi-msg records_per_extent=1 timeout_ms=30000 busy_poll_iters=100000 cq_sleep_ns=0 ofi_domain=efa_0-rdm
+zcofi-rma-target-worker: affinity_index=0 target_cpu=2 status=ok
+Error: Custom { kind: Other, error: "zc_ofi_open_rma provider=efa-direct endpoint=rdm node=auto service=27001 server=yes domain=efa_0-rdm failed rc=-95: strict OFI topology requested FI_EFA_WR_HIGH_PPS, but the build-time EFA headers do not advertise that provider operation flag" }

@@ -1,0 +1,16 @@
+classification=dedicated-adhoc-topology-explicit
+run_id=zcutils-blockmatrix-adhoc-c8gn16-20260811T121140Z
+source_commit=1913baabf736da77d08e3d561036487486830cc6
+source_diff_sha256=ee323eae5208a65ee4e59c01120f11dd075fe329d913203a24f3ca489b1b1103
+instance_type=c8gn.16xlarge nodes=2 az=us-east-2c numa_nodes_per_host=1 cpus_per_host=64
+lane_to_worker=0:0 client_lane_to_cpu=0:0 target_lane_to_cpu=0:3
+lane_to_nic=0:efa_0/efa_0-rdm provider=efa endpoint=rdm
+client_private_ip=172.31.36.28 target_private_ip=172.31.39.213 route_interface=ens50
+irq_cpu_set=56-63 irq_count_per_host=16 irq_affinity_verified=true
+hugepages_total_per_host=8192 hugepages_free_before_matrix=8192 hugepage_size_kib=2048
+memlock_kib=unlimited cq_sleep_ns=0 busy_poll_iters=100000
+per_worker_qd_equals_per_lane_qd=true workers=1 lanes=1 aggregate_outstanding_depth_equals_per_worker_qd=true
+read_completion=initiator-local-cq-data-visible
+write_completion=initiator-delivery-cq-remote-visible
+remote_application_ack=separate durability=separate
+coordination_honored=true coordination_token=l18cabf155fcd0bf6-9b341

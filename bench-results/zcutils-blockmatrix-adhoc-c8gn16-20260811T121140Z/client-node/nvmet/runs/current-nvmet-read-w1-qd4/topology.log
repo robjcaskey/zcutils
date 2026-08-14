@@ -1,0 +1,9 @@
+classification=dedicated-adhoc-topology-explicit
+transport=nvme-tcp
+per_worker_qd=4 workers=1 lanes=1 aggregate_outstanding_depth=4
+lane_to_worker_cpu=0:0
+client_cpu_list=0 target_worker_cpus=3,35 irq_cpus=56-63
+hugetlb_free=8192 hugetlb_needed=4 memlock_kib=unlimited memlock_needed_kib=73728
+namespace=/dev/nvme1n1 partuuid=8c027f92-9603-4669-b7d4-32ac9e5ddd59 io_queues=1 target_backing=tmpfs-regular-file target_buffered_io=1 durability=volatile
+/sys/block/nvme1c1n1/mq/0/cpu_list=0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63
+fua_writes=0 write_completion=remote-nvme-command-target-page-cache-admission

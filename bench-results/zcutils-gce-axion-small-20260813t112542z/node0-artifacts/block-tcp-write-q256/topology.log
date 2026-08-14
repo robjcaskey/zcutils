@@ -1,0 +1,65 @@
+classification=dedicated-adhoc-control
+coordination_scope=dedicated-adhoc
+bootstrap_manifest=/home/rob/.local/state/zcutils/adhoc-bootstrap.env
+lane_count=1
+block_per_worker_qd=256 block_workers=1 block_aggregate_outstanding_depth=256
+topology_cpu_list=0-3
+coordinator_cpu=1
+lane=0 client_cpu=0 target_cpu=1 transport_cpu=inline kernel_cpu=2 leaf_cpu=none hctx_cpus=0, 1, 2, 3
+owner=0 owner_cpu=3 source_hctx_lane=explicit numa_node=0
+hugepages_total=1024
+hugepages_free=1015
+hugepage_size_kib=2048
+memlock_kib=unlimited
+loadavg=2.98 1.62 0.79 1/185 16247
+coordination_honored=true
+external_nic_low_latency_confirmed=1 scope=client-and-leaf
+target_poll_us=1000
+target_busy_poll_us=1000
+target_busy_hysteresis_us=10000
+target_poll_clock_check_spins=64
+kernel_completion_poll_us=1000 kernel_idle_recheck_us=1000
+kernel_state_interval_ms=0
+block_ring_mode=normal sqpoll_cpu_list=none sqpoll_idle_ms=1000
+block_engine=uring-fixed fua_writes=0 write_completion=ordinary-device-ack
+block_latency_sample_rate=1024
+block_ring_stats=1 block_wait_min_completions=16 block_cqe_spin=0 block_cqe_adaptive_spin=0 block_cqe_adaptive_spin_min=0 block_cqe_adaptive_spin_max=4096 block_cqe_adaptive_wait_ns=50000 block_cqe_hot_poll=1 block_cqe_hot_poll_progress_spins=4096
+shm_descriptor_entries_per_channel=512
+kernel_queues=1 kernel_queue_depth=256 kernel_pipeline_depth=512 hctx_numa_node=-1
+shm_sector_order_slots=32768
+shm_payload_entries_per_channel=4096
+writeback_batch_requested=2048 writeback_batch_effective=2048
+request_batch=512 request_batch_fill_us=0 request_batch_fill_min=32
+wal_lane_batch=1 representative_eligible=true
+wal_owner_dispatch=0 wal_owner_extent_records=256 wal_owner_worker_spins=65536 wal_owner_worker_adaptive_spin=1 wal_owner_worker_spin_min=4096 wal_owner_worker_adaptive_wait_ns=50000
+wal_owner_ingress=1 wal_owner_ingress_source=auto-representative-external-write wal_owner_count=1 wal_owner_count_source=placement-lanes-default wal_owner_cpu_list=3
+wal_owner_write_fill_us=0 wal_owner_write_fill_min=256 wal_owner_pipeline_batches=16 wal_owner_pipeline_refill_spins=256 wal_owner_mixed_hysteresis_us=10000
+wal_owner_debounce_us=2 wal_owner_backlog_low_records=16 wal_owner_backlog_high_records=256
+wal_owner_batch_records=2048 wal_owner_fragment_records=1 wal_owner_fragment_fill_us=500 wal_owner_queue_depth=256 wal_owner_queue_depth_source=aggregate-outstanding-depth
+wal_owner_foreground_immediate_limit=1
+wal_owner_max_tx_iovecs=960
+wal_lane_window=16
+wal_split_transport=0 wal_transport_cpu_list=inline
+wal_transport_wait_policy=greedy
+transfer_payload_slots_requested=1 transfer_payload_slots_effective=1
+wal_extent_records=512 wal_extent_fill_us=20 wal_split_min_batch_records=64
+wal_foreground_read_immediate=1
+wal_compact_writes=1
+dirty_pressure_reserve=0
+remote_recv_spins=0 leaf_spin_reads=0 leaf_spin_policy=adaptive leaf_spin_budget=adaptive leaf_adaptive_spin_min=256 leaf_adaptive_spin_max=65536 leaf_adaptive_wait_ns=50000 leaf_adaptive_hysteresis_ns=10000000
+remote_recv_policy=adaptive remote_recv_adaptive_spin_min=0 remote_recv_adaptive_spin_max=65536 remote_recv_adaptive_wait_ns=50000 remote_recv_adaptive_hysteresis_ns=10000000
+remote_send_mode=blocking remote_send_ring_entries=256 remote_send_zc_required=1 allow_unsafe_send_zc=0
+remote_transport=tcp remote_ofi_provider=efa remote_ofi_endpoint=rdm ofi_domain=auto lane_ofi_domains=single-domain ofi_cq_sleep_ns=50000 wal_ofi_message_bytes=1048576 wal_ofi_hugetlb_confirmed=0 efa_use_device_rdma=0 shm_ofi_rma_reads=0 shm_ofi_rma_read_qd=1 rma_read_aggregate_outstanding_depth=1 leaf_ofi_rma_reads=0 shm_ofi_rma_writes=0 shm_ofi_rma_writes_required=0 shm_ofi_rma_write_qd=1 rma_write_aggregate_outstanding_depth=1 leaf_ofi_rma_writes=0 rma_write_delivery_complete=1 rma_write_more=0 rma_write_more_burst=64
+rma_write_completion=delivery-cq-before-doorbell-result-hwm rma_write_pipeline_batches=16 rma_write_overlap_order=delivery-barrier end_to_end_zero_copy=no
+rma_write_qd_source=inactive-default rma_write_representative_min_qd=16 rma_write_qd_scope=per-owner-payload-operations block_qd_coupled=no
+rma_write_owner_mode=placement rma_write_endpoint_count=1 multi_endpoint_confirmed=0 ingress_lane_fan_in=none
+remote_stream_count=1 remote_stream_scope=stable-userspace-owners
+rma_source_backing_requested=hugetlb legacy_hugetlb_confirmation=0 actual_backing=validated-from-target-log-before-benchmark
+order_smoke_pairs=0
+shm_payload_slot_bytes=4096
+shm_lease_release_batch=1
+backend=wal-tcp local_leaf=0 leaf_target=zcmem:128M leaf_addr=10.128.0.6 leaf_port=29000 leaf_submit_mode=blocking leaf_allow_volatile_sync=1
+leaf_source_addr=10.128.0.5
+leaf_addrs=single-address leaf_source_addrs=single-source
+external_leaf_topology_artifact=/home/rob/zcutils/bench-results/zcutils-gce-axion-small-20260813t112542z/external-leaf-topology-one-lane.env leaf_lane_to_worker_cpu=0:0 leaf_lane_to_nic=0:enp0s0
+actual_zcnblk-shm-target-shared-arena: requested=hugetlb backing=external-hugetlb-memfd region_bytes=18874368 hugepage_bytes=2097152 import_supported=true import_active=true first_touch_cpu=1

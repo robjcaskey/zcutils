@@ -1,0 +1,12 @@
+lane_to_worker_cpu=0:3,1:35
+lane_to_nic=0:efa_0/efa_0-rdm,1:efa_0/efa_0-rdm
+worker_count=2
+worker_cpus=3,35
+transport=efa efa_domain=efa_0-rdm efa_device=efa_0
+tcp_interface=ens50 tcp_route_src=172.31.39.213
+hugetlb_total_pages=8192
+hugetlb_free_pages=8192
+hugetlb_page_kib=2048
+memlock_kib=unlimited
+irq_cpu_set=56-63
+coordination_scope=dedicated-adhoc-instance

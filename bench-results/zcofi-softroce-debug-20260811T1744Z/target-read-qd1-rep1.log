@@ -1,0 +1,5 @@
+PERF WARNING: zcofi-rma-target running without URING_PLAY_PIN_CPUS=1; lane/CPU topology is not pinned
+PERF WARNING: zcofi-rma-target running without URING_PLAY_PIN_CPU_LIST; state the lane-to-CPU map for real IOPS numbers
+zcofi-rma-target-lane-map: lane=0 worker=0 cpu=unpinned domain=rxe_zc_t scheduling=one-worker-per-lane aggregate_mapping_declared=yes
+zcofi-rma-target: provider=verbs endpoint=rdm bind=198.18.0.2 base_service=37011 lanes=1 bytes_per_lane=67108864 extent_bytes=4096 workers=1 direct_rma_target=yes lane_local_registered_arenas=yes commit_doorbell=ofi-msg records_per_extent=1 timeout_ms=60000 busy_poll_iters=100000 cq_sleep_ns=0 ofi_domain=rxe_zc_t
+Error: Custom { kind: Other, error: "zc_ofi_open_rma provider=verbs endpoint=rdm node=198.18.0.2 service=37011 server=yes domain=rxe_zc_t failed rc=-61: fi_getinfo provider=verbs endpoint=rdm node=198.18.0.2 service=37011 server=1 query_node=198.18.0.2 query_service=37011 flags=144115188075855872 rc=-61 (No data available)" }

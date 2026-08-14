@@ -1,0 +1,23 @@
+classification=remote-userspace-leaf
+coordination_honored=true
+leaf_host=172.31.37.73 leaf_port=29030 leaf_source_addr=kernel-route local_leaf=0
+wal_transport=ofi ofi_provider=efa ofi_endpoint=rdm ofi_domain=efa_0-rdm ofi_cq_sleep_ns=0 ofi_message_bytes=1048576
+rma_writes=1 rma_writes_required=1 rma_write_qd_per_owner=16 rma_delivery_complete=1 rma_reads=0
+rma_source_backing=vmalloc_user-remap_vmalloc_range rma_source_hugetlb_confirmed=0
+topology_representative=0 preflight_warnings=1
+kernel_queues=2 target_cpus=1,33 kthread_cpus=2,34 leaf_cpus=3,35 owner_cpus=18,50 owner_count=2 owner_pipeline_batches=1
+lane_to_kthread_cpu=0:2,1:34 lane_to_ingress_worker_cpu=0:1,1:33 owner_lane_to_worker_cpu=0:18,1:50 leaf_lane_to_worker_cpu=0:3,1:35
+leaf_lane_to_nic=0:efa_0/efa_0-rdm,1:efa_0/efa_0-rdm external_leaf_topology_artifact=/home/ubuntu/bench-topology/node0/external-leaf-topology.log
+placement_owner=separate-userspace-stable-extent-owner block_client_placement=no owner_ingress=1
+lane0_hctx=0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+lane1_hctx=32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63
+postgres_connection0_hctxs=0 postgres_connection1_hctxs=1
+sync_coordinator_cpu=19
+postgres_cpus=4-15,36-47
+pgbench_cpus=16,17,48,49
+scale=300 clients=128 jobs=16 duration=20 repeats=3 warmup_seconds=5 builtin=tpcb-like track_wal_io_timing=off vector_hwm=1 ordering_epochs=1
+write_completion=local-dirty-lease-admission; sync_completion=remote-volatile-leaf-hwm
+transport_write_payload_completion=initiator-delivery-cq-before-metadata-doorbell; remote_write_ack=doorbell-result-hwm; sync_fua=leaf-after-doorbell
+copy_ledger=postgres-kernel-filesystem+one-block-edge-copy-to-shared-slot+registered-shared-slot-rma-direct-to-leaf-memory+metadata-doorbell-only; end_to_end_zero_copy=no
+hugepages_total=20000 memlock_kib=unlimited loadavg=24.23 23.60 12.24 1/817 21354
+zcnblk-pgbench: WARNING: The registered RMA source is the vmalloc_user/remap_vmalloc_range shared arena, not an explicit HugeTLB mapping; reserve pages for the leaf, but do not classify this client source path as HugeTLB-backed.

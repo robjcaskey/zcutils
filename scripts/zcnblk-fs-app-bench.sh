@@ -192,8 +192,15 @@ case "$COORDINATION_SCOPE" in
 			die 'bootstrap manifest does not prove dedicated adhoc ownership'
 		grep -qx 'coordination_honored=true' "$BOOTSTRAP_MANIFEST" || \
 			die 'bootstrap manifest does not honor dedicated coordination'
-		grep -Eq '^instance_id=i-[0-9a-f]+$' "$BOOTSTRAP_MANIFEST" || \
-			die 'bootstrap manifest does not identify an EC2 instance'
+		if grep -q '^cloud_provider=' "$BOOTSTRAP_MANIFEST"; then
+			grep -Eq '^cloud_provider=(ec2|gce)$' "$BOOTSTRAP_MANIFEST" || \
+				die 'bootstrap manifest does not identify a supported cloud provider'
+			grep -Eq '^instance_id=(i-[0-9a-f]+|[0-9]+)$' "$BOOTSTRAP_MANIFEST" || \
+				die 'bootstrap manifest does not identify an EC2 or GCE instance'
+		else
+			grep -Eq '^instance_id=i-[0-9a-f]+$' "$BOOTSTRAP_MANIFEST" || \
+				die 'legacy bootstrap manifest does not identify an EC2 instance'
+		fi
 		printf 'scope=dedicated-adhoc honored=true manifest=%s\n' "$BOOTSTRAP_MANIFEST" | \
 			tee -a "$EDGE_RESULT_DIR/coordination.log"
 		coord_honored=true

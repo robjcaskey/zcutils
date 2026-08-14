@@ -1,0 +1,191 @@
+agent-coord-result: acquired=true honored=true token=l18cabd6e59c18eac-94c2c owner=codex:zcutils-zccusan-qemu-7.2 mode=soft-exclusive sensitivity=high priority=60 expires=1786534883 resource=cpu=2-7;memory-bandwidth=*;kvm=*;network=qemu-tap-zccusan conflicts=none
+[zccusan-qemu] building current zcutils binaries
+warning: unused import: `ZCNBLK_WAL_FEATURE_ALL`
+  --> src/lib.rs:43:5
+   |
+43 |     ZCNBLK_WAL_FEATURE_ALL, ZCNBLK_WAL_FEATURE_ATOMIC_WRITE, ZCNBLK_WAL_...
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `rq_region` is never read
+    --> src/lib.rs:2484:13
+     |
+2484 |             rq_region.id = 0;
+     |             ^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `rq_region` is never read
+    --> src/lib.rs:2485:13
+     |
+2485 |             rq_region.mmap_offset = 0;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+
+warning: unnecessary `unsafe` block
+     --> src/lib.rs:60977:5
+      |
+60977 |     unsafe { _mm_sfence() };
+      |     ^^^^^^ unnecessary `unsafe` block
+      |
+      = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `open_rma_on_domain`, `rma_write`, and `rma_read` are never used
+     --> src/lib.rs:10621:8
+      |
+10578 | impl ZcOfiEndpoint {
+      | ------------------ associated items in this implementation
+...
+10621 |     fn open_rma_on_domain(
+      |        ^^^^^^^^^^^^^^^^^^
+...
+11268 |     fn rma_write(&mut self, buf: &[u8], remote_addr: u64, remote_key:...
+      |        ^^^^^^^^^
+...
+11364 |     fn rma_read(&mut self, buf: &mut [u8], remote_addr: u64, remote_k...
+      |        ^^^^^^^^
+      |
+      = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `register_rma_target` and `rma_read` are never used
+     --> src/lib.rs:12156:8
+      |
+12090 | impl ZcOfiMessageStream {
+      | ----------------------- methods in this implementation
+...
+12156 |     fn register_rma_target(&mut self, target: &mut [u8]) -> io::Resul...
+      |        ^^^^^^^^^^^^^^^^^^^
+...
+12240 |     fn rma_read(&mut self, target: &mut [u8], remote_addr: u64, remot...
+      |        ^^^^^^^^
+
+warning: function `zcnblk_fan_wal_recv_exact_dontwait_spin` is never used
+     --> src/lib.rs:33731:4
+      |
+33731 | fn zcnblk_fan_wal_recv_exact_dontwait_spin(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `zcnblk_fan_wal_read_frame_dontwait_spin` is never used
+     --> src/lib.rs:34066:4
+      |
+34066 | fn zcnblk_fan_wal_read_frame_dontwait_spin(stream: &TcpStream) -> io:...
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `zcnblk_fan_wal_read_payload_dontwait_spin` is never used
+     --> src/lib.rs:34187:4
+      |
+34187 | fn zcnblk_fan_wal_read_payload_dontwait_spin(
+      |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `append` is never used
+     --> src/lib.rs:35349:8
+      |
+35329 | impl ZcnblkFanWalMemfdLog {
+      | ------------------------- method in this implementation
+...
+35349 |     fn append(&self, payload: &[u8]) -> io::Result<u64> {
+      |        ^^^^^^
+
+warning: method `admit_write_shared_lease` is never used
+     --> src/lib.rs:36726:19
+      |
+36255 | impl ZcnblkFanWalDirtyCache {
+      | --------------------------- method in this implementation
+...
+36726 |     pub(crate) fn admit_write_shared_lease(
+      |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `zc_ofi_rma_write` is never used
+     --> src/lib.rs:10473:8
+      |
+10473 |     fn zc_ofi_rma_write(
+      |        ^^^^^^^^^^^^^^^^
+
+warning: function `zc_ofi_rma_read` is never used
+     --> src/lib.rs:10500:8
+      |
+10500 |     fn zc_ofi_rma_read(
+      |        ^^^^^^^^^^^^^^^
+
+warning: constant `ZCNBLK_WAL_WRITE_LIFE_NONE` is never used
+  --> src/wal_contract.rs:36:18
+   |
+36 | pub(crate) const ZCNBLK_WAL_WRITE_LIFE_NONE: u8 = 1;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ZCNBLK_WAL_WRITE_LIFE_SHORT` is never used
+  --> src/wal_contract.rs:37:18
+   |
+37 | pub(crate) const ZCNBLK_WAL_WRITE_LIFE_SHORT: u8 = 2;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ZCNBLK_WAL_WRITE_LIFE_MEDIUM` is never used
+  --> src/wal_contract.rs:38:18
+   |
+38 | pub(crate) const ZCNBLK_WAL_WRITE_LIFE_MEDIUM: u8 = 3;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ZCNBLK_WAL_WRITE_LIFE_LONG` is never used
+  --> src/wal_contract.rs:39:18
+   |
+39 | pub(crate) const ZCNBLK_WAL_WRITE_LIFE_LONG: u8 = 4;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `rma_read` is never used
+   --> src/zcnblk_shm_target.rs:557:8
+    |
+410 | impl RemoteWalStream {
+    | -------------------- method in this implementation
+...
+557 |     fn rma_read(&mut self, target: &mut [u8], remote_addr: u64, remote_...
+    |        ^^^^^^^^
+
+warning: methods `write_batch` and `read_into` are never used
+    --> src/zcnblk_shm_target.rs:2688:8
+     |
+1916 | impl RemoteWalLeaf {
+     | ------------------ methods in this implementation
+...
+2688 |     fn write_batch(
+     |        ^^^^^^^^^^^
+...
+2783 |     fn read_into(&mut self, request: ZcnblkShmRequest, out: &mut [u8])...
+     |        ^^^^^^^^^
+
+warning: fields `lane_count` and `address` are never read
+    --> src/zcnblk_shm_target.rs:3341:5
+     |
+3339 | struct RemoteWalWorker {
+     |        --------------- fields in this struct
+3340 |     lane_id: u32,
+3341 |     lane_count: u32,
+     |     ^^^^^^^^^^
+3342 |     address: String,
+     |     ^^^^^^^
+
+warning: field `lane_id` is never read
+    --> src/zcnblk_shm_target.rs:3678:5
+     |
+3677 | struct WalLaneTransportWorker {
+     |        ---------------------- field in this struct
+3678 |     lane_id: u32,
+     |     ^^^^^^^
+
+warning: method `requeue_request_head` is never used
+    --> src/zcnblk_shm_target.rs:7375:8
+     |
+6703 | impl SharedTarget {
+     | ----------------- method in this implementation
+...
+7375 |     fn requeue_request_head(&mut self, channel: u32, sequence: u64, su...
+     |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: `zcutils` (lib) generated 22 warnings (run `cargo fix --lib -p zcutils` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.04s
+initramfs_bytes=32117760
+[zccusan-qemu] launching phase=softroce target VM
+[zccusan-qemu] launching phase=softroce client VM
+qemu-wait-status: phase=softroce client=0 target=0

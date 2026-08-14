@@ -11168,9 +11168,11 @@ impl ZcOfiEndpoint {
     }
 
     fn rma_register_read_buffer(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        let rc = unsafe {
-            zc_ofi_rma_register_read_buffer(self.raw, buf.as_mut_ptr().cast::<c_void>(), buf.len())
-        };
+        unsafe { self.rma_register_read_buffer_raw(buf.as_mut_ptr(), buf.len()) }
+    }
+
+    unsafe fn rma_register_read_buffer_raw(&mut self, buf: *mut u8, len: usize) -> io::Result<()> {
+        let rc = unsafe { zc_ofi_rma_register_read_buffer(self.raw, buf.cast::<c_void>(), len) };
         if rc != 0 {
             return Err(zcofi_error_from_endpoint(
                 self,
@@ -11775,6 +11777,17 @@ impl ZcOfiEndpoint {
         ))
     }
 
+    unsafe fn rma_register_read_buffer_raw(
+        &mut self,
+        _buf: *mut u8,
+        _len: usize,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
     fn rma_read_queue_init(&mut self, _depth: usize) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -12143,6 +12156,7 @@ struct ZcOfiMessageStream {
     receive: Vec<u8>,
     receive_start: usize,
     receive_end: usize,
+    receive_posted: bool,
     transmit: Vec<u8>,
 }
 
@@ -12155,11 +12169,45 @@ impl ZcOfiMessageStream {
         server: bool,
         rma_capable: bool,
     ) -> io::Result<Self> {
+        Self::connect_on_domain(
+            provider,
+            endpoint_name,
+            node,
+            service,
+            server,
+            rma_capable,
+            None,
+        )
+    }
+
+    fn connect_on_domain(
+        provider: &str,
+        endpoint_name: &str,
+        node: &str,
+        service: u16,
+        server: bool,
+        rma_capable: bool,
+        domain_name: Option<&str>,
+    ) -> io::Result<Self> {
         let service = service.to_string();
         let mut endpoint = if rma_capable {
-            ZcOfiEndpoint::open_rma(provider, endpoint_name, node, &service, server)?
+            ZcOfiEndpoint::open_rma_on_domain(
+                provider,
+                endpoint_name,
+                node,
+                &service,
+                server,
+                domain_name,
+            )?
         } else {
-            ZcOfiEndpoint::open(provider, endpoint_name, node, &service, server)?
+            ZcOfiEndpoint::open_on_domain(
+                provider,
+                endpoint_name,
+                node,
+                &service,
+                server,
+                domain_name,
+            )?
         };
         let provider_limit = endpoint.max_msg_size();
         let requested = env_usize_or("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", 1024 * 1024);
@@ -12198,12 +12246,14 @@ impl ZcOfiMessageStream {
         unsafe {
             endpoint.register_send_buffer_raw(transmit.as_ptr(), transmit.capacity())?;
         }
+        endpoint.recv_start(&mut receive)?;
         Ok(Self {
             endpoint,
             message_bytes,
             receive,
             receive_start: 0,
             receive_end: 0,
+            receive_posted: true,
             transmit,
         })
     }
@@ -12226,6 +12276,14 @@ impl ZcOfiMessageStream {
 
     fn register_rma_read_buffer(&mut self, target: &mut [u8]) -> io::Result<()> {
         self.endpoint.rma_register_read_buffer(target)
+    }
+
+    unsafe fn register_rma_read_buffer_raw(
+        &mut self,
+        target: *mut u8,
+        len: usize,
+    ) -> io::Result<()> {
+        unsafe { self.endpoint.rma_register_read_buffer_raw(target, len) }
     }
 
     fn configure_rma_read_queue(&mut self, depth: usize) -> io::Result<()> {
@@ -12324,7 +12382,13 @@ impl ZcOfiMessageStream {
     }
 
     fn refill(&mut self) -> io::Result<()> {
-        let received = self.endpoint.recv(&mut self.receive)?;
+        let received = if self.receive_posted {
+            let received = self.endpoint.recv_finish()?;
+            self.receive_posted = false;
+            received
+        } else {
+            self.endpoint.recv(&mut self.receive)?
+        };
         if received == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -12337,7 +12401,10 @@ impl ZcOfiMessageStream {
     }
 
     fn refill_idle(&mut self) -> io::Result<()> {
-        self.endpoint.recv_start(&mut self.receive)?;
+        if !self.receive_posted {
+            self.endpoint.recv_start(&mut self.receive)?;
+            self.receive_posted = true;
+        }
         let received = loop {
             match self.endpoint.recv_finish() {
                 Ok(received) => break received,
@@ -12351,6 +12418,7 @@ impl ZcOfiMessageStream {
                 Err(error) => return Err(error),
             }
         };
+        self.receive_posted = false;
         if received == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -12384,6 +12452,10 @@ impl Read for ZcOfiMessageStream {
             &self.receive[self.receive_start..self.receive_start.saturating_add(take)],
         );
         self.receive_start += take;
+        if self.receive_start == self.receive_end {
+            self.endpoint.recv_start(&mut self.receive)?;
+            self.receive_posted = true;
+        }
         Ok(take)
     }
 }
@@ -12393,49 +12465,34 @@ impl Write for ZcOfiMessageStream {
         if input.is_empty() {
             return Ok(0);
         }
-        if input.len() > self.message_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "OFI WAL message is {} bytes, above configured maximum {}",
-                    input.len(),
-                    self.message_bytes
-                ),
-            ));
-        }
+        // Preserve Write's byte-stream contract when a logical WAL frame is
+        // larger than the provider's message limit.  The write_all callers
+        // will submit the remaining bytes as subsequent ordered messages, and
+        // the matching Read implementation already refills across message
+        // boundaries.
+        let take = input.len().min(self.message_bytes);
         self.transmit.clear();
-        self.transmit.extend_from_slice(input);
+        self.transmit.extend_from_slice(&input[..take]);
         self.endpoint.send(&self.transmit)?;
-        Ok(input.len())
+        Ok(take)
     }
 
     fn write_vectored(&mut self, inputs: &[IoSlice<'_>]) -> io::Result<usize> {
-        let total = inputs.iter().try_fold(0usize, |total, input| {
-            total.checked_add(input.len()).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "OFI WAL message length overflow",
-                )
-            })
-        })?;
-        if total == 0 {
+        self.transmit.clear();
+        let mut remaining = self.message_bytes;
+        for input in inputs {
+            if remaining == 0 {
+                break;
+            }
+            let take = input.len().min(remaining);
+            self.transmit.extend_from_slice(&input[..take]);
+            remaining -= take;
+        }
+        if self.transmit.is_empty() {
             return Ok(0);
         }
-        if total > self.message_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "OFI WAL vectored message is {total} bytes, above configured maximum {}",
-                    self.message_bytes
-                ),
-            ));
-        }
-        self.transmit.clear();
-        for input in inputs {
-            self.transmit.extend_from_slice(input);
-        }
         self.endpoint.send(&self.transmit)?;
-        Ok(total)
+        Ok(self.transmit.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -13904,6 +13961,7 @@ fn zcofi_rma_target_worker(
     let stream_count = specs.len();
     let mut endpoints = Vec::with_capacity(specs.len());
     let contract = zcofi_rma_peer_contract(lane_count, bytes_per_lane, extent_bytes);
+    let mut done_buf = Box::new([0u8; ZCOFI_RMA_CONTROL_LEN]);
     for spec in specs {
         let (ep, arena, initial_digest) = setup_gate.run(spec.lane, "server", || {
             let mut ep = ZcOfiEndpoint::open_rma(
@@ -13913,6 +13971,7 @@ fn zcofi_rma_target_worker(
                 &spec.service,
                 true,
             )?;
+            ep.register_recv_buffer(done_buf.as_mut_slice())?;
             let control_port = zcofi_control_port(&spec.service)?;
             zcofi_server_exchange_peer(bind.as_str(), control_port, &mut ep, &contract)?;
             zcofi_rma_server_connection_warmup(&mut ep, spec.lane, provider.as_str())?;
@@ -13962,10 +14021,9 @@ fn zcofi_rma_target_worker(
     let mut extents = 0usize;
     let mut records = 0usize;
     let mut acks = 0usize;
-    let mut done_buf = [0u8; ZCOFI_RMA_CONTROL_LEN];
     let started = Instant::now();
     for (spec, mut ep, arena, initial_digest) in endpoints {
-        let got = ep.recv(&mut done_buf)?;
+        let got = ep.recv(done_buf.as_mut_slice())?;
         if got != ZCOFI_RMA_CONTROL_LEN {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -13975,7 +14033,7 @@ fn zcofi_rma_target_worker(
                 ),
             ));
         }
-        let done = ZcOfiRmaDone::decode(&done_buf)?;
+        let done = ZcOfiRmaDone::decode(done_buf.as_slice())?;
         zcofi_rma_validate_done(done, spec.lane, lane_count, bytes_per_lane, extent_bytes)?;
         match done.operation {
             ZCOFI_RMA_DONE_READ => {
@@ -14165,6 +14223,7 @@ struct ZcOfiRmaWriteLane {
     spec: ZcOfiWalLaneSpec,
     endpoint: ZcOfiEndpoint,
     meta: ZcOfiRmaMeta,
+    done_buf: Box<[u8; ZCOFI_RMA_CONTROL_LEN]>,
     buffer: Vec<u8>,
     validation_digest: u64,
     access: ZcOfiRmaAccessPlan,
@@ -14344,6 +14403,8 @@ fn zcofi_rma_write_worker(
                 &spec.service,
                 false,
             )?;
+            let done_buf = Box::new([0u8; ZCOFI_RMA_CONTROL_LEN]);
+            ep.register_send_buffer(done_buf.as_slice())?;
             let control_port = zcofi_control_port(&spec.service)?;
             zcofi_client_exchange_peer(addr.as_str(), control_port, &mut ep, &contract)?;
             zcofi_rma_client_connection_warmup(&mut ep, spec.lane, provider.as_str())?;
@@ -14393,6 +14454,7 @@ fn zcofi_rma_write_worker(
                 spec,
                 endpoint: ep,
                 meta,
+                done_buf,
                 buffer,
                 validation_digest,
                 access,
@@ -14489,7 +14551,8 @@ fn zcofi_rma_write_worker(
             operation: ZCOFI_RMA_DONE_WRITE,
             validation_digest: lane.validation_digest,
         };
-        lane.endpoint.send(&done.encode())?;
+        lane.done_buf.copy_from_slice(&done.encode());
+        lane.endpoint.send(lane.done_buf.as_slice())?;
     }
     Ok(ZcOfiRmaReadWorkerStats {
         base: ZcWalExtentStats {
@@ -14534,6 +14597,7 @@ struct ZcOfiRmaReadLane {
     spec: ZcOfiWalLaneSpec,
     endpoint: ZcOfiEndpoint,
     meta: ZcOfiRmaMeta,
+    done_buf: Box<[u8; ZCOFI_RMA_CONTROL_LEN]>,
     buffer: Vec<u8>,
     access: ZcOfiRmaAccessPlan,
     next_extent: usize,
@@ -14753,6 +14817,8 @@ fn zcofi_rma_read_worker(
                 &spec.service,
                 false,
             )?;
+            let done_buf = Box::new([0u8; ZCOFI_RMA_CONTROL_LEN]);
+            ep.register_send_buffer(done_buf.as_slice())?;
             let control_port = zcofi_control_port(&spec.service)?;
             zcofi_client_exchange_peer(addr.as_str(), control_port, &mut ep, &contract)?;
             zcofi_rma_client_connection_warmup(&mut ep, spec.lane, provider.as_str())?;
@@ -14802,6 +14868,7 @@ fn zcofi_rma_read_worker(
                 spec,
                 endpoint: ep,
                 meta,
+                done_buf,
                 buffer,
                 access,
                 next_extent: 0,
@@ -14906,7 +14973,8 @@ fn zcofi_rma_read_worker(
             operation: ZCOFI_RMA_DONE_READ,
             validation_digest: 0,
         };
-        lane.endpoint.send(&done.encode())?;
+        lane.done_buf.copy_from_slice(&done.encode());
+        lane.endpoint.send(lane.done_buf.as_slice())?;
     }
     Ok(ZcOfiRmaReadWorkerStats {
         base: ZcWalExtentStats {
@@ -33408,7 +33476,7 @@ fn zcnblk_read_fan(
 }
 
 const ZCNBLK_FAN_WAL_MAGIC: &[u8; 8] = b"ZCFANW1\0";
-const ZCNBLK_FAN_WAL_VERSION: u16 = 4;
+const ZCNBLK_FAN_WAL_VERSION: u16 = 5;
 const ZCNBLK_FAN_WAL_MIN_VERSION: u16 = 2;
 const ZCNBLK_FAN_WAL_HEADER_LEN: usize = 128;
 const ZCNBLK_FAN_WAL_OP_HELLO: u16 = 1;
@@ -33430,6 +33498,7 @@ const ZCNBLK_FAN_WAL_FLAG_IO_CONTRACT_NEGOTIATION: u16 = 1 << 2;
 const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW: u16 = 1 << 3;
 const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW: u16 = 1 << 4;
 const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD: u16 = 1 << 5;
+const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_RESULT: u16 = 1 << 6;
 const ZCNBLK_FAN_WAL_COMPACT_WRITE_EXTENT_LEN: usize = 48;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -51547,23 +51616,32 @@ fn zcnblk_wal_leaf_write_request_batch_results(
     } else {
         Vec::with_capacity(descriptor_bytes_len)
     };
+    let rma_read_results = batch.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_RESULT != 0;
     let mut read_payload_len = 0usize;
     for (idx, request) in requests.iter().enumerate() {
         let result_payload_len = if request.frame.op == ZCNBLK_FAN_WAL_OP_READ_DESC {
-            let payload = read_results[idx].as_ref().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "zcnblk-wal-leaf request read missing payload",
-                )
-            })?;
-            let len = payload.len();
-            read_payload_len = read_payload_len.checked_add(len).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "WAL leaf read payload overflow")
-            })?;
+            let len = request.frame.payload_len as usize;
+            if !rma_read_results {
+                let payload = read_results[idx].as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcnblk-wal-leaf request read missing payload",
+                    )
+                })?;
+                if payload.len() != len {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "zcnblk-wal-leaf request read payload length mismatch",
+                    ));
+                }
+                read_payload_len = read_payload_len.checked_add(len).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "WAL leaf read payload overflow")
+                })?;
+            }
             stats.read_bytes = stats.read_bytes.checked_add(len).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "WAL leaf read overflow")
             })?;
-            len
+            if rma_read_results { 0 } else { len }
         } else {
             stats.write_bytes = stats
                 .write_bytes
@@ -51719,6 +51797,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
         return Ok(false);
     }
     let rma_payload = batch.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD != 0;
+    let rma_read_results = batch.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_RESULT != 0;
     let count = batch.segment_count as usize;
     if count == 0 {
         return Err(io::Error::new(
@@ -51857,7 +51936,7 @@ fn zcnblk_wal_leaf_try_direct_memory_write_batch(
     let submit_started = Instant::now();
     let mut read_results = (0..requests.len()).map(|_| None).collect::<Vec<_>>();
     for (idx, request) in requests.iter().enumerate() {
-        if request.frame.op != ZCNBLK_FAN_WAL_OP_READ_DESC {
+        if request.frame.op != ZCNBLK_FAN_WAL_OP_READ_DESC || rma_read_results {
             continue;
         }
         read_results[idx] = if request.submit_mode == ZcnblkWalLeafIoMode::Blocking {
@@ -53641,6 +53720,28 @@ fn zcnblk_wal_leaf_ring_label(options: RawRingOptions) -> String {
     }
 }
 
+fn zcnblk_wal_leaf_lane_domain(lane: usize, lanes: usize) -> io::Result<Option<String>> {
+    let Ok(value) = env::var("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_DOMAINS") else {
+        return Ok(None);
+    };
+    let domains = value
+        .split(',')
+        .map(str::trim)
+        .filter(|domain| !domain.is_empty())
+        .collect::<Vec<_>>();
+    match domains.len() {
+        0 => Ok(None),
+        1 => Ok(Some(domains[0].to_string())),
+        count if count == lanes => Ok(Some(domains[lane].to_string())),
+        count => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "URING_PLAY_ZCNBLK_WAL_LEAF_OFI_DOMAINS must contain one domain or one per lane: got {count} for {lanes} lanes"
+            ),
+        )),
+    }
+}
+
 fn zcnblk_wal_leaf_spin_reads_enabled() -> bool {
     env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_SPIN_READS", false)
         || env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_ULTRA_LOW_LATENCY", false)
@@ -53702,6 +53803,7 @@ fn zcnblk_wal_leaf_process_stream(
     let mut logged_descriptor_topology = false;
     let mut result_ranges = false;
     let mut negotiated_features = 0u32;
+    let mut rma_reads_negotiated = false;
     let mut rma_writes_negotiated = false;
     let mut stream_plan = ZcPlanRuntime::default();
     let result_ranges_configured = zcnblk_fan_wal_result_ranges_enabled();
@@ -53797,6 +53899,7 @@ fn zcnblk_wal_leaf_process_stream(
                             unsafe { stream.register_rma_target(window_ptr, window_len)? };
                         if rma_read_enabled {
                             hello_ack.flags |= ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW;
+                            rma_reads_negotiated = true;
                         }
                         if rma_write_enabled {
                             hello_ack.flags |= ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW;
@@ -53875,6 +53978,14 @@ fn zcnblk_wal_leaf_process_stream(
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
                         "zcnblk-wal-leaf received an RMA write doorbell without a negotiated write window",
+                    ));
+                }
+                if frame.flags & ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_RESULT != 0
+                    && !rma_reads_negotiated
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "zcnblk-wal-leaf received an RMA read-result request without a negotiated read window",
                     ));
                 }
                 zcnblk_wal_leaf_process_request_batch(
@@ -54592,7 +54703,10 @@ fn zcnblk_wal_leaf(
                 }
             };
             println!(
-                "zcnblk-wal-leaf-ofi-topology: provider={provider} endpoint={endpoint} lanes={ports} workers={workers} lane_to_worker=identity service_range={}-{} affinity_map={} cq_sleep_ns={} message_bytes={} placement_owner=external-userspace-stage block_client_placement=no",
+                "zcnblk-wal-leaf-ofi-topology: provider={provider} endpoint={endpoint} lanes={ports} workers={workers} lane_to_worker=identity lane_to_domain={} service_range={}-{} affinity_map={} cq_sleep_ns={} message_bytes={} placement_owner=external-userspace-stage block_client_placement=no",
+                env::var("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_DOMAINS")
+                    .or_else(|_| env::var("URING_PLAY_OFI_DOMAIN"))
+                    .unwrap_or_else(|_| "implicit".to_string()),
                 base_port,
                 tcp_bench_port(base_port, ports - 1)?,
                 env::var("URING_PLAY_PIN_CPU_LIST").unwrap_or_else(|_| "implicit".to_string()),
@@ -54610,14 +54724,16 @@ fn zcnblk_wal_leaf(
                 let endpoint = endpoint.clone();
                 let bind = bind.to_string();
                 let port = tcp_bench_port(base_port, lane)?;
+                let domain = zcnblk_wal_leaf_lane_domain(lane, ports)?;
                 handles.push(thread::spawn(move || {
-                    let stream = ZcOfiMessageStream::connect(
+                    let stream = ZcOfiMessageStream::connect_on_domain(
                         &provider,
                         &endpoint,
                         &bind,
                         port,
                         true,
                         rma_reads_enabled || rma_writes_enabled,
+                        domain.as_deref(),
                     )?;
                     let accepted = ZcnblkWalLeafAccepted {
                         meta: TcpBenchStreamMeta {

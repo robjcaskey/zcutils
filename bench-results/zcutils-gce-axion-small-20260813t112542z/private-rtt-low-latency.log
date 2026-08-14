@@ -1,0 +1,49 @@
+nic_coalescing=rx0_tx0
+Adaptive RX: n/a  TX: n/a
+rx-usecs:	0
+tx-usecs:	0
+PING repeat=1
+PING 10.128.0.6 (10.128.0.6) 56(84) bytes of data.
+
+--- 10.128.0.6 ping statistics ---
+500 packets transmitted, 500 received, 0% packet loss, time 2492ms
+rtt min/avg/max/mdev = 0.030/0.036/1.263/0.062 ms
+PING repeat=2
+PING 10.128.0.6 (10.128.0.6) 56(84) bytes of data.
+
+--- 10.128.0.6 ping statistics ---
+500 packets transmitted, 500 received, 0% packet loss, time 2493ms
+rtt min/avg/max/mdev = 0.030/0.031/0.043/0.001 ms
+PING repeat=3
+PING 10.128.0.6 (10.128.0.6) 56(84) bytes of data.
+
+--- 10.128.0.6 ping statistics ---
+500 packets transmitted, 500 received, 0% packet loss, time 2492ms
+rtt min/avg/max/mdev = 0.030/0.031/0.044/0.001 ms
+TCP_RR repeat=1 request=1 response=1 aggregate_outstanding=1 duration=10s
+MIGRATED TCP REQUEST/RESPONSE TEST from 0.0.0.0 (0.0.0.0) port 0 AF_INET to 10.128.0.6 () port 0 AF_INET : demo : first burst 0
+Local /Remote
+Socket Size   Request  Resp.   Elapsed  Trans.
+Send   Recv   Size     Size    Time     Rate         
+bytes  Bytes  bytes    bytes   secs.    per sec   
+
+65536  87380  1        1       10.00    27047.67   
+65536  87380 
+TCP_RR repeat=2 request=1 response=1 aggregate_outstanding=1 duration=10s
+MIGRATED TCP REQUEST/RESPONSE TEST from 0.0.0.0 (0.0.0.0) port 0 AF_INET to 10.128.0.6 () port 0 AF_INET : demo : first burst 0
+Local /Remote
+Socket Size   Request  Resp.   Elapsed  Trans.
+Send   Recv   Size     Size    Time     Rate         
+bytes  Bytes  bytes    bytes   secs.    per sec   
+
+65536  87380  1        1       10.00    24544.93   
+65536  87380 
+TCP_RR repeat=3 request=1 response=1 aggregate_outstanding=1 duration=10s
+MIGRATED TCP REQUEST/RESPONSE TEST from 0.0.0.0 (0.0.0.0) port 0 AF_INET to 10.128.0.6 () port 0 AF_INET : demo : first burst 0
+Local /Remote
+Socket Size   Request  Resp.   Elapsed  Trans.
+Send   Recv   Size     Size    Time     Rate         
+bytes  Bytes  bytes    bytes   secs.    per sec   
+
+65536  87380  1        1       10.00    26155.73   
+65536  87380 

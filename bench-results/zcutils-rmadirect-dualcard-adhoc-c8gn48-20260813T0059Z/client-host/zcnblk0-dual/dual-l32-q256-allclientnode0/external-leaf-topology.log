@@ -1,0 +1,11 @@
+lane_to_worker_cpu=0:4,1:10,2:16,3:22,4:28,5:34,6:40,7:46,8:52,9:58,10:64,11:70,12:76,13:82,14:88,15:94,16:100,17:106,18:112,19:118,20:124,21:130,22:136,23:142,24:148,25:154,26:160,27:166,28:172,29:178,30:184,31:190
+lane_to_nic=0:efa_0/efa_0-rdm,1:efa_0/efa_0-rdm,2:efa_0/efa_0-rdm,3:efa_0/efa_0-rdm,4:efa_0/efa_0-rdm,5:efa_0/efa_0-rdm,6:efa_0/efa_0-rdm,7:efa_0/efa_0-rdm,8:efa_0/efa_0-rdm,9:efa_0/efa_0-rdm,10:efa_0/efa_0-rdm,11:efa_0/efa_0-rdm,12:efa_0/efa_0-rdm,13:efa_0/efa_0-rdm,14:efa_0/efa_0-rdm,15:efa_0/efa_0-rdm,16:efa_1/efa_1-rdm,17:efa_1/efa_1-rdm,18:efa_1/efa_1-rdm,19:efa_1/efa_1-rdm,20:efa_1/efa_1-rdm,21:efa_1/efa_1-rdm,22:efa_1/efa_1-rdm,23:efa_1/efa_1-rdm,24:efa_1/efa_1-rdm,25:efa_1/efa_1-rdm,26:efa_1/efa_1-rdm,27:efa_1/efa_1-rdm,28:efa_1/efa_1-rdm,29:efa_1/efa_1-rdm,30:efa_1/efa_1-rdm,31:efa_1/efa_1-rdm
+worker_count=32
+worker_cpus=4,10,16,22,28,34,40,46,52,58,64,70,76,82,88,94,100,106,112,118,124,130,136,142,148,154,160,166,172,178,184,190
+transport=ofi provider=efa endpoint=rdm fabric=efa-direct efa_domains=efa_0-rdm,efa_1-rdm efa_devices=efa_0,efa_1
+stripe_placement=userspace-stable-owner extent_records=1 owners=32 owner_to_domain=0-15:efa_0-rdm,16-31:efa_1-rdm block_client_placement=no
+hugetlb_total_pages=32768
+hugetlb_free_pages=32768
+hugetlb_page_kib=2048
+memlock_kib=unlimited
+coordination_scope=dedicated-adhoc-instance

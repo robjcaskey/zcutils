@@ -8,6 +8,7 @@ result=0
 leaf_pid=""
 target_pid=""
 wal_lane_batch=0
+shm_arena_backing=hugetlb
 
 fail()
 {
@@ -53,15 +54,26 @@ stop_process()
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
+mkdir -p /sys/kernel/debug
+mount -t debugfs debugfs /sys/kernel/debug || fail "debugfs mount failed"
 mkdir -p /tmp
 ip link set lo up
 
 case " $(cat /proc/cmdline 2>/dev/null) " in
 	*" zcnblk.wal_lane_batch=1 "*) wal_lane_batch=1 ;;
 esac
+case " $(cat /proc/cmdline 2>/dev/null) " in
+	*" zcnblk.shm_arena_backing=vmalloc "*) shm_arena_backing=vmalloc ;;
+	*" zcnblk.shm_arena_backing=hugetlb "*) shm_arena_backing=hugetlb ;;
+esac
 
 echo "[zcnblk-wal-vm] uname"
 uname -a
+if [ "$shm_arena_backing" = hugetlb ]; then
+	grep '^HugePages_Total:' /proc/meminfo
+	grep -q '^HugePages_Total:[[:space:]]*[1-9]' /proc/meminfo || \
+		fail "guest has no boot-reserved HugeTLB pages"
+fi
 
 echo "[zcnblk-wal-vm] starting userspace memory leaf"
 URING_PLAY_PIN_CPU_LIST=3 \
@@ -76,8 +88,11 @@ if [ ! -e "/proc/$leaf_pid" ]; then
 	fail "WAL leaf exited during startup"
 fi
 
-echo "[zcnblk-wal-vm] loading ABI-v5 client module inside guest"
-if ! insmod /modules/zcnblk_client_mod.ko \
+echo "[zcnblk-wal-vm] loading ABI-v6 client module inside guest"
+if ! insmod /modules/aead.ko; then
+	fail "kernel AEAD dependency load failed"
+fi
+if [ "$result" -eq 0 ] && ! insmod /modules/zcnblk_client_mod.ko \
 	transport=shm lanes=1 connections_per_lane=1 size_mib=64 \
 	queues=1 queue_depth=128 max_frame_bytes=4096 pipeline_depth=128 \
 	shm_ring_entries=128 shm_payload_entries=1024 shm_poll_us=50 \
@@ -95,6 +110,8 @@ if [ "$result" -eq 0 ]; then
 	export URING_PLAY_ZCNBLK_SHM_REMOTE_RECV_ADAPTIVE_SPIN_MAX=1024
 	export URING_PLAY_ZCNBLK_SHM_LEAF_ADDR=127.0.0.1:29000
 	export URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE=/tmp/target.pid
+	export URING_PLAY_ZCNBLK_SHM_ARENA_BACKING="$shm_arena_backing"
+	export URING_PLAY_ZCNBLK_SHM_ARENA_CPU=2
 	if [ "$wal_lane_batch" -eq 1 ]; then
 		export URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH=1
 		export URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1
@@ -107,6 +124,22 @@ if [ "$result" -eq 0 ]; then
 		target_pid="$(cat /tmp/target.pid)"
 	else
 		target_pid="$target_job_pid"
+	fi
+	if [ "$shm_arena_backing" = hugetlb ]; then
+		grep -q 'zcnblk-shm-target-shared-arena: requested=hugetlb backing=external-hugetlb-memfd .*import_supported=true import_active=true' \
+			/tmp/target.log || fail "target did not activate the external HugeTLB arena"
+	else
+		grep -q 'zcnblk-shm-target-shared-arena: requested=vmalloc backing=kernel-vmalloc-user .*import_active=false' \
+			/tmp/target.log || fail "target did not retain the kernel vmalloc arena"
+	fi
+	cat /sys/kernel/debug/zcnblk/state > /tmp/state-attached.log 2>/dev/null || \
+		fail "kernel shared-memory state is unavailable"
+	if [ "$shm_arena_backing" = hugetlb ]; then
+		grep -q 'arena_backing=external-hugetlb' /tmp/state-attached.log || \
+			fail "kernel did not report the external HugeTLB arena"
+	else
+		grep -q 'arena_backing=vmalloc-user' /tmp/state-attached.log || \
+			fail "kernel did not report the vmalloc arena"
 	fi
 fi
 
@@ -159,6 +192,8 @@ echo "[zcnblk-wal-vm] order log"
 cat /tmp/order.log 2>/dev/null || true
 echo "[zcnblk-wal-vm] contract log"
 cat /tmp/contract.log 2>/dev/null || true
+echo "[zcnblk-wal-vm] attached kernel state"
+cat /tmp/state-attached.log 2>/dev/null || true
 
 grep -q 'negotiated=0x7f' /tmp/target.log 2>/dev/null || fail "target did not negotiate all seven WAL features"
 grep -q 'negotiated=0x7f' /tmp/leaf.log 2>/dev/null || fail "leaf did not negotiate all seven WAL features"
@@ -179,11 +214,12 @@ if grep -Eq 'BUG:|Oops:|KASAN:|general protection fault|kernel panic' /tmp/dmesg
 fi
 
 rmmod zcnblk_client_mod 2>/dev/null || fail "guest module unload failed"
+rmmod aead 2>/dev/null || fail "guest AEAD module unload failed"
 echo "[zcnblk-wal-vm] recent kernel log"
 dmesg | tail -80
 
 if [ "$result" -eq 0 ]; then
-	echo "[zcnblk-wal-vm] PASS: abi-v5 read-write-fua-sync-order contract=0x7f lane_batch=$wal_lane_batch"
+	echo "[zcnblk-wal-vm] PASS: abi-v6 read-write-fua-sync-order contract=0x7f arena=$shm_arena_backing lane_batch=$wal_lane_batch"
 else
 	echo "[zcnblk-wal-vm] FAILED"
 fi
