@@ -19235,14 +19235,11 @@ fn zcraid_mirror_tcp_send_worker(
         let mut issued_slots = vec![Instant::now(); effective_window];
         let mut seq_base = 0usize;
         while seq_base < extents_per_lane {
-            // Each extent contributes a header and a shared payload iovec.  Keep
-            // one syscall per branch/window while staying below Linux IOV_MAX.
+            // A durability window may exceed Linux IOV_MAX.  Keep that window
+            // intact for ACK/HWM semantics and split only its transport writes.
             let max_batch_iov =
                 env_usize_or("URING_PLAY_RAID_MIRROR_TCP_IOV_MAX", 1024).clamp(2, 1024) / 2;
-            let batch = effective_window
-                .min(max_batch_iov)
-                .min(extents_per_lane - seq_base)
-                .max(1);
+            let batch = effective_window.min(extents_per_lane - seq_base).max(1);
             let mut ranges = Vec::with_capacity(batch);
             for slot in 0..batch {
                 let seq = seq_base + slot;
@@ -19273,12 +19270,18 @@ fn zcraid_mirror_tcp_send_worker(
                         .map(ZcWalExtentHeader::encode)
                     })
                     .collect::<io::Result<Vec<_>>>()?;
-                let mut bufs = Vec::with_capacity(batch * 2);
-                for header in &headers {
-                    bufs.push(IoSlice::new(header));
-                    bufs.push(IoSlice::new(&payload));
+                for header_chunk in headers.chunks(max_batch_iov) {
+                    let mut bufs = Vec::with_capacity(header_chunk.len() * 2);
+                    for header in header_chunk {
+                        bufs.push(IoSlice::new(header));
+                        bufs.push(IoSlice::new(&payload));
+                    }
+                    tcp_write_all_vectored(
+                        stream,
+                        &mut bufs,
+                        "zcraid mirror TCP extent window chunk",
+                    )?;
                 }
-                tcp_write_all_vectored(stream, &mut bufs, "zcraid mirror TCP extent window")?;
             }
             for _ in 0..batch {
                 payload_bytes += extent_bytes;
