@@ -19461,6 +19461,7 @@ struct ZcRaidMirrorRmaRecvLane {
     endpoint: ZcOfiEndpoint,
     arena: Vec<u8>,
     doorbell: Box<[u8; ZCOFI_RMA_CONTROL_LEN]>,
+    ack_slots: Vec<u8>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -19509,6 +19510,15 @@ fn zcraid_mirror_rma_recv_worker(
             true,
             branch.fabric_domain.as_deref(),
         )?;
+        let mut doorbell = Box::new([0u8; ZCOFI_RMA_CONTROL_LEN]);
+        let ack_bytes = window.checked_mul(ZC_WAL_ACK_HEADER_LEN).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "RMA ACK arena size overflow")
+        })?;
+        let ack_slots = vec![0u8; ack_bytes];
+        // The warmup itself posts from stack storage.  Register every stable
+        // control arena first so later doorbells/ACKs never register hot.
+        ep.register_recv_buffer(doorbell.as_mut_slice())?;
+        ep.register_send_buffer(&ack_slots)?;
         let control_port = zcofi_control_port(&service)?;
         zcofi_server_exchange_peer(bind.as_str(), control_port, &mut ep, &contract)?;
         zcofi_rma_server_connection_warmup(&mut ep, lane, provider.as_str())?;
@@ -19538,7 +19548,8 @@ fn zcraid_mirror_rma_recv_worker(
             lane,
             endpoint: ep,
             arena,
-            doorbell: Box::new([0u8; ZCOFI_RMA_CONTROL_LEN]),
+            doorbell,
+            ack_slots,
         });
     }
 
@@ -19599,10 +19610,12 @@ fn zcraid_mirror_rma_recv_worker(
             }
             terminal.sync()?;
             terminal_syncs += 1;
-            for header in headers {
-                lane_ep
-                    .endpoint
-                    .send(&zcraid_mirror_ack_for_header(header)?.encode())?;
+            for (slot, header) in headers.into_iter().enumerate() {
+                let start = slot * ZC_WAL_ACK_HEADER_LEN;
+                let end = start + ZC_WAL_ACK_HEADER_LEN;
+                lane_ep.ack_slots[start..end]
+                    .copy_from_slice(&zcraid_mirror_ack_for_header(header)?.encode());
+                lane_ep.endpoint.send(&lane_ep.ack_slots[start..end])?;
                 acks += 1;
             }
             expected_seq += batch;
@@ -19653,6 +19666,8 @@ struct ZcRaidMirrorRmaSendBranch {
     meta: ZcOfiRmaMeta,
     completion_slots: Vec<usize>,
     completion_tokens: Vec<u64>,
+    doorbell: Box<[u8; ZCOFI_RMA_CONTROL_LEN]>,
+    ack_slots: Vec<u8>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -19711,6 +19726,15 @@ fn zcraid_mirror_rma_send_worker(
                 false,
                 branch.plan.fabric_domain.as_deref(),
             )?;
+            let doorbell = Box::new([0u8; ZCOFI_RMA_CONTROL_LEN]);
+            let ack_bytes = window.checked_mul(ZC_WAL_ACK_HEADER_LEN).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "RMA ACK arena size overflow")
+            })?;
+            let mut ack_slots = vec![0u8; ack_bytes];
+            // Register stable control storage before the stack-backed warmup
+            // performs the endpoint's first SEND/RECV posts.
+            ep.register_send_buffer(doorbell.as_slice())?;
+            ep.register_recv_buffer(&mut ack_slots)?;
             let contract = zcraid_mirror_rma_peer_contract(
                 branch.plan.branch,
                 lane_count,
@@ -19731,6 +19755,8 @@ fn zcraid_mirror_rma_send_worker(
             }
             let meta = ZcOfiRmaMeta::decode(&meta_buf)?;
             zcofi_rma_validate_meta(meta, lane, lane_count, arena_bytes, extent_bytes)?;
+            // RMA source registration and queue initialization seal strict-mode
+            // registration state.  All control arenas must be registered first.
             ep.rma_register_write_buffer(&source)?;
             ep.rma_write_queue_init(window)?;
             eprintln!(
@@ -19751,6 +19777,8 @@ fn zcraid_mirror_rma_send_worker(
                 meta,
                 completion_slots: vec![0; window],
                 completion_tokens: vec![0; window],
+                doorbell,
+                ack_slots,
             });
         }
 
@@ -19837,16 +19865,25 @@ fn zcraid_mirror_rma_send_worker(
                     batch: u64::try_from(batch).unwrap(),
                     extent_bytes: u64::try_from(extent_bytes).unwrap(),
                 };
-                branch.endpoint.send(&bell.encode())?;
+                *branch.doorbell = bell.encode();
+                branch.endpoint.send(branch.doorbell.as_slice())?;
             }
             for branch in &mut branch_eps {
                 for slot in 0..batch {
-                    let mut ack_buf = [0u8; ZC_WAL_ACK_HEADER_LEN];
-                    let got = branch.endpoint.recv(&mut ack_buf)?;
+                    let start = slot * ZC_WAL_ACK_HEADER_LEN;
+                    let end = start + ZC_WAL_ACK_HEADER_LEN;
+                    let got = branch.endpoint.recv(&mut branch.ack_slots[start..end])?;
                     if got != ZC_WAL_ACK_HEADER_LEN {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "short RMA ACK"));
                     }
-                    let ack = ZcWalAckHeader::decode(&ack_buf)?;
+                    let ack_buf: &[u8; ZC_WAL_ACK_HEADER_LEN] =
+                        branch.ack_slots[start..end].try_into().map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "RMA ACK slot shape mismatch",
+                            )
+                        })?;
+                    let ack = ZcWalAckHeader::decode(ack_buf)?;
                     if ack.lane_id as usize != lane
                         || ack.shard_id as usize != branch.branch
                         || ack.extent_sequence as usize != seq_base + slot
