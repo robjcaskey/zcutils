@@ -11,6 +11,7 @@ use std::io::{self, ErrorKind, Read, Seek, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::Path;
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,7 @@ const VERSION: u32 = 1;
 const KIND_DATA: u32 = 1;
 const KIND_ACK: u32 = 2;
 const HANDSHAKE_SEQUENCE: u64 = u64::MAX;
+const FLAG_MORE: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameHeader {
@@ -33,13 +35,21 @@ pub struct FrameHeader {
 
 impl FrameHeader {
     pub fn data(sequence: u64, payload_len: u32, seed: u64) -> Self {
+        Self::data_with_more(sequence, payload_len, seed, false)
+    }
+
+    pub fn data_with_more(sequence: u64, payload_len: u32, seed: u64, more: bool) -> Self {
         Self {
             kind: KIND_DATA,
             sequence,
             payload_len,
-            flags: 0,
+            flags: if more { FLAG_MORE } else { 0 },
             value: seed,
         }
+    }
+
+    fn ends_sync_batch(self) -> bool {
+        self.kind == KIND_DATA && self.flags & FLAG_MORE == 0
     }
 
     pub fn ack(sequence: u64, highwater: u64) -> Self {
@@ -83,6 +93,8 @@ impl FrameHeader {
         if !matches!(header.kind, KIND_DATA | KIND_ACK)
             || header.payload_len as usize > MAX_PAYLOAD
             || (header.kind == KIND_ACK && header.payload_len != 0)
+            || header.flags & !FLAG_MORE != 0
+            || (header.kind == KIND_ACK && header.flags != 0)
         {
             return Err(io::Error::new(
                 ErrorKind::InvalidData,
@@ -141,6 +153,15 @@ fn pipe_pair() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
+fn pipe_capacity(fd: RawFd) -> io::Result<usize> {
+    let capacity = unsafe { libc::fcntl(fd, libc::F_GETPIPE_SZ) };
+    if capacity < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(capacity as usize)
+    }
+}
+
 fn cvt_count(result: libc::ssize_t) -> io::Result<usize> {
     if result < 0 {
         Err(io::Error::last_os_error())
@@ -151,22 +172,46 @@ fn cvt_count(result: libc::ssize_t) -> io::Result<usize> {
 
 fn splice_exact(from: RawFd, to: RawFd, mut len: usize) -> io::Result<()> {
     while len != 0 {
-        let done = cvt_count(unsafe {
+        let done = match cvt_count(unsafe {
             libc::splice(
                 from,
                 std::ptr::null_mut(),
                 to,
                 std::ptr::null_mut(),
                 len,
-                libc::SPLICE_F_MOVE | libc::SPLICE_F_MORE,
+                libc::SPLICE_F_MOVE,
             )
-        })?;
+        }) {
+            Ok(done) => done,
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if done == 0 {
             return Err(io::Error::new(ErrorKind::UnexpectedEof, "short splice"));
         }
         len -= done;
     }
     Ok(())
+}
+
+fn splice_some(from: RawFd, to: RawFd, max_len: usize) -> io::Result<usize> {
+    loop {
+        match cvt_count(unsafe {
+            libc::splice(
+                from,
+                std::ptr::null_mut(),
+                to,
+                std::ptr::null_mut(),
+                max_len,
+                libc::SPLICE_F_MOVE | libc::SPLICE_F_MORE,
+            )
+        }) {
+            Ok(0) => return Err(io::Error::new(ErrorKind::UnexpectedEof, "short splice")),
+            Ok(done) => return Ok(done),
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn tee_exact(from: RawFd, to: RawFd, mut len: usize) -> io::Result<()> {
@@ -182,19 +227,23 @@ fn tee_exact(from: RawFd, to: RawFd, mut len: usize) -> io::Result<()> {
     Ok(())
 }
 
-fn vmsplice_all(socket: RawFd, bytes: &[u8]) -> io::Result<()> {
-    let (read_pipe, write_pipe) = pipe_pair()?;
+fn vmsplice_all(
+    socket: RawFd,
+    bytes: &[u8],
+    read_pipe: RawFd,
+    write_pipe: RawFd,
+) -> io::Result<()> {
     let mut sent = 0;
     while sent < bytes.len() {
         let mut iov = libc::iovec {
             iov_base: bytes[sent..].as_ptr() as *mut libc::c_void,
             iov_len: bytes.len() - sent,
         };
-        let pinned = cvt_count(unsafe { libc::vmsplice(write_pipe.as_raw_fd(), &mut iov, 1, 0) })?;
+        let pinned = cvt_count(unsafe { libc::vmsplice(write_pipe, &mut iov, 1, 0) })?;
         if pinned == 0 {
             return Err(io::Error::new(ErrorKind::WriteZero, "short vmsplice"));
         }
-        splice_exact(read_pipe.as_raw_fd(), socket, pinned)?;
+        splice_exact(read_pipe, socket, pinned)?;
         sent += pinned;
     }
     Ok(())
@@ -240,23 +289,25 @@ pub struct ScanResult {
 pub fn scan_log(path: &Path, verify_payload: bool) -> io::Result<ScanResult> {
     let mut file = OpenOptions::new().read(true).open(path)?;
     let total = file.metadata()?.len();
-    let mut valid = 0u64;
-    let mut expected = 0u64;
+    let mut parsed_bytes = 0u64;
+    let mut parsed_frames = 0u64;
+    let mut committed_bytes = 0u64;
+    let mut committed_frames = 0u64;
     loop {
-        if total == valid {
+        if total == parsed_bytes {
             break;
         }
-        if total - valid < HEADER_LEN as u64 {
+        if total - parsed_bytes < HEADER_LEN as u64 {
             return Ok(ScanResult {
-                frames: expected,
-                valid_bytes: valid,
-                incomplete_tail_bytes: total - valid,
+                frames: committed_frames,
+                valid_bytes: committed_bytes,
+                incomplete_tail_bytes: total - committed_bytes,
             });
         }
         let Some(header) = read_header(&mut file)? else {
             break;
         };
-        if header.kind != KIND_DATA || header.sequence != expected {
+        if header.kind != KIND_DATA || header.sequence != parsed_frames {
             return Err(io::Error::new(
                 ErrorKind::InvalidData,
                 "non-contiguous terminal log",
@@ -271,9 +322,9 @@ pub fn scan_log(path: &Path, verify_payload: bool) -> io::Result<ScanResult> {
                 Ok(()) => {}
                 Err(error) if error.kind() == ErrorKind::UnexpectedEof => {
                     return Ok(ScanResult {
-                        frames: expected,
-                        valid_bytes: valid,
-                        incomplete_tail_bytes: total - valid,
+                        frames: committed_frames,
+                        valid_bytes: committed_bytes,
+                        incomplete_tail_bytes: total - committed_bytes,
                     });
                 }
                 Err(error) => return Err(error),
@@ -292,13 +343,17 @@ pub fn scan_log(path: &Path, verify_payload: bool) -> io::Result<ScanResult> {
             remaining -= take;
             offset += take;
         }
-        valid += HEADER_LEN as u64 + header.payload_len as u64;
-        expected += 1;
+        parsed_bytes += HEADER_LEN as u64 + header.payload_len as u64;
+        parsed_frames += 1;
+        if header.ends_sync_batch() {
+            committed_bytes = parsed_bytes;
+            committed_frames = parsed_frames;
+        }
     }
     Ok(ScanResult {
-        frames: expected,
-        valid_bytes: valid,
-        incomplete_tail_bytes: total.saturating_sub(valid),
+        frames: committed_frames,
+        valid_bytes: committed_bytes,
+        incomplete_tail_bytes: total.saturating_sub(committed_bytes),
     })
 }
 
@@ -324,6 +379,8 @@ fn open_terminal_log(path: &Path) -> io::Result<(File, u64)> {
 fn replay_suffix(local: &File, start: u64, end: u64, remote: &mut TcpStream) -> io::Result<()> {
     let mut source = local.try_clone()?;
     source.seek(std::io::SeekFrom::Start(0))?;
+    let (read_pipe, write_pipe) = pipe_pair()?;
+    let splice_chunk = pipe_capacity(write_pipe.as_raw_fd())?;
     for expected in 0..end {
         let header = read_header(&mut source)?.ok_or_else(|| {
             io::Error::new(ErrorKind::UnexpectedEof, "local replay prefix ended early")
@@ -339,22 +396,23 @@ fn replay_suffix(local: &File, start: u64, end: u64, remote: &mut TcpStream) -> 
             continue;
         }
         remote.write_all(&header.encode())?;
-        let (read_pipe, write_pipe) = pipe_pair()?;
         let mut remaining = header.payload_len as usize;
         while remaining != 0 {
-            let chunk = remaining.min(4096);
-            splice_exact(source.as_raw_fd(), write_pipe.as_raw_fd(), chunk)?;
-            splice_exact(read_pipe.as_raw_fd(), remote.as_raw_fd(), chunk)?;
-            remaining -= chunk;
+            let chunk = remaining.min(splice_chunk);
+            let moved = splice_some(source.as_raw_fd(), write_pipe.as_raw_fd(), chunk)?;
+            splice_exact(read_pipe.as_raw_fd(), remote.as_raw_fd(), moved)?;
+            remaining -= moved;
         }
-        let ack = read_header(remote)?.ok_or_else(|| {
-            io::Error::new(ErrorKind::UnexpectedEof, "remote closed during replay")
-        })?;
-        if ack.kind != KIND_ACK || ack.sequence != expected || ack.value != expected + 1 {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                "invalid remote replay ACK",
-            ));
+        if header.ends_sync_batch() {
+            let ack = read_header(remote)?.ok_or_else(|| {
+                io::Error::new(ErrorKind::UnexpectedEof, "remote closed during replay")
+            })?;
+            if ack.kind != KIND_ACK || ack.sequence != expected || ack.value != expected + 1 {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "invalid remote replay ACK",
+                ));
+            }
         }
     }
     Ok(())
@@ -392,6 +450,10 @@ pub fn run_leaf(listen: &str, path: &Path, delay_ms: u64) -> io::Result<()> {
     stream.set_nodelay(true)?;
     let (mut log, mut expected) = open_terminal_log(path)?;
     let session_start = expected;
+    let mut durable_hwm = expected;
+    let mut sync_batches = 0u64;
+    let (read_pipe, write_pipe) = pipe_pair()?;
+    let splice_chunk = pipe_capacity(write_pipe.as_raw_fd())?;
     stream.write_all(&FrameHeader::ack(HANDSHAKE_SEQUENCE, expected).encode())?;
     loop {
         let Some(header) = read_header(&mut stream)? else {
@@ -404,26 +466,37 @@ pub fn run_leaf(listen: &str, path: &Path, delay_ms: u64) -> io::Result<()> {
             ));
         }
         log.write_all(&header.encode())?;
-        let (read_pipe, write_pipe) = pipe_pair()?;
         let mut remaining = header.payload_len as usize;
         while remaining != 0 {
-            let chunk = remaining.min(4096);
-            splice_exact(stream.as_raw_fd(), write_pipe.as_raw_fd(), chunk)?;
-            splice_exact(read_pipe.as_raw_fd(), log.as_raw_fd(), chunk)?;
-            remaining -= chunk;
-        }
-        log.sync_data()?;
-        if delay_ms != 0 {
-            thread::sleep(Duration::from_millis(delay_ms));
+            let chunk = remaining.min(splice_chunk);
+            let moved = splice_some(stream.as_raw_fd(), write_pipe.as_raw_fd(), chunk)?;
+            splice_exact(read_pipe.as_raw_fd(), log.as_raw_fd(), moved)?;
+            remaining -= moved;
         }
         expected += 1;
-        stream.write_all(&FrameHeader::ack(header.sequence, expected).encode())?;
+        if header.ends_sync_batch() {
+            log.sync_data()?;
+            if delay_ms != 0 {
+                thread::sleep(Duration::from_millis(delay_ms));
+            }
+            durable_hwm = expected;
+            sync_batches += 1;
+            stream.write_all(&FrameHeader::ack(header.sequence, durable_hwm).encode())?;
+        }
+    }
+    if expected != durable_hwm {
+        return Err(io::Error::new(
+            ErrorKind::UnexpectedEof,
+            "remote stream ended inside a sync batch",
+        ));
     }
     log.sync_data()?;
     eprintln!(
-        "RACING_MIRROR_LEAF_PASS peer={peer} durable_hwm={expected} appended_frames={} payload_userspace_copy_bytes=0 header_copy_bytes={}",
+        "RACING_MIRROR_LEAF_PASS peer={peer} durable_hwm={durable_hwm} appended_frames={} sync_batches={sync_batches} payload_userspace_copy_bytes=0 header_copy_bytes={}",
         expected - session_start,
-        HEADER_LEN as u64 + (expected - session_start) * HEADER_LEN as u64 * 3
+        HEADER_LEN as u64
+            + (expected - session_start) * HEADER_LEN as u64 * 2
+            + sync_batches * HEADER_LEN as u64
     );
     Ok(())
 }
@@ -465,6 +538,25 @@ pub fn run_first_hop(listen: &str, remote: &str, local_path: &Path) -> io::Resul
     let mut expected = local_start;
     let mut local_hwm = ContiguousHighwater::starting_at(local_start);
     let mut remote_hwm = ContiguousHighwater::starting_at(local_start);
+    let mut batch_start = local_start;
+    let mut sync_batches = 0u64;
+    let sync_file = local.try_clone()?;
+    let (sync_request_tx, sync_request_rx) = mpsc::channel::<u64>();
+    let (sync_done_tx, sync_done_rx) = mpsc::channel::<(u64, io::Result<()>)>();
+    let sync_thread = thread::spawn(move || {
+        while let Ok(highwater) = sync_request_rx.recv() {
+            if sync_done_tx
+                .send((highwater, sync_file.sync_data()))
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    let (source_read, source_write) = pipe_pair()?;
+    let (remote_read, remote_write) = pipe_pair()?;
+    let relay_chunk =
+        pipe_capacity(source_write.as_raw_fd())?.min(pipe_capacity(remote_write.as_raw_fd())?);
     loop {
         let Some(header) = read_header(&mut client)? else {
             break;
@@ -478,56 +570,71 @@ pub fn run_first_hop(listen: &str, remote: &str, local_path: &Path) -> io::Resul
         local.write_all(&header.encode())?;
         remote_stream.write_all(&header.encode())?;
 
-        let (source_read, source_write) = pipe_pair()?;
-        let (remote_read, remote_write) = pipe_pair()?;
         let payload_len = header.payload_len as usize;
         let mut remaining = payload_len;
         while remaining != 0 {
-            let chunk = remaining.min(4096);
-            splice_exact(client.as_raw_fd(), source_write.as_raw_fd(), chunk)?;
-            tee_exact(source_read.as_raw_fd(), remote_write.as_raw_fd(), chunk)?;
-            thread::scope(|scope| -> io::Result<()> {
-                let local_drain =
-                    scope.spawn(|| splice_exact(source_read.as_raw_fd(), local.as_raw_fd(), chunk));
-                splice_exact(remote_read.as_raw_fd(), remote_stream.as_raw_fd(), chunk)?;
-                local_drain
-                    .join()
-                    .map_err(|_| io::Error::other("local terminal worker panicked"))??;
-                Ok(())
-            })?;
-            remaining -= chunk;
+            let chunk = remaining.min(relay_chunk);
+            let moved = splice_some(client.as_raw_fd(), source_write.as_raw_fd(), chunk)?;
+            tee_exact(source_read.as_raw_fd(), remote_write.as_raw_fd(), moved)?;
+            splice_exact(source_read.as_raw_fd(), local.as_raw_fd(), moved)?;
+            splice_exact(remote_read.as_raw_fd(), remote_stream.as_raw_fd(), moved)?;
+            remaining -= moved;
         }
-        thread::scope(|scope| -> io::Result<()> {
-            let local_task = scope.spawn(|| local.sync_data());
+        expected += 1;
+        if header.ends_sync_batch() {
+            sync_request_tx
+                .send(expected)
+                .map_err(|_| io::Error::new(ErrorKind::BrokenPipe, "local sync worker stopped"))?;
             let remote_ack = read_header(&mut remote_stream)?.ok_or_else(|| {
                 io::Error::new(ErrorKind::UnexpectedEof, "remote closed before ACK")
             })?;
             if remote_ack.kind != KIND_ACK
                 || remote_ack.sequence != header.sequence
-                || remote_ack.value != header.sequence + 1
+                || remote_ack.value != expected
             {
                 return Err(io::Error::new(
                     ErrorKind::InvalidData,
                     "invalid remote durable ACK",
                 ));
             }
-            local_task
-                .join()
-                .map_err(|_| io::Error::other("local terminal worker panicked"))??;
-            Ok(())
-        })?;
-        local_hwm.complete(header.sequence)?;
-        remote_hwm.complete(header.sequence)?;
-        expected += 1;
-        let highwater = mirror_highwater(&local_hwm, &remote_hwm);
-        client.write_all(&FrameHeader::ack(header.sequence, highwater).encode())?;
+            let (local_done, result) = sync_done_rx.recv().map_err(|_| {
+                io::Error::new(ErrorKind::BrokenPipe, "local sync worker lost completion")
+            })?;
+            if local_done != expected {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "local sync worker returned the wrong high-water mark",
+                ));
+            }
+            result?;
+            for sequence in batch_start..expected {
+                local_hwm.complete(sequence)?;
+                remote_hwm.complete(sequence)?;
+            }
+            batch_start = expected;
+            sync_batches += 1;
+            let highwater = mirror_highwater(&local_hwm, &remote_hwm);
+            client.write_all(&FrameHeader::ack(header.sequence, highwater).encode())?;
+        }
+    }
+    if batch_start != expected {
+        return Err(io::Error::new(
+            ErrorKind::UnexpectedEof,
+            "client stream ended inside a sync batch",
+        ));
     }
     remote_stream.shutdown(Shutdown::Write)?;
+    drop(sync_request_tx);
+    sync_thread
+        .join()
+        .map_err(|_| io::Error::other("local sync worker panicked"))?;
     eprintln!(
-        "RACING_MIRROR_FIRST_HOP_PASS peer={peer} durable_hwm={} appended_frames={} payload_userspace_copy_bytes=0 header_copy_bytes={}",
+        "RACING_MIRROR_FIRST_HOP_PASS peer={peer} durable_hwm={} appended_frames={} sync_batches={sync_batches} payload_userspace_copy_bytes=0 header_copy_bytes={}",
         mirror_highwater(&local_hwm, &remote_hwm),
         expected - local_start,
-        HEADER_LEN as u64 * 2 + (expected - local_start) * HEADER_LEN as u64 * 5
+        HEADER_LEN as u64 * 2
+            + (expected - local_start) * HEADER_LEN as u64 * 3
+            + sync_batches * HEADER_LEN as u64 * 2
     );
     Ok(())
 }
@@ -537,14 +644,30 @@ pub struct ClientResult {
     pub frames: u64,
     pub recovered_from: u64,
     pub payload_bytes: u64,
+    pub window: u64,
     pub elapsed: Duration,
 }
 
 pub fn run_client(target: &str, frames: u64, payload_len: usize) -> io::Result<ClientResult> {
+    run_client_window(target, frames, payload_len, 1)
+}
+
+pub fn run_client_window(
+    target: &str,
+    frames: u64,
+    payload_len: usize,
+    window: u64,
+) -> io::Result<ClientResult> {
     if payload_len == 0 || payload_len > MAX_PAYLOAD {
         return Err(io::Error::new(
             ErrorKind::InvalidInput,
             format!("payload must be 1..={MAX_PAYLOAD}"),
+        ));
+    }
+    if window == 0 || window > 4096 {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "window must be 1..=4096",
         ));
     }
     let mut stream = connect_until(target, Duration::from_secs(30))?;
@@ -562,27 +685,48 @@ pub fn run_client(target: &str, frames: u64, payload_len: usize) -> io::Result<C
         ));
     }
     let first_sequence = handshake.value;
+    let (source_read, source_write) = pipe_pair()?;
     let start = Instant::now();
-    for sequence in first_sequence..first_sequence + frames {
-        let seed = sequence ^ 0xa5a5_5a5a_d3c4_b2e1;
-        let payload = make_payload(seed, payload_len);
-        stream.write_all(&FrameHeader::data(sequence, payload_len as u32, seed).encode())?;
-        vmsplice_all(stream.as_raw_fd(), &payload)?;
+    let final_sequence = first_sequence
+        .checked_add(frames)
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "sequence range overflow"))?;
+    let mut sequence = first_sequence;
+    while sequence < final_sequence {
+        let batch_end = sequence.saturating_add(window).min(final_sequence);
+        let mut payload_leases = Vec::with_capacity((batch_end - sequence) as usize);
+        while sequence < batch_end {
+            let seed = sequence ^ 0xa5a5_5a5a_d3c4_b2e1;
+            let payload = make_payload(seed, payload_len);
+            let more = sequence + 1 < batch_end;
+            stream.write_all(
+                &FrameHeader::data_with_more(sequence, payload_len as u32, seed, more).encode(),
+            )?;
+            vmsplice_all(
+                stream.as_raw_fd(),
+                &payload,
+                source_read.as_raw_fd(),
+                source_write.as_raw_fd(),
+            )?;
+            payload_leases.push(payload);
+            sequence += 1;
+        }
         let ack = read_header(&mut stream)?.ok_or_else(|| {
             io::Error::new(ErrorKind::UnexpectedEof, "first hop closed before ACK")
         })?;
-        if ack.kind != KIND_ACK || ack.sequence != sequence || ack.value != sequence + 1 {
+        if ack.kind != KIND_ACK || ack.sequence != batch_end - 1 || ack.value != batch_end {
             return Err(io::Error::new(
                 ErrorKind::InvalidData,
                 "invalid mirror durable ACK",
             ));
         }
+        drop(payload_leases);
     }
     stream.shutdown(Shutdown::Write)?;
     Ok(ClientResult {
         frames,
         recovered_from: first_sequence,
         payload_bytes: frames * payload_len as u64,
+        window,
         elapsed: start.elapsed(),
     })
 }
@@ -641,6 +785,31 @@ mod tests {
         assert_eq!(frames, 1);
         assert_eq!(reopened.metadata().unwrap().len(), scan.valid_bytes);
         reopened.seek(std::io::SeekFrom::End(0)).unwrap();
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn scanner_discards_a_complete_uncommitted_batch_tail() {
+        let path = temp_path("uncommitted-batch");
+        let mut file = File::create(&path).unwrap();
+        let payload0 = make_payload(7, 4096);
+        let payload1 = make_payload(8, 4096);
+        file.write_all(&FrameHeader::data(0, 4096, 7).encode())
+            .unwrap();
+        file.write_all(&payload0).unwrap();
+        file.write_all(&FrameHeader::data_with_more(1, 4096, 8, true).encode())
+            .unwrap();
+        file.write_all(&payload1).unwrap();
+        file.flush().unwrap();
+
+        let scan = scan_log(&path, true).unwrap();
+        assert_eq!(scan.frames, 1);
+        assert_eq!(scan.valid_bytes, (HEADER_LEN + 4096) as u64);
+        assert_eq!(scan.incomplete_tail_bytes, (HEADER_LEN + 4096) as u64);
+        let (reopened, frames) = open_terminal_log(&path).unwrap();
+        assert_eq!(frames, 1);
+        assert_eq!(reopened.metadata().unwrap().len(), scan.valid_bytes);
         drop(reopened);
         std::fs::remove_file(path).unwrap();
     }

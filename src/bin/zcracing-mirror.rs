@@ -1,11 +1,11 @@
 use std::env;
 use std::io;
 use std::path::Path;
-use zcutils::racing_mirror::{run_client, run_first_hop, run_leaf, scan_log};
+use zcutils::racing_mirror::{run_client_window, run_first_hop, run_leaf, scan_log};
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  zcracing-mirror client ADDR FRAMES PAYLOAD_BYTES\n  zcracing-mirror first-hop LISTEN REMOTE LOCAL_LOG\n  zcracing-mirror leaf LISTEN TERMINAL_LOG [ACK_DELAY_MS]\n  zcracing-mirror verify TERMINAL_LOG EXPECTED_FRAMES"
+        "usage:\n  zcracing-mirror client ADDR FRAMES PAYLOAD_BYTES [WINDOW]\n  zcracing-mirror first-hop LISTEN REMOTE LOCAL_LOG\n  zcracing-mirror leaf LISTEN TERMINAL_LOG [ACK_DELAY_MS]\n  zcracing-mirror verify TERMINAL_LOG EXPECTED_FRAMES"
     );
     std::process::exit(2)
 }
@@ -24,11 +24,15 @@ fn main() -> io::Result<()> {
             let addr = args.next().unwrap_or_else(|| usage());
             let frames = number(args.next(), "frames");
             let payload = number(args.next(), "payload bytes");
-            let result = run_client(&addr, frames, payload)?;
+            let window = args
+                .next()
+                .map(|v| v.parse().unwrap_or_else(|_| usage()))
+                .unwrap_or(1);
+            let result = run_client_window(&addr, frames, payload, window)?;
             let seconds = result.elapsed.as_secs_f64();
             println!(
-                "RACING_MIRROR_CLIENT_PASS appended_frames={} recovered_from={} payload_bytes={} durable_ack=both-legs elapsed_s={seconds:.6} representative_benchmark=false source_payload_copy=vmsplice first_hop_payload_userspace_copy_bytes=0 remote_payload_userspace_copy_bytes=0",
-                result.frames, result.recovered_from, result.payload_bytes
+                "RACING_MIRROR_CLIENT_PASS appended_frames={} recovered_from={} payload_bytes={} window={} durable_ack=both-legs elapsed_s={seconds:.6} representative_benchmark=false source_payload_copy=vmsplice first_hop_payload_userspace_copy_bytes=0 remote_payload_userspace_copy_bytes=0",
+                result.frames, result.recovered_from, result.payload_bytes, result.window
             );
         }
         Some("first-hop") => {

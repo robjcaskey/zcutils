@@ -19,8 +19,11 @@ client VM
 
 ## Completion and recovery contract
 
-Each leg reports a contiguous durable high-water mark. The mirror high-water
-mark is `min(local_contiguous_hwm, remote_contiguous_hwm)`. Local `fdatasync`
+Each leg reports a contiguous durable high-water mark. The client may submit a
+bounded window of records; the final record marks the batch barrier, so both
+terminal `fdatasync` operations cover the whole prefix with one drain per leg.
+The mirror high-water mark is
+`min(local_contiguous_hwm, remote_contiguous_hwm)`. Local `fdatasync`
 and the remote durable ACK race concurrently, but a fast leg never permits an
 early client ACK. A missing sequence holds the relevant leg at the hole.
 
@@ -52,9 +55,19 @@ deterministic payload grading is a test oracle, not a general-data checksum.
   device. The claim is specifically zero userspace payload copies at the
   mirror and remote leaf, not zero physical copies everywhere.
 
-A syscall trace of two 32 KiB records exercised 2 `vmsplice` calls at the
-source, 16 `tee` plus 48 `splice` calls at the first hop, and 32 `splice` calls
-at the remote leaf. Both resulting 65,664-byte logs verified.
+A syscall trace of 1,024 32 KiB records in 32-record windows exercised one
+source pipe, two first-hop pipes, and one remote-leaf pipe for the entire run.
+The source made 1,024 `vmsplice` calls; the first hop used 1,035 `tee` and 3,105
+`splice` calls; the remote leaf used 2,866 `splice` calls. Both resulting logs
+were independently graded. The small `read` and `write` calls in the trace are
+protocol metadata, not payload.
+
+Pipe capacity is only an upper bound on each transfer. Linux can exhaust pipe
+buffer slots before the nominal byte capacity, so each receive-side splice
+accepts the progress the kernel returns and drains it immediately. Conversely,
+the final pipe-to-socket splice deliberately omits `SPLICE_F_MORE`; incorrectly
+promising another send caused a severe low-depth TCP latency regression on the
+tested ARM64 kernel.
 
 ## Three-machine QEMU proof
 
@@ -68,16 +81,20 @@ The harness boots three concurrent KVM guests on a private TCP network. The
 first-hop and remote guests each receive their own raw image as a terminal
 virtio-blk device and mount ext4; the client receives no terminal device. It:
 
-1. appends eight 4 KiB records;
+1. appends eight 4 KiB records in two four-record windows;
 2. delays every remote durable ACK by 50 ms and checks that mirror completion
    cannot outrun that leg;
-3. truncates the remote test log to HWM 7 to model a lagging leg;
-4. restarts all three userspace roles, zero-copy replays sequence 7 from the
+3. truncates the remote test log to the previous committed batch at HWM 4;
+4. restarts all three userspace roles, zero-copy replays sequences 4–7 from the
    local log, and recovers mirror HWM 8;
 5. appends four more records; and
 6. independently grades all 12 records on both terminal devices.
 
 Every guest prints the lane -> worker -> vCPU mapping. The harness loudly marks
 the run as a functional QEMU correctness test, not a representative benchmark:
-hugetlb, memlock, kthread/hctx affinity, raw RTT, batching, and io_uring fast
-paths are not qualified.
+hugetlb, memlock, kthread/hctx affinity, raw RTT, and io_uring fast paths are
+not qualified. The four-record durability batching is exercised but is not a
+performance result.
+
+The representative three-host single-lane performance run is recorded in
+[`racing-highwater-mirror-adhoc-20260815.md`](racing-highwater-mirror-adhoc-20260815.md).

@@ -1,0 +1,10 @@
+RACING_MIRROR_CLIENT_PASS appended_frames=1024 recovered_from=0 payload_bytes=33554432 window=32 durable_ack=both-legs elapsed_s=0.128493 representative_benchmark=false source_payload_copy=vmsplice first_hop_payload_userspace_copy_bytes=0 remote_payload_userspace_copy_bytes=0
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 72.84    0.003306           3      1024           splice
+ 25.38    0.001152           1      1024           vmsplice
+  1.28    0.000058           3        15           read
+  0.42    0.000019          19         1           write
+  0.09    0.000004           4         1           pipe2
+------ ----------- ----------- --------- --------- ----------------
+100.00    0.004539           2      2065           total

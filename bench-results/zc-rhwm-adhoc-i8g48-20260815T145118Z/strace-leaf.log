@@ -1,0 +1,11 @@
+RACING_MIRROR_READY role=remote-leaf listen=172.31.45.24:47031
+RACING_MIRROR_LEAF_PASS peer=172.31.36.201:46650 durable_hwm=1024 appended_frames=1024 sync_batches=32 payload_userspace_copy_bytes=0 header_copy_bytes=133184
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 77.98    0.029948          10      2866           splice
+ 14.91    0.005726         168        34           fdatasync
+  6.96    0.002672           2      1046           write
+  0.15    0.000056           3        15           read
+  0.01    0.000005           5         1           pipe2
+------ ----------- ----------- --------- --------- ----------------
+100.00    0.038407           9      3962           total

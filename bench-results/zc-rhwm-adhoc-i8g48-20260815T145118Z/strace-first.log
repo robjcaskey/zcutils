@@ -1,0 +1,13 @@
+RACING_MIRROR_READY role=first-hop listen=172.31.36.201:47030 remote=172.31.45.24:47031
+strace: Process 24920 attached
+RACING_MIRROR_FIRST_HOP_PASS peer=172.31.35.1:57912 durable_hwm=1024 appended_frames=1024 sync_batches=32 payload_userspace_copy_bytes=0 header_copy_bytes=200832
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 74.61    0.027916           8      3105           splice
+ 14.38    0.005381         163        33           fdatasync
+  6.08    0.002275           2      1048           write
+  4.73    0.001770           1      1035           tee
+  0.16    0.000060           4        15           read
+  0.04    0.000014           7         2           pipe2
+------ ----------- ----------- --------- --------- ----------------
+100.00    0.037416           7      5238           total

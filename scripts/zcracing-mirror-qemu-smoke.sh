@@ -16,8 +16,15 @@ REMOTE_IMAGE="$WORK_DIR/remote-terminal.ext4"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-120}"
 FRAMES="${FRAMES:-8}"
 RESUME_FRAMES="${RESUME_FRAMES:-4}"
+WINDOW="${WINDOW:-4}"
 REMOTE_ACK_DELAY_MS="${REMOTE_ACK_DELAY_MS:-50}"
 MCAST_PORT="${MCAST_PORT:-47040}"
+
+[[ "$FRAMES" =~ ^[1-9][0-9]*$ && "$RESUME_FRAMES" =~ ^[1-9][0-9]*$ \
+	&& "$WINDOW" =~ ^[1-9][0-9]*$ ]] || {
+	printf 'FRAMES, RESUME_FRAMES, and WINDOW must be positive integers\n' >&2
+	exit 2
+}
 
 need()
 {
@@ -126,7 +133,7 @@ launch_vm()
 	qemu-system-x86_64 \
 		-machine accel=kvm -cpu host -m 512M -smp 1 -nographic -no-reboot -nodefaults \
 		-serial "file:$log" -kernel "$KERNEL" -initrd "$INITRAMFS" \
-		-append "console=ttyS0 panic=-1 oops=panic quiet net.ifnames=0 zcrm.role=$role zcrm.frames=$FRAMES zcrm.resume_frames=$RESUME_FRAMES zcrm.delay_ms=$REMOTE_ACK_DELAY_MS" \
+		-append "console=ttyS0 panic=-1 oops=panic quiet net.ifnames=0 zcrm.role=$role zcrm.frames=$FRAMES zcrm.resume_frames=$RESUME_FRAMES zcrm.window=$WINDOW zcrm.delay_ms=$REMOTE_ACK_DELAY_MS" \
 		-netdev "socket,id=net0,mcast=230.44.0.1:$MCAST_PORT" \
 		-device virtio-net-pci,netdev=net0 \
 		"${drive_args[@]}" >/dev/null 2>>"$log" &
@@ -177,14 +184,17 @@ grep -q 'RACING_MIRROR_QEMU_RESTART' "$LOG_DIR/client.log"
 grep -q 'RACING_MIRROR_QEMU_RESTART' "$LOG_DIR/first-hop.log"
 grep -q 'RACING_MIRROR_QEMU_RESTART' "$LOG_DIR/remote-leaf.log"
 grep -q 'RACING_MIRROR_QEMU_LAG_INJECTED' "$LOG_DIR/remote-leaf.log"
-grep -q "RACING_MIRROR_REPLAY_PASS from_hwm=$((FRAMES - 1)) to_hwm=$FRAMES payload_userspace_copy_bytes=0" "$LOG_DIR/first-hop.log"
+last_batch=$((FRAMES % WINDOW))
+(( last_batch != 0 )) || last_batch="$WINDOW"
+lag_hwm=$((FRAMES - last_batch))
+grep -q "RACING_MIRROR_REPLAY_PASS from_hwm=$lag_hwm to_hwm=$FRAMES payload_userspace_copy_bytes=0" "$LOG_DIR/first-hop.log"
 
 client_elapsed="$(awk -F'elapsed_s=' '/RACING_MIRROR_CLIENT_PASS/ { split($2, value, " "); total += value[1] } END { printf "%.6f", total }' "$LOG_DIR/client.log")"
-minimum_delay="$(awk -v frames="$FRAMES" -v resume="$RESUME_FRAMES" -v delay="$REMOTE_ACK_DELAY_MS" 'BEGIN { printf "%.6f", (frames + resume) * delay / 1000.0 * 0.80 }')"
+minimum_delay="$(awk -v frames="$FRAMES" -v resume="$RESUME_FRAMES" -v window="$WINDOW" -v delay="$REMOTE_ACK_DELAY_MS" 'BEGIN { batches = int((frames + window - 1) / window) + int((resume + window - 1) / window); printf "%.6f", batches * delay / 1000.0 * 0.80 }')"
 awk -v actual="$client_elapsed" -v minimum="$minimum_delay" 'BEGIN { exit !(actual + 0 >= minimum + 0) }' || {
 	printf 'client durable HWM advanced too early: elapsed=%s minimum=%s\n' "$client_elapsed" "$minimum_delay" >&2
 	exit 1
 }
 
-printf 'RACING_MIRROR_QEMU_MATRIX_PASS machines=3 placement=userspace local_terminal=virtio-blk-ext4 remote_terminal=virtio-blk-ext4 payload_relay=splice-tee first_hop_payload_userspace_copy_bytes=0 remote_payload_userspace_copy_bytes=0 durable_hwm=min-contiguous-legs process_restart_resume=true lagging_remote_suffix_replay=true delayed_leg_ms=%s elapsed_s=%s logs=%s\n' \
-	"$REMOTE_ACK_DELAY_MS" "$client_elapsed" "$LOG_DIR"
+printf 'RACING_MIRROR_QEMU_MATRIX_PASS machines=3 placement=userspace local_terminal=virtio-blk-ext4 remote_terminal=virtio-blk-ext4 payload_relay=splice-tee first_hop_payload_userspace_copy_bytes=0 remote_payload_userspace_copy_bytes=0 durable_hwm=min-contiguous-legs process_restart_resume=true lagging_remote_suffix_replay=true window=%s delayed_leg_ms=%s elapsed_s=%s logs=%s\n' \
+	"$WINDOW" "$REMOTE_ACK_DELAY_MS" "$client_elapsed" "$LOG_DIR"
