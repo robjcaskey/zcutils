@@ -30,6 +30,7 @@ pub mod integrity_contract;
 mod io_slots;
 pub mod ofi_pipe;
 pub mod persistent_wal;
+pub mod racing_mirror;
 pub mod readcache_bench;
 pub(crate) mod wal_contract;
 pub mod window;

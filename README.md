@@ -121,6 +121,9 @@ without dragging in the SAN stack.
   visibility contract for ordered fanout without block-device RAID primitives.
 - `docs/zcnblk-log-fanout-architecture.md`: log-based fanout/fanin design for
   400G-class zcnblk mirror/stripe result-log zipper paths.
+- `docs/racing-highwater-mirror.md`: implemented userspace local-plus-remote
+  racing durable mirror, copy ledger, recovery contract, and three-VM QEMU
+  proof.
 - `docs/topology-aware-zero-copy-planner.md`: negotiated descriptor planner for
   deriving lane, CPU, queue, WAL, branch, and zipper topology from workload
   intent instead of per-run manual knobs.
