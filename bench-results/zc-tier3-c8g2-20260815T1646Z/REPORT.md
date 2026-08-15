@@ -1,12 +1,18 @@
-# Three-host cost-bounded tier architecture checkpoint
+# Three-host cost-bounded tier architecture report
 
-This is a checkpoint from the active six-hour architecture run, not a final
-storage-performance claim.  The tests use three `c8g.2xlarge` Spot instances
+This is a bounded architecture run, not a final storage-performance claim.
+The tests used three `c8g.2xlarge` Spot instances
 in `us-east-2c`, each quoted at `$0.087900/hour` at launch.  Total compute is
 `$0.2637/hour`; the first bounded lease ends at `2026-08-15T20:40:00Z`.
 The launcher reserved a conservative `$1.2513` ceiling for that lease,
 including public IPv4 and root gp3.  Instance identities and addresses are in
 `inventory.json`.
+
+All three instances launched at `2026-08-15T16:46:47Z` and were confirmed
+terminated at `2026-08-15T17:42:13Z`, after 55 minutes 26 seconds.  At the
+launch quote, the compute portion is approximately `$0.244`; the authoritative
+bill can differ with Spot price changes and ancillary IPv4/EBS charges.
+`termination.txt` records the exact instance IDs and final AWS states.
 
 ## Topology and qualification
 
@@ -193,6 +199,20 @@ correctness result only; root gp3 is intentionally excluded from the hot
 performance path.  The copied 64 MiB payload was removed after its recorded
 SHA was verified; the fio JSON and hash remain.
 
+The framed two-leg high-water path was also exercised against ordinary
+terminal files on the node 1 and node 2 root ext4/gp3 filesystems.  Each clean
+repeat appended 8,192 4 KiB frames at window 64, waited for both terminal
+`fdatasync` completions at every barrier, and independently scanned and hashed
+both logs before the payload files were removed.  Repeats r1, r3, and r4 took
+0.730799 s, 0.714671 s, and 0.916717 s: mean 10,536 records/s (41.16 MiB/s),
+range 8,936--11,463 records/s, spread 23.98%.  This is persistent correctness
+and variability evidence, not a representative performance result.
+
+Repeat r2 is explicitly excluded.  Listener/client orchestration accidentally
+queued two clients; the surviving client completed after 105.380513 s and its
+empty verifier logs do not constitute an independently graded repeat.  The
+three accepted repeats have nonempty local and remote verifier logs.
+
 ## Refinement decisions and open work
 
 1. Keep the fast hot-admit byte path for admission/throughput, but do not call
@@ -208,9 +228,12 @@ SHA was verified; the fio JSON and hash remain.
    in the framed tier protocol.  The behavior exists and passed over three
    hosts, but the standalone racing-high-water prototype still has no read
    messages.
-6. Persist replay high water at a genuinely nonvolatile terminal.  RAM testing
-   now covers live mid-window death, partial tails, lag, and bounded overflow;
-   the same barrier rollback still needs small persistent-leaf crash testing.
+6. The clean persistent terminal path now passes small ext4/gp3 conformance.
+   RAM testing covers live mid-window death, partial tails, lag, and bounded
+   overflow; a forced mid-barrier crash-and-restart against persistent leaves
+   remains the next targeted durability test.
 
-The active run continues with multi-lane and read/failure work; this checkpoint
-does not close the six-hour goal.
+The run was stopped early after the architecture questions had converged, to
+avoid paying for idle spot capacity.  It therefore refines the design and
+records bounded conformance/performance evidence; it does not claim exhaustive
+six-hour soak coverage.
