@@ -1,0 +1,90 @@
+Warning: Permanently added '3.141.190.208' (ED25519) to the list of known hosts.
+zcraid-mirror-send-branch-topology: branch=0 domain=efa_0-rdm lanes=0-15 leader_cpus=16-31 workers=0-15 block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches
+zcraid-mirror-send-branch-topology: branch=1 domain=efa_0-rdm lanes=0-15 leader_cpus=32-47 workers=0-15 block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches
+zcraid-mirror-send-branch-port: branch=0 addr=172.31.36.169 base_port=42000 source_ip=kernel-route domain=efa_0-rdm
+zcraid-mirror-send-branch-port: branch=1 addr=172.31.43.77 base_port=44000 source_ip=kernel-route domain=efa_0-rdm
+zcraid-mirror-send: transport=tcp-mux-compatible addr=172.31.36.169,172.31.43.77 branches=2 lanes=0-15 lane_count=16 bytes_per_lane=67108864 extent_bytes=65536 logical_record_bytes=4096 extents_per_lane=1024 workers=16 ack_enabled=no ack_policy=disabled completion_semantic=disabled ack_window=1 ack_wait_window=1 per_lane_branch_qd=64 aggregate_tx_outstanding=2048 aggregate_ack_outstanding=0 zlane_coord=lane-owner zlane_lock_shards=0 provider=efa endpoint=rdm plan_json=yes compact_4k=no wire_sequence_header=yes payload_inject=no ack_inject=no branch_post_nowait=no prepost_ack=no
+zcraid-mirror-tcp-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=1 target_cpu=1 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=2 target_cpu=2 status=ok
+zcraid-mirror-tcp-send-lane: worker=1 branch=0 lane=1 addr=172.31.36.169 port=42001 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=2 branch=0 lane=2 addr=172.31.36.169 port=42002 source_ip=kernel-route
+zcraid-mirror-tcp-send-worker: affinity_index=4 target_cpu=4 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=3 target_cpu=3 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=5 target_cpu=5 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=6 target_cpu=6 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=7 target_cpu=7 status=ok
+zcraid-mirror-tcp-send-lane: worker=4 branch=0 lane=4 addr=172.31.36.169 port=42004 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=3 branch=0 lane=3 addr=172.31.36.169 port=42003 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=1 branch=1 lane=1 addr=172.31.43.77 port=44001 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=5 branch=0 lane=5 addr=172.31.36.169 port=42005 source_ip=kernel-route
+zcraid-mirror-tcp-send-worker: affinity_index=9 target_cpu=9 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=10 target_cpu=10 status=ok
+zcraid-mirror-tcp-send-lane: worker=6 branch=0 lane=6 addr=172.31.36.169 port=42006 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=3 branch=1 lane=3 addr=172.31.43.77 port=44003 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=4 branch=1 lane=4 addr=172.31.43.77 port=44004 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=7 branch=0 lane=7 addr=172.31.36.169 port=42007 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=5 branch=1 lane=5 addr=172.31.43.77 port=44005 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=6 branch=1 lane=6 addr=172.31.43.77 port=44006 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=9 branch=0 lane=9 addr=172.31.36.169 port=42009 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=10 branch=0 lane=10 addr=172.31.36.169 port=42010 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=7 branch=1 lane=7 addr=172.31.43.77 port=44007 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=9 branch=1 lane=9 addr=172.31.43.77 port=44009 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=10 branch=1 lane=10 addr=172.31.43.77 port=44010 source_ip=kernel-route
+tcp-bench-connect-route-probe: peer=172.31.36.169:42000 local_socket=172.31.36.169:44432 probe_src=172.31.36.169 route_dev=lo route_src=172.31.36.169 route="local 172.31.36.169 from 172.31.36.169 dev lo uid 1000 \ cache <local>"
+zcraid-mirror-tcp-send-lane: worker=0 branch=0 lane=0 addr=172.31.36.169 port=42000 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=0 branch=1 lane=0 addr=172.31.43.77 port=44000 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=2 branch=1 lane=2 addr=172.31.43.77 port=44002 source_ip=kernel-route
+zcraid-mirror-tcp-send-worker: affinity_index=8 target_cpu=8 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=11 target_cpu=11 status=ok
+zcraid-mirror-tcp-send-lane: worker=8 branch=0 lane=8 addr=172.31.36.169 port=42008 source_ip=kernel-route
+zcraid-mirror-tcp-send-worker: affinity_index=12 target_cpu=12 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=14 target_cpu=14 status=ok
+zcraid-mirror-tcp-send-worker: affinity_index=13 target_cpu=13 status=ok
+zcraid-mirror-tcp-send-lane: worker=11 branch=0 lane=11 addr=172.31.36.169 port=42011 source_ip=kernel-route
+zcraid-mirror-tcp-send-worker: affinity_index=15 target_cpu=15 status=ok
+zcraid-mirror-tcp-send-lane: worker=8 branch=1 lane=8 addr=172.31.43.77 port=44008 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=14 branch=0 lane=14 addr=172.31.36.169 port=42014 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=12 branch=0 lane=12 addr=172.31.36.169 port=42012 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=13 branch=0 lane=13 addr=172.31.36.169 port=42013 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=15 branch=0 lane=15 addr=172.31.36.169 port=42015 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=13 branch=1 lane=13 addr=172.31.43.77 port=44013 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=15 branch=1 lane=15 addr=172.31.43.77 port=44015 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=14 branch=1 lane=14 addr=172.31.43.77 port=44014 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=12 branch=1 lane=12 addr=172.31.43.77 port=44012 source_ip=kernel-route
+zcraid-mirror-tcp-send-lane: worker=11 branch=1 lane=11 addr=172.31.43.77 port=44011 source_ip=kernel-route
+tcp-bench-connect-route-probe: peer=172.31.43.77:44002 local_socket=172.31.36.169:46518 probe_src=172.31.36.169 route_dev=ens50 route_src=172.31.36.169 route="172.31.43.77 from 172.31.36.169 dev ens50 uid 1000 \ cache"
+zcraid-mirror-send-worker: worker=0 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.052490 payload_Gbitps=10.228 logical_iops=312137 thread_cpu_seconds=0.018024 cpu_wall_pct=34.3 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=10 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-send-worker-wire: worker=0 branch_wire_bytes=134479872 branch_wire_Gbitps=20.496
+zcraid-mirror-send-worker: worker=1 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.029197 payload_Gbitps=18.388 logical_iops=561161 thread_cpu_seconds=0.019988 cpu_wall_pct=68.5 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=3 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-send-worker-wire: worker=1 branch_wire_bytes=134479872 branch_wire_Gbitps=36.848
+zcraid-mirror-send-worker: worker=2 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.043296 payload_Gbitps=12.400 logical_iops=378416 thread_cpu_seconds=0.018760 cpu_wall_pct=43.3 target_cpu=2 affinity_applied=true start_cpu=2 end_cpu=2 voluntary_ctxt_switches=8 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-send-worker-wire: worker=2 branch_wire_bytes=134479872 branch_wire_Gbitps=24.848
+zcraid-mirror-send-worker: worker=3 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.036246 payload_Gbitps=14.812 logical_iops=452024 thread_cpu_seconds=0.027034 cpu_wall_pct=74.6 target_cpu=3 affinity_applied=true start_cpu=3 end_cpu=3 voluntary_ctxt_switches=3 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-send-worker-wire: worker=3 branch_wire_bytes=134479872 branch_wire_Gbitps=29.682
+zcraid-mirror-send-worker: worker=4 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.053625 payload_Gbitps=10.012 logical_iops=305530 thread_cpu_seconds=0.018957 cpu_wall_pct=35.4 target_cpu=4 affinity_applied=true start_cpu=4 end_cpu=4 voluntary_ctxt_switches=5 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-send-worker-wire: worker=4 branch_wire_bytes=134479872 branch_wire_Gbitps=20.062
+zcraid-mirror-send-worker: worker=5 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.033987 payload_Gbitps=15.796 logical_iops=482070 thread_cpu_seconds=0.024795 cpu_wall_pct=73.0 target_cpu=5 affinity_applied=true start_cpu=5 end_cpu=5 voluntary_ctxt_switches=3 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-send-worker-wire: worker=5 branch_wire_bytes=134479872 branch_wire_Gbitps=31.655
+zcraid-mirror-send-worker: worker=6 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.063511 payload_Gbitps=8.453 logical_iops=257973 thread_cpu_seconds=0.018667 cpu_wall_pct=29.4 target_cpu=6 affinity_applied=true start_cpu=6 end_cpu=6 voluntary_ctxt_switches=4 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-send-worker-wire: worker=6 branch_wire_bytes=134479872 branch_wire_Gbitps=16.940
+zcraid-mirror-send-worker: worker=7 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.072067 payload_Gbitps=7.450 logical_iops=227343 thread_cpu_seconds=0.032470 cpu_wall_pct=45.1 target_cpu=7 affinity_applied=true start_cpu=7 end_cpu=7 voluntary_ctxt_switches=3 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-send-worker-wire: worker=7 branch_wire_bytes=134479872 branch_wire_Gbitps=14.928
+zcraid-mirror-send-worker: worker=8 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.029762 payload_Gbitps=18.039 logical_iops=550492 thread_cpu_seconds=0.020613 cpu_wall_pct=69.3 target_cpu=8 affinity_applied=true start_cpu=8 end_cpu=8 voluntary_ctxt_switches=2 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-send-worker-wire: worker=8 branch_wire_bytes=134479872 branch_wire_Gbitps=36.148
+zcraid-mirror-send-worker: worker=9 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.029678 payload_Gbitps=18.090 logical_iops=552055 thread_cpu_seconds=0.020891 cpu_wall_pct=70.4 target_cpu=9 affinity_applied=true start_cpu=9 end_cpu=9 voluntary_ctxt_switches=2 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-send-worker-wire: worker=9 branch_wire_bytes=134479872 branch_wire_Gbitps=36.250
+zcraid-mirror-send-worker: worker=10 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.036373 payload_Gbitps=14.760 logical_iops=450439 thread_cpu_seconds=0.017897 cpu_wall_pct=49.2 target_cpu=10 affinity_applied=true start_cpu=10 end_cpu=10 voluntary_ctxt_switches=3 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-send-worker-wire: worker=10 branch_wire_bytes=134479872 branch_wire_Gbitps=29.578
+zcraid-mirror-send-worker: worker=11 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.037142 payload_Gbitps=14.455 logical_iops=441117 thread_cpu_seconds=0.027860 cpu_wall_pct=75.0 target_cpu=11 affinity_applied=true start_cpu=11 end_cpu=11 voluntary_ctxt_switches=2 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-send-worker-wire: worker=11 branch_wire_bytes=134479872 branch_wire_Gbitps=28.966
+zcraid-mirror-send-worker: worker=12 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.029401 payload_Gbitps=18.260 logical_iops=557252 thread_cpu_seconds=0.020221 cpu_wall_pct=68.8 target_cpu=12 affinity_applied=true start_cpu=12 end_cpu=12 voluntary_ctxt_switches=4 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-send-worker-wire: worker=12 branch_wire_bytes=134479872 branch_wire_Gbitps=36.591
+zcraid-mirror-send-worker: worker=13 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.063607 payload_Gbitps=8.440 logical_iops=257581 thread_cpu_seconds=0.019402 cpu_wall_pct=30.5 target_cpu=13 affinity_applied=true start_cpu=13 end_cpu=13 voluntary_ctxt_switches=4 involuntary_ctxt_switches=0 migrations=0
+zcraid-mirror-send-worker-wire: worker=13 branch_wire_bytes=134479872 branch_wire_Gbitps=16.914
+zcraid-mirror-send-worker: worker=14 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.041005 payload_Gbitps=13.093 logical_iops=399565 thread_cpu_seconds=0.019534 cpu_wall_pct=47.6 target_cpu=14 affinity_applied=true start_cpu=14 end_cpu=14 voluntary_ctxt_switches=3 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-send-worker-wire: worker=14 branch_wire_bytes=134479872 branch_wire_Gbitps=26.237
+zcraid-mirror-send-worker: worker=15 streams=2 payload_bytes=67108864 wire_bytes=134479872 extents=1024 logical_records=16384 acks=0 seconds=0.049389 payload_Gbitps=10.870 logical_iops=331733 thread_cpu_seconds=0.019867 cpu_wall_pct=40.2 target_cpu=15 affinity_applied=true start_cpu=15 end_cpu=15 voluntary_ctxt_switches=4 involuntary_ctxt_switches=1 migrations=0
+zcraid-mirror-send-worker-wire: worker=15 branch_wire_bytes=134479872 branch_wire_Gbitps=21.783
+zcraid-mirror-send-summary: transport=tcp-mux-compatible branches=2 lanes=16 workers=16 extent_bytes=65536 logical_record_bytes=4096 ack_policy=disabled ack_window=1 zlane_coord=lane-owner zlane_lock_shards=0 logical_payload_bytes=1073741824 branch_wire_bytes=2151677952 extents=16384 logical_records=262144 committed_acks=0 seconds=0.072067 logical_payload_Gbitps=119.193 branch_wire_Gbitps=238.852 logical_iops=3637483 voluntary_ctxt_switches=63 involuntary_ctxt_switches=7 migrations=0
+zcraid-mirror-send-commit-contract: placement_owner=userspace-raid block_device_raid_primitive=false ack_policy=disabled measurement=transport-ceiling commit_point=not-enforced ordering=send-order-only zlane_coord=lane-owner

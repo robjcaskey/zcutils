@@ -1,0 +1,37 @@
+zcraid-mirror-terminal: target=zcmem:2147483648 device_bytes=2147483648 required_bytes=1073741824 alignment=65536 durability=volatile sync_contract=remote-volatile-retained-hwm io_mode=uring placement_owner=userspace-raid block_device_raid_primitive=false
+zcraid-mirror-recv-branch-topology: branch=0 domain=efa_0-rdm lanes=0-15 leader_cpus=16-31 workers=0-15 block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches
+zcraid-mirror-recv-branch-topology: branch=1 domain=efa_0-rdm lanes=0-15 leader_cpus=32-47 workers=0-15 block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches
+zcraid-mirror-recv: transport=tcp-mux-compatible bind=0.0.0.0 base_port=44000 branch=1 lanes=0-15 lane_count=16 bytes_per_lane=67108864 extent_bytes=65536 logical_record_bytes=4096 extents_per_lane=1024 workers=16 ack_enabled=yes ack_policy=sync completion_semantic=sync ack_window=1024 per_lane_rx_qd=1024 aggregate_rx_outstanding=0 zlane_coord=lane-owner zlane_lock_shards=0 tcp_recv_spin=no tcp_recv_spin_budget=off provider=efa endpoint=rdm branch_domain=efa_0-rdm plan_json=yes compact_4k=no wire_sequence_header=yes terminal=zcmem:2147483648 terminal_ack_semantic=terminal-write-plus-sync-hwm
+zcraid-mirror-tcp-recv-worker: affinity_index=1 target_cpu=33 status=ok
+zcraid-mirror-tcp-recv-worker: affinity_index=2 target_cpu=34 status=ok
+zcraid-mirror-tcp-recv-worker: affinity_index=3 target_cpu=35 status=ok
+zcraid-mirror-tcp-recv-worker: affinity_index=5 target_cpu=37 status=ok
+zcraid-mirror-tcp-recv-worker: affinity_index=4 target_cpu=36 status=ok
+zcraid-mirror-tcp-recv-worker: affinity_index=6 target_cpu=38 status=ok
+zcraid-mirror-tcp-recv-worker: affinity_index=7 target_cpu=39 status=ok
+zcraid-mirror-tcp-recv-worker: affinity_index=8 target_cpu=40 status=ok
+zcraid-mirror-tcp-recv-worker: affinity_index=9 target_cpu=41 status=ok
+zcraid-mirror-tcp-recv-worker: affinity_index=10 target_cpu=42 status=ok
+zcraid-mirror-tcp-recv-worker: affinity_index=11 target_cpu=43 status=ok
+zcraid-mirror-tcp-recv-worker: affinity_index=0 target_cpu=32 status=ok
+zcraid-mirror-tcp-recv-worker: affinity_index=12 target_cpu=44 status=ok
+zcraid-mirror-tcp-recv-lane: worker=3 branch=1 lane=3 port=44003 peer=172.31.36.169:47530
+zcraid-mirror-tcp-recv-worker: affinity_index=13 target_cpu=45 status=ok
+zcraid-mirror-tcp-recv-lane: worker=5 branch=1 lane=5 port=44005 peer=172.31.36.169:45160
+zcraid-mirror-tcp-recv-lane: worker=2 branch=1 lane=2 port=44002 peer=172.31.36.169:42528
+zcraid-mirror-tcp-recv-worker: affinity_index=14 target_cpu=46 status=ok
+zcraid-mirror-tcp-recv-lane: worker=1 branch=1 lane=1 port=44001 peer=172.31.36.169:54500
+zcraid-mirror-tcp-recv-lane: worker=6 branch=1 lane=6 port=44006 peer=172.31.36.169:51534
+zcraid-mirror-tcp-recv-worker: affinity_index=15 target_cpu=47 status=ok
+zcraid-mirror-tcp-recv-lane: worker=4 branch=1 lane=4 port=44004 peer=172.31.36.169:40736
+zcraid-mirror-tcp-recv-lane: worker=7 branch=1 lane=7 port=44007 peer=172.31.36.169:53374
+zcraid-mirror-tcp-recv-lane: worker=8 branch=1 lane=8 port=44008 peer=172.31.36.169:43318
+zcraid-mirror-tcp-recv-lane: worker=9 branch=1 lane=9 port=44009 peer=172.31.36.169:54192
+zcraid-mirror-tcp-recv-lane: worker=10 branch=1 lane=10 port=44010 peer=172.31.36.169:39342
+zcraid-mirror-tcp-recv-lane: worker=11 branch=1 lane=11 port=44011 peer=172.31.36.169:37770
+zcraid-mirror-tcp-recv-lane: worker=0 branch=1 lane=0 port=44000 peer=172.31.36.169:38186
+zcraid-mirror-tcp-recv-lane: worker=12 branch=1 lane=12 port=44012 peer=172.31.36.169:41396
+zcraid-mirror-tcp-recv-lane: worker=13 branch=1 lane=13 port=44013 peer=172.31.36.169:33330
+zcraid-mirror-tcp-recv-lane: worker=14 branch=1 lane=14 port=44014 peer=172.31.36.169:53126
+zcraid-mirror-tcp-recv-lane: worker=15 branch=1 lane=15 port=44015 peer=172.31.36.169:58522
+Error: Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }
