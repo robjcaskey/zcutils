@@ -1,0 +1,75 @@
+representative=yes shared_system=yes topology_strict=1 topology_fatal=0
+placement=single-userspace-writer-to-single-terminal-leaf mirror=no stripe=no spill=no
+device=/dev/nvme0n1 model=Amazon EC2 NVMe Instance Storage device_numa=1 filesystem_source=/dev/nvme0n1 file=/mnt/zc-fio-leaf/terminal-leaf.bin file_bytes=274877906944
+hugepages=1024 memlock_kb=194658552 ioengine=io_uring direct=1 fixedbufs=1 registerfiles=1
+low_qd_lane=0 worker=0 cpu=96 hctx=0 worker_count=1 lane_count=1
+saturation_workers=32 lanes=32 cpu_list=96-127 per_worker_region=8GiB aggregate_region=256GiB
+raw_transport=local-pcie raw_transport_rtt=not-applicable network_rtt_ceiling=not-applicable
+read_completion=direct-read-data-visible-to-userspace
+write_completion=direct-write-completed-without-durability-barrier
+sync_completion=each-direct-write-followed-by-fsync-drain-via-psync-engine
+fio_version=fio-3.36 kernel=6.17.0-1019-aws host=ip-172-31-40-73
+hctx=0 cpus=96, 97, 98
+hctx=1 cpus=99, 100, 101
+hctx=10 cpus=126, 127, 128
+hctx=11 cpus=129, 130, 131
+hctx=12 cpus=132, 133, 134
+hctx=13 cpus=135, 136, 137
+hctx=14 cpus=138, 139, 140
+hctx=15 cpus=141, 142, 143
+hctx=16 cpus=144, 145, 146
+hctx=17 cpus=147, 148, 149
+hctx=18 cpus=150, 151, 152
+hctx=19 cpus=153, 154, 155
+hctx=2 cpus=102, 103, 104
+hctx=20 cpus=156, 157, 158
+hctx=21 cpus=159, 160, 161
+hctx=22 cpus=162, 163, 164
+hctx=23 cpus=165, 166, 167
+hctx=24 cpus=168, 169, 170
+hctx=25 cpus=171, 172, 173
+hctx=26 cpus=174, 175, 176
+hctx=27 cpus=177, 178, 179
+hctx=28 cpus=180, 181, 182
+hctx=29 cpus=183, 184, 185
+hctx=3 cpus=105, 106, 107
+hctx=30 cpus=186, 187, 188
+hctx=31 cpus=189, 190, 191
+hctx=32 cpus=0, 1, 2
+hctx=33 cpus=3, 4, 5
+hctx=34 cpus=6, 7, 8
+hctx=35 cpus=9, 10, 11
+hctx=36 cpus=12, 13, 14
+hctx=37 cpus=15, 16, 17
+hctx=38 cpus=18, 19, 20
+hctx=39 cpus=21, 22, 23
+hctx=4 cpus=108, 109, 110
+hctx=40 cpus=24, 25, 26
+hctx=41 cpus=27, 28, 29
+hctx=42 cpus=30, 31, 32
+hctx=43 cpus=33, 34, 35
+hctx=44 cpus=36, 37, 38
+hctx=45 cpus=39, 40, 41
+hctx=46 cpus=42, 43, 44
+hctx=47 cpus=45, 46, 47
+hctx=48 cpus=48, 49, 50
+hctx=49 cpus=51, 52, 53
+hctx=5 cpus=111, 112, 113
+hctx=50 cpus=54, 55, 56
+hctx=51 cpus=57, 58, 59
+hctx=52 cpus=60, 61, 62
+hctx=53 cpus=63, 64, 65
+hctx=54 cpus=66, 67, 68
+hctx=55 cpus=69, 70, 71
+hctx=56 cpus=72, 73, 74
+hctx=57 cpus=75, 76, 77
+hctx=58 cpus=78, 79, 80
+hctx=59 cpus=81, 82, 83
+hctx=6 cpus=114, 115, 116
+hctx=60 cpus=84, 85, 86
+hctx=61 cpus=87, 88, 89
+hctx=62 cpus=90, 91, 92
+hctx=63 cpus=93, 94, 95
+hctx=7 cpus=117, 118, 119
+hctx=8 cpus=120, 121, 122
+hctx=9 cpus=123, 124, 125

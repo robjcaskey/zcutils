@@ -26,8 +26,10 @@ pub mod block;
 pub mod dirty_pool;
 pub mod enterprise_workload;
 pub mod fanout;
+pub mod integrity_contract;
 mod io_slots;
 pub mod ofi_pipe;
+pub mod persistent_wal;
 pub mod readcache_bench;
 pub(crate) mod wal_contract;
 pub mod window;
@@ -33499,6 +33501,9 @@ const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_WINDOW: u16 = 1 << 3;
 const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_WINDOW: u16 = 1 << 4;
 const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_WRITE_PAYLOAD: u16 = 1 << 5;
 const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_RESULT: u16 = 1 << 6;
+// Set only by a userspace placement stage whose startup admission proved the
+// requested corruption model and the corresponding correction operator.
+const ZCNBLK_FAN_WAL_FLAG_TOPOLOGY_INTEGRITY_ADMITTED: u16 = 1 << 7;
 const ZCNBLK_FAN_WAL_COMPACT_WRITE_EXTENT_LEN: usize = 48;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33547,6 +33552,116 @@ impl ZcnblkFanPlacementMode {
             Self::Raid10 => "raid10",
         }
     }
+}
+
+fn zcnblk_fan_integrity_admission_from_env(
+    mode: ZcnblkFanPlacementMode,
+    leaf_count: usize,
+    max_atomic_write_bytes: usize,
+) -> io::Result<Option<integrity_contract::IntegrityAdmission>> {
+    let Ok(spec) = env::var("URING_PLAY_ZCNBLK_FAN_INTEGRITY_LEAVES") else {
+        return Ok(None);
+    };
+    let mut leaves = Vec::new();
+    for (index, entry) in spec.split(';').enumerate() {
+        let fields = entry.split('|').map(str::trim).collect::<Vec<_>>();
+        if fields.len() != 7 || fields[0].is_empty() || fields[1].is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "integrity leaf {index} must be id|fault-domain|memory-ecc|transport-integrity|none|framing|e2e|durable-flush|power-fail-atomic-bytes"
+                ),
+            ));
+        }
+        let media_integrity = match fields[4].to_ascii_lowercase().as_str() {
+            "none" | "unverified" => integrity_contract::IntegrityEvidence::Unverified,
+            "frame" | "framing" => integrity_contract::IntegrityEvidence::FramingOnly,
+            "e2e" | "end-to-end" | "end_to_end" => integrity_contract::IntegrityEvidence::EndToEnd,
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown integrity media evidence {other:?}"),
+                ));
+            }
+        };
+        leaves.push(integrity_contract::LeafIntegrityCapability {
+            leaf_id: fields[0].to_string(),
+            fault_domain: fields[1].to_string(),
+            memory_ecc: parse_bool_arg(fields[2], "integrity memory ECC")?,
+            transport_integrity: parse_bool_arg(fields[3], "integrity transport")?,
+            media_integrity,
+            durable_flush: parse_bool_arg(fields[5], "integrity durable flush")?,
+            power_fail_atomic_bytes: parse_size_arg(fields[6], "power-fail atomic bytes")? as u64,
+        });
+    }
+    if leaves.len() != leaf_count {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "integrity declaration has {} leaves but placement has {leaf_count}",
+                leaves.len()
+            ),
+        ));
+    }
+    let required = integrity_contract::RequiredFaultModel {
+        known_erasures: env_usize_or("URING_PLAY_ZCNBLK_FAN_REQUIRED_ERASURES", 0),
+        silent_corruptions: env_usize_or("URING_PLAY_ZCNBLK_FAN_REQUIRED_SILENT_CORRUPTIONS", 1),
+    };
+    let requested_resolver = env::var("URING_PLAY_ZCNBLK_FAN_CORRUPTION_RESOLVER")
+        .unwrap_or_else(|_| "none".to_string())
+        .to_ascii_lowercase();
+    let resolver = match requested_resolver.as_str() {
+        "none" => integrity_contract::CorruptionResolver::None,
+        // These names are understood so topology files fail with a precise
+        // implementation error instead of silently claiming an operator.
+        "majority" | "replica-majority" | "replica_majority" => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "zcnblk-fan does not yet implement quorum reads/replica-majority repair; redundant placement alone cannot admit CRC-free payloads",
+            ));
+        }
+        "erasure" | "erasure-decode" | "erasure_decode" => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "zcnblk-fan does not yet implement erasure decoding/repair; parity placement alone cannot admit CRC-free payloads",
+            ));
+        }
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown corruption resolver {other:?}"),
+            ));
+        }
+    };
+    let composition = match mode {
+        ZcnblkFanPlacementMode::Stripe => {
+            integrity_contract::UserspaceComposition::Stripe { leaves: leaf_count }
+        }
+        ZcnblkFanPlacementMode::Mirror => {
+            integrity_contract::UserspaceComposition::Replicas { copies: leaf_count }
+        }
+        ZcnblkFanPlacementMode::Raid10 => {
+            if leaf_count < 2 || leaf_count % 2 != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "RAID10 integrity admission requires an even leaf count",
+                ));
+            }
+            integrity_contract::UserspaceComposition::Raid10 {
+                groups: leaf_count / 2,
+                copies: 2,
+            }
+        }
+    };
+    integrity_contract::admit_topology(
+        composition,
+        &leaves,
+        required,
+        resolver,
+        integrity_contract::CommitProtocol::PayloadThenCommit,
+        max_atomic_write_bytes as u64,
+    )
+    .map(Some)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46239,6 +46354,7 @@ fn zcnblk_fan_wal_handler(
     order: Arc<ZcnblkFanOrder>,
     order_mode: ZcnblkFanOrderMode,
     mode: ZcnblkFanPlacementMode,
+    topology_integrity_admitted: bool,
     runtime_plan: ZcPlanRuntime,
     leaf_base_port: u16,
     ports: usize,
@@ -46340,11 +46456,15 @@ fn zcnblk_fan_wal_handler(
             zcnblk_fan_wal_attach_local_topology(
                 ZcnblkFanWalFrame {
                     op: ZCNBLK_FAN_WAL_OP_HELLO,
-                    flags: if result_ranges {
+                    flags: (if result_ranges {
                         ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH
                     } else {
                         0
-                    },
+                    }) | (if topology_integrity_admitted {
+                        ZCNBLK_FAN_WAL_FLAG_TOPOLOGY_INTEGRITY_ADMITTED
+                    } else {
+                        0
+                    }),
                     lane_id: meta.lane as u32,
                     lane_count: ports as u32,
                     branch_id: leaf_idx as u32,
@@ -48849,6 +48969,19 @@ fn zcnblk_fan_wal(
         ));
     }
     let leaf_specs = zcnblk_read_fan_leaf_specs(leaf_spec)?;
+    let integrity_admission =
+        zcnblk_fan_integrity_admission_from_env(mode, leaf_specs.len(), chunk_bytes)?;
+    let topology_integrity_admitted = integrity_admission.is_some();
+    if let Some(admission) = &integrity_admission {
+        println!(
+            "zcnblk-fan-integrity-admission: admitted=true hotpath_payload_checks=none fixed_header_crc=on proof={}",
+            admission.proof
+        );
+    } else {
+        eprintln!(
+            "zcnblk-fan-integrity-admission: admitted=false reason=no-formal-chain-contract payload_crc_required=true"
+        );
+    }
     let local_leaf_backends = zcnblk_fan_wal_local_leaf_backends(&leaf_specs, chunk_bytes)?;
     let local_leaf_mode = local_leaf_backends.is_some();
     let leaf_addrs = Arc::new(leaf_specs);
@@ -49135,6 +49268,7 @@ fn zcnblk_fan_wal(
                 order,
                 order_mode,
                 mode,
+                topology_integrity_admitted,
                 runtime_plan,
                 leaf_base_port,
                 ports,
@@ -49898,6 +50032,11 @@ enum ZcnblkWalLeafBackend {
     LeaseMemory {
         store: ZcnblkWalLeafLeaseMemory,
     },
+    PersistentJournal {
+        label: String,
+        store: persistent_wal::PersistentWalRuntime,
+        device_bytes: u64,
+    },
     Block {
         label: String,
         file: fs::File,
@@ -49913,6 +50052,14 @@ impl ZcnblkWalLeafBackend {
             Self::Memory { arena, .. } => Some((arena.ptr, arena.device_bytes)),
             _ => None,
         }
+    }
+
+    fn requires_topology_integrity_admission(&self) -> bool {
+        matches!(
+            self,
+            Self::PersistentJournal { store, .. }
+                if store.stats().integrity == persistent_wal::IntegrityMode::Frame
+        )
     }
 }
 
@@ -50226,6 +50373,7 @@ impl ZcnblkWalLeafBackend {
             Self::DevNull { .. } => "zcdevnull",
             Self::Memory { label, .. } => label,
             Self::LeaseMemory { store } => &store.label,
+            Self::PersistentJournal { label, .. } => label,
             Self::Block { label, .. } => label,
         }
     }
@@ -50235,6 +50383,7 @@ impl ZcnblkWalLeafBackend {
             Self::DevNull { device_bytes, .. } | Self::Block { device_bytes, .. } => *device_bytes,
             Self::Memory { arena, .. } => arena.device_bytes as u64,
             Self::LeaseMemory { store } => store.device_bytes,
+            Self::PersistentJournal { device_bytes, .. } => *device_bytes,
         }
     }
 
@@ -50248,6 +50397,7 @@ impl ZcnblkWalLeafBackend {
             } => *required_alignment,
             Self::Memory { arena, .. } => arena.required_alignment,
             Self::LeaseMemory { store } => store.required_alignment,
+            Self::PersistentJournal { .. } => ZC_WAL_RECORD_SIZE,
         }
     }
 
@@ -50269,6 +50419,7 @@ impl ZcnblkWalLeafBackend {
     fn durability(&self) -> ZcnblkWalLeafDurability {
         match self {
             Self::Block { durability, .. } => *durability,
+            Self::PersistentJournal { .. } => ZcnblkWalLeafDurability::Persistent,
             Self::DevNull { .. } | Self::Memory { .. } | Self::LeaseMemory { .. } => {
                 ZcnblkWalLeafDurability::Volatile
             }
@@ -50281,6 +50432,7 @@ impl ZcnblkWalLeafBackend {
                 durability: ZcnblkWalLeafDurability::Persistent,
                 ..
             } => "remote-persistent-sync-data",
+            Self::PersistentJournal { .. } => "remote-persistent-journal-hwm",
             Self::Memory { .. } | Self::LeaseMemory { .. } if allow_volatile_sync => {
                 "remote-volatile-retained-hwm"
             }
@@ -50327,6 +50479,9 @@ impl ZcnblkWalLeafBackend {
                 Ok(())
             }
             Self::LeaseMemory { store } => store.write_copy_at(offset, payload),
+            Self::PersistentJournal { store, .. } => {
+                store.append_contiguous(offset, payload).map(|_| ())
+            }
             Self::Block { file, .. } => zc_write_all_at(file, payload, offset),
         }
     }
@@ -50337,6 +50492,11 @@ impl ZcnblkWalLeafBackend {
             Self::DevNull { .. } => Ok(vec![0u8; len]),
             Self::Memory { arena, .. } => Ok(arena.read_at(offset, len)),
             Self::LeaseMemory { store } => store.read_at(offset, len),
+            Self::PersistentJournal { store, .. } => {
+                let mut payload = vec![0u8; len];
+                store.read_at(offset, &mut payload)?;
+                Ok(payload)
+            }
             Self::Block { file, .. } => {
                 let mut payload = vec![0u8; len];
                 zc_read_exact_at(file, &mut payload, offset)?;
@@ -50347,6 +50507,7 @@ impl ZcnblkWalLeafBackend {
 
     fn sync(&self, allow_volatile_sync: bool) -> io::Result<()> {
         match self {
+            Self::PersistentJournal { store, .. } => store.sync().map(|_| ()),
             Self::Block {
                 file,
                 durability: ZcnblkWalLeafDurability::Persistent,
@@ -50582,6 +50743,9 @@ impl ZcnblkWalLeafBackend {
                 Ok(())
             }
             Self::LeaseMemory { store } => store.write_copy_at(offset, payload),
+            Self::PersistentJournal { store, .. } => {
+                store.append_contiguous(offset, payload).map(|_| ())
+            }
             Self::Block { file, .. } => zc_write_all_at(file, payload, offset),
         }
     }
@@ -50694,6 +50858,92 @@ fn zcnblk_wal_leaf_open_backend(
     chunk_bytes: usize,
     preferred_numa_node: Option<i32>,
 ) -> io::Result<ZcnblkWalLeafBackend> {
+    if let Some(spec) = target_spec.strip_prefix("zcpwal:") {
+        let fields = spec.split(',').collect::<Vec<_>>();
+        if fields.len() != 4 || fields[0].is_empty() || fields[1].is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcpwal target must be zcpwal:JOURNAL_PATH,BASE_PATH,LOGICAL_SIZE,JOURNAL_SIZE",
+            ));
+        }
+        let device_bytes = parse_size_arg(fields[2], "zcpwal logical size")? as u64;
+        let journal_bytes = parse_size_arg(fields[3], "zcpwal journal size")? as u64;
+        let integrity = match env::var("URING_PLAY_ZCNBLK_PWAL_INTEGRITY")
+            .unwrap_or_else(|_| "crc32c".to_string())
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "frame" | "framing" | "none" => persistent_wal::IntegrityMode::Frame,
+            "crc" | "crc32c" => persistent_wal::IntegrityMode::Crc32c,
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcpwal integrity mode {other:?}; use frame or crc32c"),
+                ));
+            }
+        };
+        let file_provisioning = match env::var("URING_PLAY_ZCNBLK_PWAL_FILE_PROVISIONING")
+            .unwrap_or_else(|_| "preallocate".to_string())
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "preallocate" | "fallocate" => persistent_wal::FileProvisioning::Preallocate,
+            "require-allocated" | "require_allocated" | "verify" => {
+                persistent_wal::FileProvisioning::RequireAllocated
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "unknown zcpwal file provisioning {other:?}; use preallocate or require-allocated"
+                    ),
+                ));
+            }
+        };
+        let io_mode = match env::var("URING_PLAY_ZCNBLK_PWAL_IO")
+            .unwrap_or_else(|_| "buffered".to_string())
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "buffered" | "page-cache" | "page_cache" => persistent_wal::BackingIoMode::Buffered,
+            "direct" | "o_direct" | "odirect" => persistent_wal::BackingIoMode::Direct,
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown zcpwal I/O mode {other:?}; use buffered or direct"),
+                ));
+            }
+        };
+        let store = persistent_wal::PersistentWalRuntime::open_with_options(
+            fields[0],
+            fields[1],
+            device_bytes,
+            journal_bytes,
+            integrity,
+            persistent_wal::PersistentWalOpenOptions {
+                file_provisioning,
+                io_mode,
+            },
+        )?;
+        let backing = store.stats();
+        return Ok(ZcnblkWalLeafBackend::PersistentJournal {
+            label: format!(
+                "zcpwal:{},{}:integrity={}:io={:?}:journal_backing={:?}:base_backing={:?}:file_provisioning={:?}",
+                fields[0],
+                fields[1],
+                match integrity {
+                    persistent_wal::IntegrityMode::Frame => "frame",
+                    persistent_wal::IntegrityMode::Crc32c => "crc32c",
+                },
+                io_mode,
+                backing.journal_backing.kind,
+                backing.base_backing.kind,
+                file_provisioning,
+            ),
+            store,
+            device_bytes,
+        });
+    }
     if zcnblk_is_devnull_target(target_spec) {
         let device_bytes = env_size_opt("URING_PLAY_ZCNBLK_DEVNULL_BYTES")?
             .unwrap_or(1024usize * 1024 * 1024 * 1024) as u64;
@@ -53819,6 +54069,7 @@ fn zcnblk_wal_leaf_process_stream(
             ZcnblkWalLeafBackend::DevNull { .. } => None,
             ZcnblkWalLeafBackend::Memory { .. } => None,
             ZcnblkWalLeafBackend::LeaseMemory { .. } => None,
+            ZcnblkWalLeafBackend::PersistentJournal { .. } => None,
             ZcnblkWalLeafBackend::Block { .. } => {
                 let options = zcnblk_wal_leaf_ring_options(ring_affinity_index)?;
                 println!(
@@ -53855,6 +54106,20 @@ fn zcnblk_wal_leaf_process_stream(
                             meta.lane, frame.lane_id
                         ),
                     ));
+                }
+                let topology_integrity_admitted =
+                    frame.flags & ZCNBLK_FAN_WAL_FLAG_TOPOLOGY_INTEGRITY_ADMITTED != 0;
+                if backend.requires_topology_integrity_admission() && !topology_integrity_admitted {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "CRC-free persistent WAL refused: upstream userspace topology did not present a startup integrity admission",
+                    ));
+                }
+                if topology_integrity_admitted {
+                    println!(
+                        "zcnblk-wal-leaf-integrity-contract: worker={worker} slot={stream_slot} lane={} admitted=true validation=topology-chain hotpath_payload_crc=off fixed_header_crc=on",
+                        meta.lane
+                    );
                 }
                 result_ranges = result_ranges_configured
                     && frame.flags & ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH != 0;

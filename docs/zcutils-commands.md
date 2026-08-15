@@ -159,8 +159,17 @@ Startup preflight accounts for the full shared mapping once per initiator OFI
 domain and the full leaf window once per leaf endpoint. Logs report RMA bytes,
 doorbells, queue occupancy, CQ batching, completion semantics, and the copy
 ledger. This removes the userspace message-payload gather and leaf receive copy;
-it is not end-to-end PostgreSQL zero copy because the filesystem/block edge
-still copies into the shared slot. `scripts/zcnblk-shm-block-bench.sh` exposes
+it is not automatically end-to-end PostgreSQL zero copy because ordinary
+filesystem/block bios still copy into the shared slot. The client module has a
+strictly opt-in exception: with an imported external HugeTLB arena,
+transferred payload leases, `shm_bio_arena_zero_copy=1`, and an O_DIRECT bio
+whose pages exactly alias the selected lane-local payload slot, it leases those
+same pages and skips the write/read copy. Mismatched or busy slots fall back to
+the copy path. `/sys/kernel/debug/zcnblk/state` reports
+`bio_alias_writes`, `bio_alias_reads`, and `bio_alias_busy_fallbacks`; do not
+claim this operation was exercised unless the relevant alias counter advances.
+This is buffer ownership only: placement remains in the userspace target.
+`scripts/zcnblk-shm-block-bench.sh` exposes
 the same variables for correctness and QD curves. `scripts/zcnblk-pgbench.sh`
 uses `WAL_TRANSPORT=tcp|ofi`; keep owner count, owner/ingress/leaf CPU maps,
 pipeline depth, database settings, and workload parameters identical for a
@@ -170,13 +179,13 @@ record that its same-domain EFA topology is intentional; without that explicit
 confirmation the run is non-representative, and strict mode stops before
 printing benchmark results.
 
-The current client shared arena is still allocated with `vmalloc_user()` and
-mapped with `remap_vmalloc_range()`. Reserving HugeTLB pages does not change
-that source backing. Both block and PostgreSQL harnesses therefore warn and
+The client begins with `vmalloc_user()` backing but can import a sealed HugeTLB
+memfd before attach; the target startup line reports `import_active` and
+`bio_arena_alias_supported`. Both block and PostgreSQL harnesses still warn and
 mark RMA-write measurements non-representative unless
 `URING_PLAY_ZCNBLK_SHM_RMA_SOURCE_HUGETLB_CONFIRMED=1` (block) or
-`OFI_RMA_SOURCE_HUGETLB_CONFIRMED=1` (PostgreSQL) is supplied after an actual
-external-HugeTLB arena ABI is implemented and verified. The terminal `zcmem`
+`OFI_RMA_SOURCE_HUGETLB_CONFIRMED=1` (PostgreSQL) is supplied after the
+external-HugeTLB import is active and verified. The terminal `zcmem`
 leaf can independently use its existing explicit HugeTLB mapping.
 
 ### PostgreSQL TCP versus EFA RMA proof, 2026-08-11

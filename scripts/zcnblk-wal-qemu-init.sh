@@ -96,7 +96,8 @@ if [ "$result" -eq 0 ] && ! insmod /modules/zcnblk_client_mod.ko \
 	transport=shm lanes=1 connections_per_lane=1 size_mib=64 \
 	queues=1 queue_depth=128 max_frame_bytes=4096 pipeline_depth=128 \
 	shm_ring_entries=128 shm_payload_entries=1024 shm_poll_us=50 \
-	hctx_affinity=1 pin_threads=1 pin_base_cpu=1 pin_cpu_count=1 pin_stride=1; then
+	hctx_affinity=1 pin_threads=1 pin_base_cpu=1 pin_cpu_count=1 pin_stride=1 \
+	shm_bio_arena_zero_copy=1; then
 	fail "module load failed"
 fi
 wait_for_path /dev/zcnblk0 || fail "/dev/zcnblk0 did not appear"
@@ -112,6 +113,9 @@ if [ "$result" -eq 0 ]; then
 	export URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE=/tmp/target.pid
 	export URING_PLAY_ZCNBLK_SHM_ARENA_BACKING="$shm_arena_backing"
 	export URING_PLAY_ZCNBLK_SHM_ARENA_CPU=2
+	if [ "$shm_arena_backing" = hugetlb ]; then
+		export URING_PLAY_ZCNBLK_SHM_BIO_ARENA_ALIAS_SELFTEST=1
+	fi
 	if [ "$wal_lane_batch" -eq 1 ]; then
 		export URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH=1
 		export URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1
@@ -137,10 +141,19 @@ if [ "$result" -eq 0 ]; then
 	if [ "$shm_arena_backing" = hugetlb ]; then
 		grep -q 'arena_backing=external-hugetlb' /tmp/state-attached.log || \
 			fail "kernel did not report the external HugeTLB arena"
+		wait_for_log /tmp/target.log 'zcnblk-shm-target-bio-arena-alias-selftest: PASS' || \
+			fail "HugeTLB bio arena alias selftest did not pass"
 	else
 		grep -q 'arena_backing=vmalloc-user' /tmp/state-attached.log || \
 			fail "kernel did not report the vmalloc arena"
 	fi
+fi
+
+cat /sys/kernel/debug/zcnblk/state > /tmp/state-after-io.log 2>/dev/null || \
+	fail "kernel post-I/O shared-memory state is unavailable"
+if [ "$shm_arena_backing" = hugetlb ]; then
+	grep -q 'bio_alias_writes=1 bio_alias_reads=1' /tmp/state-after-io.log || \
+		fail "kernel did not account one aliased write and read"
 fi
 
 if [ "$result" -eq 0 ]; then
@@ -194,6 +207,8 @@ echo "[zcnblk-wal-vm] contract log"
 cat /tmp/contract.log 2>/dev/null || true
 echo "[zcnblk-wal-vm] attached kernel state"
 cat /tmp/state-attached.log 2>/dev/null || true
+echo "[zcnblk-wal-vm] post-I/O kernel state"
+cat /tmp/state-after-io.log 2>/dev/null || true
 
 grep -q 'negotiated=0x7f' /tmp/target.log 2>/dev/null || fail "target did not negotiate all seven WAL features"
 grep -q 'negotiated=0x7f' /tmp/leaf.log 2>/dev/null || fail "leaf did not negotiate all seven WAL features"

@@ -58,6 +58,7 @@ const ZCNBLK_SHM_CAP_ORDERING_VECTOR: u64 = 1 << 6;
 const ZCNBLK_SHM_CAP_IO_CONTRACT_SIDECAR: u64 = 1 << 7;
 const ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_IMPORT: u64 = 1 << 8;
 const ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_ACTIVE: u64 = 1 << 9;
+const ZCNBLK_SHM_CAP_BIO_ARENA_ALIAS: u64 = 1 << 10;
 const ZCNBLK_SHM_IO_FEATURE_ALL: u64 = ZCNBLK_WAL_FEATURE_FUA as u64
     | ZCNBLK_WAL_FEATURE_POLLED_COMPLETION as u64
     | ZCNBLK_WAL_FEATURE_BATCH_SUBMISSION as u64
@@ -7304,7 +7305,7 @@ impl SharedTarget {
             }
         };
         eprintln!(
-            "zcnblk-shm-target-shared-arena: requested={} backing={} region_bytes={} hugepage_bytes={} import_supported={} import_active={} first_touch_cpu={}",
+            "zcnblk-shm-target-shared-arena: requested={} backing={} region_bytes={} hugepage_bytes={} import_supported={} import_active={} bio_arena_alias_supported={} first_touch_cpu={}",
             arena_request.label(),
             mapping.backing.label(),
             mapping.len,
@@ -7315,6 +7316,7 @@ impl SharedTarget {
             header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES]
                 & ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_ACTIVE
                 != 0,
+            header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] & ZCNBLK_SHM_CAP_BIO_ARENA_ALIAS != 0,
             unsafe { libc::sched_getcpu() },
         );
         let transfer_payload_slots = backend == BackendMode::WalTcp
@@ -10282,7 +10284,7 @@ impl SharedTarget {
             "none-userspace;tcp-kernel-copy"
         };
         eprintln!(
-            "zcnblk-shm-target-summary: backend={} remote_transport={remote_transport} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} fua_requests={} polled_requests={} ioprio_requests={} registered_lease_requests={} atomic_write_requests={} write_lifetime_requests={} dirty_read_hits={} dirty_read_refs={} dirty_pressure_events={} dirty_pressure_evictions={} max_payload_slots_outstanding={} remote_read_misses={} completion_window_stalls={} remote_batches={} avg_remote_batch_records={:.2} payload_ownership={} payload_slots_free={}/{} completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order={} sync_boundary={} dirty_retention={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination={} kernel_payload_copies=one-per-direction writeback_materialization_copies={transport_copy_contract} representative={}",
+            "zcnblk-shm-target-summary: backend={} remote_transport={remote_transport} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} fua_requests={} polled_requests={} ioprio_requests={} registered_lease_requests={} atomic_write_requests={} write_lifetime_requests={} dirty_read_hits={} dirty_read_refs={} dirty_pressure_events={} dirty_pressure_evictions={} max_payload_slots_outstanding={} remote_read_misses={} completion_window_stalls={} remote_batches={} avg_remote_batch_records={:.2} payload_ownership={} payload_slots_free={}/{} completion_order=ready-order+early-local-write+remote-read+global-commit-hwm data_order={} sync_boundary={} dirty_retention={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress=shared-slot-lease read_payload_destination={} kernel_payload_copies=ordinary-bio-one-per-direction+optional-debugfs-counted-arena-alias writeback_materialization_copies={transport_copy_contract} representative={}",
             if owner_mode {
                 "WalTcpStableOwnerExtent"
             } else {
@@ -10940,7 +10942,7 @@ impl SharedTarget {
             });
         }
         eprintln!(
-            "zcnblk-shm-target-summary: backend={:?} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} completion_ioctl_kicks={} request_publishes={} request_wake_kicks={} request_wake_pct={:.4} idle_polls={} lease_releases={} lease_release_batch={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} busy_activation_requests={} ordering=per-channel-fifo+sector-predecessor sync_boundary=global-completion-hwm-before-sync placement_owner=downstream-userspace-stage block_client_placement=no kernel_payload_copies=one-per-direction",
+            "zcnblk-shm-target-summary: backend={:?} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} completion_ioctl_kicks={} request_publishes={} request_wake_kicks={} request_wake_pct={:.4} idle_polls={} lease_releases={} lease_release_batch={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} busy_activation_requests={} ordering=per-channel-fifo+sector-predecessor sync_boundary=global-completion-hwm-before-sync placement_owner=downstream-userspace-stage block_client_placement=no kernel_payload_copies=ordinary-bio-one-per-direction+optional-debugfs-counted-arena-alias",
             self.backend,
             self.header.channels,
             total.requests,
@@ -11120,7 +11122,7 @@ impl SharedTarget {
             _ => ("request-order", "immediate-copy", "reduced-memory", "none"),
         };
         eprintln!(
-            "zcnblk-shm-target-summary: backend={:?} remote_transport={remote_transport} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={elapsed:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} fua_requests={} polled_requests={} ioprio_requests={} registered_lease_requests={} atomic_write_requests={} write_lifetime_requests={} lease_release_batch={} writeback_batch={} writeback_batches={} writeback_writes={} writeback_bytes={} durable_submit_hwm={} pending_writes={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} completion_order=global-fifo data_order=per-sector+sync-hwm sync_contract={} sync_boundary={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress={} dirty_read_source={} kernel_payload_copies=one-per-direction writeback_materialization_copies={}",
+            "zcnblk-shm-target-summary: backend={:?} remote_transport={remote_transport} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={elapsed:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} kicks={} idle_polls={} lease_releases={} early_write_acks={} fua_requests={} polled_requests={} ioprio_requests={} registered_lease_requests={} atomic_write_requests={} write_lifetime_requests={} lease_release_batch={} writeback_batch={} writeback_batches={} writeback_writes={} writeback_bytes={} durable_submit_hwm={} pending_writes={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} completion_order=global-fifo data_order=per-sector+sync-hwm sync_contract={} sync_boundary={} placement_owner=downstream-userspace-stage block_client_placement=no write_ingress={} dirty_read_source={} kernel_payload_copies=ordinary-bio-one-per-direction+optional-debugfs-counted-arena-alias writeback_materialization_copies={}",
             self.backend,
             self.header.channels,
             self.stats.requests,
@@ -11378,6 +11380,87 @@ impl SharedTarget {
         }
         Ok(())
     }
+}
+
+fn spawn_bio_arena_alias_selftest(
+    mapping: Arc<Mapping>,
+    header: ZcnblkShmHeader,
+) -> io::Result<()> {
+    if !env_enabled_or("URING_PLAY_ZCNBLK_SHM_BIO_ARENA_ALIAS_SELFTEST", false) {
+        return Ok(());
+    }
+    if header.channels != 1
+        || header.slot_bytes < 4096
+        || header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES]
+            & (ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_ACTIVE | ZCNBLK_SHM_CAP_BIO_ARENA_ALIAS)
+            != (ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_ACTIVE | ZCNBLK_SHM_CAP_BIO_ARENA_ALIAS)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "bio arena alias selftest requires one channel, a 4K slot, and the active HugeTLB alias capability",
+        ));
+    }
+    thread::Builder::new()
+        .name("zcnblk-bio-alias-selftest".to_string())
+        .spawn(move || {
+            thread::sleep(Duration::from_millis(250));
+            let payload_offset = usize::try_from(header.payload_offset)
+                .map_err(|_| io::Error::other("payload offset exceeds usize"))?;
+            if payload_offset
+                .checked_add(header.slot_bytes as usize)
+                .and_then(|offset| offset.checked_add(4096))
+                .is_none_or(|end| end > mapping.len)
+            {
+                return Err(io::Error::other("payload slot falls outside shared arena"));
+            }
+            let payload = unsafe { mapping.ptr.add(payload_offset) };
+            let read_payload = unsafe { payload.add(header.slot_bytes as usize) };
+            unsafe { ptr::write_bytes(payload, 0x5a, 4096) };
+            let fd = unsafe {
+                libc::open(
+                    b"/dev/zcnblk0\0".as_ptr().cast(),
+                    libc::O_RDWR | libc::O_DIRECT | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let offset = 61 * 4096;
+            let written = unsafe { libc::pwrite(fd, payload.cast(), 4096, offset) };
+            if written != 4096 {
+                let error = if written < 0 {
+                    io::Error::last_os_error()
+                } else {
+                    io::Error::new(io::ErrorKind::WriteZero, "short alias selftest write")
+                };
+                unsafe { libc::close(fd) };
+                return Err(error);
+            }
+            if unsafe { libc::fsync(fd) } != 0 {
+                let error = io::Error::last_os_error();
+                unsafe { libc::close(fd) };
+                return Err(error);
+            }
+            unsafe { ptr::write_bytes(read_payload, 0, 4096) };
+            let read = unsafe { libc::pread(fd, read_payload.cast(), 4096, offset) };
+            unsafe { libc::close(fd) };
+            if read != 4096 {
+                return Err(if read < 0 {
+                    io::Error::last_os_error()
+                } else {
+                    io::Error::new(io::ErrorKind::UnexpectedEof, "short alias selftest read")
+                });
+            }
+            let bytes = unsafe { std::slice::from_raw_parts(read_payload, 4096) };
+            if bytes.iter().any(|byte| *byte != 0x5a) {
+                return Err(io::Error::other("bio arena alias selftest data mismatch"));
+            }
+            eprintln!(
+                "zcnblk-shm-target-bio-arena-alias-selftest: PASS writes=1 reads=1 bytes_each=4096 placement_owner=userspace block_client_placement=no"
+            );
+            Ok(())
+        })?;
+    Ok(())
 }
 
 fn pin_current_thread(cpu: usize) -> io::Result<()> {
@@ -12016,6 +12099,7 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
     if !wal_lane_batch {
         target.start_remote_workers()?;
     }
+    spawn_bio_arena_alias_selftest(Arc::clone(&target.mapping), target.header)?;
     if wal_lane_batch {
         target.run_wal_lane_parallel(
             cpus.as_deref(),
