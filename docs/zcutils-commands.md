@@ -1372,14 +1372,25 @@ That form keeps placement in userspace RAID: branch 0 and branch 1 are separate
 userspace mirror legs, not block-device RAID primitives.
 
 `zcraid-mirror-send` supports three ACK policies. The default
-`URING_PLAY_RAID_MIRROR_ACK_POLICY=remote` is a conservative commit benchmark:
-ordinary extents wait for every mirror branch HWM in each ACK window. Use
-`URING_PLAY_RAID_MIRROR_ACK_POLICY=sync` only on the TCP model to separate
-ordinary local admission from its periodic remote drain. The OFI protocol does
-not yet implement a durability/FUA drain; requesting `sync` on OFI prints a
-warning and is explicitly downgraded to remotely acknowledged writes. Use
-`disabled` only as a transport ceiling; it does not measure committed or
+`URING_PLAY_RAID_MIRROR_ACK_POLICY=remote` waits for every mirror branch HWM in
+each ACK window. An ACK is durable only when each receiver has a persistent
+terminal target; without one, startup says `remote-userspace-receipt-only` and
+strict topology mode rejects the run. `sync` changes the periodic drain window.
+Use `disabled` only as a transport ceiling; it does not measure committed or
 sync-safe writes.
+
+A receiver terminal can be a presized-file WAL or an allowlisted terminal block
+leaf. Placement has already happened in the userspace mirror stage before this
+writer is selected. For example:
+
+```bash
+zcraid-mirror-recv tcp 0.0.0.0 42000 0 64M 64K 8 plan.json \
+  efa rdm true 'zcpwal:/wal/branch0.journal,/wal/branch0.base,128M,16M'
+```
+
+The receiver writes every extent in the window, performs one terminal sync,
+and only then returns the extent HWM ACKs. The terminal startup and worker lines
+report the target, I/O mode, write count, sync count, and durability semantic.
 
 The OFI sender allocates stable per-branch TX and ACK arenas, posts an entire
 window to every userspace branch, progresses branch TX CQs fairly, and polls
@@ -1393,6 +1404,33 @@ reports branch-post skew, branch-mask completion time, out-of-order mask
 completions, configured and peak ACK outstanding depth, and the measured HOL
 residence time for masks that completed before the contiguous commit HWM could
 retire them.
+
+`rdma` is a separate transport, not an alias for OFI messages. It uses
+`FI_RMA_WRITE` from one registered source window shared by every mirror branch
+into a registered staging window at each receiver. After all one-sided writes
+in a window reach delivery-complete CQ state, the sender transmits a small
+doorbell. Each receiver drains the staging window to its persistent terminal,
+syncs it, and returns HWM ACKs; source and remote staging slots are not reused
+before those ACKs. RDMA mode refuses to start without ACKs, a terminal, or
+delivery-complete ordering. For example:
+
+```bash
+URING_PLAY_RAID_MIRROR_ACK_WINDOW=64 \
+URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1 \
+URING_PLAY_OFI_RMA_WRITE_MORE=1 \
+zcraid-mirror-recv rdma auto 42000 0 64M 64K 8 plan.json efa rdm true \
+  'zcpwal:/wal/branch0.journal,/wal/branch0.base,128M,16M'
+
+URING_PLAY_RAID_MIRROR_ACK_WINDOW=64 \
+URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE=1 \
+URING_PLAY_OFI_RMA_WRITE_MORE=1 \
+zcraid-mirror-send rdma 172.31.40.44,172.31.37.202 \
+  42000,44000 64M 64K 8 plan.json efa rdm true
+```
+
+Use `ofi-msg` (or the shorter `ofi`) for the registered `FI_MSG` path. Benchmark
+output labels these as `libfabric-rdm-message` and `libfabric-fi-rma-write`, so
+results cannot silently conflate the two.
 
 Zlane coordination is part of the mirror contract. By default
 `URING_PLAY_RAID_ZLANE_COORD=lane-owner` maps each `(lane, sequence)` to a
@@ -1423,8 +1461,10 @@ FI_EFA_USE_DEVICE_RDMA=1 \
 zcraid-mirror-send ofi 172.31.38.204 42000,44000 24G 384K 64 plan.json efa rdm false
 ```
 
-Use `tcp` instead of `ofi` to run the same userspace mirror contract over
-lane-aware TCP sockets. Every run prints branch domains, lanes, leader CPUs,
+Use `tcp` to run the same userspace mirror contract over lane-aware TCP sockets.
+The TCP sender creates the payload once and uses a batched header/payload
+`writev` window per branch, avoiding per-branch userspace payload copies and
+per-extent syscalls. Every run prints branch domains, lanes, leader CPUs,
 workers, logical commit IOPS, branch wire Gbit/s, ACK latency, context switches,
 and migrations.
 

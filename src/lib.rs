@@ -12081,6 +12081,20 @@ fn zcraid_mirror_ofi_peer_contract(
     )
 }
 
+fn zcraid_mirror_rma_peer_contract(
+    branch: usize,
+    lane_count: usize,
+    extent_bytes: usize,
+    ack_window: usize,
+    coord_mode: ZcRaidZlaneCoordMode,
+) -> String {
+    format!(
+        "zcraid-mirror-rma-v1;branch={branch};lanes={lane_count};extent={extent_bytes};window={};data=fi-rma-write;doorbell=fi-msg;ack=terminal-sync-hwm;source=shared-registered-arena;zlane={}",
+        ack_window.max(1),
+        coord_mode.label(),
+    )
+}
+
 fn zcofi_server_exchange_peer(
     bind: &str,
     control_port: u16,
@@ -17774,17 +17788,19 @@ fn zcofi_wal_relay(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ZcRaidMirrorTransport {
     Tcp,
-    Ofi,
+    OfiMsg,
+    Rma,
 }
 
 impl ZcRaidMirrorTransport {
     fn parse(value: &str) -> io::Result<Self> {
         match value.to_ascii_lowercase().as_str() {
             "tcp" | "tcp-mux" | "tcpmux" | "mux" => Ok(Self::Tcp),
-            "ofi" | "rdma" | "libfabric" | "efa" | "libfabric-efa" => Ok(Self::Ofi),
+            "ofi" | "ofi-msg" | "libfabric" | "efa" | "libfabric-efa" => Ok(Self::OfiMsg),
+            "rdma" | "rma" | "ofi-rma" | "rdma-rma" => Ok(Self::Rma),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("unknown zcraid mirror transport {other:?}; use tcp or ofi"),
+                format!("unknown zcraid mirror transport {other:?}; use tcp, ofi-msg, or rdma"),
             )),
         }
     }
@@ -17792,7 +17808,8 @@ impl ZcRaidMirrorTransport {
     fn label(self) -> &'static str {
         match self {
             Self::Tcp => "tcp-mux-compatible",
-            Self::Ofi => "libfabric-rdm",
+            Self::OfiMsg => "libfabric-rdm-message",
+            Self::Rma => "libfabric-fi-rma-write",
         }
     }
 }
@@ -18003,6 +18020,122 @@ struct ZcRaidMirrorTcpLane {
     port: u16,
     peer_addr: SocketAddr,
     stream: TcpStream,
+}
+
+#[derive(Clone)]
+struct ZcRaidMirrorTerminal {
+    backend: Arc<ZcnblkWalLeafBackend>,
+    io_mode: ZcnblkWalLeafIoMode,
+    allow_volatile_sync: bool,
+}
+
+impl ZcRaidMirrorTerminal {
+    fn open(target: &str, extent_bytes: usize, required_bytes: u64) -> io::Result<Self> {
+        let backend = Arc::new(zcnblk_wal_leaf_open_backend(target, extent_bytes, None)?);
+        if backend.device_bytes() < required_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "zcraid mirror terminal {} has {} bytes but the lane layout requires {required_bytes}",
+                    backend.label(),
+                    backend.device_bytes(),
+                ),
+            ));
+        }
+        let allow_volatile_sync =
+            env_enabled_or("URING_PLAY_RAID_MIRROR_ALLOW_VOLATILE_SYNC", false);
+        if backend
+            .sync_contract(allow_volatile_sync)
+            .starts_with("unsupported")
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "zcraid mirror terminal {} cannot provide a durable HWM: {}",
+                    backend.label(),
+                    backend.sync_contract(allow_volatile_sync),
+                ),
+            ));
+        }
+        let io_mode = env::var("URING_PLAY_RAID_MIRROR_TERMINAL_IO")
+            .ok()
+            .map(|value| ZcnblkWalLeafIoMode::parse(&value))
+            .transpose()?
+            .unwrap_or(ZcnblkWalLeafIoMode::Uring);
+        if matches!(io_mode, ZcnblkWalLeafIoMode::Mixed) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraid mirror terminal I/O must be blocking or uring, not mixed",
+            ));
+        }
+        eprintln!(
+            "zcraid-mirror-terminal: target={} device_bytes={} required_bytes={required_bytes} alignment={} durability={} sync_contract={} io_mode={} placement_owner=userspace-raid block_device_raid_primitive=false",
+            backend.label(),
+            backend.device_bytes(),
+            backend.required_alignment(),
+            backend.durability().label(),
+            backend.sync_contract(allow_volatile_sync),
+            io_mode.label(),
+        );
+        Ok(Self {
+            backend,
+            io_mode,
+            allow_volatile_sync,
+        })
+    }
+
+    fn ring(&self) -> io::Result<Option<RawRing>> {
+        if !self.io_mode.uses_uring_ring() {
+            return Ok(None);
+        }
+        let entries = env_usize_or("URING_PLAY_RAID_MIRROR_TERMINAL_RING_ENTRIES", 256)
+            .max(2)
+            .next_power_of_two();
+        Ok(Some(RawRing::new(
+            u32::try_from(entries).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "zcraid mirror terminal ring entries exceed u32",
+                )
+            })?,
+            u32::try_from(entries.saturating_mul(2)).unwrap_or(u32::MAX),
+        )?))
+    }
+
+    fn write(
+        &self,
+        ring: &mut Option<RawRing>,
+        header: ZcWalExtentHeader,
+        payload: &[u8],
+    ) -> io::Result<()> {
+        self.backend
+            .write_at_mode(self.io_mode, ring, header.base_wal_offset, payload)
+    }
+
+    fn sync(&self) -> io::Result<()> {
+        self.backend.sync(self.allow_volatile_sync)
+    }
+}
+
+fn zcraid_mirror_required_terminal_bytes(
+    lane_count: usize,
+    bytes_per_lane: usize,
+    coord_mode: ZcRaidZlaneCoordMode,
+) -> io::Result<u64> {
+    let multiplier = if coord_mode.shared_logical_namespace() {
+        1
+    } else {
+        lane_count
+    };
+    multiplier
+        .checked_mul(bytes_per_lane)
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcraid mirror terminal layout size overflow",
+            )
+        })
 }
 
 fn zcraid_usize_from_json(value: &serde_json::Value, field: &str) -> io::Result<usize> {
@@ -18320,7 +18453,9 @@ fn zcraid_mirror_ack_window(transport: ZcRaidMirrorTransport) -> usize {
         "URING_PLAY_RAID_MIRROR_ACK_WINDOW",
         match transport {
             ZcRaidMirrorTransport::Tcp => env_usize_or("URING_PLAY_TCP_ACK_WINDOW", 1),
-            ZcRaidMirrorTransport::Ofi => env_usize_or("URING_PLAY_OFI_ACK_WINDOW", 1),
+            ZcRaidMirrorTransport::OfiMsg | ZcRaidMirrorTransport::Rma => {
+                env_usize_or("URING_PLAY_OFI_ACK_WINDOW", 1)
+            }
         },
     )
     .max(1)
@@ -18620,9 +18755,12 @@ fn zcraid_mirror_topology_warnings(
     coord_mode: ZcRaidZlaneCoordMode,
 ) -> io::Result<()> {
     zcwal_extent_perf_warnings(label, lanes.len(), 1, workers)?;
-    let efa_transport =
-        transport == ZcRaidMirrorTransport::Ofi && matches!(provider, "efa" | "efa-direct");
-    if transport == ZcRaidMirrorTransport::Ofi {
+    let ofi_transport = matches!(
+        transport,
+        ZcRaidMirrorTransport::OfiMsg | ZcRaidMirrorTransport::Rma
+    );
+    let efa_transport = ofi_transport && matches!(provider, "efa" | "efa-direct");
+    if ofi_transport {
         let domains_explicit = plan.branches.iter().all(|branch| {
             branch
                 .fabric_domain
@@ -18655,7 +18793,7 @@ fn zcraid_mirror_topology_warnings(
             ),
         )?;
     }
-    if transport == ZcRaidMirrorTransport::Ofi {
+    if transport == ZcRaidMirrorTransport::OfiMsg {
         if extent_bytes == ZC_WAL_RECORD_SIZE
             && !zcofi_efa_direct_requested(provider)
             && !env_truthy("URING_PLAY_OFI_COMPACT_4K")
@@ -18895,8 +19033,10 @@ fn zcraid_mirror_tcp_recv_worker(
     extents_per_lane: usize,
     extent_bytes: usize,
     ack_enabled: bool,
+    ack_window: usize,
     coord_mode: ZcRaidZlaneCoordMode,
     recv_spin_budget: Option<usize>,
+    terminal: Option<ZcRaidMirrorTerminal>,
 ) -> io::Result<ZcWalExtentStats> {
     let affinity = maybe_pin_current_thread("zcraid-mirror-tcp-recv-worker", worker);
     let tid = current_tid();
@@ -18911,12 +19051,20 @@ fn zcraid_mirror_tcp_recv_worker(
     let mut extents = 0usize;
     let mut records = 0usize;
     let mut acks = 0usize;
+    let mut terminal_writes = 0usize;
+    let mut terminal_syncs = 0usize;
+    let mut terminal_ring = terminal
+        .as_ref()
+        .map(ZcRaidMirrorTerminal::ring)
+        .transpose()?
+        .flatten();
     let started = Instant::now();
     for mut lane_stream in lanes {
         println!(
             "zcraid-mirror-tcp-recv-lane: worker={worker} branch={branch_id} lane={} port={} peer={}",
             lane_stream.lane, lane_stream.port, lane_stream.peer_addr
         );
+        let mut pending_acks = Vec::with_capacity(ack_window.max(1));
         for seq in 0..extents_per_lane {
             zcraid_mirror_tcp_recv_exact(
                 &mut lane_stream.stream,
@@ -18940,11 +19088,32 @@ fn zcraid_mirror_tcp_recv_worker(
                 recv_spin_budget,
                 "zcraid mirror TCP payload",
             )?;
+            if let Some(terminal) = terminal.as_ref() {
+                terminal.write(&mut terminal_ring, header, &payload)?;
+                terminal_writes = terminal_writes.saturating_add(1);
+                pending_acks.push(header);
+                let barrier =
+                    pending_acks.len() >= ack_window.max(1) || seq + 1 == extents_per_lane;
+                if barrier {
+                    terminal.sync()?;
+                    terminal_syncs = terminal_syncs.saturating_add(1);
+                    if ack_enabled {
+                        for durable in pending_acks.drain(..) {
+                            lane_stream
+                                .stream
+                                .write_all(&zcraid_mirror_ack_for_header(durable)?.encode())?;
+                            acks += 1;
+                        }
+                    } else {
+                        pending_acks.clear();
+                    }
+                }
+            }
             payload_bytes += extent_bytes;
             wire_bytes += ZC_WAL_EXTENT_HEADER_LEN + extent_bytes;
             extents += 1;
             records += header.record_count as usize;
-            if ack_enabled {
+            if ack_enabled && terminal.is_none() {
                 let ack = zcraid_mirror_ack_for_header(header)?.encode();
                 lane_stream.stream.write_all(&ack)?;
                 acks += 1;
@@ -18952,6 +19121,12 @@ fn zcraid_mirror_tcp_recv_worker(
         }
         let _ = lane_stream.stream.shutdown(Shutdown::Both);
     }
+    eprintln!(
+        "zcraid-mirror-terminal-worker: transport=tcp worker={worker} enabled={} writes={terminal_writes} syncs={terminal_syncs} durable_ack={} durability_window={}",
+        yes(terminal.is_some()),
+        yes(terminal.is_some() && ack_enabled),
+        ack_window.max(1),
+    );
     let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
     let end_cpu = current_cpu();
     let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
@@ -19060,7 +19235,14 @@ fn zcraid_mirror_tcp_send_worker(
         let mut issued_slots = vec![Instant::now(); effective_window];
         let mut seq_base = 0usize;
         while seq_base < extents_per_lane {
-            let batch = effective_window.min(extents_per_lane - seq_base).max(1);
+            // Each extent contributes a header and a shared payload iovec.  Keep
+            // one syscall per branch/window while staying below Linux IOV_MAX.
+            let max_batch_iov =
+                env_usize_or("URING_PLAY_RAID_MIRROR_TCP_IOV_MAX", 1024).clamp(2, 1024) / 2;
+            let batch = effective_window
+                .min(max_batch_iov)
+                .min(extents_per_lane - seq_base)
+                .max(1);
             let mut ranges = Vec::with_capacity(batch);
             for slot in 0..batch {
                 let seq = seq_base + slot;
@@ -19074,22 +19256,31 @@ fn zcraid_mirror_tcp_send_worker(
                 ranges.push((first_logical_index, last_logical_index));
             }
             let mut range_guards = Some(coordinator.acquire_many(&ranges)?);
-            for (slot, issued) in issued_slots.iter_mut().take(batch).enumerate() {
-                let seq = seq_base + slot;
+            for issued in issued_slots.iter_mut().take(batch) {
                 *issued = Instant::now();
-                for (branch_id, stream) in branch_streams.iter_mut() {
-                    let header = zcraid_mirror_extent_header(
-                        lane,
-                        lane_count,
-                        *branch_id,
-                        seq,
-                        extent_bytes,
-                        coordinator.mode(),
-                    )?
-                    .encode();
-                    let mut bufs = [IoSlice::new(&header), IoSlice::new(&payload)];
-                    tcp_write_all_vectored(stream, &mut bufs, "zcraid mirror TCP extent")?;
+            }
+            for (branch_id, stream) in branch_streams.iter_mut() {
+                let headers = (0..batch)
+                    .map(|slot| {
+                        zcraid_mirror_extent_header(
+                            lane,
+                            lane_count,
+                            *branch_id,
+                            seq_base + slot,
+                            extent_bytes,
+                            coordinator.mode(),
+                        )
+                        .map(ZcWalExtentHeader::encode)
+                    })
+                    .collect::<io::Result<Vec<_>>>()?;
+                let mut bufs = Vec::with_capacity(batch * 2);
+                for header in &headers {
+                    bufs.push(IoSlice::new(header));
+                    bufs.push(IoSlice::new(&payload));
                 }
+                tcp_write_all_vectored(stream, &mut bufs, "zcraid mirror TCP extent window")?;
+            }
+            for _ in 0..batch {
                 payload_bytes += extent_bytes;
                 wire_bytes += (ZC_WAL_EXTENT_HEADER_LEN + extent_bytes) * branch_streams.len();
                 extents += 1;
@@ -19180,6 +19371,538 @@ fn zcraid_mirror_ofi_open_endpoint(
     ZcOfiEndpoint::open_on_domain(provider, endpoint, node, service, server, domain)
 }
 
+fn zcraid_mirror_rma_open_endpoint(
+    provider: &str,
+    endpoint: &str,
+    node: &str,
+    service: &str,
+    server: bool,
+    domain: Option<&str>,
+) -> io::Result<ZcOfiEndpoint> {
+    ZcOfiEndpoint::open_rma_on_domain(provider, endpoint, node, service, server, domain)
+}
+
+const ZCRAID_RMA_DOORBELL_MAGIC: &[u8; 8] = b"ZCRMRMA1";
+
+#[derive(Clone, Copy)]
+struct ZcRaidMirrorRmaDoorbell {
+    lane: u32,
+    branch: u32,
+    seq_base: u64,
+    batch: u64,
+    extent_bytes: u64,
+}
+
+impl ZcRaidMirrorRmaDoorbell {
+    fn encode(self) -> [u8; ZCOFI_RMA_CONTROL_LEN] {
+        let mut out = [0u8; ZCOFI_RMA_CONTROL_LEN];
+        out[..8].copy_from_slice(ZCRAID_RMA_DOORBELL_MAGIC);
+        out[8..12].copy_from_slice(&self.lane.to_le_bytes());
+        out[12..16].copy_from_slice(&self.branch.to_le_bytes());
+        out[16..24].copy_from_slice(&self.seq_base.to_le_bytes());
+        out[24..32].copy_from_slice(&self.batch.to_le_bytes());
+        out[32..40].copy_from_slice(&self.extent_bytes.to_le_bytes());
+        out
+    }
+
+    fn decode(buf: &[u8]) -> io::Result<Self> {
+        if buf.len() != ZCOFI_RMA_CONTROL_LEN || &buf[..8] != ZCRAID_RMA_DOORBELL_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zcraid mirror RMA doorbell shape or magic mismatch",
+            ));
+        }
+        Ok(Self {
+            lane: u32::from_le_bytes(buf[8..12].try_into().unwrap()),
+            branch: u32::from_le_bytes(buf[12..16].try_into().unwrap()),
+            seq_base: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
+            batch: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
+            extent_bytes: u64::from_le_bytes(buf[32..40].try_into().unwrap()),
+        })
+    }
+}
+
+#[cfg(test)]
+mod zcraid_mirror_rma_protocol_tests {
+    use super::*;
+
+    #[test]
+    fn doorbell_round_trips_window_identity() {
+        let expected = ZcRaidMirrorRmaDoorbell {
+            lane: 7,
+            branch: 3,
+            seq_base: 4096,
+            batch: 64,
+            extent_bytes: 65536,
+        };
+        let actual = ZcRaidMirrorRmaDoorbell::decode(&expected.encode()).unwrap();
+        assert_eq!(actual.lane, expected.lane);
+        assert_eq!(actual.branch, expected.branch);
+        assert_eq!(actual.seq_base, expected.seq_base);
+        assert_eq!(actual.batch, expected.batch);
+        assert_eq!(actual.extent_bytes, expected.extent_bytes);
+    }
+
+    #[test]
+    fn transport_parser_does_not_alias_rdma_to_fi_msg() {
+        assert_eq!(
+            ZcRaidMirrorTransport::parse("ofi").unwrap(),
+            ZcRaidMirrorTransport::OfiMsg
+        );
+        assert_eq!(
+            ZcRaidMirrorTransport::parse("rdma").unwrap(),
+            ZcRaidMirrorTransport::Rma
+        );
+    }
+}
+
+struct ZcRaidMirrorRmaRecvLane {
+    lane: usize,
+    endpoint: ZcOfiEndpoint,
+    arena: Vec<u8>,
+    doorbell: Box<[u8; ZCOFI_RMA_CONTROL_LEN]>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcraid_mirror_rma_recv_worker(
+    worker: usize,
+    provider: Arc<String>,
+    endpoint: Arc<String>,
+    bind: Arc<String>,
+    branch: ZcRaidMirrorBranchPlan,
+    base_port: u16,
+    lanes: Vec<usize>,
+    lane_count: usize,
+    extents_per_lane: usize,
+    extent_bytes: usize,
+    ack_window: usize,
+    coord_mode: ZcRaidZlaneCoordMode,
+    terminal: ZcRaidMirrorTerminal,
+) -> io::Result<ZcWalExtentStats> {
+    let affinity = maybe_pin_current_thread("zcraid-mirror-rma-recv-worker", worker);
+    let tid = current_tid();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_cpu = current_cpu();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
+    let window = ack_window.max(1).min(extents_per_lane.max(1));
+    let arena_bytes = window.checked_mul(extent_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RMA receive arena size overflow",
+        )
+    })?;
+    let contract = zcraid_mirror_rma_peer_contract(
+        branch.branch,
+        lane_count,
+        extent_bytes,
+        window,
+        coord_mode,
+    );
+    let mut endpoints = Vec::with_capacity(lanes.len());
+    for lane in lanes {
+        let service = tcp_bench_port(base_port, lane)?.to_string();
+        let mut ep = zcraid_mirror_rma_open_endpoint(
+            provider.as_str(),
+            endpoint.as_str(),
+            bind.as_str(),
+            &service,
+            true,
+            branch.fabric_domain.as_deref(),
+        )?;
+        let control_port = zcofi_control_port(&service)?;
+        zcofi_server_exchange_peer(bind.as_str(), control_port, &mut ep, &contract)?;
+        zcofi_rma_server_connection_warmup(&mut ep, lane, provider.as_str())?;
+        let mut arena = vec![0u8; arena_bytes];
+        let (remote_addr, remote_key) = ep.rma_register_target(&mut arena)?;
+        let meta = ZcOfiRmaMeta {
+            lane_id: u32::try_from(lane)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "lane overflow"))?,
+            lane_count: u32::try_from(lane_count)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "lane count overflow"))?,
+            bytes_per_lane: u64::try_from(arena_bytes)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "arena overflow"))?,
+            extent_bytes: u64::try_from(extent_bytes)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "extent overflow"))?,
+            remote_addr,
+            remote_key,
+        };
+        ep.send(&meta.encode())?;
+        eprintln!(
+            "zcraid-mirror-rma-recv-lane: worker={worker} branch={} lane={lane} provider={} domain={} registered_staging_bytes={arena_bytes} remote_addr=0x{remote_addr:016x} remote_key=0x{remote_key:016x} terminal={} completion=terminal-write-plus-sync-before-ack",
+            branch.branch,
+            provider.as_str(),
+            branch.fabric_domain.as_deref().unwrap_or("auto"),
+            terminal.backend.label(),
+        );
+        endpoints.push(ZcRaidMirrorRmaRecvLane {
+            lane,
+            endpoint: ep,
+            arena,
+            doorbell: Box::new([0u8; ZCOFI_RMA_CONTROL_LEN]),
+        });
+    }
+
+    let mut payload_bytes = 0usize;
+    let mut wire_bytes = 0usize;
+    let mut extents = 0usize;
+    let mut records = 0usize;
+    let mut acks = 0usize;
+    let mut terminal_writes = 0usize;
+    let mut terminal_syncs = 0usize;
+    let records_per_extent = extent_bytes / ZC_WAL_RECORD_SIZE;
+    let started = Instant::now();
+    for lane_ep in &mut endpoints {
+        let mut expected_seq = 0usize;
+        let mut ring = terminal.ring()?;
+        while expected_seq < extents_per_lane {
+            let got = lane_ep.endpoint.recv(lane_ep.doorbell.as_mut_slice())?;
+            if got != ZCOFI_RMA_CONTROL_LEN {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "short RMA doorbell",
+                ));
+            }
+            let doorbell = ZcRaidMirrorRmaDoorbell::decode(lane_ep.doorbell.as_slice())?;
+            let batch = window.min(extents_per_lane - expected_seq);
+            if doorbell.lane as usize != lane_ep.lane
+                || doorbell.branch as usize != branch.branch
+                || doorbell.seq_base as usize != expected_seq
+                || doorbell.batch as usize != batch
+                || doorbell.extent_bytes as usize != extent_bytes
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "RMA doorbell mismatch branch={} lane={} expected_seq={expected_seq} expected_batch={batch}",
+                        branch.branch, lane_ep.lane
+                    ),
+                ));
+            }
+            let mut headers = Vec::with_capacity(batch);
+            for slot in 0..batch {
+                let header = zcraid_mirror_extent_header(
+                    lane_ep.lane,
+                    lane_count,
+                    branch.branch,
+                    expected_seq + slot,
+                    extent_bytes,
+                    coord_mode,
+                )?;
+                let start = slot * extent_bytes;
+                terminal.write(
+                    &mut ring,
+                    header,
+                    &lane_ep.arena[start..start + extent_bytes],
+                )?;
+                headers.push(header);
+                terminal_writes += 1;
+            }
+            terminal.sync()?;
+            terminal_syncs += 1;
+            for header in headers {
+                lane_ep
+                    .endpoint
+                    .send(&zcraid_mirror_ack_for_header(header)?.encode())?;
+                acks += 1;
+            }
+            expected_seq += batch;
+            payload_bytes += batch * extent_bytes;
+            wire_bytes +=
+                batch * extent_bytes + ZCOFI_RMA_CONTROL_LEN + batch * ZC_WAL_ACK_HEADER_LEN;
+            extents += batch;
+            records += batch * records_per_extent;
+        }
+    }
+    eprintln!(
+        "zcraid-mirror-terminal-worker: transport=rdma-rma worker={worker} enabled=yes writes={terminal_writes} syncs={terminal_syncs} durable_ack=yes durability_window={window}"
+    );
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_cpu = current_cpu();
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    Ok(ZcWalExtentStats {
+        worker,
+        streams: endpoints.len(),
+        payload_bytes,
+        wire_bytes,
+        extents,
+        records,
+        acks,
+        wall: started.elapsed(),
+        cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+        start_cpu,
+        end_cpu,
+        voluntary_switches: end_switches
+            .voluntary
+            .saturating_sub(start_switches.voluntary),
+        involuntary_switches: end_switches
+            .involuntary
+            .saturating_sub(start_switches.involuntary),
+        migrations: end_switches
+            .migrations
+            .saturating_sub(start_switches.migrations),
+        ack_latency: LatencyHistogram::new(),
+        uring_recv: UringRecvStats::default(),
+    })
+}
+
+struct ZcRaidMirrorRmaSendBranch {
+    branch: usize,
+    endpoint: ZcOfiEndpoint,
+    meta: ZcOfiRmaMeta,
+    completion_slots: Vec<usize>,
+    completion_tokens: Vec<u64>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcraid_mirror_rma_send_worker(
+    worker: usize,
+    provider: Arc<String>,
+    endpoint: Arc<String>,
+    lanes: Vec<usize>,
+    branches: Arc<Vec<ZcRaidMirrorBranchTarget>>,
+    coordinator: Arc<ZcRaidZlaneCoordinator>,
+    lane_count: usize,
+    extents_per_lane: usize,
+    extent_bytes: usize,
+    ack_window: usize,
+) -> io::Result<ZcWalExtentStats> {
+    let affinity = maybe_pin_current_thread("zcraid-mirror-rma-send-worker", worker);
+    let tid = current_tid();
+    let start_thread_cpu = thread_cpu_time().unwrap_or_default();
+    let start_cpu = current_cpu();
+    let start_switches = read_thread_context_switches(tid).unwrap_or_default();
+    let window = ack_window.max(1).min(extents_per_lane.max(1));
+    let arena_bytes = window.checked_mul(extent_bytes).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RMA source arena size overflow",
+        )
+    })?;
+    let pattern = SendPayloadPattern::from_env(extent_bytes)?;
+    let records_per_extent = extent_bytes / ZC_WAL_RECORD_SIZE;
+    let mut payload_bytes = 0usize;
+    let mut wire_bytes = 0usize;
+    let mut extents = 0usize;
+    let mut records = 0usize;
+    let mut acks = 0usize;
+    let mut ack_latency = LatencyHistogram::new();
+    let mut cq_polls = 0u64;
+    let mut cq_completions = 0u64;
+    let stream_count = lanes.len().saturating_mul(branches.len());
+    let mut operation_wall = Duration::ZERO;
+
+    for lane in lanes {
+        // One payload allocation is registered against every branch endpoint.
+        // Mirroring therefore adds NIC operations, not branch-sized memcpy work.
+        let mut source = vec![0u8; arena_bytes];
+        for slot in source.chunks_exact_mut(extent_bytes) {
+            pattern.fill(slot);
+        }
+        let mut branch_eps = Vec::with_capacity(branches.len());
+        for branch in branches.iter() {
+            let service = tcp_bench_port(branch.base_port, lane)?.to_string();
+            let mut ep = zcraid_mirror_rma_open_endpoint(
+                provider.as_str(),
+                endpoint.as_str(),
+                branch.addr.as_str(),
+                &service,
+                false,
+                branch.plan.fabric_domain.as_deref(),
+            )?;
+            let contract = zcraid_mirror_rma_peer_contract(
+                branch.plan.branch,
+                lane_count,
+                extent_bytes,
+                window,
+                coordinator.mode(),
+            );
+            let control_port = zcofi_control_port(&service)?;
+            zcofi_client_exchange_peer(branch.addr.as_str(), control_port, &mut ep, &contract)?;
+            zcofi_rma_client_connection_warmup(&mut ep, lane, provider.as_str())?;
+            let mut meta_buf = [0u8; ZCOFI_RMA_CONTROL_LEN];
+            let got = ep.recv(&mut meta_buf)?;
+            if got != ZCOFI_RMA_CONTROL_LEN {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "short RMA metadata",
+                ));
+            }
+            let meta = ZcOfiRmaMeta::decode(&meta_buf)?;
+            zcofi_rma_validate_meta(meta, lane, lane_count, arena_bytes, extent_bytes)?;
+            ep.rma_register_write_buffer(&source)?;
+            ep.rma_write_queue_init(window)?;
+            eprintln!(
+                "zcraid-mirror-rma-send-lane: worker={worker} branch={} lane={lane} provider={} domain={} shared_registered_source_bytes={arena_bytes} remote_addr=0x{:016x} remote_key=0x{:016x} queue_depth={window} delivery_complete={} durable_completion=remote-terminal-sync-ack",
+                branch.plan.branch,
+                provider.as_str(),
+                branch.plan.fabric_domain.as_deref().unwrap_or("auto"),
+                meta.remote_addr,
+                meta.remote_key,
+                yes(env_enabled_or(
+                    "URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE",
+                    true
+                )),
+            );
+            branch_eps.push(ZcRaidMirrorRmaSendBranch {
+                branch: branch.plan.branch,
+                endpoint: ep,
+                meta,
+                completion_slots: vec![0; window],
+                completion_tokens: vec![0; window],
+            });
+        }
+
+        let lane_started = Instant::now();
+        let mut seq_base = 0usize;
+        while seq_base < extents_per_lane {
+            let batch = window.min(extents_per_lane - seq_base);
+            let mut ranges = Vec::with_capacity(batch);
+            for slot in 0..batch {
+                let (_, first, last, _) = zcraid_mirror_extent_layout(
+                    lane,
+                    lane_count,
+                    seq_base + slot,
+                    extent_bytes,
+                    coordinator.mode(),
+                )?;
+                ranges.push((first, last));
+            }
+            let _range_guards = coordinator.acquire_many(&ranges)?;
+            let issued = Instant::now();
+            for branch in &mut branch_eps {
+                for slot in 0..batch {
+                    let offset = slot.checked_mul(extent_bytes).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "RMA slot overflow")
+                    })?;
+                    let remote_addr = branch
+                        .meta
+                        .remote_addr
+                        .checked_add(u64::try_from(offset).unwrap())
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidInput, "RMA address overflow")
+                        })?;
+                    let posted = unsafe {
+                        branch.endpoint.rma_write_post_more_raw(
+                            source.as_ptr().add(offset),
+                            extent_bytes,
+                            remote_addr,
+                            branch.meta.remote_key,
+                            slot,
+                            u64::try_from(slot).unwrap(),
+                            slot + 1 < batch,
+                        )?
+                    };
+                    if !posted {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            format!(
+                                "RMA queue rejected branch={} lane={lane} slot={slot} batch={batch}",
+                                branch.branch
+                            ),
+                        ));
+                    }
+                }
+            }
+            for branch in &mut branch_eps {
+                let mut remaining = batch;
+                while remaining != 0 {
+                    cq_polls += 1;
+                    let completed = branch.endpoint.rma_write_poll(
+                        &mut branch.completion_slots[..batch],
+                        &mut branch.completion_tokens[..batch],
+                        true,
+                    )?;
+                    for index in 0..completed {
+                        let slot = branch.completion_slots[index];
+                        if slot >= batch || branch.completion_tokens[index] != slot as u64 {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "RMA completion slot/token mismatch",
+                            ));
+                        }
+                    }
+                    remaining = remaining.checked_sub(completed).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "excess RMA completions")
+                    })?;
+                    cq_completions += completed as u64;
+                }
+            }
+            for branch in &mut branch_eps {
+                let bell = ZcRaidMirrorRmaDoorbell {
+                    lane: u32::try_from(lane).unwrap(),
+                    branch: u32::try_from(branch.branch).unwrap(),
+                    seq_base: u64::try_from(seq_base).unwrap(),
+                    batch: u64::try_from(batch).unwrap(),
+                    extent_bytes: u64::try_from(extent_bytes).unwrap(),
+                };
+                branch.endpoint.send(&bell.encode())?;
+            }
+            for branch in &mut branch_eps {
+                for slot in 0..batch {
+                    let mut ack_buf = [0u8; ZC_WAL_ACK_HEADER_LEN];
+                    let got = branch.endpoint.recv(&mut ack_buf)?;
+                    if got != ZC_WAL_ACK_HEADER_LEN {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, "short RMA ACK"));
+                    }
+                    let ack = ZcWalAckHeader::decode(&ack_buf)?;
+                    if ack.lane_id as usize != lane
+                        || ack.shard_id as usize != branch.branch
+                        || ack.extent_sequence as usize != seq_base + slot
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "RMA durable ACK identity mismatch",
+                        ));
+                    }
+                }
+            }
+            acks += batch;
+            ack_latency.record_duration(issued.elapsed());
+            payload_bytes += batch * extent_bytes;
+            wire_bytes += batch * extent_bytes * branch_eps.len()
+                + branch_eps.len() * (ZCOFI_RMA_CONTROL_LEN + batch * ZC_WAL_ACK_HEADER_LEN);
+            extents += batch;
+            records += batch * records_per_extent;
+            seq_base += batch;
+        }
+        operation_wall = operation_wall.saturating_add(lane_started.elapsed());
+    }
+    eprintln!(
+        "zcraid-mirror-rma-send-queue-worker: worker={worker} streams={stream_count} shared_payload_copy_per_branch=no cq_polls={cq_polls} cq_completions={cq_completions} durable_acks={acks}"
+    );
+    let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
+    let end_cpu = current_cpu();
+    let end_switches = read_thread_context_switches(tid).unwrap_or(start_switches);
+    Ok(ZcWalExtentStats {
+        worker,
+        streams: stream_count,
+        payload_bytes,
+        wire_bytes,
+        extents,
+        records,
+        acks,
+        wall: operation_wall,
+        cpu: end_thread_cpu.saturating_sub(start_thread_cpu),
+        target_cpu: affinity.target_cpu,
+        affinity_applied: affinity.applied,
+        start_cpu,
+        end_cpu,
+        voluntary_switches: end_switches
+            .voluntary
+            .saturating_sub(start_switches.voluntary),
+        involuntary_switches: end_switches
+            .involuntary
+            .saturating_sub(start_switches.involuntary),
+        migrations: end_switches
+            .migrations
+            .saturating_sub(start_switches.migrations),
+        ack_latency,
+        uring_recv: UringRecvStats::default(),
+    })
+}
+
 struct ZcRaidMirrorOfiRecvLane {
     lane: usize,
     endpoint: ZcOfiEndpoint,
@@ -19204,7 +19927,9 @@ fn zcraid_mirror_ofi_recv_worker(
     extent_bytes: usize,
     ack_enabled: bool,
     recv_window: usize,
+    ack_window: usize,
     coord_mode: ZcRaidZlaneCoordMode,
+    terminal: Option<ZcRaidMirrorTerminal>,
 ) -> io::Result<ZcWalExtentStats> {
     let affinity = maybe_pin_current_thread("zcraid-mirror-ofi-recv-worker", worker);
     let tid = current_tid();
@@ -19303,12 +20028,21 @@ fn zcraid_mirror_ofi_recv_worker(
     let mut cq_poll_calls = 0u64;
     let mut cq_batches = 0u64;
     let mut cq_completions = 0u64;
+    let mut terminal_writes = 0usize;
+    let mut terminal_syncs = 0usize;
+    let mut terminal_ring = terminal
+        .as_ref()
+        .map(ZcRaidMirrorTerminal::ring)
+        .transpose()?
+        .flatten();
     let started = Instant::now();
     for mut lane_state in endpoints {
         let lane = lane_state.lane;
         let mut next_post_seq = recv_window;
         let mut completed_extents = 0usize;
         let mut seen = vec![false; extents_per_lane];
+        let durability_window = ack_window.max(1);
+        let mut durability_batches = BTreeMap::<usize, Vec<Option<ZcWalExtentHeader>>>::new();
         while completed_extents < extents_per_lane {
             cq_poll_calls = cq_poll_calls.saturating_add(1);
             let completed = lane_state.endpoint.recv_poll(
@@ -19384,11 +20118,63 @@ fn zcraid_mirror_ofi_recv_worker(
                 }
                 seen[seq] = true;
                 completed_extents += 1;
+                if let Some(terminal) = terminal.as_ref() {
+                    let payload = if compact_4k {
+                        message
+                    } else {
+                        &message[ZC_WAL_EXTENT_HEADER_LEN..]
+                    };
+                    terminal.write(&mut terminal_ring, header, payload)?;
+                    terminal_writes = terminal_writes.saturating_add(1);
+                    let batch_base = seq / durability_window * durability_window;
+                    let expected = durability_window.min(extents_per_lane - batch_base);
+                    let batch = durability_batches
+                        .entry(batch_base)
+                        .or_insert_with(|| vec![None; expected]);
+                    let batch_slot = seq - batch_base;
+                    if batch_slot >= batch.len() || batch[batch_slot].replace(header).is_some() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "zcraid mirror terminal durability batch mismatch lane={lane} seq={seq} base={batch_base} slot={batch_slot} expected={expected}"
+                            ),
+                        ));
+                    }
+                    if batch.iter().all(Option::is_some) {
+                        let durable = durability_batches.remove(&batch_base).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "zcraid mirror terminal durability batch disappeared",
+                            )
+                        })?;
+                        terminal.sync()?;
+                        terminal_syncs = terminal_syncs.saturating_add(1);
+                        if ack_enabled {
+                            for durable_header in durable.into_iter().flatten() {
+                                lane_state.ack_buf.copy_from_slice(
+                                    &zcraid_mirror_ack_for_header(durable_header)?.encode(),
+                                );
+                                if ack_inject
+                                    && lane_state.ack_buf.len() <= lane_state.endpoint.inject_size()
+                                {
+                                    lane_state
+                                        .endpoint
+                                        .inject_to_last(lane_state.ack_buf.as_slice())?;
+                                } else {
+                                    lane_state
+                                        .endpoint
+                                        .send_to_last(lane_state.ack_buf.as_slice())?;
+                                }
+                                acks += 1;
+                            }
+                        }
+                    }
+                }
                 payload_bytes += extent_bytes;
                 wire_bytes += message_bytes;
                 extents += 1;
                 records += header.record_count as usize;
-                if ack_enabled {
+                if ack_enabled && terminal.is_none() {
                     lane_state
                         .ack_buf
                         .copy_from_slice(&zcraid_mirror_ack_for_header(header)?.encode());
@@ -19430,11 +20216,26 @@ fn zcraid_mirror_ofi_recv_worker(
                 }
             }
         }
+        if !durability_batches.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "zcraid mirror terminal lane={lane} ended with {} incomplete durability batches",
+                    durability_batches.len()
+                ),
+            ));
+        }
     }
 
     println!(
         "zcraid-mirror-ofi-recv-queue-worker: worker={worker} lanes={stream_count} configured_rx_depth={recv_window} cq_poll_calls={cq_poll_calls} cq_batches={cq_batches} cq_completions={cq_completions} avg_cqes_per_batch={:.2}",
         cq_completions as f64 / cq_batches.max(1) as f64,
+    );
+    eprintln!(
+        "zcraid-mirror-terminal-worker: transport=ofi worker={worker} enabled={} writes={terminal_writes} syncs={terminal_syncs} durable_ack={} durability_window={}",
+        yes(terminal.is_some()),
+        yes(terminal.is_some() && ack_enabled),
+        ack_window.max(1),
     );
 
     let end_thread_cpu = thread_cpu_time().unwrap_or(start_thread_cpu);
@@ -20021,6 +20822,7 @@ fn zcraid_mirror_recv(
     provider: &str,
     endpoint: &str,
     ack_enabled: bool,
+    terminal_target: Option<&str>,
 ) -> io::Result<()> {
     let fallback_branches = branch_id + 1;
     let plan = zcraid_mirror_load_plan(plan_path, 1, fallback_branches.max(2))?;
@@ -20036,8 +20838,33 @@ fn zcraid_mirror_recv(
     let wire_ack_enabled = ack_policy.waits_for_acks();
     let coord_mode = ZcRaidZlaneCoordMode::from_env()?;
     let coordinator = ZcRaidZlaneCoordinator::new(coord_mode);
+    let terminal = terminal_target
+        .filter(|target| !target.trim().is_empty() && *target != "-")
+        .map(|target| {
+            ZcRaidMirrorTerminal::open(
+                target,
+                record_bytes,
+                zcraid_mirror_required_terminal_bytes(lane_count, bytes_per_lane, coord_mode)?,
+            )
+        })
+        .transpose()?;
+    if wire_ack_enabled && terminal.is_none() {
+        zc_topology_issue(
+            "zcraid-mirror-recv",
+            "ACKs cover remote userspace receipt only because no terminal target was supplied; pass a persistent zcpwal or allowlisted PARTUUID terminal before reporting durable mirror completion",
+        )?;
+    }
+    if terminal.is_some() && !wire_ack_enabled {
+        zc_topology_issue(
+            "zcraid-mirror-recv",
+            "a terminal target is configured but ACKs are disabled; terminal writes will be drained, but the sender cannot observe a durable HWM",
+        )?;
+    }
     let tcp_recv_spin_budget = zcraid_mirror_tcp_recv_spin_budget();
-    if transport == ZcRaidMirrorTransport::Ofi {
+    if matches!(
+        transport,
+        ZcRaidMirrorTransport::OfiMsg | ZcRaidMirrorTransport::Rma
+    ) {
         zcofi_report_wire_profile(
             "zcraid-mirror-recv",
             provider,
@@ -20069,16 +20896,18 @@ fn zcraid_mirror_recv(
     } else {
         env_usize_or("URING_PLAY_OFI_RX_QUEUE_DEPTH", 64).max(1)
     };
-    let aggregate_rx_outstanding = if transport == ZcRaidMirrorTransport::Ofi {
+    let aggregate_rx_outstanding = if matches!(
+        transport,
+        ZcRaidMirrorTransport::OfiMsg | ZcRaidMirrorTransport::Rma
+    ) {
         lanes.len().saturating_mul(ofi_recv_window)
     } else {
         0
     };
     println!(
-        "zcraid-mirror-recv: transport={} bind={bind} base_port={base_port} branch={branch_id} lanes={} lane_count={} bytes_per_lane={bytes_per_lane} extent_bytes={record_bytes} logical_record_bytes={ZC_WAL_RECORD_SIZE} extents_per_lane={extents_per_lane} workers={workers} ack_enabled={} ack_policy={} completion_semantic={} ack_window={ack_window} per_lane_rx_qd={ofi_recv_window} aggregate_rx_outstanding={aggregate_rx_outstanding} zlane_coord={} zlane_lock_shards={} tcp_recv_spin={} tcp_recv_spin_budget={} provider={provider} endpoint={endpoint} branch_domain={} plan_json={} compact_4k={} wire_sequence_header={}",
+        "zcraid-mirror-recv: transport={} bind={bind} base_port={base_port} branch={branch_id} lanes={} lane_count={lane_count} bytes_per_lane={bytes_per_lane} extent_bytes={record_bytes} logical_record_bytes={ZC_WAL_RECORD_SIZE} extents_per_lane={extents_per_lane} workers={workers} ack_enabled={} ack_policy={} completion_semantic={} ack_window={ack_window} per_lane_rx_qd={ofi_recv_window} aggregate_rx_outstanding={aggregate_rx_outstanding} zlane_coord={} zlane_lock_shards={} tcp_recv_spin={} tcp_recv_spin_budget={} provider={provider} endpoint={endpoint} branch_domain={} plan_json={} compact_4k={} wire_sequence_header={} terminal={} terminal_ack_semantic={}",
         transport.label(),
         format_cpu_list(&lanes),
-        lane_count,
         yes(wire_ack_enabled),
         ack_policy.label(),
         ack_policy.label(),
@@ -20100,6 +20929,15 @@ fn zcraid_mirror_recv(
             record_bytes,
             wire_ack_enabled
         )),
+        terminal
+            .as_ref()
+            .map(|terminal| terminal.backend.label())
+            .unwrap_or("none"),
+        if terminal.is_some() && wire_ack_enabled {
+            "terminal-write-plus-sync-hwm"
+        } else {
+            "remote-userspace-receipt-only"
+        },
     );
     let mut results = Vec::new();
     match transport {
@@ -20111,6 +20949,7 @@ fn zcraid_mirror_recv(
                 if shard.is_empty() {
                     continue;
                 }
+                let terminal = terminal.clone();
                 handles.push(thread::spawn(move || {
                     zcraid_mirror_tcp_recv_worker(
                         worker,
@@ -20120,8 +20959,10 @@ fn zcraid_mirror_recv(
                         extents_per_lane,
                         record_bytes,
                         wire_ack_enabled,
+                        ack_window,
                         coord_mode,
                         tcp_recv_spin_budget,
+                        terminal,
                     )
                 }));
             }
@@ -20133,7 +20974,7 @@ fn zcraid_mirror_recv(
                 results.push(stats);
             }
         }
-        ZcRaidMirrorTransport::Ofi => {
+        ZcRaidMirrorTransport::OfiMsg => {
             let lane_shards = zcraid_mirror_partition_lanes(&lanes, workers);
             let provider = Arc::new(provider.to_string());
             let endpoint = Arc::new(libfabric_endpoint_pingpong(endpoint)?.to_string());
@@ -20147,6 +20988,7 @@ fn zcraid_mirror_recv(
                 let endpoint = Arc::clone(&endpoint);
                 let bind = Arc::clone(&bind);
                 let branch = branch.clone();
+                let terminal = terminal.clone();
                 handles.push(thread::spawn(move || {
                     zcraid_mirror_ofi_recv_worker(
                         worker,
@@ -20165,7 +21007,9 @@ fn zcraid_mirror_recv(
                         } else {
                             env_usize_or("URING_PLAY_OFI_RX_QUEUE_DEPTH", 64).max(1)
                         },
+                        ack_window,
                         coord_mode,
+                        terminal,
                     )
                 }));
             }
@@ -20173,6 +21017,59 @@ fn zcraid_mirror_recv(
                 let stats = handle
                     .join()
                     .map_err(|_| io::Error::other("zcraid mirror OFI recv worker panicked"))??;
+                zcraid_mirror_print_worker("zcraid-mirror-recv", &stats);
+                results.push(stats);
+            }
+        }
+        ZcRaidMirrorTransport::Rma => {
+            if !wire_ack_enabled {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the RDMA mirror requires durable acknowledgements",
+                ));
+            }
+            let terminal = terminal.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the RDMA mirror requires a persistent terminal target",
+                )
+            })?;
+            let lane_shards = zcraid_mirror_partition_lanes(&lanes, workers);
+            let provider = Arc::new(provider.to_string());
+            let endpoint = Arc::new(libfabric_endpoint_pingpong(endpoint)?.to_string());
+            let bind = Arc::new(bind.to_string());
+            let mut handles = Vec::new();
+            for (worker, shard) in lane_shards.into_iter().enumerate() {
+                if shard.is_empty() {
+                    continue;
+                }
+                let provider = Arc::clone(&provider);
+                let endpoint = Arc::clone(&endpoint);
+                let bind = Arc::clone(&bind);
+                let branch = branch.clone();
+                let terminal = terminal.clone();
+                handles.push(thread::spawn(move || {
+                    zcraid_mirror_rma_recv_worker(
+                        worker,
+                        provider,
+                        endpoint,
+                        bind,
+                        branch,
+                        base_port,
+                        shard,
+                        lane_count,
+                        extents_per_lane,
+                        record_bytes,
+                        ack_window,
+                        coord_mode,
+                        terminal,
+                    )
+                }));
+            }
+            for handle in handles {
+                let stats = handle
+                    .join()
+                    .map_err(|_| io::Error::other("zcraid mirror RMA recv worker panicked"))??;
                 zcraid_mirror_print_worker("zcraid-mirror-recv", &stats);
                 results.push(stats);
             }
@@ -20250,16 +21147,21 @@ fn zcraid_mirror_send(
     let branch_count = plan.branches.len();
     let ack_window = zcraid_mirror_ack_window(transport);
     let requested_ack_policy = ZcRaidMirrorAckPolicy::from_env(ack_enabled)?;
-    let ack_policy = if transport == ZcRaidMirrorTransport::Ofi
-        && matches!(requested_ack_policy, ZcRaidMirrorAckPolicy::Sync)
+    let ack_policy = requested_ack_policy;
+    if transport == ZcRaidMirrorTransport::Rma && !ack_policy.waits_for_acks() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the RDMA mirror requires durable terminal acknowledgements",
+        ));
+    }
+    if transport == ZcRaidMirrorTransport::Rma
+        && !env_enabled_or("URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE", true)
     {
-        eprintln!(
-            "PERF WARNING: zcraid-mirror-send sync/FUA durability drains are not implemented for the OFI mirror protocol; this run is downgraded to remotely acknowledged writes and must not be reported as durable completion"
-        );
-        ZcRaidMirrorAckPolicy::Remote
-    } else {
-        requested_ack_policy
-    };
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RDMA mirror delivery-complete cannot be disabled because the data/doorbell visibility order would be unsafe",
+        ));
+    }
     let wire_ack_enabled = ack_policy.waits_for_acks();
     let coord_mode = ZcRaidZlaneCoordMode::from_env()?;
     let coordinator = Arc::new(ZcRaidZlaneCoordinator::new(coord_mode));
@@ -20273,24 +21175,42 @@ fn zcraid_mirror_send(
             coordinator.lock_count()
         );
     }
-    if transport == ZcRaidMirrorTransport::Ofi {
+    if matches!(
+        transport,
+        ZcRaidMirrorTransport::OfiMsg | ZcRaidMirrorTransport::Rma
+    ) {
         zcofi_report_wire_profile(
             "zcraid-mirror-send",
             provider,
             record_bytes,
             wire_ack_enabled,
         );
-        if branch_count > 1 && !env_enabled_or("URING_PLAY_OFI_BRANCH_POST_NOWAIT", true) {
+        if transport == ZcRaidMirrorTransport::OfiMsg
+            && branch_count > 1
+            && !env_enabled_or("URING_PLAY_OFI_BRANCH_POST_NOWAIT", true)
+        {
             zc_topology_issue(
                 "zcraid-mirror-send",
                 "multi-branch OFI posting is configured to wait branch-by-branch",
             )?;
         }
-        if wire_ack_enabled && ack_window > 1 && !env_enabled_or("URING_PLAY_OFI_PREPOST_ACK", true)
+        if transport == ZcRaidMirrorTransport::OfiMsg
+            && wire_ack_enabled
+            && ack_window > 1
+            && !env_enabled_or("URING_PLAY_OFI_PREPOST_ACK", true)
         {
             zc_topology_issue(
                 "zcraid-mirror-send",
                 "windowed OFI ACK preposting is disabled; the branch-by-window ACK matrix cannot run",
+            )?;
+        }
+        if transport == ZcRaidMirrorTransport::Rma
+            && ack_window > 1
+            && !env_enabled_or("URING_PLAY_OFI_RMA_WRITE_MORE", false)
+        {
+            zc_topology_issue(
+                "zcraid-mirror-send",
+                "windowed RDMA posting is not using FI_MORE doorbell coalescing; set URING_PLAY_OFI_RMA_WRITE_MORE=1",
             )?;
         }
         let required_window = if wire_ack_enabled {
@@ -20331,9 +21251,9 @@ fn zcraid_mirror_send(
             branch.plan.fabric_domain.as_deref().unwrap_or("auto")
         );
     }
-    let ofi_branch_post_nowait = transport == ZcRaidMirrorTransport::Ofi
+    let ofi_branch_post_nowait = transport == ZcRaidMirrorTransport::OfiMsg
         && env_enabled_or("URING_PLAY_OFI_BRANCH_POST_NOWAIT", true);
-    let ofi_prepost_ack = transport == ZcRaidMirrorTransport::Ofi
+    let ofi_prepost_ack = transport == ZcRaidMirrorTransport::OfiMsg
         && wire_ack_enabled
         && env_enabled_or("URING_PLAY_OFI_PREPOST_ACK", true);
     let ofi_window = if wire_ack_enabled {
@@ -20401,7 +21321,7 @@ fn zcraid_mirror_send(
                 }));
             }
         }
-        ZcRaidMirrorTransport::Ofi => {
+        ZcRaidMirrorTransport::OfiMsg => {
             let provider = Arc::new(provider.to_string());
             let endpoint = Arc::new(libfabric_endpoint_pingpong(endpoint)?.to_string());
             for (worker, shard) in lane_shards.into_iter().enumerate() {
@@ -20424,6 +21344,33 @@ fn zcraid_mirror_send(
                         extents_per_lane,
                         record_bytes,
                         wire_ack_enabled,
+                        ack_window,
+                    )
+                }));
+            }
+        }
+        ZcRaidMirrorTransport::Rma => {
+            let provider = Arc::new(provider.to_string());
+            let endpoint = Arc::new(libfabric_endpoint_pingpong(endpoint)?.to_string());
+            for (worker, shard) in lane_shards.into_iter().enumerate() {
+                if shard.is_empty() {
+                    continue;
+                }
+                let provider = Arc::clone(&provider);
+                let endpoint = Arc::clone(&endpoint);
+                let branches = Arc::clone(&branches);
+                let coordinator = Arc::clone(&coordinator);
+                handles.push(thread::spawn(move || {
+                    zcraid_mirror_rma_send_worker(
+                        worker,
+                        provider,
+                        endpoint,
+                        shard,
+                        branches,
+                        coordinator,
+                        lane_count,
+                        extents_per_lane,
+                        record_bytes,
                         ack_window,
                     )
                 }));
@@ -97077,7 +98024,7 @@ pub fn main_entry() -> io::Result<()> {
             )
         }
         Some("zcraid-mirror-send") => {
-            let usage = "usage: zcraid-mirror-send <tcp|ofi> <addr> <branch-base-ports-csv> [bytes-per-lane] [extent-bytes] [workers] [plan-json|-] [provider] [endpoint] [ack]";
+            let usage = "usage: zcraid-mirror-send <tcp|ofi-msg|rdma> <addr> <branch-base-ports-csv> [bytes-per-lane] [extent-bytes] [workers] [plan-json|-] [provider] [endpoint] [ack]";
             let transport_arg = args
                 .next()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
@@ -97130,7 +98077,7 @@ pub fn main_entry() -> io::Result<()> {
             )
         }
         Some("zcraid-mirror-recv") => {
-            let usage = "usage: zcraid-mirror-recv <tcp|ofi> <bind> <base-port> <branch-id> [bytes-per-lane] [extent-bytes] [workers] [plan-json|-] [provider] [endpoint] [ack]";
+            let usage = "usage: zcraid-mirror-recv <tcp|ofi-msg|rdma> <bind> <base-port> <branch-id> [bytes-per-lane] [extent-bytes] [workers] [plan-json|-] [provider] [endpoint] [ack] [terminal-target|-]";
             let transport_arg = args
                 .next()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
@@ -97175,6 +98122,7 @@ pub fn main_entry() -> io::Result<()> {
                 .map(|value| parse_bool_arg(&value, "ack"))
                 .transpose()?
                 .unwrap_or(true);
+            let terminal_target = args.next();
             zcraid_mirror_recv(
                 transport,
                 &bind,
@@ -97187,6 +98135,7 @@ pub fn main_entry() -> io::Result<()> {
                 &provider,
                 &endpoint,
                 ack_enabled,
+                terminal_target.as_deref(),
             )
         }
         None | Some("probe") => probe(),
