@@ -1841,7 +1841,14 @@ chunk to the hot path synchronously, then queues the same bytes to an optional
 cold spill path or spill command. `--memory-bytes` bounds queued spill data, so
 the upstream pipeline gets backpressure when the cold tier falls behind.
 File and pipe writes are chunk-buffered, and the result line reports main/spill
-CPU time plus context-switch counters.
+CPU time plus context-switch counters. It reports active `hot_admit_seconds`
+and `hot_admit_MiBps` at the point where all bytes have reached the hot
+materialization, separately from `spill_drain_seconds` and whole-pipeline
+`seconds`. `input_wait_seconds` isolates listener/upstream idle time, while
+`hot_admit_wall_seconds` retains the wall-clock boundary from process start.
+`hot_admit_queued_bytes` records how much bounded cold backlog
+remained at that acknowledgement boundary. This distinction is required when
+comparing an early hot acknowledgement with a synchronous cold-tier drain.
 
 This composes with `zcraid-split` for RAID1-style fanout without putting the
 tier policy into every fanout command. Spill remains userspace work:

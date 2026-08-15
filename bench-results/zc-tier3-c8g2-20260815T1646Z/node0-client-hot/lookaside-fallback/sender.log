@@ -1,0 +1,5 @@
+zcnblk-send: addr=172.31.40.201 shard_count=1 base_port=16100 ports=1 connections_per_port=1 total_connections=1 bytes_per_connection=67108864 chunk_bytes=4096 workers=1 op_mode=write-sync-read read_window=256 write_window=8192 mixed_read_drain_watermark=256 access=random:range_bytes=33554432:seed=0x7a636e626c6b0001 verify_reads=yes wait_write_acks=yes batch_depth=512 write_extents=no read_extents=no read_extent_batch_extents=1 drain_ready_responses=yes payload_pattern=offset:seed=0x0000000000003039 source_ip=172.31.36.34 source_ports=kernel-ephemeral latency=yes encryption=none aes_frame_bytes=65536
+zcnblk-send-worker: affinity_index=0 target_cpu=2 status=ok
+tcp-bench-connect-route-probe: peer=172.31.40.201:16100 local_socket=172.31.36.34:49611 probe_src=172.31.36.34 route_dev=ens34 route_src=172.31.36.34 route="172.31.40.201 from 172.31.36.34 dev ens34 uid 1000 \ cache"
+zcnblk-send-stream: worker=0 lane=0 port=16100 conn=0 shard=0 base_offset=0
+Error: Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }

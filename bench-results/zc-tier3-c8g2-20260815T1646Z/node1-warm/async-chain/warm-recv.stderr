@@ -1,0 +1,6 @@
+zcforward-topology: descriptor_mode=auto zero_copy=auto preserve_lanes=no preserve_topology=no topology=- lane_id=0 lane_count=1 queue_id=- preferred_worker=0 lane_map=lane0=inbound-worker0=cpu2 preferred_cpu=2 numa_node=- ordered=global topology_target_cpu=2 topology_affinity_applied=yes topology_start_cpu=1 topology_end_cpu=2 topology_target_numa_node=0 topology_end_numa_node=0
+ZC_TCPMUX_READY listen_address=0.0.0.0 listen_addresses=0.0.0.0 port=9201 ports=9201 lanes=1 authentication=disabled encryption=none
+zcforward-source-topology: source=tcpmux lane=0 receiver_cpu=2 receiver_numa_node=0
+zcforward-source-result: source=tcpmux peer=172.31.36.34:52749 bytes=4294967296 encryption=none already_encrypted=false
+zcforward-branch-result: branch=stdout bytes=4294967296 chunks=261468
+zcforward-result: bytes=4294967296 chunks=261468 branches=1 branch_bytes=4294967296 seconds=23.798023 MiBps=172.12 branch_labels=stdout descriptor_mode=auto zero_copy=auto preserve_lanes=no preserve_topology=no topology=- lane_id=0 lane_count=1 queue_id=- preferred_worker=0 lane_map=lane0=inbound-worker0=cpu2 preferred_cpu=2 numa_node=- ordered=global

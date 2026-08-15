@@ -1,0 +1,28 @@
+zcforward-topology: descriptor_mode=auto zero_copy=auto preserve_lanes=no preserve_topology=no topology=- lane_id=0 lane_count=1 queue_id=- preferred_worker=0 lane_map=lane0=worker0=cpu4 preferred_cpu=4 numa_node=- ordered=global topology_target_cpu=4 topology_affinity_applied=yes topology_start_cpu=6 topology_end_cpu=4 topology_target_numa_node=0 topology_end_numa_node=0
+connect zc-tcpmux data plane-route-probe: peer=172.31.40.201:9101 local_socket=172.31.36.34:54135 probe_src=172.31.36.34 route_dev=ens34 route_src=172.31.36.34 route="172.31.40.201 from 172.31.36.34 dev ens34 uid 1000 \ cache"
+zcforward-branch-result: branch=tcpmux:172.31.40.201:9101:none:encrypt bytes=4294967296 chunks=65637
+zcforward-branch-result: branch=file:/dev/shm/zc-tier3-c8g2-20260815T1646Z-sync-hot bytes=4294967296 chunks=65637
+zcforward-result: bytes=4294967296 chunks=65637 branches=2 branch_bytes=8589934592 seconds=3.605627 MiBps=1136.00 branch_labels=tcpmux:172.31.40.201:9101:none:encrypt,file:/dev/shm/zc-tier3-c8g2-20260815T1646Z-sync-hot descriptor_mode=auto zero_copy=auto preserve_lanes=no preserve_topology=no topology=- lane_id=0 lane_count=1 queue_id=- preferred_worker=0 lane_map=lane0=worker0=cpu4 preferred_cpu=4 numa_node=- ordered=global
+	Command being timed: "target/release/zcutils zcforward --output /dev/shm/zc-tier3-c8g2-20260815T1646Z-sync-hot --to-tcpmux 172.31.40.201:9101 --local-data-address 172.31.36.34 --disable-authentication --encryption none --buffer-bytes 1m --queue-depth 8 --preferred-cpu 4 --lane-id 0 --lane-count 1 --preferred-worker 0 --lane-map lane0=worker0=cpu4"
+	User time (seconds): 0.27
+	System time (seconds): 2.30
+	Percent of CPU this job got: 71%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:03.60
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 6048
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 3
+	Minor (reclaiming a frame) page faults: 547
+	Voluntary context switches: 73635
+	Involuntary context switches: 42570
+	Swaps: 0
+	File system inputs: 288
+	File system outputs: 8
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

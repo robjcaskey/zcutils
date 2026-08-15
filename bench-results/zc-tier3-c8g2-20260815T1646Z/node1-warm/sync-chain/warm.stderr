@@ -1,0 +1,7 @@
+zcforward-topology: descriptor_mode=auto zero_copy=auto preserve_lanes=no preserve_topology=no topology=- lane_id=0 lane_count=1 queue_id=- preferred_worker=0 lane_map=lane0=worker0=cpu4 preferred_cpu=4 numa_node=- ordered=global topology_target_cpu=4 topology_affinity_applied=yes topology_start_cpu=0 topology_end_cpu=4 topology_target_numa_node=0 topology_end_numa_node=0
+zcforward-source-topology: source=tcpmux lane=0 receiver_cpu=4 receiver_numa_node=0
+connect zc-tcpmux data plane-route-probe: peer=172.31.44.114:9102 local_socket=172.31.40.201:53597 probe_src=172.31.40.201 route_dev=ens34 route_src=172.31.40.201 route="172.31.44.114 from 172.31.40.201 dev ens34 uid 1000 \ cache"
+zcforward-source-result: source=tcpmux peer=172.31.36.34:54135 bytes=4294967296 encryption=none already_encrypted=false
+zcforward-branch-result: branch=tcpmux:172.31.44.114:9102:none:encrypt bytes=4294967296 chunks=184055
+zcforward-branch-result: branch=file:/dev/shm/zc-tier3-c8g2-20260815T1646Z-sync-warm bytes=4294967296 chunks=184055
+zcforward-result: bytes=4294967296 chunks=184055 branches=2 branch_bytes=8589934592 seconds=21.489249 MiBps=190.61 branch_labels=tcpmux:172.31.44.114:9102:none:encrypt,file:/dev/shm/zc-tier3-c8g2-20260815T1646Z-sync-warm descriptor_mode=auto zero_copy=auto preserve_lanes=no preserve_topology=no topology=- lane_id=0 lane_count=1 queue_id=- preferred_worker=0 lane_map=lane0=worker0=cpu4 preferred_cpu=4 numa_node=- ordered=global

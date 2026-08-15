@@ -1,0 +1,29 @@
+zctier-topology: descriptor_mode=auto zero_copy=auto preserve_lanes=no preserve_topology=no topology=- lane_id=0 lane_count=1 queue_id=- preferred_worker=0 lane_map=lane0=hot-worker0=cpu3 preferred_cpu=3 numa_node=- ordered=global topology_target_cpu=3 topology_affinity_applied=yes topology_start_cpu=7 topology_end_cpu=3 topology_target_numa_node=0 topology_end_numa_node=0
+zcforward-topology: descriptor_mode=auto zero_copy=auto preserve_lanes=no preserve_topology=no topology=- lane_id=0 lane_count=1 queue_id=- preferred_worker=0 lane_map=lane0=outbound-worker0=cpu4 preferred_cpu=4 numa_node=- ordered=global topology_target_cpu=4 topology_affinity_applied=yes topology_start_cpu=3 topology_end_cpu=4 topology_target_numa_node=0 topology_end_numa_node=0
+connect zc-tcpmux data plane-route-probe: peer=172.31.40.201:9201 local_socket=172.31.36.34:52749 probe_src=172.31.36.34 route_dev=ens34 route_src=172.31.36.34 route="172.31.40.201 from 172.31.36.34 dev ens34 uid 1000 \ cache"
+zcforward-branch-result: branch=tcpmux:172.31.40.201:9201:none:encrypt bytes=4294967296 chunks=65536
+zcforward-result: bytes=4294967296 chunks=65536 branches=1 branch_bytes=4294967296 seconds=3.605149 MiBps=1136.15 branch_labels=tcpmux:172.31.40.201:9201:none:encrypt descriptor_mode=auto zero_copy=auto preserve_lanes=no preserve_topology=no topology=- lane_id=0 lane_count=1 queue_id=- preferred_worker=0 lane_map=lane0=outbound-worker0=cpu4 preferred_cpu=4 numa_node=- ordered=global
+zctier-result: hot=/dev/shm/zc-tier3-c8g2-20260815T1646Z-async-hot spill=cmd:env URING_PLAY_TOPOLOGY_STRICT=1 URING_PLAY_EXPECT_ROUTE_DEV=ens34 URING_PLAY_EXPECT_ROUTE_SRC=172.31.36.34 target/release/zcutils zcforward --to-tcpmux 172.31.40.201:9201 --local-data-address 172.31.36.34 --disable-authentication --encryption none --buffer-bytes 1m --queue-depth 16 --preferred-cpu 4 --lane-id 0 --lane-count 1 --preferred-worker 0 --lane-map lane0=outbound-worker0=cpu4 hot_bytes=4294967296 hot_chunks=4096 spill_bytes=4294967296 spill_chunks=4096 memory_bytes=268435456 max_queued_bytes=268435456 hot_admit_queued_bytes=266338304 final_queued_bytes=0 hot_admit_seconds=3.380439 hot_admit_MiBps=1211.68 spill_drain_seconds=0.236650 seconds=3.617089 MiBps=1132.40 main_cpu_seconds=1.585419 spill_cpu_seconds=0.753348 voluntary_ctxt_switches=121392 involuntary_ctxt_switches=25686 migrations=0 main_voluntary_ctxt_switches=58694 main_involuntary_ctxt_switches=18598 main_migrations=0 spill_voluntary_ctxt_switches=62698 spill_involuntary_ctxt_switches=7088 spill_migrations=0 descriptor_mode=auto zero_copy=auto preserve_lanes=no preserve_topology=no topology=- lane_id=0 lane_count=1 queue_id=- preferred_worker=0 lane_map=lane0=hot-worker0=cpu3 preferred_cpu=3 numa_node=- ordered=global
+	Command being timed: "target/release/zcutils zctier --hot /dev/shm/zc-tier3-c8g2-20260815T1646Z-async-hot --spill-to env URING_PLAY_TOPOLOGY_STRICT=1 URING_PLAY_EXPECT_ROUTE_DEV=ens34 URING_PLAY_EXPECT_ROUTE_SRC=172.31.36.34 target/release/zcutils zcforward --to-tcpmux 172.31.40.201:9201 --local-data-address 172.31.36.34 --disable-authentication --encryption none --buffer-bytes 1m --queue-depth 16 --preferred-cpu 4 --lane-id 0 --lane-count 1 --preferred-worker 0 --lane-map lane0=outbound-worker0=cpu4 --chunk-bytes 1m --memory-bytes 256m --queue-depth 256 --preferred-cpu 3 --lane-id 0 --lane-count 1 --preferred-worker 0 --lane-map lane0=hot-worker0=cpu3"
+	User time (seconds): 0.34
+	System time (seconds): 4.30
+	Percent of CPU this job got: 128%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:03.62
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 268504
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 19
+	Minor (reclaiming a frame) page faults: 413416
+	Voluntary context switches: 157745
+	Involuntary context switches: 45577
+	Swaps: 0
+	File system inputs: 1968
+	File system outputs: 8
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

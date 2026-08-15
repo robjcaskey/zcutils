@@ -75783,6 +75783,7 @@ fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
     let start_thread_cpu = thread_cpu_time().unwrap_or_default();
     let start_switches = read_thread_context_switches(tid).unwrap_or_default();
     let mut input = io::stdin().lock();
+    let mut first_input_at = None::<Instant>;
     let mut hot_bytes = 0u64;
     let mut hot_chunks = 0u64;
     loop {
@@ -75790,6 +75791,7 @@ fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
         if data.is_empty() {
             break;
         }
+        first_input_at.get_or_insert_with(Instant::now);
         hot.write_all(&data)?;
         hot_bytes = hot_bytes.checked_add(data.len() as u64).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "zctier hot byte count overflow")
@@ -75813,6 +75815,23 @@ fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
         }
     }
     hot.flush()?;
+    // This is the acknowledgement boundary for the hot-admit policy: all input
+    // is visible in the hot materialization, while the bounded spill queue may
+    // still be draining.  Keep it separate from whole-pipeline completion so a
+    // slow cold tier cannot make early-admit results look synchronous.
+    let hot_admit_wall_seconds = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    let input_wait_seconds = first_input_at
+        .map(|first| first.saturating_duration_since(started).as_secs_f64())
+        .unwrap_or(hot_admit_wall_seconds);
+    let hot_admit_seconds = first_input_at
+        .map(|first| first.elapsed().as_secs_f64())
+        .unwrap_or(0.0)
+        .max(f64::MIN_POSITIVE);
+    let hot_admit_queued_bytes = if let Some(spill) = spill.as_ref() {
+        spill.backpressure.snapshot()?.0
+    } else {
+        0
+    };
 
     let mut spill_label = "-".to_string();
     let mut spill_bytes = 0u64;
@@ -75858,8 +75877,9 @@ fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
         .migrations
         .saturating_sub(start_switches.migrations);
     let secs = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    let spill_drain_seconds = (secs - hot_admit_wall_seconds).max(0.0);
     eprintln!(
-        "zctier-result: hot={} spill={} hot_bytes={} hot_chunks={} spill_bytes={} spill_chunks={} memory_bytes={} max_queued_bytes={} final_queued_bytes={} seconds={secs:.6} MiBps={:.2} main_cpu_seconds={:.6} spill_cpu_seconds={:.6} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={} main_voluntary_ctxt_switches={} main_involuntary_ctxt_switches={} main_migrations={} spill_voluntary_ctxt_switches={} spill_involuntary_ctxt_switches={} spill_migrations={} {}",
+        "zctier-result: hot={} spill={} hot_bytes={} hot_chunks={} spill_bytes={} spill_chunks={} memory_bytes={} max_queued_bytes={} hot_admit_queued_bytes={} final_queued_bytes={} input_wait_seconds={input_wait_seconds:.6} hot_admit_seconds={hot_admit_seconds:.6} hot_admit_wall_seconds={hot_admit_wall_seconds:.6} hot_admit_MiBps={:.2} spill_drain_seconds={spill_drain_seconds:.6} seconds={secs:.6} MiBps={:.2} main_cpu_seconds={:.6} spill_cpu_seconds={:.6} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={} main_voluntary_ctxt_switches={} main_involuntary_ctxt_switches={} main_migrations={} spill_voluntary_ctxt_switches={} spill_involuntary_ctxt_switches={} spill_migrations={} {}",
         hot_path.display(),
         spill_label,
         hot_bytes,
@@ -75868,7 +75888,9 @@ fn zctier(args: impl Iterator<Item = String>) -> io::Result<()> {
         spill_chunks,
         memory_bytes,
         max_queued_bytes,
+        hot_admit_queued_bytes,
         final_queued_bytes,
+        hot_bytes as f64 / (1024.0 * 1024.0) / hot_admit_seconds,
         hot_bytes as f64 / (1024.0 * 1024.0) / secs,
         main_cpu.as_secs_f64(),
         spill_cpu.as_secs_f64(),
