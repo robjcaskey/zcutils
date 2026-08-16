@@ -1,0 +1,30 @@
+{
+  "compiled": {
+    "lane_count": 4,
+    "parallel_raid": {
+      "block_device_raid_primitive": false,
+      "branch_topology": [
+        {
+          "branch": 0,
+          "policy": "mirror",
+          "placement_owner": "userspace-raid",
+          "block_device_raid_primitive": false,
+          "fabric_domain": "local-tcp-branch0",
+          "lanes": [0, 1, 2, 3],
+          "leader_cpus": [4, 5, 6, 7],
+          "workers": [0, 1, 2, 3]
+        },
+        {
+          "branch": 1,
+          "policy": "mirror",
+          "placement_owner": "userspace-raid",
+          "block_device_raid_primitive": false,
+          "fabric_domain": "local-tcp-branch1",
+          "lanes": [0, 1, 2, 3],
+          "leader_cpus": [8, 9, 10, 11],
+          "workers": [0, 1, 2, 3]
+        }
+      ]
+    }
+  }
+}
