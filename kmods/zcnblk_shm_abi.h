@@ -28,6 +28,7 @@
 #define ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_IMPORT (1ULL << 8)
 #define ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_ACTIVE (1ULL << 9)
 #define ZCNBLK_SHM_CAP_BIO_ARENA_ALIAS (1ULL << 10)
+#define ZCNBLK_SHM_CAP_SAMPLED_SEQUENCE_TELEMETRY (1ULL << 11)
 
 #define ZCNBLK_SHM_IO_FEATURE_FUA (1ULL << 0)
 #define ZCNBLK_SHM_IO_FEATURE_POLLED_COMPLETION (1ULL << 1)
@@ -66,6 +67,8 @@
 
 /* Reserved while the kernel fills a slot but before it publishes a request. */
 #define ZCNBLK_SHM_PAYLOAD_OWNER_RESERVED (~0ULL)
+/* Reserved by an application and handed to the kernel by an aliased bio. */
+#define ZCNBLK_SHM_PAYLOAD_OWNER_APP_RESERVED (~1ULL)
 
 /*
  * One control block has one kernel producer and one userspace consumer.
@@ -165,6 +168,7 @@ struct zcnblk_shm_header {
 	__u64 capacity_bytes;
 	__u64 daemon_generation;
 	__u64 daemon_online;
+	/* Debug telemetry; it may lag when SAMPLED_SEQUENCE_TELEMETRY is set. */
 	__u64 global_submit_sequence;
 	__u64 reserved[4];
 };

@@ -57,6 +57,8 @@ SHM_RING_ENTRIES="${SHM_RING_ENTRIES:-128}"
 KERNEL_QUEUE_DEPTH="${KERNEL_QUEUE_DEPTH:-$IODEPTH}"
 KERNEL_PIPELINE_DEPTH="${KERNEL_PIPELINE_DEPTH:-$SHM_RING_ENTRIES}"
 KERNEL_QUEUES="${KERNEL_QUEUES:-$LANES}"
+KERNEL_WORKER_BATCH_DEQUEUE="${KERNEL_WORKER_BATCH_DEQUEUE:-1}"
+KERNEL_SEQUENCE_TELEMETRY_INTERVAL="${KERNEL_SEQUENCE_TELEMETRY_INTERVAL:-256}"
 HCTX_NUMA_NODE="${HCTX_NUMA_NODE:--1}"
 SIZE_MIB="${SIZE_MIB:-$((LANES * 128))}"
 REGION_BYTES_PER_WORKER="${REGION_BYTES_PER_WORKER:-67108864}"
@@ -521,6 +523,13 @@ fi
 	die "KERNEL_QUEUE_DEPTH must be a positive integer"
 [[ "$KERNEL_PIPELINE_DEPTH" =~ ^[0-9]+$ ]] && [ "$KERNEL_PIPELINE_DEPTH" -gt 0 ] || \
 	die "KERNEL_PIPELINE_DEPTH must be a positive integer"
+[[ "$KERNEL_WORKER_BATCH_DEQUEUE" =~ ^[01]$ ]] || \
+	die "KERNEL_WORKER_BATCH_DEQUEUE must be zero or one"
+[[ "$KERNEL_SEQUENCE_TELEMETRY_INTERVAL" =~ ^[0-9]+$ ]] || \
+	die "KERNEL_SEQUENCE_TELEMETRY_INTERVAL must be a non-negative integer"
+(( KERNEL_SEQUENCE_TELEMETRY_INTERVAL == 0 ||
+   (KERNEL_SEQUENCE_TELEMETRY_INTERVAL & (KERNEL_SEQUENCE_TELEMETRY_INTERVAL - 1)) == 0 )) || \
+	die "KERNEL_SEQUENCE_TELEMETRY_INTERVAL must be zero or a power of two"
 [[ "$HCTX_NUMA_NODE" =~ ^-?[0-9]+$ ]] || die "HCTX_NUMA_NODE must be an integer"
 [ "$KERNEL_PIPELINE_DEPTH" -le "$SHM_RING_ENTRIES" ] || \
 	die "KERNEL_PIPELINE_DEPTH must not exceed SHM_RING_ENTRIES"
@@ -814,6 +823,8 @@ fi
 log "loading placement-free shared-memory client edge"
 sudo -n insmod "$MODULE" transport=shm lanes="$LANES" connections_per_lane=1 \
 	size_mib="$SIZE_MIB" queues="$KERNEL_QUEUES" queue_depth="$KERNEL_QUEUE_DEPTH" \
+	worker_batch_dequeue="$KERNEL_WORKER_BATCH_DEQUEUE" \
+	shm_sequence_telemetry_interval="$KERNEL_SEQUENCE_TELEMETRY_INTERVAL" \
 	shm_sector_order_slots="$SECTOR_ORDER_SLOTS" \
 	max_frame_bytes="$MAX_FRAME_BYTES" \
 	pipeline_depth="$KERNEL_PIPELINE_DEPTH" shm_ring_entries="$SHM_RING_ENTRIES" \
@@ -1100,6 +1111,9 @@ fi
 	printf 'shm_descriptor_entries_per_channel=%s\n' "$SHM_RING_ENTRIES"
 	printf 'kernel_queues=%s kernel_queue_depth=%s kernel_pipeline_depth=%s hctx_numa_node=%s\n' \
 		"$KERNEL_QUEUES" "$KERNEL_QUEUE_DEPTH" "$KERNEL_PIPELINE_DEPTH" "$HCTX_NUMA_NODE"
+	printf 'kernel_worker_batch_dequeue=%s\n' "$KERNEL_WORKER_BATCH_DEQUEUE"
+	printf 'kernel_sequence_telemetry_interval=%s\n' \
+		"$KERNEL_SEQUENCE_TELEMETRY_INTERVAL"
 	printf 'shm_sector_order_slots=%s\n' "$SECTOR_ORDER_SLOTS"
 	printf 'shm_payload_entries_per_channel=%s\n' "$SHM_PAYLOAD_ENTRIES"
 	safe_writeback_limit=$((SHM_PAYLOAD_ENTRIES - SHM_RING_ENTRIES))

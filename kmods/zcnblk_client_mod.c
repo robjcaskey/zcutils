@@ -153,9 +153,24 @@ module_param(shm_bio_arena_zero_copy, bool, 0444);
 MODULE_PARM_DESC(shm_bio_arena_zero_copy,
 		 "Lease an imported HugeTLB payload slot directly when an O_DIRECT bio already aliases that exact lane-local slot");
 
+static bool shm_bio_arena_zero_copy_required;
+module_param(shm_bio_arena_zero_copy_required, bool, 0444);
+MODULE_PARM_DESC(shm_bio_arena_zero_copy_required,
+		 "Reject malformed imported-arena bios and retry busy exact slots instead of falling back to a payload copy");
+
 static uint fill_timeout_ms;
 module_param(fill_timeout_ms, uint, 0444);
 MODULE_PARM_DESC(fill_timeout_ms, "Time to wait for more queued requests before receiving a partial pipeline, 0 means reap completions immediately");
+
+static bool worker_batch_dequeue = true;
+module_param(worker_batch_dequeue, bool, 0444);
+MODULE_PARM_DESC(worker_batch_dequeue,
+		 "Splice each connection's pending FIFO into a worker-local batch instead of taking queue_lock per request");
+
+static uint shm_sequence_telemetry_interval = 256;
+module_param(shm_sequence_telemetry_interval, uint, 0444);
+MODULE_PARM_DESC(shm_sequence_telemetry_interval,
+		 "Copy the exact kernel submit sequence into the shared debug header every N requests (zero disables the copy)");
 
 static bool write_acks;
 module_param(write_acks, bool, 0444);
@@ -261,6 +276,8 @@ struct zcnblk_conn {
 	wait_queue_head_t wait;
 	struct task_struct *thread;
 	struct list_head pending;
+	/* Only the connection worker touches this locklessly. */
+	struct list_head worker_pending;
 	struct list_head inflight;
 	struct zcnblk_pdu **shm_inflight;
 	u32 shm_inflight_entries;
@@ -309,6 +326,8 @@ struct zcnblk_shm_state {
 	atomic64_t bio_alias_writes;
 	atomic64_t bio_alias_reads;
 	atomic64_t bio_alias_busy_fallbacks;
+	atomic64_t bio_alias_required_retries;
+	atomic64_t bio_alias_required_rejects;
 };
 
 struct zcnblk_dev {
@@ -1108,6 +1127,10 @@ static int zcnblk_shm_claim_specific_payload_slot(struct zcnblk_conn *conn,
 	if (slot >= conn->dev->shm->header->payload_entries)
 		return -EINVAL;
 	owner = zcnblk_shm_payload_owner(conn->dev, conn->conn_id, slot);
+	if (cmpxchg(owner, ZCNBLK_SHM_PAYLOAD_OWNER_APP_RESERVED,
+		    ZCNBLK_SHM_PAYLOAD_OWNER_RESERVED) ==
+	    ZCNBLK_SHM_PAYLOAD_OWNER_APP_RESERVED)
+		return 0;
 	if (cmpxchg(owner, 0, ZCNBLK_SHM_PAYLOAD_OWNER_RESERVED))
 		return -EAGAIN;
 	atomic64_dec((atomic64_t *)&channel->payload_free_slots);
@@ -1150,9 +1173,15 @@ static bool zcnblk_shm_rq_matches_region(struct zcnblk_shm_state *shm,
 	return false;
 }
 
-static bool zcnblk_shm_rq_payload_alias(struct zcnblk_conn *conn,
-					struct request *rq, u32 length,
-					u32 *payload_slot)
+enum zcnblk_shm_alias_match {
+	ZCNBLK_SHM_ALIAS_NONE,
+	ZCNBLK_SHM_ALIAS_EXACT,
+	ZCNBLK_SHM_ALIAS_MISMATCH,
+};
+
+static enum zcnblk_shm_alias_match
+zcnblk_shm_rq_payload_alias(struct zcnblk_conn *conn, struct request *rq,
+			    u32 length, u32 *payload_slot)
 {
 	struct zcnblk_shm_state *shm = conn->dev->shm;
 	struct zcnblk_shm_header *hdr = shm->header;
@@ -1162,10 +1191,11 @@ static bool zcnblk_shm_rq_payload_alias(struct zcnblk_conn *conn,
 	u64 payload_relative;
 	u64 global_slot;
 	u32 channel;
+	bool found = false;
 
-	if (!shm_bio_arena_zero_copy || !shm->external_hugetlb ||
-	    !shm->transfer_payload_slots || !length || length > hdr->slot_bytes)
-		return false;
+	if ((!shm_bio_arena_zero_copy && !shm_bio_arena_zero_copy_required) ||
+	    !shm->external_hugetlb || !shm->transfer_payload_slots)
+		return ZCNBLK_SHM_ALIAS_NONE;
 	rq_for_each_segment(first, rq, iter) {
 		struct page *page = first.bv_page +
 			(first.bv_offset >> PAGE_SHIFT);
@@ -1173,22 +1203,27 @@ static bool zcnblk_shm_rq_payload_alias(struct zcnblk_conn *conn,
 					      page_to_pfn(page));
 
 		if (!entry)
-			return false;
+			return ZCNBLK_SHM_ALIAS_NONE;
 		region_offset = (u64)xa_to_value(entry) * PAGE_SIZE +
 			(first.bv_offset & ~PAGE_MASK);
+		found = true;
 		break;
 	}
-	if (region_offset < hdr->payload_offset)
-		return false;
+	if (!found)
+		return ZCNBLK_SHM_ALIAS_NONE;
+	if (!length || length > hdr->slot_bytes ||
+	    region_offset < hdr->payload_offset)
+		return ZCNBLK_SHM_ALIAS_MISMATCH;
 	payload_relative = region_offset - hdr->payload_offset;
 	global_slot = payload_relative;
 	if (do_div(global_slot, hdr->slot_bytes))
-		return false;
+		return ZCNBLK_SHM_ALIAS_MISMATCH;
 	channel = div_u64(global_slot, hdr->payload_entries);
 	if (channel != conn->conn_id)
-		return false;
+		return ZCNBLK_SHM_ALIAS_MISMATCH;
 	*payload_slot = global_slot % hdr->payload_entries;
-	return zcnblk_shm_rq_matches_region(shm, rq, region_offset, length);
+	return zcnblk_shm_rq_matches_region(shm, rq, region_offset, length) ?
+		ZCNBLK_SHM_ALIAS_EXACT : ZCNBLK_SHM_ALIAS_MISMATCH;
 }
 
 static bool zcnblk_shm_daemon_online(struct zcnblk_dev *dev)
@@ -1212,8 +1247,7 @@ static bool zcnblk_shm_has_capacity(struct zcnblk_conn *conn)
 		req = smp_load_acquire(&channel->req_cons);
 		inflight_slot = prod % conn->shm_inflight_entries;
 		return prod - req < hdr->ring_entries &&
-			!READ_ONCE(conn->shm_inflight[inflight_slot]) &&
-			atomic64_read((atomic64_t *)&channel->payload_free_slots) > 0;
+			!READ_ONCE(conn->shm_inflight[inflight_slot]);
 	}
 
 	if (hdr->payload_entries == hdr->ring_entries)
@@ -1433,13 +1467,37 @@ static struct zcnblk_pdu *zcnblk_pop_pending(struct zcnblk_conn *conn)
 {
 	struct zcnblk_pdu *pdu = NULL;
 
-	spin_lock(&conn->queue_lock);
-	if (!list_empty(&conn->pending)) {
-		pdu = list_first_entry(&conn->pending, struct zcnblk_pdu, entry);
-		list_del_init(&pdu->entry);
+	if (worker_batch_dequeue && list_empty(&conn->worker_pending)) {
+		/*
+		 * Transfer a whole producer batch with one queue-lock round trip.
+		 * queue_rq() remains a multi-producer FIFO, while the sole connection
+		 * worker drains its private list without bouncing queue_lock for every
+		 * 4 KiB request.
+		 */
+		spin_lock(&conn->queue_lock);
+		list_splice_tail_init(&conn->pending, &conn->worker_pending);
+		spin_unlock(&conn->queue_lock);
 	}
-	spin_unlock(&conn->queue_lock);
+	if (!list_empty(&conn->worker_pending)) {
+		pdu = list_first_entry(&conn->worker_pending,
+				       struct zcnblk_pdu, entry);
+		list_del_init(&pdu->entry);
+	} else if (!worker_batch_dequeue) {
+		spin_lock(&conn->queue_lock);
+		if (!list_empty(&conn->pending)) {
+			pdu = list_first_entry(&conn->pending,
+					       struct zcnblk_pdu, entry);
+			list_del_init(&pdu->entry);
+		}
+		spin_unlock(&conn->queue_lock);
+	}
 	return pdu;
+}
+
+static bool zcnblk_worker_has_pending(struct zcnblk_conn *conn)
+{
+	return !list_empty(&conn->worker_pending) ||
+		!list_empty_careful(&conn->pending);
 }
 
 static u32 zcnblk_pending_count(struct zcnblk_conn *conn, u32 limit)
@@ -1473,18 +1531,23 @@ static int zcnblk_debugfs_state_show(struct seq_file *m, void *unused)
 		return 0;
 	}
 	seq_printf(m,
-		   "shm=1 daemon_online=%llu daemon_generation=%llu global_submit_sequence=%llu ring_entries=%u payload_entries=%u transfer_payload_slots=%u arena_backing=%s region_bytes=%zu bio_arena_zero_copy=%u bio_alias_writes=%lld bio_alias_reads=%lld bio_alias_busy_fallbacks=%lld\n",
+		   "shm=1 daemon_online=%llu daemon_generation=%llu global_submit_sequence=%llu published_submit_sequence=%llu sequence_telemetry_interval=%u ring_entries=%u payload_entries=%u transfer_payload_slots=%u arena_backing=%s region_bytes=%zu bio_arena_zero_copy=%u bio_arena_zero_copy_required=%u bio_alias_writes=%lld bio_alias_reads=%lld bio_alias_busy_fallbacks=%lld bio_alias_required_retries=%lld bio_alias_required_rejects=%lld\n",
 		   smp_load_acquire(&dev->shm->header->daemon_online),
 		   READ_ONCE(dev->shm->header->daemon_generation),
+		   atomic64_read(&dev->shm->submit_sequence),
 		   READ_ONCE(dev->shm->header->global_submit_sequence),
+		   shm_sequence_telemetry_interval,
 		   dev->shm->header->ring_entries,
 		   dev->shm->header->payload_entries,
 		   dev->shm->transfer_payload_slots,
 		   dev->shm->external_hugetlb ? "external-hugetlb" : "vmalloc-user",
 		   dev->shm->region_bytes, shm_bio_arena_zero_copy,
+		   shm_bio_arena_zero_copy_required,
 		   atomic64_read(&dev->shm->bio_alias_writes),
 		   atomic64_read(&dev->shm->bio_alias_reads),
-		   atomic64_read(&dev->shm->bio_alias_busy_fallbacks));
+		   atomic64_read(&dev->shm->bio_alias_busy_fallbacks),
+		   atomic64_read(&dev->shm->bio_alias_required_retries),
+		   atomic64_read(&dev->shm->bio_alias_required_rejects));
 
 	for (conn_id = 0; conn_id < dev->total_conns; conn_id++) {
 		struct zcnblk_conn *conn = &dev->conns[conn_id];
@@ -1543,6 +1606,8 @@ static void zcnblk_wait_for_batch_fill(struct zcnblk_conn *conn, u32 depth)
 		return;
 
 	want = depth - 1;
+	if (!list_empty(&conn->worker_pending))
+		return;
 	if (zcnblk_pending_count(conn, want) >= want)
 		return;
 
@@ -1655,9 +1720,8 @@ static void zcnblk_add_inflight_or_complete(struct zcnblk_conn *conn,
 static void zcnblk_push_pending_front(struct zcnblk_conn *conn,
 				      struct zcnblk_pdu *pdu)
 {
-	spin_lock(&conn->queue_lock);
-	list_add(&pdu->entry, &conn->pending);
-	spin_unlock(&conn->queue_lock);
+	/* All callers are the sole connection worker. */
+	list_add(&pdu->entry, &conn->worker_pending);
 }
 
 static int zcnblk_send_batch(struct zcnblk_conn *conn, struct zcnblk_pdu *first)
@@ -1989,6 +2053,7 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 	u32 alias_slot = 0;
 	u64 submit_sequence;
 	u16 wire_op;
+	enum zcnblk_shm_alias_match alias_match;
 	bool payload_alias;
 	int ret;
 
@@ -2005,8 +2070,14 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 	if (WARN_ON_ONCE(conn->shm_inflight[inflight_slot]))
 		return -EOVERFLOW;
 	desc = zcnblk_shm_request(dev, conn->conn_id, sequence);
-	payload_alias = zcnblk_shm_rq_payload_alias(conn, pdu->rq, pdu->len,
-						   &alias_slot);
+	alias_match = zcnblk_shm_rq_payload_alias(conn, pdu->rq, pdu->len,
+						 &alias_slot);
+	payload_alias = alias_match == ZCNBLK_SHM_ALIAS_EXACT;
+	if (alias_match == ZCNBLK_SHM_ALIAS_MISMATCH &&
+	    shm_bio_arena_zero_copy_required) {
+		atomic64_inc(&dev->shm->bio_alias_required_rejects);
+		return -EOPNOTSUPP;
+	}
 	if (dev->shm->transfer_payload_slots) {
 		ret = payload_alias ?
 			zcnblk_shm_claim_specific_payload_slot(conn, alias_slot) :
@@ -2014,6 +2085,10 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 		if (payload_alias && !ret) {
 			payload_slot = alias_slot;
 		} else if (payload_alias && ret == -EAGAIN) {
+			if (shm_bio_arena_zero_copy_required) {
+				atomic64_inc(&dev->shm->bio_alias_required_retries);
+				return -EAGAIN;
+			}
 			atomic64_inc(&dev->shm->bio_alias_busy_fallbacks);
 			payload_alias = false;
 			ret = zcnblk_shm_claim_payload_slot(conn, &payload_slot);
@@ -2105,8 +2180,10 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 	/* Publish descriptor bytes before making the sequence visible. */
 	smp_store_release(&desc->sequence, sequence + 1);
 	smp_store_release(&channel->req_prod, sequence + 1);
-	WRITE_ONCE(dev->shm->header->global_submit_sequence,
-		   desc->submit_sequence);
+	if (shm_sequence_telemetry_interval &&
+	    !(desc->submit_sequence & (shm_sequence_telemetry_interval - 1)))
+		WRITE_ONCE(dev->shm->header->global_submit_sequence,
+			   desc->submit_sequence);
 	WRITE_ONCE(channel->request_publishes,
 		   READ_ONCE(channel->request_publishes) + 1);
 	list_add_tail(&pdu->entry, &conn->inflight);
@@ -2236,7 +2313,7 @@ static bool zcnblk_shm_spin_for_work(struct zcnblk_conn *conn)
 	do {
 		if (zcnblk_shm_completion_ready(conn) ||
 		    (zcnblk_shm_daemon_online(conn->dev) &&
-		     !list_empty_careful(&conn->pending) &&
+		     zcnblk_worker_has_pending(conn) &&
 		     zcnblk_shm_has_capacity(conn)))
 			return true;
 		cpu_relax();
@@ -2291,7 +2368,7 @@ static int zcnblk_shm_conn_thread(void *data)
 		if (kthread_should_stop() || conn->failed ||
 		    zcnblk_shm_completion_ready(conn) ||
 		    (zcnblk_shm_daemon_online(conn->dev) &&
-		     !list_empty_careful(&conn->pending) &&
+		     zcnblk_worker_has_pending(conn) &&
 		     zcnblk_shm_has_capacity(conn))) {
 			WRITE_ONCE(zcnblk_shm_channel(conn->dev, conn->conn_id)
 					->completion_wake_armed, 0);
@@ -2312,7 +2389,7 @@ static int zcnblk_shm_conn_thread(void *data)
 				kthread_should_stop() || conn->failed ||
 				zcnblk_shm_completion_ready(conn) ||
 				(zcnblk_shm_daemon_online(conn->dev) &&
-				 !list_empty_careful(&conn->pending) &&
+				 zcnblk_worker_has_pending(conn) &&
 				 zcnblk_shm_has_capacity(conn)),
 				max_t(unsigned long, 1,
 				      usecs_to_jiffies(shm_poll_us)));
@@ -2321,7 +2398,7 @@ static int zcnblk_shm_conn_thread(void *data)
 				kthread_should_stop() || conn->failed ||
 				zcnblk_shm_completion_ready(conn) ||
 				(zcnblk_shm_daemon_online(conn->dev) &&
-				 !list_empty_careful(&conn->pending) &&
+				 zcnblk_worker_has_pending(conn) &&
 				 zcnblk_shm_has_capacity(conn)));
 		}
 		WRITE_ONCE(zcnblk_shm_channel(conn->dev, conn->conn_id)
@@ -2336,6 +2413,7 @@ static int zcnblk_shm_conn_thread(void *data)
 		spin_unlock(&conn->queue_lock);
 		zcnblk_fail_list(&pending);
 	}
+	zcnblk_fail_list(&conn->worker_pending);
 	zcnblk_fail_list(&conn->inflight);
 	if (conn->failed)
 		wait_event_interruptible(conn->wait, kthread_should_stop());
@@ -2419,14 +2497,17 @@ static int zcnblk_conn_thread(void *data)
 
 		if (conn->inflight_count && conn->inflight_count < pipeline_depth &&
 		    fill_timeout_ms) {
+			if (zcnblk_worker_has_pending(conn)) {
+				continue;
+			}
 			wait_event_interruptible_timeout(
 				conn->wait,
 				kthread_should_stop() ||
-					!list_empty_careful(&conn->pending),
+					zcnblk_worker_has_pending(conn),
 				msecs_to_jiffies(fill_timeout_ms));
 			if (kthread_should_stop())
 				break;
-			if (!list_empty_careful(&conn->pending))
+			if (zcnblk_worker_has_pending(conn))
 				continue;
 		}
 
@@ -2449,9 +2530,12 @@ static int zcnblk_conn_thread(void *data)
 		if (sent)
 			continue;
 
+		if (kthread_should_stop() || zcnblk_worker_has_pending(conn)) {
+			continue;
+		}
 		wait_event_interruptible(conn->wait,
 					 kthread_should_stop() ||
-					 !list_empty_careful(&conn->pending));
+					 zcnblk_worker_has_pending(conn));
 	}
 
 	{
@@ -2462,6 +2546,7 @@ static int zcnblk_conn_thread(void *data)
 		spin_unlock(&conn->queue_lock);
 		zcnblk_fail_list(&pending);
 	}
+	zcnblk_fail_list(&conn->worker_pending);
 	zcnblk_fail_list(&conn->inflight);
 	if (conn->failed)
 		wait_event_interruptible(conn->wait, kthread_should_stop());
@@ -3116,6 +3201,8 @@ static int zcnblk_shm_layout_init(struct zcnblk_dev *dev)
 	atomic64_set(&shm->bio_alias_writes, 0);
 	atomic64_set(&shm->bio_alias_reads, 0);
 	atomic64_set(&shm->bio_alias_busy_fallbacks, 0);
+	atomic64_set(&shm->bio_alias_required_retries, 0);
+	atomic64_set(&shm->bio_alias_required_rejects, 0);
 	shm->sector_predecessors = kvcalloc(shm_sector_order_slots,
 					    sizeof(*shm->sector_predecessors),
 					    GFP_KERNEL);
@@ -3226,6 +3313,9 @@ static int zcnblk_shm_layout_init(struct zcnblk_dev *dev)
 		ZCNBLK_SHM_CAP_IO_CONTRACT_SIDECAR |
 		ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_IMPORT |
 		ZCNBLK_SHM_CAP_BIO_ARENA_ALIAS;
+	if (shm_sequence_telemetry_interval != 1)
+		hdr->reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] |=
+			ZCNBLK_SHM_CAP_SAMPLED_SEQUENCE_TELEMETRY;
 	hdr->reserved[ZCNBLK_SHM_HEADER_IO_FEATURES] =
 		ZCNBLK_SHM_IO_FEATURE_ALL;
 	if (shm_ordering_epochs)
@@ -3295,6 +3385,7 @@ static int zcnblk_shm_connect_one(struct zcnblk_dev *dev,
 	spin_lock_init(&conn->queue_lock);
 	init_waitqueue_head(&conn->wait);
 	INIT_LIST_HEAD(&conn->pending);
+	INIT_LIST_HEAD(&conn->worker_pending);
 	INIT_LIST_HEAD(&conn->inflight);
 	conn->dev = dev;
 	conn->lane = lane;
@@ -3378,6 +3469,7 @@ static int zcnblk_connect_one(struct zcnblk_dev *dev, struct zcnblk_conn *conn,
 	spin_lock_init(&conn->queue_lock);
 	init_waitqueue_head(&conn->wait);
 	INIT_LIST_HEAD(&conn->pending);
+	INIT_LIST_HEAD(&conn->worker_pending);
 	INIT_LIST_HEAD(&conn->inflight);
 	conn->dev = dev;
 	conn->lane = lane;
@@ -3533,6 +3625,11 @@ static int __init zcnblk_init(void)
 	if (!lanes || !connections_per_lane || !shard_count || !size_mib ||
 	    !max_frame_bytes || !queue_depth || !pipeline_depth || !batch_depth)
 		return -EINVAL;
+	if (shm_sequence_telemetry_interval &&
+	    !is_power_of_2(shm_sequence_telemetry_interval)) {
+		pr_err("zcnblk: shm_sequence_telemetry_interval must be zero or a power of two\n");
+		return -EINVAL;
+	}
 	if (!transport || (strcmp(transport, "tcp") && strcmp(transport, "shm"))) {
 		pr_err("zcnblk: unknown transport=%s; use tcp or shm\n",
 		       transport ? transport : "(null)");
@@ -3669,7 +3766,7 @@ static int __init zcnblk_init(void)
 				    &zcnblk_debugfs_state_fops);
 	}
 
-	pr_info("zcnblk: /dev/%s transport=%s remote=%s remote_ips=%s remote_count=%u port_base=%u lanes=%u connections_per_lane=%u total_conns=%u shards=%u bytes=%llu frame=%u queues=%u depth=%u pipeline_depth=%u batch_depth=%u batch_fill_timeout_us=%u fill_timeout_ms=%u write_acks=%d null_backend=%d null_read_zero=%d hctx_affinity=%d hctx_numa_node=%d pin_threads=%d pin_base_cpu=%u pin_cpu_count=%u pin_stride=%u shard_affinity=%d encryption=%s aes_frame=%u publish_delay_ms=%u shm_ring_entries=%u shm_payload_entries=%u shm_region_bytes=%zu shm_poll_us=%u shm_bio_arena_zero_copy=%d placement_owner=userspace block_client_placement=no\n",
+	pr_info("zcnblk: /dev/%s transport=%s remote=%s remote_ips=%s remote_count=%u port_base=%u lanes=%u connections_per_lane=%u total_conns=%u shards=%u bytes=%llu frame=%u queues=%u depth=%u pipeline_depth=%u batch_depth=%u batch_fill_timeout_us=%u fill_timeout_ms=%u write_acks=%d null_backend=%d null_read_zero=%d hctx_affinity=%d hctx_numa_node=%d pin_threads=%d pin_base_cpu=%u pin_cpu_count=%u pin_stride=%u shard_affinity=%d encryption=%s aes_frame=%u publish_delay_ms=%u shm_ring_entries=%u shm_payload_entries=%u shm_region_bytes=%zu shm_poll_us=%u shm_bio_arena_zero_copy=%d shm_bio_arena_zero_copy_required=%d placement_owner=userspace block_client_placement=no\n",
 		ZCNBLK_DISK_NAME, transport, remote_ip, remote_ips ? remote_ips : "-", zcnblk_remote_addr_count,
 		remote_port_base, lanes, connections_per_lane,
 		total_conns, shard_count, capacity_bytes, max_frame_bytes,
@@ -3683,7 +3780,8 @@ static int __init zcnblk_init(void)
 		zcnblk_dev->shm ? zcnblk_dev->shm->header->ring_entries : 0,
 		zcnblk_dev->shm ? zcnblk_dev->shm->header->payload_entries : 0,
 		zcnblk_dev->shm ? zcnblk_dev->shm->region_bytes : 0,
-		shm_poll_us, shm_bio_arena_zero_copy);
+		shm_poll_us, shm_bio_arena_zero_copy,
+		shm_bio_arena_zero_copy_required);
 	return 0;
 
 out_put_disk:
