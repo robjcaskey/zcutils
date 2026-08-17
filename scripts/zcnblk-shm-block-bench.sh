@@ -63,6 +63,7 @@ HCTX_NUMA_NODE="${HCTX_NUMA_NODE:--1}"
 SIZE_MIB="${SIZE_MIB:-$((LANES * 128))}"
 REGION_BYTES_PER_WORKER="${REGION_BYTES_PER_WORKER:-67108864}"
 BACKEND="${BACKEND:-memory}"
+LANE_LOCAL_SEQUENCES="${URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES:-$([ "$BACKEND" = memory ] && printf 1 || printf 0)}"
 START_LOCAL_LEAF="${START_LOCAL_LEAF:-$([ "$BACKEND" = wal-tcp ] && printf 1 || printf 0)}"
 EXTERNAL_LEAF_TOPOLOGY_ARTIFACT="${EXTERNAL_LEAF_TOPOLOGY_ARTIFACT:-}"
 MODE="${MODE:-rw}"
@@ -527,6 +528,8 @@ fi
 	die "KERNEL_WORKER_BATCH_DEQUEUE must be zero or one"
 [[ "$KERNEL_SEQUENCE_TELEMETRY_INTERVAL" =~ ^[0-9]+$ ]] || \
 	die "KERNEL_SEQUENCE_TELEMETRY_INTERVAL must be a non-negative integer"
+[[ "$LANE_LOCAL_SEQUENCES" =~ ^[01]$ ]] || \
+	die "URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES must be zero or one"
 (( KERNEL_SEQUENCE_TELEMETRY_INTERVAL == 0 ||
    (KERNEL_SEQUENCE_TELEMETRY_INTERVAL & (KERNEL_SEQUENCE_TELEMETRY_INTERVAL - 1)) == 0 )) || \
 	die "KERNEL_SEQUENCE_TELEMETRY_INTERVAL must be zero or a power of two"
@@ -1114,6 +1117,9 @@ fi
 	printf 'kernel_worker_batch_dequeue=%s\n' "$KERNEL_WORKER_BATCH_DEQUEUE"
 	printf 'kernel_sequence_telemetry_interval=%s\n' \
 		"$KERNEL_SEQUENCE_TELEMETRY_INTERVAL"
+	printf 'lane_local_sequences_requested=%s expected_sync_boundary=%s\n' \
+		"$LANE_LOCAL_SEQUENCES" \
+		"$([ "$LANE_LOCAL_SEQUENCES" = 1 ] && [ "$BACKEND" = memory ] && printf admitted-lane-vector-hwm || printf global-completion-hwm)"
 	printf 'shm_sector_order_slots=%s\n' "$SECTOR_ORDER_SLOTS"
 	printf 'shm_payload_entries_per_channel=%s\n' "$SHM_PAYLOAD_ENTRIES"
 	safe_writeback_limit=$((SHM_PAYLOAD_ENTRIES - SHM_RING_ENTRIES))
@@ -1303,6 +1309,7 @@ fi
 	URING_PLAY_ZCNBLK_SHM_ARENA_BACKING="$SHM_ARENA_BACKING" \
 	URING_PLAY_ZCNBLK_SHM_ARENA_CPU_LIST="$SHM_ARENA_CPU_LIST" \
 	URING_PLAY_ZCNBLK_SHM_ARENA_CPU="${target_cpus[0]}" \
+	URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES="$LANE_LOCAL_SEQUENCES" \
 	URING_PLAY_TOPOLOGY_REPRESENTATIVE="$REPRESENTATIVE" \
 	URING_PLAY_ZCNBLK_SHM_POLL_CLOCK_CHECK_SPINS="$POLL_CLOCK_CHECK_SPINS" \
 	URING_PLAY_ZCNBLK_SHM_COORDINATOR_CPU="$coordinator_cpu" \
@@ -1403,6 +1410,16 @@ target_pid="$(cat "$pid_file")"
 arena_line="$(grep '^zcnblk-shm-target-shared-arena:' "$OUTDIR/target.log" | tail -n 1 || true)"
 [ -n "$arena_line" ] || die "target did not report the shared-arena backing before benchmarking"
 printf 'actual_%s\n' "$arena_line" | tee -a "$OUTDIR/topology.log"
+sequence_line="$(grep '^zcnblk-shm-target-sequencing:' "$OUTDIR/target.log" | tail -n 1 || true)"
+[ -n "$sequence_line" ] || die "target did not report its sequencing contract before benchmarking"
+printf 'actual_%s\n' "$sequence_line" | tee -a "$OUTDIR/topology.log"
+if [ "$LANE_LOCAL_SEQUENCES" = 1 ] && [ "$BACKEND" = memory ]; then
+	grep -q ' mode=lane-local .* sync_boundary=admitted-lane-vector-hwm' <<<"$sequence_line" || \
+		die "target did not negotiate the requested lane-local sequencing contract"
+else
+	grep -q ' mode=global .* sync_boundary=global-completion-hwm' <<<"$sequence_line" || \
+		die "target unexpectedly negotiated lane-local sequencing"
+fi
 if [ "$SHM_ARENA_BACKING" = hugetlb ]; then
 	grep -q ' backing=external-hugetlb-memfd .* import_active=true ' <<<"$arena_line" || \
 		die "target did not activate the required external HugeTLB shared arena"

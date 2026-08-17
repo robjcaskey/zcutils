@@ -321,6 +321,7 @@ struct zcnblk_shm_state {
 	atomic64_t *sector_predecessors;
 	u32 sector_order_bits;
 	bool transfer_payload_slots;
+	bool lane_local_sequences;
 	bool registered;
 	struct xarray arena_page_indices;
 	atomic64_t bio_alias_writes;
@@ -2118,7 +2119,16 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 	 * published. Admission-time allocation leaves invisible holes behind
 	 * busy connection queues and can indefinitely block a userspace HWM.
 	 */
-	submit_sequence = atomic64_inc_return(&dev->shm->submit_sequence);
+	if (dev->shm->lane_local_sequences) {
+		if (sequence > div_u64(U64_MAX - conn->conn_id - 1,
+				       dev->total_conns)) {
+			ret = -EOVERFLOW;
+			goto out_release_slot;
+		}
+		submit_sequence = sequence * dev->total_conns + conn->conn_id + 1;
+	} else {
+		submit_sequence = atomic64_inc_return(&dev->shm->submit_sequence);
+	}
 	if (dev->shm->transfer_payload_slots)
 		smp_store_release(zcnblk_shm_payload_owner(dev, conn->conn_id,
 							     payload_slot),
@@ -2180,7 +2190,7 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 	/* Publish descriptor bytes before making the sequence visible. */
 	smp_store_release(&desc->sequence, sequence + 1);
 	smp_store_release(&channel->req_prod, sequence + 1);
-	if (shm_sequence_telemetry_interval &&
+	if (!dev->shm->lane_local_sequences && shm_sequence_telemetry_interval &&
 	    !(desc->submit_sequence & (shm_sequence_telemetry_interval - 1)))
 		WRITE_ONCE(dev->shm->header->global_submit_sequence,
 			   desc->submit_sequence);
@@ -2963,13 +2973,20 @@ static long zcnblk_shm_ctl_ioctl(struct file *file, unsigned int cmd,
 			return -EFAULT;
 		if (attach.magic != ZCNBLK_SHM_MAGIC ||
 		    attach.version != ZCNBLK_SHM_VERSION ||
-		    attach.flags & ~ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS)
+		    attach.flags & ~(ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS |
+				     ZCNBLK_SHM_ATTACH_F_LANE_LOCAL_SEQUENCE))
 			return -EINVAL;
 		if (attach.flags & ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS) {
 			if (!(shm->header->reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] &
 			      ZCNBLK_SHM_CAP_TRANSFER_PAYLOAD_SLOTS))
 				return -EOPNOTSUPP;
 			shm->transfer_payload_slots = true;
+		}
+		if (attach.flags & ZCNBLK_SHM_ATTACH_F_LANE_LOCAL_SEQUENCE) {
+			if (!(shm->header->reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] &
+			      ZCNBLK_SHM_CAP_LANE_LOCAL_SEQUENCE))
+				return -EOPNOTSUPP;
+			shm->lane_local_sequences = true;
 		}
 		WRITE_ONCE(shm->header->daemon_generation,
 			   READ_ONCE(shm->header->daemon_generation) + 1);
@@ -3312,7 +3329,8 @@ static int zcnblk_shm_layout_init(struct zcnblk_dev *dev)
 		ZCNBLK_SHM_CAP_COMPLETION_WAKE_ARMED |
 		ZCNBLK_SHM_CAP_IO_CONTRACT_SIDECAR |
 		ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_IMPORT |
-		ZCNBLK_SHM_CAP_BIO_ARENA_ALIAS;
+		ZCNBLK_SHM_CAP_BIO_ARENA_ALIAS |
+		ZCNBLK_SHM_CAP_LANE_LOCAL_SEQUENCE;
 	if (shm_sequence_telemetry_interval != 1)
 		hdr->reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] |=
 			ZCNBLK_SHM_CAP_SAMPLED_SEQUENCE_TELEMETRY;

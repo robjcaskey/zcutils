@@ -23,6 +23,10 @@ use crate::wal_contract::{
     ZCNBLK_WAL_FEATURE_FUA, ZCNBLK_WAL_FEATURE_IO_PRIORITY, ZCNBLK_WAL_FEATURE_POLLED_COMPLETION,
     ZCNBLK_WAL_FEATURE_REGISTERED_LEASE, ZCNBLK_WAL_FEATURE_WRITE_LIFETIME, ZcnblkWalIoContract,
 };
+use crate::zcnblk_app_arena::{
+    ZCNBLK_APP_ARENA_F_EXTERNAL_HUGETLB, ZCNBLK_APP_ARENA_MAGIC, ZCNBLK_APP_ARENA_VERSION,
+    ZcnblkAppArenaDescriptor, send_descriptor,
+};
 use std::cell::UnsafeCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
@@ -32,6 +36,8 @@ use std::io::{self, IoSlice, Read, Write};
 use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
@@ -59,6 +65,7 @@ const ZCNBLK_SHM_CAP_IO_CONTRACT_SIDECAR: u64 = 1 << 7;
 const ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_IMPORT: u64 = 1 << 8;
 const ZCNBLK_SHM_CAP_EXTERNAL_HUGETLB_ACTIVE: u64 = 1 << 9;
 const ZCNBLK_SHM_CAP_BIO_ARENA_ALIAS: u64 = 1 << 10;
+const ZCNBLK_SHM_CAP_LANE_LOCAL_SEQUENCE: u64 = 1 << 12;
 const ZCNBLK_SHM_IO_FEATURE_ALL: u64 = ZCNBLK_WAL_FEATURE_FUA as u64
     | ZCNBLK_WAL_FEATURE_POLLED_COMPLETION as u64
     | ZCNBLK_WAL_FEATURE_BATCH_SUBMISSION as u64
@@ -77,6 +84,7 @@ const ZCNBLK_SHM_REQUEST_ID_MASK: u64 = (1 << ZCNBLK_SHM_REQUEST_ID_BITS) - 1;
 const ZCNBLK_SHM_CQE_F_READ_PAYLOAD_REF: u32 = 1 << 0;
 const ZCNBLK_SHM_CQE_REF_CHANNEL_SHIFT: u32 = 8;
 const ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS: u32 = 1 << 0;
+const ZCNBLK_SHM_ATTACH_F_LANE_LOCAL_SEQUENCE: u32 = 1 << 1;
 const ZCNBLK_SHM_ARENA_IMPORT_F_HUGETLB: u32 = 1 << 0;
 const ZCNBLK_SHM_HEADER_CAPABILITIES: usize = 0;
 const ZCNBLK_SHM_HEADER_PAYLOAD_OWNER_OFFSET: usize = 1;
@@ -313,6 +321,7 @@ struct Mapping {
     len: usize,
     backing: SharedArenaBacking,
     hugepage_bytes: usize,
+    export_fd: Option<OwnedFd>,
 }
 
 impl Mapping {
@@ -340,6 +349,7 @@ impl Mapping {
             len,
             backing,
             hugepage_bytes,
+            export_fd: None,
         })
     }
 
@@ -6976,6 +6986,9 @@ struct SharedTarget {
     ready_heads: BinaryHeap<Reverse<(u64, u32, u64)>>,
     head_queued: Vec<bool>,
     next_submit_sequence: u64,
+    lane_local_sequences: bool,
+    lane_completed: Vec<u64>,
+    next_ready_channel: u32,
     read_batch: usize,
     read_batch_fill_us: u64,
     read_batch_fill_min: usize,
@@ -7121,6 +7134,7 @@ impl SharedTarget {
             len: mapped_bytes,
             backing: SharedArenaBacking::ExternalHugeTlb,
             hugepage_bytes,
+            export_fd: None,
         };
         Self::first_touch_hugetlb_arena(&staging, header)?;
         let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
@@ -7164,12 +7178,14 @@ impl SharedTarget {
             ));
         }
         *header = imported_header;
-        Mapping::map_control(
+        let mut mapping = Mapping::map_control(
             file,
             mapped_bytes,
             SharedArenaBacking::ExternalHugeTlb,
             hugepage_bytes,
-        )
+        )?;
+        mapping.export_fd = Some(arena_fd);
+        Ok(mapping)
     }
 
     fn open(
@@ -7319,10 +7335,27 @@ impl SharedTarget {
             header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] & ZCNBLK_SHM_CAP_BIO_ARENA_ALIAS != 0,
             unsafe { libc::sched_getcpu() },
         );
+        let app_arena_export_requested = env::var_os("URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET")
+            .is_some_and(|value| !value.is_empty());
+        if app_arena_export_requested
+            && (mapping.backing != SharedArenaBacking::ExternalHugeTlb
+                || mapping.export_fd.is_none())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "application arena export requires a HugeTLB arena imported by this target",
+            ));
+        }
         let transfer_payload_slots = backend == BackendMode::WalTcp
             && env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH", false)
             && !env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_OWNER_DISPATCH", false)
             && env_enabled_or("URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS", true);
+        if app_arena_export_requested && !transfer_payload_slots {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "application arena export requires the per-slot WAL lease path; enable URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH=1 and URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1",
+            ));
+        }
         if transfer_payload_slots {
             if header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES]
                 & ZCNBLK_SHM_CAP_TRANSFER_PAYLOAD_SLOTS
@@ -7425,6 +7458,35 @@ impl SharedTarget {
         } else {
             Vec::new()
         };
+        let lane_local_sequences = backend == BackendMode::Memory
+            && env_enabled_or("URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES", true);
+        if lane_local_sequences
+            && header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] & ZCNBLK_SHM_CAP_LANE_LOCAL_SEQUENCE
+                == 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "lane-local sequencing requested but unsupported by zcnblk",
+            ));
+        }
+        eprintln!(
+            "zcnblk-shm-target-sequencing: mode={} request_tokens={} sync_boundary={}",
+            if lane_local_sequences {
+                "lane-local"
+            } else {
+                "global"
+            },
+            if lane_local_sequences {
+                "lane-sequence+lane-id"
+            } else {
+                "global-sequence"
+            },
+            if lane_local_sequences {
+                "admitted-lane-vector-hwm"
+            } else {
+                "global-completion-hwm"
+            },
+        );
         let target = Self {
             file,
             mapping,
@@ -7439,6 +7501,9 @@ impl SharedTarget {
             ready_heads: BinaryHeap::new(),
             head_queued: vec![false; header.channels as usize],
             next_submit_sequence: 1,
+            lane_local_sequences,
+            lane_completed: vec![0; header.channels as usize],
+            next_ready_channel: 0,
             read_batch: env::var("URING_PLAY_ZCNBLK_SHM_READ_BATCH")
                 .ok()
                 .map(|value| value.parse::<usize>())
@@ -7512,11 +7577,8 @@ impl SharedTarget {
         let attach = ZcnblkShmAttach {
             magic: ZCNBLK_SHM_MAGIC,
             version: ZCNBLK_SHM_VERSION,
-            flags: if transfer_payload_slots {
-                ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS
-            } else {
-                0
-            },
+            flags: u32::from(transfer_payload_slots) * ZCNBLK_SHM_ATTACH_F_TRANSFER_PAYLOAD_SLOTS
+                | u32::from(lane_local_sequences) * ZCNBLK_SHM_ATTACH_F_LANE_LOCAL_SEQUENCE,
         };
         let ret = unsafe { libc::ioctl(target.file.as_raw_fd(), ZCNBLK_SHM_IOC_ATTACH, &attach) };
         if ret < 0 {
@@ -7919,7 +7981,70 @@ impl SharedTarget {
     }
 
     fn next_request(&mut self) -> io::Result<Option<(u32, u64, ZcnblkShmRequest)>> {
+        if self.lane_local_sequences {
+            return self.next_lane_local_request();
+        }
         self.next_request_at(self.next_submit_sequence)
+    }
+
+    fn lane_token(&self, channel: u32, request_sequence: u64) -> io::Result<u64> {
+        request_sequence
+            .checked_mul(u64::from(self.header.channels))
+            .and_then(|base| base.checked_add(u64::from(channel) + 1))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "lane token overflow"))
+    }
+
+    fn lane_token_complete(&self, token: u64) -> bool {
+        if token == 0 {
+            return true;
+        }
+        let zero_based = token - 1;
+        let channels = u64::from(self.header.channels);
+        let channel = (zero_based % channels) as usize;
+        let request_sequence = zero_based / channels;
+        self.lane_completed[channel] > request_sequence
+    }
+
+    fn next_lane_local_request(&mut self) -> io::Result<Option<(u32, u64, ZcnblkShmRequest)>> {
+        for relative in 0..self.header.channels {
+            let channel = (self.next_ready_channel + relative) % self.header.channels;
+            let Some((request_sequence, request)) = self.head_request(channel)? else {
+                continue;
+            };
+            let expected_token = self.lane_token(channel, request_sequence)?;
+            if request.submit_sequence != expected_token {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "lane-local token mismatch channel={channel} request_sequence={request_sequence} expected={expected_token} actual={}",
+                        request.submit_sequence
+                    ),
+                ));
+            }
+            if !self.lane_token_complete(request.sector_predecessor) {
+                continue;
+            }
+            if request.op == ZCNBLK_SHM_OP_SYNC {
+                let ordering_epoch = request.ordering_epoch();
+                if ordering_epoch == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "lane-local sync has reserved ordering epoch zero",
+                    ));
+                }
+                let tails = self.flush_admission_vector(ordering_epoch)?;
+                if tails
+                    .iter()
+                    .enumerate()
+                    .any(|(lane, tail)| self.lane_completed[lane] < *tail)
+                {
+                    continue;
+                }
+            }
+            self.next_ready_channel = (channel + 1) % self.header.channels;
+            return Ok(Some((channel, request_sequence, request)));
+        }
+        Ok(None)
     }
 
     fn requeue_request_head(&mut self, channel: u32, sequence: u64, submit_sequence: u64) {
@@ -8844,7 +8969,21 @@ impl SharedTarget {
         {
             self.stats.lease_releases += 1;
         }
-        self.next_submit_sequence += 1;
+        if self.lane_local_sequences {
+            let completed = &mut self.lane_completed[channel as usize];
+            if *completed != request_sequence {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "lane completion order mismatch channel={channel} expected={} actual={request_sequence}",
+                        *completed
+                    ),
+                ));
+            }
+            *completed += 1;
+        } else {
+            self.next_submit_sequence += 1;
+        }
         Ok(())
     }
 
@@ -10593,6 +10732,7 @@ impl SharedTarget {
         &self,
         channel: u32,
         completions: &WalCompletionTracker,
+        lane_hwms: &[AtomicU64],
         cpu: Option<usize>,
     ) -> io::Result<(Stats, Duration)> {
         if let Some(cpu) = cpu {
@@ -10722,9 +10862,36 @@ impl SharedTarget {
                     "request descriptor topology or payload slot mismatch",
                 ));
             }
+            if self.lane_local_sequences
+                && request.submit_sequence != self.lane_token(channel, request_sequence)?
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "parallel lane-local request token mismatch",
+                ));
+            }
             let dependency_ready = match request.op {
+                ZCNBLK_SHM_OP_SYNC if self.lane_local_sequences => {
+                    let tails = self.flush_admission_vector(request.ordering_epoch())?;
+                    tails
+                        .iter()
+                        .enumerate()
+                        .all(|(lane, tail)| lane_hwms[lane].load(Ordering::Acquire) >= *tail)
+                }
                 ZCNBLK_SHM_OP_SYNC => {
                     completions.advance_hwm() >= request.submit_sequence.saturating_sub(1)
+                }
+                ZCNBLK_SHM_OP_WRITE | ZCNBLK_SHM_OP_READ if self.lane_local_sequences => {
+                    let token = request.sector_predecessor;
+                    if token == 0 {
+                        true
+                    } else {
+                        let zero_based = token - 1;
+                        let lanes = u64::from(self.header.channels);
+                        let predecessor_lane = (zero_based % lanes) as usize;
+                        let predecessor_sequence = zero_based / lanes;
+                        lane_hwms[predecessor_lane].load(Ordering::Acquire) > predecessor_sequence
+                    }
                 }
                 ZCNBLK_SHM_OP_WRITE | ZCNBLK_SHM_OP_READ => {
                     completions.is_complete(request.sector_predecessor)
@@ -10794,14 +10961,18 @@ impl SharedTarget {
             }
 
             stats.requests += 1;
-            completions.mark_complete_deferred(request.submit_sequence)?;
-            completions_since_advance = completions_since_advance.saturating_add(1);
-            if request.op == ZCNBLK_SHM_OP_SYNC {
-                completions.advance_hwm();
-                completions_since_advance = 0;
-            } else if completions_since_advance >= self.kick_batch {
-                let _ = completions.try_advance_hwm();
-                completions_since_advance = 0;
+            if self.lane_local_sequences {
+                lane_hwms[channel as usize].store(request_sequence + 1, Ordering::Release);
+            } else {
+                completions.mark_complete_deferred(request.submit_sequence)?;
+                completions_since_advance = completions_since_advance.saturating_add(1);
+                if request.op == ZCNBLK_SHM_OP_SYNC {
+                    completions.advance_hwm();
+                    completions_since_advance = 0;
+                } else if completions_since_advance >= self.kick_batch {
+                    let _ = completions.try_advance_hwm();
+                    completions_since_advance = 0;
+                }
             }
             let completion_sequence =
                 unsafe { atomic_load(ptr::addr_of!((*control).comp_prod), Ordering::Acquire) };
@@ -10859,7 +11030,9 @@ impl SharedTarget {
         if pending_kick != 0 {
             stats.kicks += u64::from(self.kick_channel(channel)?);
         }
-        completions.advance_hwm();
+        if !self.lane_local_sequences {
+            completions.advance_hwm();
+        }
         self.release_channel_payloads(channel)?;
         if let Some(epoch) = active_epoch {
             active += epoch.elapsed();
@@ -10877,15 +11050,21 @@ impl SharedTarget {
                 io::Error::new(io::ErrorKind::InvalidInput, "completion tracker overflow")
             })?;
         let completions = WalCompletionTracker::new(max_in_flight)?;
+        let lane_hwms = (0..self.header.channels)
+            .map(|_| AtomicU64::new(0))
+            .collect::<Vec<_>>();
         let results = thread::scope(|scope| {
             let mut handles = Vec::with_capacity(self.header.channels as usize);
             for channel in 0..self.header.channels {
                 let completions = &completions;
+                let lane_hwms = &lane_hwms;
                 let target: &SharedTarget = self;
                 let cpu = cpus
                     .and_then(|values| values.get(channel as usize))
                     .copied();
-                handles.push(scope.spawn(move || target.run_channel(channel, completions, cpu)));
+                handles.push(
+                    scope.spawn(move || target.run_channel(channel, completions, lane_hwms, cpu)),
+                );
             }
             handles
                 .into_iter()
@@ -10942,7 +11121,7 @@ impl SharedTarget {
             });
         }
         eprintln!(
-            "zcnblk-shm-target-summary: backend={:?} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} completion_ioctl_kicks={} request_publishes={} request_wake_kicks={} request_wake_pct={:.4} idle_polls={} lease_releases={} lease_release_batch={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} busy_activation_requests={} ordering=per-channel-fifo+sector-predecessor sync_boundary=global-completion-hwm-before-sync placement_owner=downstream-userspace-stage block_client_placement=no kernel_payload_copies=ordinary-bio-one-per-direction+optional-debugfs-counted-arena-alias",
+            "zcnblk-shm-target-summary: backend={:?} channels={} requests={} writes={} reads={} syncs={} write_bytes={} read_bytes={} wall_seconds={wall_seconds:.6} active_seconds={active_seconds:.6} active_descriptor_iops={:.0} active_4k_equivalent_iops={:.0} active_payload_Gibitps={:.2} completion_ioctl_kicks={} request_publishes={} request_wake_kicks={} request_wake_pct={:.4} idle_polls={} lease_releases={} lease_release_batch={} poll_us={} busy_poll_us={} busy_hysteresis_us={} poll_clock_check_spins={} busy_activation_requests={} ordering=per-channel-fifo+sector-predecessor sequence_mode={} sync_boundary={} placement_owner=downstream-userspace-stage block_client_placement=no kernel_payload_copies=ordinary-bio-one-per-direction+optional-debugfs-counted-arena-alias",
             self.backend,
             self.header.channels,
             total.requests,
@@ -10966,6 +11145,16 @@ impl SharedTarget {
             self.busy_hysteresis_us,
             self.poll_clock_check_spins,
             self.kick_batch,
+            if self.lane_local_sequences {
+                "lane-local-token"
+            } else {
+                "global-sequence"
+            },
+            if self.lane_local_sequences {
+                "admitted-lane-vector-hwm-before-sync"
+            } else {
+                "global-completion-hwm-before-sync"
+            },
         );
         Ok(())
     }
@@ -11380,6 +11569,93 @@ impl SharedTarget {
         }
         Ok(())
     }
+}
+
+struct AppArenaSocketGuard {
+    path: PathBuf,
+    dev: u64,
+    ino: u64,
+}
+
+impl Drop for AppArenaSocketGuard {
+    fn drop(&mut self) {
+        if let Ok(metadata) = fs::symlink_metadata(&self.path)
+            && metadata.dev() == self.dev
+            && metadata.ino() == self.ino
+        {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn spawn_app_arena_exporter(mapping: Arc<Mapping>, header: ZcnblkShmHeader) -> io::Result<()> {
+    let Some(path) = env::var_os("URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
+        return Ok(());
+    };
+    let export_fd = mapping.export_fd.as_ref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "application arena exporter has no retained HugeTLB memfd",
+        )
+    })?;
+    let listener = UnixListener::bind(&path)?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o660))?;
+    listener.set_nonblocking(true)?;
+    let metadata = fs::symlink_metadata(&path)?;
+    let guard = AppArenaSocketGuard {
+        path: path.clone(),
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+    };
+    let descriptor = ZcnblkAppArenaDescriptor {
+        magic: ZCNBLK_APP_ARENA_MAGIC,
+        version: ZCNBLK_APP_ARENA_VERSION,
+        descriptor_bytes: size_of::<ZcnblkAppArenaDescriptor>() as u32,
+        flags: ZCNBLK_APP_ARENA_F_EXTERNAL_HUGETLB,
+        channels: header.channels,
+        payload_entries: header.payload_entries,
+        slot_bytes: header.slot_bytes,
+        channel_bytes: size_of::<ZcnblkShmChannel>() as u32,
+        payload_free_slots_offset: std::mem::offset_of!(ZcnblkShmChannel, payload_free_slots)
+            as u32,
+        reserved: 0,
+        reserved2: 0,
+        channel_offset: header.channel_offset,
+        payload_owner_offset: header.reserved[ZCNBLK_SHM_HEADER_PAYLOAD_OWNER_OFFSET],
+        payload_offset: header.payload_offset,
+        region_bytes: header.region_bytes,
+    };
+    let raw_fd = export_fd.as_raw_fd();
+    thread::Builder::new()
+        .name("zcnblk-app-arena-export".to_string())
+        .spawn(move || {
+            let _guard = guard;
+            let _mapping = mapping;
+            eprintln!(
+                "zcnblk-shm-target-app-arena: socket={} channels={} slots_per_lane={} slot_bytes={} ownership=application-token-to-kernel-lease copy_on_block_edge=no",
+                path.display(), descriptor.channels, descriptor.payload_entries, descriptor.slot_bytes,
+            );
+            while RUNNING.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        if let Err(error) = send_descriptor(&mut stream, descriptor, raw_fd) {
+                            eprintln!("zcnblk-shm-target-app-arena-client-error: {error}");
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => {
+                        eprintln!("zcnblk-shm-target-app-arena-listener-error: {error}");
+                        break;
+                    }
+                }
+            }
+        })?;
+    Ok(())
 }
 
 fn spawn_bio_arena_alias_selftest(
@@ -12099,6 +12375,7 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
     if !wal_lane_batch {
         target.start_remote_workers()?;
     }
+    spawn_app_arena_exporter(Arc::clone(&target.mapping), target.header)?;
     spawn_bio_arena_alias_selftest(Arc::clone(&target.mapping), target.header)?;
     if wal_lane_batch {
         target.run_wal_lane_parallel(
