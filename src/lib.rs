@@ -34,6 +34,7 @@ pub mod racing_mirror;
 pub mod readcache_bench;
 pub(crate) mod wal_contract;
 pub mod window;
+pub mod zcnblk_app_arena;
 pub mod zcnblk_shm_target;
 
 use crate::block::zcnblk::{
@@ -70183,6 +70184,7 @@ struct BlockBenchConfig {
     sqpoll_idle_ms: u32,
     latency_sample_rate: usize,
     fua_writes: bool,
+    app_arena_socket: Option<String>,
 }
 
 impl Default for BlockBenchConfig {
@@ -70208,6 +70210,9 @@ impl Default for BlockBenchConfig {
             sqpoll_idle_ms: 1000,
             latency_sample_rate: env_usize_or("URING_PLAY_BLOCKBENCH_LATENCY_SAMPLE_RATE", 0),
             fua_writes: false,
+            app_arena_socket: env::var("URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
         }
     }
 }
@@ -70240,6 +70245,7 @@ struct BlockBenchWorkerResult {
     buffer_stride: usize,
     buffer_map_len: usize,
     buffer_mode: SlotWalBufferMode,
+    app_arena_buffers: bool,
     memory_policy: &'static str,
     sqpoll_cpu: i32,
     latency: LatencyHistogram,
@@ -70265,6 +70271,7 @@ fn zcblockbench_help() {
            [--cqe 16|32] [--iopoll off|classic|hybrid] [--registered-ring true|false]\n\
            [--sqpoll-cpus CPU-LIST]\n\
            [--fua|--fua-writes true|false]\n\
+           [--app-arena-socket PATH]\n\
            [--latency-sample-rate N|--latency]\n\
          \n\
          Defaults run a short multithreaded write suite against /dev/null.\n\
@@ -70360,6 +70367,7 @@ fn parse_zcblockbench_args(args: impl Iterator<Item = String>) -> io::Result<Blo
             "--fua-writes" => {
                 cfg.fua_writes = parse_bool_arg(&next_flag_value(&mut args, &arg)?, &arg)?
             }
+            "--app-arena-socket" => cfg.app_arena_socket = Some(next_flag_value(&mut args, &arg)?),
             "--suite" => cfg.engine = BlockBenchEngine::Suite,
             "--uring-plain" => cfg.engine = BlockBenchEngine::UringPlain,
             "--uring-fixed" => cfg.engine = BlockBenchEngine::UringFixed,
@@ -70468,6 +70476,17 @@ fn zcblockbench_validate_config(cfg: &BlockBenchConfig) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "FUA writes require uring-plain, uring-fixed, aio, sync, or hybrid; the io-slot benchmark ABI has no per-request FUA control",
+        ));
+    }
+    if cfg.app_arena_socket.is_some()
+        && !matches!(
+            cfg.engine,
+            BlockBenchEngine::UringPlain | BlockBenchEngine::UringFixed
+        )
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "application arena buffers require uring-plain or uring-fixed",
         ));
     }
     validate_slot_wal_pipeline(cfg.pipeline, cfg.ring_entries)?;
@@ -70669,6 +70688,7 @@ fn zcblockbench_uring_fixed_worker(
     sqpoll_idle_ms: u32,
     registered_io: bool,
     fua_writes: bool,
+    app_arena_socket: Option<String>,
     latency_sample_rate: usize,
     start_barrier: Arc<Barrier>,
 ) -> io::Result<BlockBenchWorkerResult> {
@@ -70683,17 +70703,85 @@ fn zcblockbench_uring_fixed_worker(
     let (files, read_file_index, write_file_index) =
         zcblockbench_open_files(&target, mode, true, fua_writes)?;
     let mut fds: Vec<i32> = files.iter().map(AsRawFd::as_raw_fd).collect();
-    let buffers = buffer_mode.allocate_for_worker(pipeline, chunk_bytes, preferred_numa_node)?;
+    let mut arena_buffers = if let Some(socket) = app_arena_socket.as_ref() {
+        let arena = crate::zcnblk_app_arena::ZcnblkAppArena::connect(socket)?;
+        if worker >= arena.channels() as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "application arena has fewer lanes than benchmark workers",
+            ));
+        }
+        if arena.slot_bytes() != chunk_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "application arena slot size does not match benchmark block size",
+            ));
+        }
+        let mut slots = Vec::with_capacity(pipeline);
+        for _ in 0..pipeline {
+            slots.push(arena.allocate(worker as u32)?);
+        }
+        Some(slots)
+    } else {
+        None
+    };
+    let buffers = if arena_buffers.is_none() {
+        Some(buffer_mode.allocate_for_worker(pipeline, chunk_bytes, preferred_numa_node)?)
+    } else {
+        None
+    };
     if mode.needs_write() {
-        fill_slot_wal_buffers(&buffers, chunk_bytes);
+        if let Some(slots) = arena_buffers.as_mut() {
+            for (slot, buffer) in slots.iter_mut().enumerate() {
+                for (index, byte) in buffer.as_mut_slice()?.iter_mut().enumerate() {
+                    *byte = (slot as u8).wrapping_mul(29) ^ (index as u8).wrapping_mul(131);
+                }
+            }
+        } else {
+            fill_slot_wal_buffers(buffers.as_ref().expect("owned buffers"), chunk_bytes);
+        }
     }
-    let buffer_base = buffers.base_addr();
-    let buffer_stride = buffers.stride();
-    let buffer_map_len = buffers.map_len();
+    let buffer_base = if let Some(slots) = arena_buffers.as_mut() {
+        slots[0].as_mut_slice()?.as_mut_ptr() as usize
+    } else {
+        buffers.as_ref().expect("owned buffers").base_addr()
+    };
+    let buffer_stride = if let Some(slots) = arena_buffers.as_mut() {
+        if slots.len() > 1 {
+            let first = slots[0].as_mut_slice()?.as_mut_ptr() as usize;
+            let second = slots[1].as_mut_slice()?.as_mut_ptr() as usize;
+            second.abs_diff(first)
+        } else {
+            chunk_bytes
+        }
+    } else {
+        buffers.as_ref().expect("owned buffers").stride()
+    };
+    let buffer_map_len = if arena_buffers.is_some() {
+        pipeline.saturating_mul(chunk_bytes)
+    } else {
+        buffers.as_ref().expect("owned buffers").map_len()
+    };
     let buffer_alignment = address_alignment(buffer_base);
-    let memory_policy = buffers.memory_policy();
+    let memory_policy = if arena_buffers.is_some() {
+        "shared-target-hugetlb"
+    } else {
+        buffers.as_ref().expect("owned buffers").memory_policy()
+    };
     let slot_buffer_layout = SlotBufferLayout::PerSlot;
-    let mut iovecs = buffers.iovecs(chunk_bytes);
+    let mut iovecs = if let Some(slots) = arena_buffers.as_mut() {
+        slots
+            .iter_mut()
+            .map(|buffer| {
+                Ok(libc::iovec {
+                    iov_base: buffer.as_mut_slice()?.as_mut_ptr().cast(),
+                    iov_len: chunk_bytes,
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?
+    } else {
+        buffers.as_ref().expect("owned buffers").iovecs(chunk_bytes)
+    };
 
     let ring_stats_enabled = env_enabled_or("URING_PLAY_BLOCKBENCH_RING_STATS", false);
     let mut ring = RawRing::new_with_options(
@@ -70759,8 +70847,12 @@ fn zcblockbench_uring_fixed_worker(
             latency_started[slot] =
                 zcblockbench_should_sample(submitted, latency_sample_rate).then(Instant::now);
             let buf_index = slot_buffer_layout.fixed_buf_index(slot)?;
-            let ptr = buffers.ptr(slot);
-            match direction {
+            let ptr = if let Some(slots) = arena_buffers.as_mut() {
+                slots[slot].handoff_to_kernel()?.0
+            } else {
+                buffers.as_ref().expect("owned buffers").ptr(slot)
+            };
+            let queued = match direction {
                 io_slots::SlotRw::Read => {
                     if registered_io {
                         ring.queue_read_fixed_file(
@@ -70770,7 +70862,7 @@ fn zcblockbench_uring_fixed_worker(
                             io_offset,
                             buf_index,
                             slot as u64,
-                        )?
+                        )
                     } else {
                         ring.queue_read(
                             fds[read_file_index as usize],
@@ -70778,7 +70870,7 @@ fn zcblockbench_uring_fixed_worker(
                             chunk_bytes_u32,
                             io_offset,
                             slot as u64,
-                        )?
+                        )
                     }
                 }
                 io_slots::SlotRw::Write => {
@@ -70790,7 +70882,7 @@ fn zcblockbench_uring_fixed_worker(
                             io_offset,
                             buf_index,
                             slot as u64,
-                        )?
+                        )
                     } else {
                         ring.queue_write(
                             fds[write_file_index as usize],
@@ -70798,9 +70890,15 @@ fn zcblockbench_uring_fixed_worker(
                             chunk_bytes_u32,
                             io_offset,
                             slot as u64,
-                        )?
+                        )
                     }
                 }
+            };
+            if let Err(error) = queued {
+                if let Some(slots) = arena_buffers.as_mut() {
+                    let _ = slots[slot].recover_unsubmitted();
+                }
+                return Err(error);
             }
             submitted += 1;
         }
@@ -70855,6 +70953,9 @@ fn zcblockbench_uring_fixed_worker(
                     latency_start,
                     latency_is_read[slot],
                 );
+            }
+            if let Some(slots) = arena_buffers.as_mut() {
+                slots[slot].wait_reacquire(Duration::from_secs(5))?;
             }
             completed += 1;
             free_slots.push(slot);
@@ -70913,6 +71014,7 @@ fn zcblockbench_uring_fixed_worker(
         buffer_stride,
         buffer_map_len,
         buffer_mode,
+        app_arena_buffers: arena_buffers.is_some(),
         memory_policy,
         sqpoll_cpu: sqpoll_cpu.map(|cpu| cpu as i32).unwrap_or(-1),
         latency,
@@ -71105,6 +71207,7 @@ fn zcblockbench_sync_worker(
         buffer_stride,
         buffer_map_len,
         buffer_mode,
+        app_arena_buffers: false,
         memory_policy,
         sqpoll_cpu: -1,
         latency,
@@ -71296,6 +71399,7 @@ fn zcblockbench_aio_worker(
         buffer_stride,
         buffer_map_len,
         buffer_mode,
+        app_arena_buffers: false,
         memory_policy,
         sqpoll_cpu: -1,
         latency,
@@ -71381,7 +71485,11 @@ fn zcblockbench_print_results(
             result.local_cpu,
             option_i32_label(result.worker_numa_node),
             result.sqpoll_cpu,
-            result.buffer_mode.as_str(),
+            if result.app_arena_buffers {
+                "shared-target-hugetlb-arena"
+            } else {
+                result.buffer_mode.as_str()
+            },
             result.buffer_base,
             result.buffer_alignment,
             result.buffer_stride,
@@ -71448,7 +71556,11 @@ fn zcblockbench_print_results(
         blockbench_cqe_mode_label(cfg.cqe_mode),
         blockbench_iopoll_mode_label(cfg.io_poll_mode),
         cfg.registered_ring_fd,
-        cfg.buffer_mode.as_str(),
+        if results.iter().any(|result| result.app_arena_buffers) {
+            "shared-target-hugetlb-arena"
+        } else {
+            cfg.buffer_mode.as_str()
+        },
         cfg.pin_workers,
         total_cpu_seconds / io_seconds * 100.0,
         total_cpu_seconds * 1_000_000_000.0 / total_ops as f64,
@@ -71610,6 +71722,7 @@ fn zcblockbench_run_direct_engine(
                         cfg.sqpoll_idle_ms,
                         worker_engine == BlockBenchEngine::UringFixed,
                         cfg.fua_writes,
+                        cfg.app_arena_socket.clone(),
                         cfg.latency_sample_rate,
                         start_barrier,
                     )
@@ -71777,7 +71890,11 @@ fn zcblockbench(args: impl Iterator<Item = String>) -> io::Result<()> {
         blockbench_iopoll_mode_label(cfg.io_poll_mode),
         cfg.registered_ring_fd,
         cfg.sqpoll_idle_ms,
-        cfg.buffer_mode.as_str(),
+        if cfg.app_arena_socket.is_some() {
+            "shared-target-hugetlb-arena"
+        } else {
+            cfg.buffer_mode.as_str()
+        },
         cfg.pin_workers,
         cfg.latency_sample_rate,
         cfg.fua_writes,

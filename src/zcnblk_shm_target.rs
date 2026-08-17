@@ -25,7 +25,7 @@ use crate::wal_contract::{
 };
 use crate::zcnblk_app_arena::{
     ZCNBLK_APP_ARENA_F_EXTERNAL_HUGETLB, ZCNBLK_APP_ARENA_MAGIC, ZCNBLK_APP_ARENA_VERSION,
-    ZcnblkAppArenaDescriptor, send_descriptor,
+    ZCNBLK_SHM_PAYLOAD_OWNER_APP_RESERVED, ZcnblkAppArenaDescriptor, send_descriptor,
 };
 use std::cell::UnsafeCell;
 use std::cmp::Reverse;
@@ -54,6 +54,7 @@ const ZCNBLK_SHM_DESC_BYTES: u32 = 64;
 const ZCNBLK_SHM_OP_WRITE: u16 = 1;
 const ZCNBLK_SHM_OP_READ: u16 = 2;
 const ZCNBLK_SHM_OP_SYNC: u16 = 7;
+const ZCNBLK_SHM_F_APP_PAYLOAD_ALIAS: u16 = 1 << 2;
 const ZCNBLK_SHM_CAP_SECTOR_PREDECESSOR: u64 = 1 << 0;
 const ZCNBLK_SHM_CAP_TRANSFER_PAYLOAD_SLOTS: u64 = 1 << 1;
 const ZCNBLK_SHM_CAP_READ_PAYLOAD_REF: u64 = 1 << 2;
@@ -7346,14 +7347,15 @@ impl SharedTarget {
                 "application arena export requires a HugeTLB arena imported by this target",
             ));
         }
-        let transfer_payload_slots = backend == BackendMode::WalTcp
-            && env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH", false)
-            && !env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_OWNER_DISPATCH", false)
-            && env_enabled_or("URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS", true);
+        let transfer_payload_slots = (backend == BackendMode::Memory && app_arena_export_requested)
+            || (backend == BackendMode::WalTcp
+                && env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH", false)
+                && !env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_OWNER_DISPATCH", false)
+                && env_enabled_or("URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS", true));
         if app_arena_export_requested && !transfer_payload_slots {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "application arena export requires the per-slot WAL lease path; enable URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH=1 and URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1",
+                "application arena export requires transferable payload-slot ownership",
             ));
         }
         if transfer_payload_slots {
@@ -7849,8 +7851,25 @@ impl SharedTarget {
         let control = self.channel_ptr(channel)?;
         let free_slots =
             unsafe { &*ptr::addr_of_mut!((*control).payload_free_slots).cast::<AtomicU64>() };
-        release_payload_owner_token(owner, free_slots, request.submit_sequence).map_err(
-            |actual| {
+        if request.flags & ZCNBLK_SHM_F_APP_PAYLOAD_ALIAS != 0 {
+            owner
+                .compare_exchange(
+                    request.submit_sequence,
+                    ZCNBLK_SHM_PAYLOAD_OWNER_APP_RESERVED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .map_err(|actual| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "application payload return mismatch channel={channel} slot={} expected={} actual={actual}",
+                            request.payload_slot, request.submit_sequence
+                        ),
+                    )
+                })?;
+        } else {
+            release_payload_owner_token(owner, free_slots, request.submit_sequence).map_err(|actual| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
@@ -7858,8 +7877,8 @@ impl SharedTarget {
                         request.payload_slot, request.submit_sequence
                     ),
                 )
-            },
-        )?;
+            })?;
+        }
         Ok(())
     }
 
@@ -8854,8 +8873,9 @@ impl SharedTarget {
         self.active_started.get_or_insert(now);
         self.active_last = Some(now);
         if request.queue_id != channel
-            || request.payload_slot
-                != (request_sequence % u64::from(self.header.payload_entries)) as u32
+            || (!self.transfer_payload_slots
+                && request.payload_slot
+                    != (request_sequence % u64::from(self.header.payload_entries)) as u32)
             || request.len > self.header.slot_bytes
         {
             return Err(io::Error::new(
@@ -8867,7 +8887,8 @@ impl SharedTarget {
             self.kick(channel)?;
             std::hint::spin_loop();
         }
-        let payload = self.payload_ptr(channel, request_sequence)?;
+        let payload_offset = self.request_payload_offset(channel, request_sequence, &request)?;
+        let payload = unsafe { self.mapping.ptr.add(payload_offset) };
         let end = request
             .offset
             .checked_add(u64::from(request.len))
@@ -8950,6 +8971,9 @@ impl SharedTarget {
                 .mark_releasable(channel, request_sequence)?;
         }
 
+        if self.transfer_payload_slots && request.op == ZCNBLK_SHM_OP_WRITE {
+            self.release_transferred_write_slot(channel, &request)?;
+        }
         self.stats.requests += 1;
         self.publish_completion(channel, request_sequence, request, status, committed_hwm)?;
         if !self.backend.is_wal_writeback()
@@ -10853,8 +10877,9 @@ impl SharedTarget {
             }
             let request = unsafe { ptr::read(request_ptr) };
             if request.queue_id != channel
-                || request.payload_slot
-                    != (request_sequence % u64::from(self.header.payload_entries)) as u32
+                || (!self.transfer_payload_slots
+                    && request.payload_slot
+                        != (request_sequence % u64::from(self.header.payload_entries)) as u32)
                 || request.len > self.header.slot_bytes
             {
                 return Err(io::Error::new(
@@ -10907,7 +10932,9 @@ impl SharedTarget {
                 std::hint::spin_loop();
             }
 
-            let payload = self.payload_ptr(channel, request_sequence)?;
+            let payload_offset =
+                self.request_payload_offset(channel, request_sequence, &request)?;
+            let payload = unsafe { self.mapping.ptr.add(payload_offset) };
             let end = request
                 .offset
                 .checked_add(u64::from(request.len))
@@ -10960,6 +10987,9 @@ impl SharedTarget {
                 }
             }
 
+            if self.transfer_payload_slots && request.op == ZCNBLK_SHM_OP_WRITE {
+                self.release_transferred_write_slot(channel, &request)?;
+            }
             stats.requests += 1;
             if self.lane_local_sequences {
                 lane_hwms[channel as usize].store(request_sequence + 1, Ordering::Release);

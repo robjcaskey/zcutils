@@ -59,11 +59,13 @@ KERNEL_PIPELINE_DEPTH="${KERNEL_PIPELINE_DEPTH:-$SHM_RING_ENTRIES}"
 KERNEL_QUEUES="${KERNEL_QUEUES:-$LANES}"
 KERNEL_WORKER_BATCH_DEQUEUE="${KERNEL_WORKER_BATCH_DEQUEUE:-1}"
 KERNEL_SEQUENCE_TELEMETRY_INTERVAL="${KERNEL_SEQUENCE_TELEMETRY_INTERVAL:-256}"
+KERNEL_COMPLETION_BATCH="${KERNEL_COMPLETION_BATCH:-256}"
 HCTX_NUMA_NODE="${HCTX_NUMA_NODE:--1}"
 SIZE_MIB="${SIZE_MIB:-$((LANES * 128))}"
 REGION_BYTES_PER_WORKER="${REGION_BYTES_PER_WORKER:-67108864}"
 BACKEND="${BACKEND:-memory}"
 LANE_LOCAL_SEQUENCES="${URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES:-$([ "$BACKEND" = memory ] && printf 1 || printf 0)}"
+APP_ARENA_BUFFERS="${URING_PLAY_ZCNBLK_SHM_APP_ARENA_BUFFERS:-0}"
 START_LOCAL_LEAF="${START_LOCAL_LEAF:-$([ "$BACKEND" = wal-tcp ] && printf 1 || printf 0)}"
 EXTERNAL_LEAF_TOPOLOGY_ARTIFACT="${EXTERNAL_LEAF_TOPOLOGY_ARTIFACT:-}"
 MODE="${MODE:-rw}"
@@ -528,8 +530,22 @@ fi
 	die "KERNEL_WORKER_BATCH_DEQUEUE must be zero or one"
 [[ "$KERNEL_SEQUENCE_TELEMETRY_INTERVAL" =~ ^[0-9]+$ ]] || \
 	die "KERNEL_SEQUENCE_TELEMETRY_INTERVAL must be a non-negative integer"
+[[ "$KERNEL_COMPLETION_BATCH" =~ ^[0-9]+$ ]] && [ "$KERNEL_COMPLETION_BATCH" -gt 0 ] || \
+	die "KERNEL_COMPLETION_BATCH must be a positive integer"
 [[ "$LANE_LOCAL_SEQUENCES" =~ ^[01]$ ]] || \
 	die "URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES must be zero or one"
+[[ "$APP_ARENA_BUFFERS" =~ ^[01]$ ]] || \
+	die "URING_PLAY_ZCNBLK_SHM_APP_ARENA_BUFFERS must be zero or one"
+if [ "$APP_ARENA_BUFFERS" = 1 ]; then
+	[ "$SHM_ARENA_BACKING" = hugetlb ] || \
+		die "application arena buffers require URING_PLAY_ZCNBLK_SHM_ARENA_BACKING=hugetlb"
+	case "$BLOCK_ENGINE" in
+	uring-plain|uring-fixed) ;;
+	*) die "application arena buffers require uring-plain or uring-fixed" ;;
+	esac
+	[ "$IODEPTH" -le "$SHM_PAYLOAD_ENTRIES" ] || \
+		die "application arena buffers require IODEPTH <= SHM_PAYLOAD_ENTRIES"
+fi
 (( KERNEL_SEQUENCE_TELEMETRY_INTERVAL == 0 ||
    (KERNEL_SEQUENCE_TELEMETRY_INTERVAL & (KERNEL_SEQUENCE_TELEMETRY_INTERVAL - 1)) == 0 )) || \
 	die "KERNEL_SEQUENCE_TELEMETRY_INTERVAL must be zero or a power of two"
@@ -828,6 +844,9 @@ sudo -n insmod "$MODULE" transport=shm lanes="$LANES" connections_per_lane=1 \
 	size_mib="$SIZE_MIB" queues="$KERNEL_QUEUES" queue_depth="$KERNEL_QUEUE_DEPTH" \
 	worker_batch_dequeue="$KERNEL_WORKER_BATCH_DEQUEUE" \
 	shm_sequence_telemetry_interval="$KERNEL_SEQUENCE_TELEMETRY_INTERVAL" \
+	shm_completion_batch="$KERNEL_COMPLETION_BATCH" \
+	shm_bio_arena_zero_copy="$APP_ARENA_BUFFERS" \
+	shm_bio_arena_zero_copy_required="$APP_ARENA_BUFFERS" \
 	shm_sector_order_slots="$SECTOR_ORDER_SLOTS" \
 	max_frame_bytes="$MAX_FRAME_BYTES" \
 	pipeline_depth="$KERNEL_PIPELINE_DEPTH" shm_ring_entries="$SHM_RING_ENTRIES" \
@@ -1117,9 +1136,12 @@ fi
 	printf 'kernel_worker_batch_dequeue=%s\n' "$KERNEL_WORKER_BATCH_DEQUEUE"
 	printf 'kernel_sequence_telemetry_interval=%s\n' \
 		"$KERNEL_SEQUENCE_TELEMETRY_INTERVAL"
+	printf 'kernel_completion_batch=%s\n' "$KERNEL_COMPLETION_BATCH"
 	printf 'lane_local_sequences_requested=%s expected_sync_boundary=%s\n' \
 		"$LANE_LOCAL_SEQUENCES" \
 		"$([ "$LANE_LOCAL_SEQUENCES" = 1 ] && [ "$BACKEND" = memory ] && printf admitted-lane-vector-hwm || printf global-completion-hwm)"
+	printf 'application_arena_buffers=%s application_buffer_copy_on_block_edge=%s\n' \
+		"$APP_ARENA_BUFFERS" "$([ "$APP_ARENA_BUFFERS" = 1 ] && printf no || printf yes)"
 	printf 'shm_sector_order_slots=%s\n' "$SECTOR_ORDER_SLOTS"
 	printf 'shm_payload_entries_per_channel=%s\n' "$SHM_PAYLOAD_ENTRIES"
 	safe_writeback_limit=$((SHM_PAYLOAD_ENTRIES - SHM_RING_ENTRIES))
@@ -1217,7 +1239,9 @@ fi
 ps -eLo pid,tid,psr,pcpu,comm --sort=-pcpu | head -n 80 >"$OUTDIR/process-noise.before" || true
 
 block_hugepages=0
-if [ "$BUFFER_MODE" != hugetlb ]; then
+if [ "$APP_ARENA_BUFFERS" = 1 ]; then
+	printf 'hugetlb_preflight: benchmark buffers alias the shared target arena; no separate client allocation\n' | tee -a "$OUTDIR/preflight.log"
+elif [ "$BUFFER_MODE" != hugetlb ]; then
 	printf 'PERF WARNING: BUFFER_MODE=%s; this is not a hugetlb representative run\n' "$BUFFER_MODE" | tee -a "$OUTDIR/preflight.log" >&2
 	[ "$REPRESENTATIVE" != 1 ] || die "representative runs require BUFFER_MODE=hugetlb"
 else
@@ -1300,6 +1324,8 @@ if [ "$START_LOCAL_LEAF" = 1 ]; then
 fi
 
 log "starting userspace shared target/fan; no placement decision exists in the kernel edge"
+app_arena_socket=""
+[ "$APP_ARENA_BUFFERS" != 1 ] || app_arena_socket="$OUTDIR/app-arena.sock"
 target_priv=(sudo -n env)
 if [ "${TARGET_MEMLOCK_UNLIMITED:-0}" = 1 ]; then
 	command -v prlimit >/dev/null || die "TARGET_MEMLOCK_UNLIMITED=1 requires prlimit"
@@ -1309,6 +1335,7 @@ fi
 	URING_PLAY_ZCNBLK_SHM_ARENA_BACKING="$SHM_ARENA_BACKING" \
 	URING_PLAY_ZCNBLK_SHM_ARENA_CPU_LIST="$SHM_ARENA_CPU_LIST" \
 	URING_PLAY_ZCNBLK_SHM_ARENA_CPU="${target_cpus[0]}" \
+	URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET="$app_arena_socket" \
 	URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES="$LANE_LOCAL_SEQUENCES" \
 	URING_PLAY_TOPOLOGY_REPRESENTATIVE="$REPRESENTATIVE" \
 	URING_PLAY_ZCNBLK_SHM_POLL_CLOCK_CHECK_SPINS="$POLL_CLOCK_CHECK_SPINS" \
@@ -1424,6 +1451,15 @@ if [ "$SHM_ARENA_BACKING" = hugetlb ]; then
 	grep -q ' backing=external-hugetlb-memfd .* import_active=true ' <<<"$arena_line" || \
 		die "target did not activate the required external HugeTLB shared arena"
 fi
+if [ "$APP_ARENA_BUFFERS" = 1 ]; then
+	for _ in $(seq 1 100); do
+		[ -S "$app_arena_socket" ] && break
+		sleep 0.01
+	done
+	[ -S "$app_arena_socket" ] || die "target did not publish the application arena socket"
+	grep -q '^zcnblk-shm-target-app-arena:' "$OUTDIR/target.log" || \
+		die "target did not report the application arena ownership contract"
+fi
 if [ "$SHM_OFI_RMA_WRITES" = 1 ]; then
 	for _ in $(seq 1 200); do
 		rma_windows="$(grep -c '^zcnblk-shm-target-ofi-rma-write-window: lane=.* completion=initiator-delivery-cq-before-doorbell' "$OUTDIR/target.log" || true)"
@@ -1531,6 +1567,7 @@ for ((rep = 1; rep <= REPEATS; rep++)); do
 	context_after="$OUTDIR/rep$rep.context.after"
 	snapshot_contexts "$context_before"
 	bench=(env "URING_PLAY_PIN_CPU_LIST=$client_cpu_list"
+		"URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET=$app_arena_socket"
 		"URING_PLAY_TOPOLOGY_STRICT=$REPRESENTATIVE"
 		"URING_PLAY_BLOCKBENCH_RING_STATS=$BLOCK_RING_STATS"
 		"URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS=$BLOCK_WAIT_MIN_COMPLETIONS"
@@ -1603,6 +1640,28 @@ for ((rep = 1; rep <= REPEATS; rep++)); do
 	ring_line="$(grep 'zcblockbench-ring:' "$result_log" | tail -n 1 || true)"
 	[ -z "$ring_line" ] || printf 'repeat=%s %s\n' "$rep" "$ring_line" | tee -a "$OUTDIR/results.log"
 done
+
+if [ "$APP_ARENA_BUFFERS" = 1 ]; then
+	sudo -n cat /sys/kernel/debug/zcnblk/state | tee "$OUTDIR/kernel-arena-final.log"
+	expected_alias_writes="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^writes=/) { split($i,a,"="); total+=a[2] } } END { print total+0 }' "$OUTDIR/results.log")"
+	expected_alias_reads="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^reads=/) { split($i,a,"="); total+=a[2] } } END { print total+0 }' "$OUTDIR/results.log")"
+	alias_counter() {
+		local name=$1
+		awk -v name="$name" '{ for (i=1; i<=NF; i++) if ($i ~ ("^" name "=")) { split($i,a,"="); print a[2]; exit } }' "$OUTDIR/kernel-arena-final.log"
+	}
+	actual_alias_writes="$(alias_counter bio_alias_writes)"
+	actual_alias_reads="$(alias_counter bio_alias_reads)"
+	alias_fallbacks="$(alias_counter bio_alias_busy_fallbacks)"
+	alias_rejects="$(alias_counter bio_alias_required_rejects)"
+	[ "$actual_alias_writes" = "$expected_alias_writes" ] || \
+		die "arena write alias count $actual_alias_writes does not match completed writes $expected_alias_writes"
+	[ "$actual_alias_reads" = "$expected_alias_reads" ] || \
+		die "arena read alias count $actual_alias_reads does not match completed reads $expected_alias_reads"
+	[ "$alias_fallbacks" = 0 ] || die "arena alias path recorded $alias_fallbacks copy fallbacks"
+	[ "$alias_rejects" = 0 ] || die "arena alias path recorded $alias_rejects rejected mismatches"
+	printf 'arena_alias_validation=pass writes=%s reads=%s copy_fallbacks=0 rejected_mismatches=0\n' \
+		"$actual_alias_writes" "$actual_alias_reads" | tee -a "$OUTDIR/results.log"
+fi
 
 safe_stop_target
 target_pid=""

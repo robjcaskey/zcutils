@@ -143,6 +143,11 @@ static uint shm_poll_us = 50;
 module_param(shm_poll_us, uint, 0644);
 MODULE_PARM_DESC(shm_poll_us, "Shared transport completion busy-poll budget and maximum idle sleep before rechecking work");
 
+static uint shm_completion_batch = 256;
+module_param(shm_completion_batch, uint, 0444);
+MODULE_PARM_DESC(shm_completion_batch,
+		 "Maximum contiguous shared completions consumed under one producer snapshot and consumer release");
+
 static bool shm_ordering_epochs = true;
 module_param(shm_ordering_epochs, bool, 0444);
 MODULE_PARM_DESC(shm_ordering_epochs,
@@ -1077,22 +1082,26 @@ static u64 *zcnblk_shm_payload_owner(struct zcnblk_dev *dev, u32 conn_id,
 }
 
 static void zcnblk_shm_release_payload_slot(struct zcnblk_conn *conn,
-					    u32 payload_slot, u64 owner)
+					    u32 payload_slot, u64 owner,
+					    bool return_to_app)
 {
 	u64 *token;
+	u64 released_owner = return_to_app ?
+		ZCNBLK_SHM_PAYLOAD_OWNER_APP_RESERVED : 0;
 	struct zcnblk_shm_channel *channel;
 
 	if (!conn->dev->shm->transfer_payload_slots)
 		return;
 	token = zcnblk_shm_payload_owner(conn->dev, conn->conn_id, payload_slot);
-	if (cmpxchg(token, owner, 0) != owner) {
+	if (cmpxchg(token, owner, released_owner) != owner) {
 		pr_err_ratelimited("zcnblk: payload owner release mismatch channel=%u slot=%u owner=%llu actual=%llu\n",
 				   conn->conn_id, payload_slot, owner,
 				   READ_ONCE(*token));
 		return;
 	}
 	channel = zcnblk_shm_channel(conn->dev, conn->conn_id);
-	atomic64_inc((atomic64_t *)&channel->payload_free_slots);
+	if (!return_to_app)
+		atomic64_inc((atomic64_t *)&channel->payload_free_slots);
 }
 
 static int zcnblk_shm_claim_payload_slot(struct zcnblk_conn *conn, u32 *slot)
@@ -1532,12 +1541,13 @@ static int zcnblk_debugfs_state_show(struct seq_file *m, void *unused)
 		return 0;
 	}
 	seq_printf(m,
-		   "shm=1 daemon_online=%llu daemon_generation=%llu global_submit_sequence=%llu published_submit_sequence=%llu sequence_telemetry_interval=%u ring_entries=%u payload_entries=%u transfer_payload_slots=%u arena_backing=%s region_bytes=%zu bio_arena_zero_copy=%u bio_arena_zero_copy_required=%u bio_alias_writes=%lld bio_alias_reads=%lld bio_alias_busy_fallbacks=%lld bio_alias_required_retries=%lld bio_alias_required_rejects=%lld\n",
+		   "shm=1 daemon_online=%llu daemon_generation=%llu global_submit_sequence=%llu published_submit_sequence=%llu sequence_telemetry_interval=%u completion_batch=%u ring_entries=%u payload_entries=%u transfer_payload_slots=%u arena_backing=%s region_bytes=%zu bio_arena_zero_copy=%u bio_arena_zero_copy_required=%u bio_alias_writes=%lld bio_alias_reads=%lld bio_alias_busy_fallbacks=%lld bio_alias_required_retries=%lld bio_alias_required_rejects=%lld\n",
 		   smp_load_acquire(&dev->shm->header->daemon_online),
 		   READ_ONCE(dev->shm->header->daemon_generation),
 		   atomic64_read(&dev->shm->submit_sequence),
 		   READ_ONCE(dev->shm->header->global_submit_sequence),
 		   shm_sequence_telemetry_interval,
+		   shm_completion_batch,
 		   dev->shm->header->ring_entries,
 		   dev->shm->header->payload_entries,
 		   dev->shm->transfer_payload_slots,
@@ -2166,6 +2176,8 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 	desc->op = wire_op;
 	desc->flags = ZCNBLK_SHM_F_TOPOLOGY_VALID |
 		ZCNBLK_SHM_F_PORT_LANE;
+	if (payload_alias)
+		desc->flags |= ZCNBLK_SHM_F_APP_PAYLOAD_ALIAS;
 	desc->lane = conn->lane;
 	desc->stream = conn->stream;
 	desc->queue_id = conn->conn_id;
@@ -2209,19 +2221,17 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 out_release_slot:
 	if (dev->shm->transfer_payload_slots)
 		zcnblk_shm_release_payload_slot(conn, payload_slot,
-						ZCNBLK_SHM_PAYLOAD_OWNER_RESERVED);
+						ZCNBLK_SHM_PAYLOAD_OWNER_RESERVED,
+						false);
 	return ret;
 }
 
-static int zcnblk_shm_consume_completion(struct zcnblk_conn *conn)
+static int zcnblk_shm_consume_completion_at(struct zcnblk_conn *conn,
+					    u64 sequence)
 {
 	struct zcnblk_dev *dev = conn->dev;
-	struct zcnblk_shm_channel *channel =
-		zcnblk_shm_channel(dev, conn->conn_id);
 	struct zcnblk_shm_completion *desc;
 	struct zcnblk_pdu *pdu;
-	u64 sequence = READ_ONCE(channel->comp_cons);
-	u64 produced = smp_load_acquire(&channel->comp_prod);
 	u16 want_op;
 	u32 inflight_slot;
 	u32 payload_channel;
@@ -2229,8 +2239,6 @@ static int zcnblk_shm_consume_completion(struct zcnblk_conn *conn)
 	blk_status_t status = BLK_STS_OK;
 	int ret = 0;
 
-	if (sequence == produced)
-		return 0;
 	desc = zcnblk_shm_completion(dev, conn->conn_id, sequence);
 	if (smp_load_acquire(&desc->sequence) != sequence + 1)
 		return 0;
@@ -2306,11 +2314,32 @@ static int zcnblk_shm_consume_completion(struct zcnblk_conn *conn)
 	conn->inflight_count--;
 	if (dev->shm->transfer_payload_slots && pdu->op != REQ_OP_WRITE)
 		zcnblk_shm_release_payload_slot(conn, pdu->shm_payload_slot,
-						pdu->shm_submit_sequence);
-	/* A read slot cannot be reused until its payload has reached the bio. */
-	smp_store_release(&channel->comp_cons, sequence + 1);
+						pdu->shm_submit_sequence,
+						pdu->shm_bio_payload_alias);
 	zcnblk_complete_pdu(pdu, status);
 	return ret ? ret : 1;
+}
+
+static int zcnblk_shm_consume_completions(struct zcnblk_conn *conn)
+{
+	struct zcnblk_shm_channel *channel =
+		zcnblk_shm_channel(conn->dev, conn->conn_id);
+	u64 sequence = READ_ONCE(channel->comp_cons);
+	u64 produced = smp_load_acquire(&channel->comp_prod);
+	u32 completed = 0;
+	int ret = 0;
+
+	while (sequence != produced && completed < shm_completion_batch) {
+		ret = zcnblk_shm_consume_completion_at(conn, sequence);
+		if (ret <= 0)
+			break;
+		sequence++;
+		completed++;
+	}
+	/* Read payloads and non-transfer slots become reusable at this release. */
+	if (completed)
+		smp_store_release(&channel->comp_cons, sequence);
+	return ret < 0 ? ret : completed;
 }
 
 static bool zcnblk_shm_spin_for_work(struct zcnblk_conn *conn)
@@ -2360,7 +2389,7 @@ static int zcnblk_shm_conn_thread(void *data)
 			progressed = true;
 		}
 
-		while ((ret = zcnblk_shm_consume_completion(conn)) > 0)
+		while ((ret = zcnblk_shm_consume_completions(conn)) > 0)
 			progressed = true;
 		if (ret < 0) {
 			conn->failed = true;
@@ -3641,7 +3670,8 @@ static int __init zcnblk_init(void)
 	int ret;
 
 	if (!lanes || !connections_per_lane || !shard_count || !size_mib ||
-	    !max_frame_bytes || !queue_depth || !pipeline_depth || !batch_depth)
+	    !max_frame_bytes || !queue_depth || !pipeline_depth || !batch_depth ||
+	    !shm_completion_batch)
 		return -EINVAL;
 	if (shm_sequence_telemetry_interval &&
 	    !is_power_of_2(shm_sequence_telemetry_interval)) {
