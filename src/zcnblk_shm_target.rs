@@ -367,18 +367,6 @@ impl Mapping {
         Ok(unsafe { std::slice::from_raw_parts(self.ptr.add(start).cast_const(), len) })
     }
 
-    unsafe fn slice_mut(&self, start: usize, len: usize) -> io::Result<&mut [u8]> {
-        let end = start.checked_add(len).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "shared mapping range overflow")
-        })?;
-        if end > self.len {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "shared mapping range exceeds mmap",
-            ));
-        }
-        Ok(unsafe { std::slice::from_raw_parts_mut(self.ptr.add(start), len) })
-    }
 }
 
 unsafe impl Send for Mapping {}
@@ -661,10 +649,19 @@ impl RemoteWalStream {
         remote_key: u64,
         slot: usize,
         user_data: u64,
+        force_completion: bool,
     ) -> io::Result<bool> {
         match self {
             Self::Ofi(stream) => unsafe {
-                stream.post_rma_read_raw(target, len, remote_addr, remote_key, slot, user_data)
+                stream.post_rma_read_raw(
+                    target,
+                    len,
+                    remote_addr,
+                    remote_key,
+                    slot,
+                    user_data,
+                    force_completion,
+                )
             },
             Self::Tcp(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -796,13 +793,16 @@ struct RemoteWalRmaReadWindow {
 #[derive(Clone, Copy)]
 struct RemoteWalRmaQueuedRead {
     batch_id: u64,
-    request: PendingRemoteRead,
     token: u64,
+    remote_offset: u64,
+    payload_offset: usize,
+    len: usize,
 }
 
+#[derive(Clone, Copy, Default)]
 struct RemoteWalRmaActiveRead {
-    queued: RemoteWalRmaQueuedRead,
-    posted_at: Instant,
+    batch_id: u64,
+    token: u64,
 }
 
 struct RemoteWalRmaBatch {
@@ -812,15 +812,21 @@ struct RemoteWalRmaBatch {
     complete: bool,
 }
 
+struct RemoteWalRmaBatchEntry {
+    id: u64,
+    batch: RemoteWalRmaBatch,
+}
+
 struct RemoteWalRmaReadQueue {
     slot_bytes: usize,
     depth: usize,
     free_slots: Vec<usize>,
     pending: VecDeque<RemoteWalRmaQueuedRead>,
-    active: Vec<Option<RemoteWalRmaActiveRead>>,
-    batches: HashMap<u64, RemoteWalRmaBatch>,
+    active: Vec<RemoteWalRmaActiveRead>,
+    batches: VecDeque<RemoteWalRmaBatchEntry>,
     completion_slots: Vec<usize>,
     completion_tokens: Vec<u64>,
+    latency_started: Option<Vec<Option<Instant>>>,
     next_batch_id: u64,
     next_token: u64,
     in_flight: usize,
@@ -829,6 +835,60 @@ struct RemoteWalRmaReadQueue {
     cq_batches: u64,
     cq_completions: u64,
     post_eagain: u64,
+    defer_tail_completion: bool,
+}
+
+#[inline]
+fn rma_read_post_policy(
+    defer_tail_completion: bool,
+    close_group: bool,
+    pending: usize,
+    free_slots: usize,
+    in_flight: usize,
+) -> (bool, bool) {
+    if !defer_tail_completion || pending == 0 || free_slots == 0 {
+        return (false, false);
+    }
+    let defer = !close_group && pending == 1 && free_slots > 1 && in_flight != 0;
+    let force_completion = !defer
+        && (free_slots == 1 || (close_group && pending == 1) || (in_flight == 0 && pending == 1));
+    (defer, force_completion)
+}
+
+fn advance_lane_completion_counts(
+    lane_completed: &mut [u64],
+    per_channel: &[usize],
+) -> io::Result<()> {
+    if lane_completed.len() != per_channel.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "lane completion count shape mismatch",
+        ));
+    }
+    for (completed, count) in lane_completed.iter_mut().zip(per_channel.iter().copied()) {
+        *completed = completed
+            .checked_add(u64::try_from(count).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "lane completion count overflow")
+            })?)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "lane completion HWM overflow")
+            })?;
+    }
+    Ok(())
+}
+
+fn lane_token_is_complete(lane_completed: &[u64], token: u64) -> bool {
+    if token == 0 {
+        return true;
+    }
+    let channels = lane_completed.len() as u64;
+    if channels == 0 {
+        return false;
+    }
+    let zero_based = token - 1;
+    let channel = (zero_based % channels) as usize;
+    let request_sequence = zero_based / channels;
+    lane_completed[channel] > request_sequence
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -949,15 +1009,18 @@ impl RemoteWalRmaReadQueue {
                 "invalid OFI RMA direct-placement queue shape",
             ));
         }
+        let latency_started = env_enabled_or("URING_PLAY_OFI_RMA_LATENCY_TELEMETRY", false)
+            .then(|| (0..depth).map(|_| None).collect());
         Ok(Self {
             slot_bytes,
             depth,
             free_slots: (0..depth).rev().collect(),
             pending: VecDeque::new(),
-            active: (0..depth).map(|_| None).collect(),
-            batches: HashMap::new(),
+            active: vec![RemoteWalRmaActiveRead::default(); depth],
+            batches: VecDeque::with_capacity(depth),
             completion_slots: vec![0; depth],
             completion_tokens: vec![0; depth],
+            latency_started,
             next_batch_id: 1,
             next_token: 1,
             in_flight: 0,
@@ -966,12 +1029,20 @@ impl RemoteWalRmaReadQueue {
             cq_batches: 0,
             cq_completions: 0,
             post_eagain: 0,
+            defer_tail_completion: env_enabled_or("URING_PLAY_OFI_SELECTIVE_COMPLETION", false)
+                && env::var("URING_PLAY_OFI_RMA_READ_COMPLETION_STRIDE")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(1)
+                    > 1
+                && env_enabled_or("URING_PLAY_OFI_RMA_DEFER_TAIL_COMPLETION", true),
         })
     }
 
     fn submit_batch(
         &mut self,
         window: RemoteWalRmaReadWindow,
+        mapping_len: usize,
         requests: &[PendingRemoteRead],
     ) -> io::Result<u64> {
         if requests.is_empty()
@@ -995,6 +1066,24 @@ impl RemoteWalRmaReadQueue {
                     format!(
                         "OFI RMA read bytes={len} exceed fixed slot bytes={}",
                         self.slot_bytes
+                    ),
+                ));
+            }
+            let payload_end = request
+                .payload_offset
+                .checked_add(len)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "OFI RMA payload range overflow",
+                    )
+                })?;
+            if payload_end > mapping_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "OFI RMA payload range offset={} len={len} exceeds shared mapping bytes={mapping_len}",
+                        request.payload_offset,
                     ),
                 ));
             }
@@ -1030,28 +1119,38 @@ impl RemoteWalRmaReadQueue {
         }
         let batch_id = self.next_batch_id;
         self.next_batch_id = self.next_batch_id.wrapping_add(1).max(1);
-        if self.batches.contains_key(&batch_id) {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "OFI RMA batch identifier space exhausted",
-            ));
+        if let Some(last) = self.batches.back() {
+            let expected = last.id.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    "OFI RMA batch identifier space exhausted with live batches",
+                )
+            })?;
+            if batch_id != expected {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "OFI RMA batch identifier sequence is not contiguous",
+                ));
+            }
         }
-        self.batches.insert(
-            batch_id,
-            RemoteWalRmaBatch {
+        self.batches.push_back(RemoteWalRmaBatchEntry {
+            id: batch_id,
+            batch: RemoteWalRmaBatch {
                 remaining: requests.len(),
                 records: requests.len(),
                 bytes,
                 complete: false,
             },
-        );
+        });
         for &request in requests {
             let token = self.next_token;
             self.next_token = self.next_token.wrapping_add(1).max(1);
             self.pending.push_back(RemoteWalRmaQueuedRead {
                 batch_id,
-                request,
                 token,
+                remote_offset: request.request.offset,
+                payload_offset: request.payload_offset,
+                len: request.request.len as usize,
             });
         }
         Ok(batch_id)
@@ -1062,18 +1161,60 @@ impl RemoteWalRmaReadQueue {
         stream: &mut RemoteWalStream,
         mapping: &Mapping,
         window: RemoteWalRmaReadWindow,
+        close_group: bool,
     ) -> io::Result<()> {
-        while let Some((slot, queued)) = self.take_postable() {
-            if self.active[slot].is_some() {
+        if self.latency_started.is_some() {
+            self.post_available_mode::<true>(stream, mapping, window, close_group)
+        } else {
+            self.post_available_mode::<false>(stream, mapping, window, close_group)
+        }
+    }
+
+    fn post_available_mode<const TRACK_LATENCY: bool>(
+        &mut self,
+        stream: &mut RemoteWalStream,
+        mapping: &Mapping,
+        window: RemoteWalRmaReadWindow,
+        close_group: bool,
+    ) -> io::Result<()> {
+        while !self.pending.is_empty() && !self.free_slots.is_empty() {
+            /* Keep one real read available to carry the fence CQE when the
+             * consumer reaches its blocking drain boundary.  Previously that
+             * boundary required a synthetic one-byte RMA read.  Do not hold a
+             * lone operation in an otherwise idle queue, and close a full
+             * posting window immediately so it can make progress. */
+            let pending_len = self.pending.len();
+            let free_len = self.free_slots.len();
+            // Interior posts cannot be the deferred real tail and cannot
+            // close a full posting window. Keep the full liveness policy off
+            // the dominant QD-2 prefix; only either tail pays those branches.
+            let (defer, force_completion) = if pending_len > 1 && free_len > 1 {
+                (false, false)
+            } else {
+                rma_read_post_policy(
+                    self.defer_tail_completion,
+                    close_group,
+                    pending_len,
+                    free_len,
+                    self.in_flight,
+                )
+            };
+            if defer {
+                break;
+            }
+            let (slot, queued) = self
+                .take_postable()
+                .expect("non-empty RMA queue lost a postable read");
+            if self.active[slot].token != 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("OFI RMA free-list returned active slot={slot}"),
                 ));
             }
-            let len = queued.request.request.len as usize;
+            let len = queued.len;
             let remote_addr = window
                 .addr
-                .checked_add(queued.request.request.offset)
+                .checked_add(queued.remote_offset)
                 .ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -1083,12 +1224,18 @@ impl RemoteWalRmaReadQueue {
             // The block-edge request owns this shared payload slot until its
             // completion is published. The whole mapping is registered once,
             // and the operation slot is retained until its CQE is retired.
-            let target = unsafe {
-                mapping
-                    .slice_mut(queued.request.payload_offset, len)?
-                    .as_mut_ptr()
+            // Batch admission proved payload_offset + len is inside this
+            // stable mapping. Mapping ownership outlives every queued read,
+            // so posting needs only the address calculation on the hot path.
+            let target = unsafe { mapping.ptr.add(queued.payload_offset) };
+            // Per-operation clock reads are surprisingly expensive at multi-million
+            // IOPS. Keep latency telemetry available for diagnostic runs, but do not
+            // put two clock_gettime calls on every production RMA read by default.
+            let posted_at = if TRACK_LATENCY {
+                Some(Instant::now())
+            } else {
+                None
             };
-            let posted_at = Instant::now();
             let posted = unsafe {
                 stream.post_rma_read_raw(
                     target,
@@ -1097,6 +1244,7 @@ impl RemoteWalRmaReadQueue {
                     window.key,
                     slot,
                     queued.token,
+                    force_completion,
                 )?
             };
             if !posted {
@@ -1105,7 +1253,16 @@ impl RemoteWalRmaReadQueue {
                 self.free_slots.push(slot);
                 break;
             }
-            self.active[slot] = Some(RemoteWalRmaActiveRead { queued, posted_at });
+            self.active[slot] = RemoteWalRmaActiveRead {
+                batch_id: queued.batch_id,
+                token: queued.token,
+            };
+            if TRACK_LATENCY {
+                self.latency_started
+                    .as_mut()
+                    .expect("latency-specialized RMA posting lost timestamp storage")[slot] =
+                    posted_at;
+            }
             self.in_flight += 1;
             self.peak_in_flight = self.peak_in_flight.max(self.in_flight);
         }
@@ -1131,7 +1288,7 @@ impl RemoteWalRmaReadQueue {
         window: RemoteWalRmaReadWindow,
         wait: bool,
     ) -> io::Result<RemoteWalRmaProgress> {
-        self.post_available(stream, mapping, window)?;
+        self.post_available(stream, mapping, window, wait)?;
         if self.in_flight == 0 {
             return Ok(RemoteWalRmaProgress::default());
         }
@@ -1148,58 +1305,101 @@ impl RemoteWalRmaReadQueue {
             completions: completed,
             ..RemoteWalRmaProgress::default()
         };
+        if completed > self.in_flight {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "OFI RMA completion batch={completed} exceeds in-flight={}",
+                    self.in_flight
+                ),
+            ));
+        }
+        let free_base = self.free_slots.len();
+        let free_end = free_base.checked_add(completed).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "OFI RMA free-list length overflow")
+        })?;
+        if free_end > self.free_slots.capacity() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "OFI RMA completion batch={completed} exceeds free-list capacity={} len={free_base}",
+                    self.free_slots.capacity()
+                ),
+            ));
+        }
+        let free_ptr = self.free_slots.as_mut_ptr();
+        let mut completion_run_batch_id = 0u64;
+        let mut completion_run_records = 0usize;
         for index in 0..completed {
             let slot = self.completion_slots[index];
             let token = self.completion_tokens[index];
-            let active = self
-                .active
-                .get_mut(slot)
-                .and_then(Option::take)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("OFI RMA completion returned inactive slot={slot}"),
-                    )
-                })?;
-            if active.queued.token != token {
+            let active = self.active.get_mut(slot).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("OFI RMA completion returned invalid slot={slot}"),
+                )
+            })?;
+            if active.token == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("OFI RMA completion returned inactive slot={slot}"),
+                ));
+            }
+            let active_batch_id = active.batch_id;
+            let active_token = active.token;
+            // `token == 0` is the sole ownership sentinel. The next post
+            // overwrites both words, so retaining the stale batch ID avoids
+            // an unnecessary second 64-bit clear on every completion.
+            active.token = 0;
+            if active_token != token {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "OFI RMA completion token mismatch slot={slot} expected={} actual={token}",
-                        active.queued.token
+                        "OFI RMA completion token mismatch slot={slot} expected={active_token} actual={token}"
                     ),
                 ));
             }
-            progress.completion_time = progress
-                .completion_time
-                .saturating_add(active.posted_at.elapsed());
-            let batch = self
-                .batches
-                .get_mut(&active.queued.batch_id)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "OFI RMA completion referenced an unknown batch",
-                    )
-                })?;
-            batch.remaining = batch.remaining.checked_sub(1).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "OFI RMA batch underflow")
-            })?;
-            batch.complete = batch.remaining == 0;
-            self.free_slots.push(slot);
-            self.in_flight = self.in_flight.checked_sub(1).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "OFI RMA in-flight underflow")
-            })?;
+            if completion_run_records != 0 && completion_run_batch_id != active_batch_id {
+                self.complete_batch_run(completion_run_batch_id, completion_run_records)?;
+                completion_run_records = 0;
+            }
+            completion_run_batch_id = active_batch_id;
+            completion_run_records += 1;
+            // The queue owns `capacity == depth`, no operation below mutates
+            // this allocation, and `free_end` was checked above. Initialize
+            // the returned slots in place, then publish their length once
+            // after the entire provider-proven group has been validated.
+            unsafe { free_ptr.add(free_base + index).write(slot) };
         }
+        if completion_run_records != 0 {
+            self.complete_batch_run(completion_run_batch_id, completion_run_records)?;
+        }
+        // Keep optional clock reads and timestamp-vector bounds checks out of
+        // the production per-slot ownership loop. Diagnostic runs pay for a
+        // second pass; telemetry-disabled runs take one branch per CQ group.
+        if let Some(started) = self.latency_started.as_mut() {
+            for index in 0..completed {
+                let slot = self.completion_slots[index];
+                if let Some(posted_at) = started[slot].take() {
+                    progress.completion_time = progress
+                        .completion_time
+                        .saturating_add(posted_at.elapsed());
+                }
+            }
+        }
+        // The C queue has already validated and returned one ownership record
+        // per completion. Account the proven group once instead of loading and
+        // storing this lane counter for every 4 KiB read.
+        self.in_flight -= completed;
+        unsafe { self.free_slots.set_len(free_end) };
         self.cq_completions = self.cq_completions.saturating_add(completed as u64);
-        self.post_available(stream, mapping, window)?;
+        self.post_available(stream, mapping, window, false)?;
         Ok(progress)
     }
 
     fn batch_complete(&self, batch_id: u64) -> io::Result<bool> {
-        self.batches
-            .get(&batch_id)
-            .map(|batch| batch.complete)
+        self.batch_index(batch_id)
+            .map(|index| self.batches[index].batch.complete)
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -1208,29 +1408,57 @@ impl RemoteWalRmaReadQueue {
             })
     }
 
+    fn complete_batch_run(&mut self, batch_id: u64, records: usize) -> io::Result<()> {
+        let batch_index = self.batch_index(batch_id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI RMA completion referenced an unknown batch",
+            )
+        })?;
+        let batch = &mut self.batches[batch_index].batch;
+        batch.remaining = batch.remaining.checked_sub(records).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "OFI RMA batch underflow")
+        })?;
+        batch.complete = batch.remaining == 0;
+        Ok(())
+    }
+
     fn finish_batch(&mut self, batch_id: u64) -> io::Result<RemoteWalRmaBatch> {
-        let complete = self
-            .batches
-            .get(&batch_id)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("unknown OFI RMA batch id={batch_id}"),
-                )
-            })?
-            .complete;
-        if !complete {
+        let front = self.batches.front().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown OFI RMA batch id={batch_id}"),
+            )
+        })?;
+        if front.id != batch_id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "out-of-order OFI RMA batch retirement id={batch_id} oldest={}",
+                    front.id
+                ),
+            ));
+        }
+        if !front.batch.complete {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 format!("OFI RMA batch id={batch_id} is incomplete"),
             ));
         }
-        self.batches.remove(&batch_id).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("OFI RMA batch id={batch_id} disappeared before retirement"),
-            )
-        })
+        self.batches
+            .pop_front()
+            .map(|entry| entry.batch)
+            .ok_or_else(|| io::Error::other("OFI RMA batch queue became empty"))
+    }
+
+    #[inline]
+    fn batch_index(&self, batch_id: u64) -> Option<usize> {
+        let first = self.batches.front()?.id;
+        let offset = usize::try_from(batch_id.checked_sub(first)?).ok()?;
+        self.batches
+            .get(offset)
+            .is_some_and(|entry| entry.id == batch_id)
+            .then_some(offset)
     }
 
     fn has_work(&self) -> bool {
@@ -1239,8 +1467,8 @@ impl RemoteWalRmaReadQueue {
 
     fn incomplete_batch_count(&self) -> usize {
         self.batches
-            .values()
-            .filter(|batch| !batch.complete)
+            .iter()
+            .filter(|entry| !entry.batch.complete)
             .count()
     }
 }
@@ -2509,20 +2737,20 @@ impl RemoteWalLeaf {
         {
             return Ok(None);
         }
-        let queue = self.rma_read_queue.as_mut().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "OFI RMA read window has no registered lane-local buffer ring",
-            )
-        })?;
-        let batch_id = queue.submit_batch(window, requests)?;
         let mapping = self.mapping.as_ref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "OFI RMA read sender has no registered shared mapping",
             )
         })?;
-        queue.post_available(&mut self.stream, mapping.as_ref(), window)?;
+        let queue = self.rma_read_queue.as_mut().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI RMA read window has no registered lane-local buffer ring",
+            )
+        })?;
+        let batch_id = queue.submit_batch(window, mapping.len, requests)?;
+        queue.post_available(&mut self.stream, mapping.as_ref(), window, false)?;
         Ok(Some(batch_id))
     }
 
@@ -2546,13 +2774,37 @@ impl RemoteWalLeaf {
     }
 
     fn progress_rma_reads_attached(&mut self, wait: bool) -> io::Result<usize> {
-        let mapping = Arc::clone(self.mapping.as_ref().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "OFI RMA read queue has no attached shared mapping",
-            )
-        })?);
-        self.progress_rma_reads(mapping.as_ref(), wait)
+        /* The mapping is permanently attached before any data-plane post.
+         * Borrow its Arc payload alongside the disjoint stream/queue fields;
+         * cloning it here put one contended refcount increment and decrement
+         * around every lane CQ progress call. */
+        let progress = {
+            let window = self.rma_read_window.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "OFI RMA progress requested without a negotiated read window",
+                )
+            })?;
+            let mapping = self.mapping.as_deref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "OFI RMA read queue has no attached shared mapping",
+                )
+            })?;
+            let queue = self.rma_read_queue.as_mut().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "OFI RMA read window has no registered lane-local buffer ring",
+                )
+            })?;
+            queue.progress(&mut self.stream, mapping, window, wait)?
+        };
+        self.rma_read_calls = self
+            .rma_read_calls
+            .saturating_add(progress.completions as u64);
+        self.rma_read_time = self.rma_read_time.saturating_add(progress.completion_time);
+        self.rma_read_copy_time = self.rma_read_copy_time.saturating_add(progress.copy_time);
+        Ok(progress.completions)
     }
 
     fn rma_read_batch_complete(&self, batch_id: u64) -> io::Result<bool> {
@@ -2579,14 +2831,9 @@ impl RemoteWalLeaf {
     }
 
     fn drain_rma_reads(&mut self, mapping: &Mapping) -> io::Result<()> {
-        let started = Instant::now();
-        let timeout = Duration::from_millis(
-            env::var("URING_PLAY_OFI_TIMEOUT_MS")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(30_000)
-                .max(1),
-        );
+        let timeout =
+            Duration::from_millis(u64::try_from(crate::zcofi_timeout_ms()).unwrap_or(30_000));
+        let mut stalled_at = None::<Instant>;
         loop {
             let has_work = self
                 .rma_read_queue
@@ -2609,13 +2856,16 @@ impl RemoteWalLeaf {
             }
             let completed = self.progress_rma_reads(mapping, true)?;
             if completed == 0 {
-                if started.elapsed() >= timeout {
+                let stalled_at = stalled_at.get_or_insert_with(Instant::now);
+                if stalled_at.elapsed() >= timeout {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
                         "OFI RMA read queue made no progress before timeout",
                     ));
                 }
                 thread::yield_now();
+            } else {
+                stalled_at = None;
             }
         }
     }
@@ -2625,7 +2875,7 @@ impl RemoteWalLeaf {
             return;
         };
         eprintln!(
-            "zcnblk-shm-target-ofi-rma-queue: lane={} per_lane_qd={} slot_bytes={} registered_ring_bytes=0 peak_in_flight={} final_in_flight={} final_queued={} final_batches={} cq_poll_calls={} cq_batches={} cq_completions={} avg_cq_completions_per_batch={:.2} post_eagain={} completion=initiator-local-cq-data-visible buffer_policy=request-owned-shared-slot retirement=fifo-batch-after-out-of-order-cq copy_after_cq=no",
+            "zcnblk-shm-target-ofi-rma-queue: lane={} per_lane_qd={} slot_bytes={} registered_ring_bytes=0 peak_in_flight={} final_in_flight={} final_queued={} final_batches={} cq_poll_calls={} cq_batches={} cq_completions={} avg_cq_completions_per_batch={:.2} post_eagain={} deferred_real_tail_marker={} synthetic_partial_flush_policy=fallback-only completion=initiator-local-cq-data-visible buffer_policy=request-owned-shared-slot retirement=fifo-batch-after-out-of-order-cq copy_after_cq=no",
             self.lane_id,
             queue.depth,
             queue.slot_bytes,
@@ -2638,6 +2888,7 @@ impl RemoteWalLeaf {
             queue.cq_completions,
             queue.cq_completions as f64 / queue.cq_batches.max(1) as f64,
             queue.post_eagain,
+            queue.defer_tail_completion,
         );
     }
 
@@ -5859,6 +6110,92 @@ impl WalCompletionTracker {
     }
 }
 
+/*
+ * One lane worker is the sole publisher for each of these trackers. Other
+ * lane workers only test exact predecessor tokens. Keeping the owner HWM and
+ * ring cache-line isolated avoids the global CAS handoff that dominated the
+ * remote 4K profile while retaining exact (not merely contiguous) dependency
+ * visibility.
+ */
+#[repr(align(64))]
+struct WalSharedLaneTracker {
+    hwm: AtomicU64,
+    slots: Box<[AtomicU64]>,
+    mask: usize,
+}
+
+impl WalSharedLaneTracker {
+    fn new(max_in_flight: usize) -> io::Result<Self> {
+        let capacity = max_in_flight
+            .max(2)
+            .checked_next_power_of_two()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "lane tracker overflow"))?;
+        Ok(Self {
+            hwm: AtomicU64::new(0),
+            slots: (0..capacity)
+                .map(|_| AtomicU64::new(0))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            mask: capacity - 1,
+        })
+    }
+
+    fn hwm(&self) -> u64 {
+        self.hwm.load(Ordering::Acquire)
+    }
+
+    fn can_track(&self, sequence: u64) -> bool {
+        sequence != 0 && sequence.saturating_sub(self.hwm()) <= self.slots.len() as u64
+    }
+
+    fn is_complete(&self, sequence: u64) -> bool {
+        sequence == 0
+            || sequence <= self.hwm()
+            || self.slots[sequence as usize & self.mask].load(Ordering::Acquire) == sequence
+    }
+
+    fn mark_complete(&self, sequence: u64) -> io::Result<u64> {
+        self.mark_complete_batch(std::iter::once(sequence))
+    }
+
+    fn mark_complete_batch(&self, sequences: impl IntoIterator<Item = u64>) -> io::Result<u64> {
+        let mut hwm = self.hwm.load(Ordering::Relaxed);
+        for sequence in sequences {
+            if sequence == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "lane completion sequence zero is reserved",
+                ));
+            }
+            let slot = &self.slots[sequence as usize & self.mask];
+            let occupied = slot.load(Ordering::Acquire);
+            if occupied != 0 && occupied > hwm {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "lane completion ring collision sequence={sequence} occupied={occupied} capacity={}",
+                        self.slots.len()
+                    ),
+                ));
+            }
+            slot.store(sequence, Ordering::Release);
+        }
+        loop {
+            let Some(next) = hwm.checked_add(1) else {
+                break;
+            };
+            let slot = &self.slots[next as usize & self.mask];
+            if slot.load(Ordering::Acquire) != next {
+                break;
+            }
+            slot.store(0, Ordering::Relaxed);
+            hwm = next;
+        }
+        self.hwm.store(hwm, Ordering::Release);
+        Ok(hwm)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WalSyncRequest {
     ordering_epoch: u64,
@@ -7460,7 +7797,7 @@ impl SharedTarget {
         } else {
             Vec::new()
         };
-        let lane_local_sequences = backend == BackendMode::Memory
+        let lane_local_sequences = matches!(backend, BackendMode::Memory | BackendMode::WalTcp)
             && env_enabled_or("URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES", true);
         if lane_local_sequences
             && header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] & ZCNBLK_SHM_CAP_LANE_LOCAL_SEQUENCE
@@ -8014,6 +8351,10 @@ impl SharedTarget {
     }
 
     fn lane_token_complete(&self, token: u64) -> bool {
+        lane_token_is_complete(&self.lane_completed, token)
+    }
+
+    fn lane_tracker_token_complete(&self, trackers: &[WalSharedLaneTracker], token: u64) -> bool {
         if token == 0 {
             return true;
         }
@@ -8021,7 +8362,9 @@ impl SharedTarget {
         let channels = u64::from(self.header.channels);
         let channel = (zero_based % channels) as usize;
         let request_sequence = zero_based / channels;
-        self.lane_completed[channel] > request_sequence
+        trackers
+            .get(channel)
+            .is_some_and(|tracker| tracker.is_complete(request_sequence + 1))
     }
 
     fn next_lane_local_request(&mut self) -> io::Result<Option<(u32, u64, ZcnblkShmRequest)>> {
@@ -8590,6 +8933,21 @@ impl SharedTarget {
         channel_count: usize,
         channel_capacity: usize,
     ) -> io::Result<Option<PendingRemoteRead>> {
+        if self.lane_local_sequences {
+            let expected = self.lane_completed[channel as usize]
+                .checked_add(channel_count as u64)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "lane completion HWM overflow")
+                })?;
+            if request_sequence != expected {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "batched lane request order mismatch channel={channel} expected={expected} actual={request_sequence}"
+                    ),
+                ));
+            }
+        }
         if request.queue_id != channel
             || request.payload_slot
                 != (request_sequence % u64::from(self.header.payload_entries)) as u32
@@ -8858,6 +9216,9 @@ impl SharedTarget {
                 0,
                 committed_hwm,
             )?;
+        }
+        if self.lane_local_sequences {
+            advance_lane_completion_counts(&mut self.lane_completed, &per_channel)?;
         }
         self.next_submit_sequence += requests.len() as u64;
         Ok(per_channel)
@@ -9216,6 +9577,7 @@ impl SharedTarget {
         channel: u32,
         lane_completions: &mut WalLaneCompletionTracker,
         completions: &WalCompletionTracker,
+        lane_tracker: &WalSharedLaneTracker,
         scratch: &mut Vec<PendingRemoteRead>,
         outstanding_read_refs: &mut VecDeque<OutstandingWalDirtyReadRef>,
     ) -> io::Result<usize> {
@@ -9230,14 +9592,25 @@ impl SharedTarget {
         if scratch.is_empty() {
             return Ok(0);
         }
-        let committed_hwm = completions.mark_complete_batch(
-            scratch
-                .iter()
-                .map(|pending| pending.request.submit_sequence),
-        )?;
+        let committed_hwm = if self.lane_local_sequences {
+            lane_tracker
+                .mark_complete_batch(scratch.iter().map(|pending| pending.request_sequence + 1))?;
+            0
+        } else {
+            completions.mark_complete_batch(
+                scratch
+                    .iter()
+                    .map(|pending| pending.request.submit_sequence),
+            )?
+        };
         for pending in scratch.iter() {
+            let published_hwm = if self.lane_local_sequences {
+                pending.request.submit_sequence
+            } else {
+                committed_hwm
+            };
             let completion_marker =
-                self.publish_wal_lane_completion(channel, &pending, committed_hwm)?;
+                self.publish_wal_lane_completion(channel, &pending, published_hwm)?;
             if let Some(dirty_ref) = pending.dirty_ref {
                 outstanding_read_refs.push_back(OutstandingWalDirtyReadRef {
                     completion_marker,
@@ -9350,7 +9723,7 @@ impl SharedTarget {
         channel: u32,
         batch: &[PendingRemoteRead],
         remote_completions: &WalCompletionTracker,
-        remote_lane_completions: &mut WalLaneReleaseTracker,
+        remote_lane_tracker: &WalSharedLaneTracker,
         syncs: &WalSyncCoordinator,
         lane_completions: &mut WalLaneCompletionTracker,
         retained_writes: &mut VecDeque<PendingRemoteRead>,
@@ -9358,6 +9731,7 @@ impl SharedTarget {
         dirty: &WalConcurrentDirtyCache,
         pressure_threshold: u64,
         completions: &WalCompletionTracker,
+        lane_tracker: &WalSharedLaneTracker,
         completion_scratch: &mut Vec<PendingRemoteRead>,
         outstanding_read_refs: &mut VecDeque<OutstandingWalDirtyReadRef>,
         completion_kicks: &mut usize,
@@ -9374,10 +9748,13 @@ impl SharedTarget {
             }
             std::hint::spin_loop();
         }
-        remote_completions
-            .mark_complete_batch(batch.iter().map(|pending| pending.request.submit_sequence))?;
+        remote_lane_tracker
+            .mark_complete_batch(batch.iter().map(|pending| pending.request_sequence + 1))?;
+        if !self.lane_local_sequences {
+            remote_completions
+                .mark_complete_batch(batch.iter().map(|pending| pending.request.submit_sequence))?;
+        }
         for pending in batch {
-            remote_lane_completions.mark_releasable(pending.request_sequence)?;
             let request = pending.request;
             match request.op {
                 ZCNBLK_SHM_OP_WRITE => {
@@ -9396,7 +9773,7 @@ impl SharedTarget {
                 _ => unreachable!("lane batch validated request operation"),
             }
         }
-        syncs.observe_remote_lane_hwm(channel, remote_lane_completions.hwm)?;
+        syncs.observe_remote_lane_hwm(channel, remote_lane_tracker.hwm())?;
         self.release_wal_lane_dirty_cache(
             channel,
             retained_writes,
@@ -9417,6 +9794,7 @@ impl SharedTarget {
             channel,
             lane_completions,
             completions,
+            lane_tracker,
             completion_scratch,
             outstanding_read_refs,
         )?;
@@ -9429,6 +9807,8 @@ impl SharedTarget {
         channel: u32,
         completions: &WalCompletionTracker,
         remote_completions: &WalCompletionTracker,
+        lane_trackers: &[WalSharedLaneTracker],
+        remote_lane_trackers: &[WalSharedLaneTracker],
         syncs: &WalSyncCoordinator,
         vector_hwm: bool,
         dirty: &WalConcurrentDirtyCache,
@@ -9508,8 +9888,14 @@ impl SharedTarget {
         // not learn or own placement, stripe, mirror, or lane policy.
         let foreground_read_immediate =
             env_enabled_or("URING_PLAY_ZCNBLK_SHM_WAL_FOREGROUND_READ_IMMEDIATE", true);
+        let cq_delay_spins = env::var("URING_PLAY_ZCNBLK_SHM_WAL_CQ_DELAY_SPINS")
+            .ok()
+            .map(|value| value.parse::<usize>())
+            .transpose()
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+            .unwrap_or(0);
         eprintln!(
-            "zcnblk-shm-target-wal-read-policy: lane={channel} foreground_immediate={foreground_read_immediate} extent_records={extent_records} extent_fill_us={extent_fill_us} minimum_batch_records={split_min_batch_records}"
+            "zcnblk-shm-target-wal-read-policy: lane={channel} foreground_immediate={foreground_read_immediate} extent_records={extent_records} extent_fill_us={extent_fill_us} minimum_batch_records={split_min_batch_records} cq_delay_spins={cq_delay_spins}"
         );
         let pending_limit = extent_records.checked_mul(lane_window).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "lane pending limit overflow")
@@ -9534,13 +9920,18 @@ impl SharedTarget {
         let mut pending_syncs = VecDeque::<PendingRemoteRead>::new();
         let mut retained_writes = VecDeque::<PendingRemoteRead>::new();
         let mut releases = WalLaneReleaseTracker::new(self.header.payload_entries as usize);
-        let remote_lane_capacity = (self.header.channels as usize)
-            .checked_mul(self.header.payload_entries as usize)
-            .and_then(|entries| entries.checked_mul(2))
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "lane remote HWM overflow")
-            })?;
-        let mut remote_lane_completions = WalLaneReleaseTracker::new(remote_lane_capacity);
+        let lane_tracker = lane_trackers.get(channel as usize).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "logical lane tracker is missing",
+            )
+        })?;
+        let remote_lane_tracker = remote_lane_trackers.get(channel as usize).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "remote lane tracker is missing",
+            )
+        })?;
         let mut lane_completions =
             WalLaneCompletionTracker::new(self.header.payload_entries as usize);
         let mut completion_scratch = Vec::with_capacity(self.header.ring_entries as usize);
@@ -9618,7 +10009,7 @@ impl SharedTarget {
                     channel,
                     &batch,
                     remote_completions,
-                    &mut remote_lane_completions,
+                    remote_lane_tracker,
                     syncs,
                     &mut lane_completions,
                     &mut retained_writes,
@@ -9626,6 +10017,7 @@ impl SharedTarget {
                     dirty,
                     pressure_threshold,
                     completions,
+                    lane_tracker,
                     &mut completion_scratch,
                     &mut outstanding_read_refs,
                     &mut completion_kicks,
@@ -9665,9 +10057,14 @@ impl SharedTarget {
                         "lane WAL descriptor has reserved ordering epoch zero",
                     ));
                 }
-                if !completions.can_track(request.submit_sequence)
-                    || !remote_completions.can_track(request.submit_sequence)
-                {
+                let completion_trackable = if self.lane_local_sequences {
+                    lane_tracker.can_track(consumed + 1)
+                        && remote_lane_tracker.can_track(consumed + 1)
+                } else {
+                    completions.can_track(request.submit_sequence)
+                        && remote_completions.can_track(request.submit_sequence)
+                };
+                if !completion_trackable {
                     stats.completion_window_stalls += 1;
                     force_send = true;
                     break;
@@ -9690,15 +10087,23 @@ impl SharedTarget {
                     };
                     stats.note_io_contract(pending.io_contract);
                     let required_hwm = request.submit_sequence.saturating_sub(1);
-                    let joined = remote_completions.hwm() >= required_hwm
-                        && syncs.try_join(request.submit_sequence, ordering_epoch);
-                    remote_completions.mark_complete(request.submit_sequence)?;
+                    let sync_key = if self.lane_local_sequences {
+                        ordering_epoch
+                    } else {
+                        request.submit_sequence
+                    };
+                    let joined = (self.lane_local_sequences
+                        || remote_completions.hwm() >= required_hwm)
+                        && syncs.try_join(sync_key, ordering_epoch);
+                    remote_lane_tracker.mark_complete(consumed + 1)?;
+                    if !self.lane_local_sequences {
+                        remote_completions.mark_complete(request.submit_sequence)?;
+                    }
                     // A sync descriptor carries no data to the leaf. Let the
                     // transport HWM cross it immediately so a later flush
                     // vector can conservatively include this sync without
                     // waiting on the durable marker it is trying to start.
-                    remote_lane_completions.mark_releasable(consumed)?;
-                    syncs.observe_remote_lane_hwm(channel, remote_lane_completions.hwm)?;
+                    syncs.observe_remote_lane_hwm(channel, remote_lane_tracker.hwm())?;
                     if joined {
                         lane_completions.admit(pending, !pending.io_contract.fua)?;
                         let payload_hwm = self.mark_payload_releasable(&mut releases, consumed)?;
@@ -9721,7 +10126,7 @@ impl SharedTarget {
                             )
                         };
                         syncs.announce(
-                            request.submit_sequence,
+                            sync_key,
                             ordering_epoch,
                             lane_tails,
                             required_global_hwm,
@@ -9757,7 +10162,11 @@ impl SharedTarget {
                     ));
                 }
                 if request.sector_predecessor != 0
-                    && !completions.is_complete(request.sector_predecessor)
+                    && if self.lane_local_sequences {
+                        !self.lane_tracker_token_complete(lane_trackers, request.sector_predecessor)
+                    } else {
+                        !completions.is_complete(request.sector_predecessor)
+                    }
                 {
                     force_send = true;
                     break;
@@ -9808,10 +10217,13 @@ impl SharedTarget {
                         };
                         if dirty_hit {
                             stats.dirty_read_refs += u64::from(pending.dirty_ref.is_some());
-                            remote_completions.mark_complete_deferred(request.submit_sequence)?;
-                            remote_lane_completions.mark_releasable(consumed)?;
-                            syncs.observe_remote_lane_hwm(channel, remote_lane_completions.hwm)?;
-                            deferred_remote_completions += 1;
+                            remote_lane_tracker.mark_complete(consumed + 1)?;
+                            if !self.lane_local_sequences {
+                                remote_completions
+                                    .mark_complete_deferred(request.submit_sequence)?;
+                                deferred_remote_completions += 1;
+                            }
+                            syncs.observe_remote_lane_hwm(channel, remote_lane_tracker.hwm())?;
                             lane_completions.admit(pending, true)?;
                             let payload_hwm =
                                 self.mark_payload_releasable(&mut releases, consumed)?;
@@ -9858,7 +10270,11 @@ impl SharedTarget {
                         || started.elapsed() >= Duration::from_micros(syncs.coalesce_us())
                 })
                 && syncs
-                    .try_begin_requested(remote_completions.hwm())?
+                    .try_begin_requested(if self.lane_local_sequences {
+                        0
+                    } else {
+                        remote_completions.hwm()
+                    })?
                     .is_some()
             {
                 progressed = true;
@@ -9886,10 +10302,14 @@ impl SharedTarget {
             }
 
             let committed_sync_hwm = syncs.committed_hwm();
-            while pending_syncs
-                .front()
-                .is_some_and(|pending| pending.request.submit_sequence <= committed_sync_hwm)
-            {
+            while pending_syncs.front().is_some_and(|pending| {
+                let sync_key = if self.lane_local_sequences {
+                    pending.request.ordering_epoch()
+                } else {
+                    pending.request.submit_sequence
+                };
+                sync_key <= committed_sync_hwm
+            }) {
                 let pending = pending_syncs.pop_front().expect("pending sync front");
                 lane_completions.mark_ready(pending.request_sequence)?;
                 let payload_hwm =
@@ -9922,6 +10342,7 @@ impl SharedTarget {
                 channel,
                 &mut lane_completions,
                 completions,
+                lane_tracker,
                 &mut completion_scratch,
                 &mut outstanding_read_refs,
             )?;
@@ -9946,7 +10367,12 @@ impl SharedTarget {
             if !syncs.lane_needs_service(channel) {
                 for pending in pending_send.iter().take(extent_records) {
                     let predecessor = pending.request.sector_predecessor;
-                    if predecessor != 0 && !remote_completions.is_complete(predecessor) {
+                    let predecessor_complete = if self.lane_local_sequences {
+                        self.lane_tracker_token_complete(remote_lane_trackers, predecessor)
+                    } else {
+                        remote_completions.is_complete(predecessor)
+                    };
+                    if predecessor != 0 && !predecessor_complete {
                         break;
                     }
                     send_ready += 1;
@@ -10005,12 +10431,15 @@ impl SharedTarget {
                         && foreground_in_flight != 0
                         && (!channel_ready || send_ready == 0)));
             if receive_now {
+                for _ in 0..cq_delay_spins {
+                    std::hint::spin_loop();
+                }
                 let batch = transport.recv(self.mapping.as_ref())?;
                 let (read_count, published) = self.complete_wal_transport_batch(
                     channel,
                     &batch,
                     remote_completions,
-                    &mut remote_lane_completions,
+                    remote_lane_tracker,
                     syncs,
                     &mut lane_completions,
                     &mut retained_writes,
@@ -10018,6 +10447,7 @@ impl SharedTarget {
                     dirty,
                     pressure_threshold,
                     completions,
+                    lane_tracker,
                     &mut completion_scratch,
                     &mut outstanding_read_refs,
                     &mut completion_kicks,
@@ -10170,13 +10600,23 @@ impl SharedTarget {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "WAL inflight overflow"))?;
         let completions = WalCompletionTracker::new(max_in_flight)?;
         let remote_completions = WalCompletionTracker::new(max_in_flight)?;
+        let lane_tracker_capacity = (self.header.payload_entries as usize)
+            .checked_mul(2)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "lane tracker overflow"))?;
+        let lane_trackers = (0..self.header.channels)
+            .map(|_| WalSharedLaneTracker::new(lane_tracker_capacity))
+            .collect::<io::Result<Vec<_>>>()?;
+        let remote_lane_trackers = (0..self.header.channels)
+            .map(|_| WalSharedLaneTracker::new(lane_tracker_capacity))
+            .collect::<io::Result<Vec<_>>>()?;
         let sync_coalesce_us = env::var("URING_PLAY_ZCNBLK_SHM_SYNC_COALESCE_US")
             .ok()
             .map(|value| value.parse::<u64>())
             .transpose()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
             .unwrap_or(if self.header.channels > 1 { 20 } else { 0 });
-        let vector_hwm = env_enabled_or("URING_PLAY_ZCNBLK_SHM_VECTOR_HWM", false);
+        let vector_hwm =
+            self.lane_local_sequences || env_enabled_or("URING_PLAY_ZCNBLK_SHM_VECTOR_HWM", false);
         let ordering_caps = ZCNBLK_SHM_CAP_ORDERING_EPOCH | ZCNBLK_SHM_CAP_ORDERING_VECTOR;
         if vector_hwm
             && self.header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] & ordering_caps != ordering_caps
@@ -10299,6 +10739,8 @@ impl SharedTarget {
             for (channel, (remote, owner_ingress)) in lane_inputs.into_iter().enumerate() {
                 let completions = &completions;
                 let remote_completions = &remote_completions;
+                let lane_trackers = &lane_trackers;
+                let remote_lane_trackers = &remote_lane_trackers;
                 let syncs = &syncs;
                 let dirty = &dirty;
                 let target: &SharedTarget = self;
@@ -10311,6 +10753,8 @@ impl SharedTarget {
                         channel as u32,
                         completions,
                         remote_completions,
+                        lane_trackers,
+                        remote_lane_trackers,
                         syncs,
                         vector_hwm,
                         dirty,
@@ -12447,6 +12891,17 @@ mod tests {
     }
 
     #[test]
+    fn batched_lane_completion_advances_sector_predecessor_hwm() {
+        let mut completed = vec![0, 0];
+        // Token 7 is lane 0, request sequence 3 in a two-lane topology.
+        assert!(!lane_token_is_complete(&completed, 7));
+        advance_lane_completion_counts(&mut completed, &[4, 2]).unwrap();
+        assert!(lane_token_is_complete(&completed, 7));
+        assert!(!lane_token_is_complete(&completed, 8));
+        assert!(advance_lane_completion_counts(&mut completed, &[1]).is_err());
+    }
+
+    #[test]
     fn rma_read_queue_keeps_pending_request_when_ring_is_full() {
         let read = |offset: u64| PendingRemoteRead {
             request: ZcnblkShmRequest {
@@ -12468,21 +12923,131 @@ mod tests {
                     key: 0,
                     len: 8192,
                 },
+                8192,
                 &[read(0), read(4096)],
             )
             .unwrap();
 
         let (slot, first) = queue.take_postable().unwrap();
         assert_eq!(slot, 0);
-        assert_eq!(first.request.request.offset, 0);
+        assert_eq!(first.remote_offset, 0);
         assert_eq!(queue.pending.len(), 1);
         assert!(queue.take_postable().is_none());
         assert_eq!(queue.pending.len(), 1);
 
         queue.free_slots.push(slot);
         let (_, second) = queue.take_postable().unwrap();
-        assert_eq!(second.request.request.offset, 4096);
+        assert_eq!(second.remote_offset, 4096);
         assert!(queue.pending.is_empty());
+    }
+
+    #[test]
+    fn rma_read_batch_validates_payload_range_before_queueing() {
+        let request = PendingRemoteRead {
+            request: ZcnblkShmRequest {
+                op: ZCNBLK_SHM_OP_READ,
+                len: 4096,
+                offset: 0,
+                ..ZcnblkShmRequest::default()
+            },
+            io_contract: ZcnblkWalIoContract::default(),
+            request_sequence: 0,
+            payload_offset: 4096,
+            dirty_ref: None,
+        };
+        let mut queue = RemoteWalRmaReadQueue::new(4096, 1).unwrap();
+        let error = queue
+            .submit_batch(
+                RemoteWalRmaReadWindow {
+                    addr: 0,
+                    key: 0,
+                    len: 4096,
+                },
+                4096,
+                &[request],
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(queue.pending.is_empty());
+        assert!(queue.batches.is_empty());
+    }
+
+    #[test]
+    fn rma_read_batch_fifo_uses_direct_monotonic_indexing() {
+        let read = |offset: u64| PendingRemoteRead {
+            request: ZcnblkShmRequest {
+                op: ZCNBLK_SHM_OP_READ,
+                len: 4096,
+                offset,
+                ..ZcnblkShmRequest::default()
+            },
+            io_contract: ZcnblkWalIoContract::default(),
+            request_sequence: offset / 4096,
+            payload_offset: offset as usize,
+            dirty_ref: None,
+        };
+        let window = RemoteWalRmaReadWindow {
+            addr: 0,
+            key: 0,
+            len: 8192,
+        };
+        let mut queue = RemoteWalRmaReadQueue::new(4096, 2).unwrap();
+        let first = queue.submit_batch(window, 8192, &[read(0)]).unwrap();
+        let second = queue
+            .submit_batch(window, 8192, &[read(4096)])
+            .unwrap();
+        assert_eq!(queue.batch_index(first), Some(0));
+        assert_eq!(queue.batch_index(second), Some(1));
+        queue.batches[0].batch.complete = true;
+        queue.batches[1].batch.complete = true;
+        assert!(queue.finish_batch(second).is_err());
+        assert_eq!(queue.finish_batch(first).unwrap().records, 1);
+        assert_eq!(queue.batch_index(second), Some(0));
+        assert_eq!(queue.finish_batch(second).unwrap().records, 1);
+        assert!(queue.batches.is_empty());
+    }
+
+    #[test]
+    fn rma_read_batch_run_accounts_group_once() {
+        let read = |offset: u64| PendingRemoteRead {
+            request: ZcnblkShmRequest {
+                op: ZCNBLK_SHM_OP_READ,
+                len: 4096,
+                offset,
+                ..ZcnblkShmRequest::default()
+            },
+            io_contract: ZcnblkWalIoContract::default(),
+            request_sequence: offset / 4096,
+            payload_offset: offset as usize,
+            dirty_ref: None,
+        };
+        let mut queue = RemoteWalRmaReadQueue::new(4096, 3).unwrap();
+        let batch_id = queue
+            .submit_batch(
+                RemoteWalRmaReadWindow {
+                    addr: 0,
+                    key: 0,
+                    len: 12_288,
+                },
+                12_288,
+                &[read(0), read(4096), read(8192)],
+            )
+            .unwrap();
+        queue.complete_batch_run(batch_id, 2).unwrap();
+        assert_eq!(queue.batches.front().unwrap().batch.remaining, 1);
+        assert!(!queue.batch_complete(batch_id).unwrap());
+        queue.complete_batch_run(batch_id, 1).unwrap();
+        assert!(queue.batch_complete(batch_id).unwrap());
+    }
+
+    #[test]
+    fn rma_read_tail_policy_replaces_synthetic_flush_with_real_marker() {
+        assert_eq!(rma_read_post_policy(false, true, 1, 8, 7), (false, false));
+        assert_eq!(rma_read_post_policy(true, false, 1, 8, 0), (false, true));
+        assert_eq!(rma_read_post_policy(true, false, 1, 7, 1), (true, false));
+        assert_eq!(rma_read_post_policy(true, false, 2, 7, 1), (false, false));
+        assert_eq!(rma_read_post_policy(true, true, 1, 7, 1), (false, true));
+        assert_eq!(rma_read_post_policy(true, false, 3, 1, 7), (false, true));
     }
 
     #[test]
@@ -13077,6 +13642,28 @@ mod tests {
         assert!(tracker.is_complete(1));
         assert!(tracker.is_complete(2));
         assert!(tracker.is_complete(3));
+    }
+
+    #[test]
+    fn wal_shared_lane_tracker_keeps_exact_out_of_order_visibility() {
+        let tracker = WalSharedLaneTracker::new(8).unwrap();
+
+        assert_eq!(tracker.mark_complete(3).unwrap(), 0);
+        assert!(tracker.is_complete(3));
+        assert!(!tracker.is_complete(2));
+        assert_eq!(tracker.mark_complete_batch([1, 2]).unwrap(), 3);
+        assert!(tracker.is_complete(1));
+        assert!(tracker.is_complete(2));
+        assert!(tracker.is_complete(3));
+    }
+
+    #[test]
+    fn wal_shared_lane_tracker_reuses_wrapped_slots_after_hwm() {
+        let tracker = WalSharedLaneTracker::new(2).unwrap();
+
+        assert_eq!(tracker.mark_complete_batch([1, 2]).unwrap(), 2);
+        assert!(tracker.can_track(4));
+        assert_eq!(tracker.mark_complete_batch([4, 3]).unwrap(), 4);
     }
 
     #[test]

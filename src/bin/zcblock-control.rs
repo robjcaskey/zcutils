@@ -28,6 +28,7 @@ const DEFAULT_CONFIGFS_ROOT: &str = "/sys/kernel/config/zcbrd";
 const DEFAULT_DEV_ROOT: &str = "/dev";
 const DEFAULT_FABRIC_DEVICE_NAME: &str = "zcnblk0";
 const DEFAULT_RAW_ALLOWLIST: &str = "/etc/zcblock-csi/allowed-raw-partitions.txt";
+const ZCNBLK_CLIENT_EDGE: &str = "/dev/zcnblk0";
 const DEFAULT_SNAPSHOT_MODE: &str = "auto";
 const DEFAULT_REPLICATION_BUFFER_BYTES: usize = 1024 * 1024;
 const DEFAULT_REPLICATION_ATTENTION_IDLE_MS: u64 = 30_000;
@@ -1380,6 +1381,9 @@ impl ControlApp {
             .as_ref()
             .ok_or_else(|| "raw-block volume missing raw_device".to_string())?;
         let path = canonical_block_device(Path::new(raw_device))?;
+        if path == Path::new(ZCNBLK_CLIENT_EDGE) {
+            return Ok(path);
+        }
         let partuuid = partuuid_for_device(&path)
             .ok_or_else(|| format!("{} has no PARTUUID allowlist identity", path.display()))?;
         self.ensure_partuuid_allowlisted(&partuuid)?;

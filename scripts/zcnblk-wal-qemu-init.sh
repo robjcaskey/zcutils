@@ -97,7 +97,7 @@ if [ "$result" -eq 0 ] && ! insmod /modules/zcnblk_client_mod.ko \
 	queues=1 queue_depth=128 max_frame_bytes=4096 pipeline_depth=128 \
 	shm_ring_entries=128 shm_payload_entries=1024 shm_poll_us=50 \
 	hctx_affinity=1 pin_threads=1 pin_base_cpu=1 pin_cpu_count=1 pin_stride=1 \
-	shm_bio_arena_zero_copy=1; then
+	shm_bio_arena_zero_copy=1 shm_bio_arena_zero_copy_required=1; then
 	fail "module load failed"
 fi
 wait_for_path /dev/zcnblk0 || fail "/dev/zcnblk0 did not appear"
@@ -113,12 +113,17 @@ if [ "$result" -eq 0 ]; then
 	export URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE=/tmp/target.pid
 	export URING_PLAY_ZCNBLK_SHM_ARENA_BACKING="$shm_arena_backing"
 	export URING_PLAY_ZCNBLK_SHM_ARENA_CPU=2
-	if [ "$shm_arena_backing" = hugetlb ]; then
-		export URING_PLAY_ZCNBLK_SHM_BIO_ARENA_ALIAS_SELFTEST=1
+	if [ "$shm_arena_backing" = hugetlb ] && [ "$wal_lane_batch" -eq 1 ]; then
+		export URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET=/tmp/zcnblk-app-arena.sock
 	fi
 	if [ "$wal_lane_batch" -eq 1 ]; then
 		export URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH=1
 		export URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1
+	else
+		# The legacy single-thread WAL engine merges requests by the global
+		# submit sequence.  Do not advertise lane-local tokens to that engine;
+		# the lane-parallel production path above owns that protocol.
+		export URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES=0
 	fi
 	/zcnblk-shm-target /dev/zcnblk-shmctl wal-tcp 32 2 1000 1000 10000 \
 		>/tmp/target.log 2>&1 &
@@ -141,8 +146,11 @@ if [ "$result" -eq 0 ]; then
 	if [ "$shm_arena_backing" = hugetlb ]; then
 		grep -q 'arena_backing=external-hugetlb' /tmp/state-attached.log || \
 			fail "kernel did not report the external HugeTLB arena"
-		wait_for_log /tmp/target.log 'zcnblk-shm-target-bio-arena-alias-selftest: PASS' || \
-			fail "HugeTLB bio arena alias selftest did not pass"
+		if [ "$wal_lane_batch" -eq 1 ]; then
+			wait_for_path /tmp/zcnblk-app-arena.sock || fail "application arena socket did not appear"
+			/zcnblk-arena-io /tmp/zcnblk-app-arena.sock /dev/zcnblk0 0 0 61 \
+				>/tmp/arena-io.log 2>&1 || fail "application arena zero-copy I/O failed"
+		fi
 	else
 		grep -q 'arena_backing=vmalloc-user' /tmp/state-attached.log || \
 			fail "kernel did not report the vmalloc arena"
@@ -151,9 +159,11 @@ fi
 
 cat /sys/kernel/debug/zcnblk/state > /tmp/state-after-io.log 2>/dev/null || \
 	fail "kernel post-I/O shared-memory state is unavailable"
-if [ "$shm_arena_backing" = hugetlb ]; then
+if [ "$shm_arena_backing" = hugetlb ] && [ "$wal_lane_batch" -eq 1 ]; then
 	grep -q 'bio_alias_writes=1 bio_alias_reads=1' /tmp/state-after-io.log || \
 		fail "kernel did not account one aliased write and read"
+	grep -q 'bio_alias_busy_fallbacks=0 bio_alias_required_retries=0 bio_alias_required_rejects=0' \
+		/tmp/state-after-io.log || fail "strict application arena path copied, retried, or rejected"
 fi
 
 if [ "$result" -eq 0 ]; then
@@ -205,6 +215,8 @@ echo "[zcnblk-wal-vm] order log"
 cat /tmp/order.log 2>/dev/null || true
 echo "[zcnblk-wal-vm] contract log"
 cat /tmp/contract.log 2>/dev/null || true
+echo "[zcnblk-wal-vm] application arena log"
+cat /tmp/arena-io.log 2>/dev/null || true
 echo "[zcnblk-wal-vm] attached kernel state"
 cat /tmp/state-attached.log 2>/dev/null || true
 echo "[zcnblk-wal-vm] post-I/O kernel state"

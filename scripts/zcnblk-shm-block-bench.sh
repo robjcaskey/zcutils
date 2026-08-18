@@ -15,6 +15,8 @@ CONTRACT_SMOKE_BLOCK="${CONTRACT_SMOKE_BLOCK:-}"
 LEAF_BIN="${LEAF_BIN:-$ROOT/target/release/zcnblk-wal-leaf}"
 LANES="${LANES:-4}"
 REPEATS="${REPEATS:-3}"
+MIN_IOPS_PER_REP="${MIN_IOPS_PER_REP:-0}"
+MIN_MEAN_IOPS="${MIN_MEAN_IOPS:-0}"
 OPS_PER_WORKER="${OPS_PER_WORKER:-2000000}"
 IODEPTH="${IODEPTH:-128}"
 RING_ENTRIES="${RING_ENTRIES:-256}"
@@ -32,6 +34,7 @@ elif [ "$IODEPTH" -ge 128 ]; then
 else
 	BLOCK_WAIT_MIN_COMPLETIONS=1
 fi
+BLOCK_FUSED_SUBMIT_WAIT="${URING_PLAY_BLOCKBENCH_FUSED_SUBMIT_WAIT:-0}"
 BLOCK_CQE_SPIN="${URING_PLAY_BLOCKBENCH_CQE_SPIN:-0}"
 BLOCK_CQE_ADAPTIVE_SPIN="${URING_PLAY_BLOCKBENCH_CQE_ADAPTIVE_SPIN:-0}"
 BLOCK_CQE_ADAPTIVE_SPIN_MIN="${URING_PLAY_BLOCKBENCH_CQE_ADAPTIVE_SPIN_MIN:-0}"
@@ -64,7 +67,11 @@ HCTX_NUMA_NODE="${HCTX_NUMA_NODE:--1}"
 SIZE_MIB="${SIZE_MIB:-$((LANES * 128))}"
 REGION_BYTES_PER_WORKER="${REGION_BYTES_PER_WORKER:-67108864}"
 BACKEND="${BACKEND:-memory}"
-LANE_LOCAL_SEQUENCES="${URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES:-$([ "$BACKEND" = memory ] && printf 1 || printf 0)}"
+case "$BACKEND" in
+	memory|wal-tcp) lane_local_sequences_default=1 ;;
+	*) lane_local_sequences_default=0 ;;
+esac
+LANE_LOCAL_SEQUENCES="${URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES:-$lane_local_sequences_default}"
 APP_ARENA_BUFFERS="${URING_PLAY_ZCNBLK_SHM_APP_ARENA_BUFFERS:-0}"
 START_LOCAL_LEAF="${START_LOCAL_LEAF:-$([ "$BACKEND" = wal-tcp ] && printf 1 || printf 0)}"
 EXTERNAL_LEAF_TOPOLOGY_ARTIFACT="${EXTERNAL_LEAF_TOPOLOGY_ARTIFACT:-}"
@@ -121,6 +128,17 @@ LEAF_SUBMIT_MODE="${LEAF_SUBMIT_MODE:-blocking}"
 REMOTE_TRANSPORT="${URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT:-tcp}"
 REMOTE_OFI_PROVIDER="${URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER:-efa}"
 REMOTE_OFI_ENDPOINT="${URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_ENDPOINT:-rdm}"
+OFI_THREADING="${URING_PLAY_OFI_THREADING:-unspec}"
+OFI_SELECTIVE_COMPLETION="${URING_PLAY_OFI_SELECTIVE_COMPLETION:-0}"
+OFI_RMA_READ_COMPLETION_STRIDE="${URING_PLAY_OFI_RMA_READ_COMPLETION_STRIDE:-1}"
+OFI_RMA_DEFER_TAIL_COMPLETION="${URING_PLAY_OFI_RMA_DEFER_TAIL_COMPLETION:-1}"
+if [ -n "${URING_PLAY_OFI_RMA_READ_MORE+x}" ]; then
+	OFI_RMA_READ_MORE="$URING_PLAY_OFI_RMA_READ_MORE"
+elif [ "$REMOTE_OFI_PROVIDER" = efa ]; then
+	OFI_RMA_READ_MORE=1
+else
+	OFI_RMA_READ_MORE=0
+fi
 SHM_OFI_DOMAINS="${URING_PLAY_ZCNBLK_SHM_OFI_DOMAINS:-}"
 OFI_DOMAIN="${URING_PLAY_OFI_DOMAIN:-}"
 OFI_CQ_SLEEP_NS="${URING_PLAY_OFI_CQ_SLEEP_NS:-50000}"
@@ -312,6 +330,7 @@ else
 fi
 WAL_SPLIT_MIN_BATCH_RECORDS="${URING_PLAY_ZCNBLK_SHM_WAL_SPLIT_MIN_BATCH_RECORDS:-64}"
 WAL_FOREGROUND_READ_IMMEDIATE="${URING_PLAY_ZCNBLK_SHM_WAL_FOREGROUND_READ_IMMEDIATE:-1}"
+WAL_CQ_DELAY_SPINS="${URING_PLAY_ZCNBLK_SHM_WAL_CQ_DELAY_SPINS:-0}"
 if [ -n "${URING_PLAY_ZCNBLK_SHM_WAL_COMPACT_WRITES+x}" ]; then
 	WAL_COMPACT_WRITES="$URING_PLAY_ZCNBLK_SHM_WAL_COMPACT_WRITES"
 elif [ "$BACKEND" = wal-tcp ]; then
@@ -328,6 +347,7 @@ PERF_STAT="${PERF_STAT:-1}"
 BUILD="${BUILD:-0}"
 SET_GOVERNOR="${SET_GOVERNOR:-}"
 OUTDIR="${OUTDIR:-$ROOT/bench-results/local-zcnblk-shm-$(date -u +%Y%m%dT%H%M%SZ)}"
+APP_ARENA_SOCKET="${URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET:-/tmp/zcnblk-app-arena-$$.sock}"
 
 block_lease=""
 perf_lease=""
@@ -506,6 +526,8 @@ trap cleanup EXIT INT TERM
 
 [ "$LANES" -gt 0 ] || die "LANES must be positive"
 [ "$REPEATS" -gt 0 ] || die "REPEATS must be positive"
+[[ "$MIN_IOPS_PER_REP" =~ ^[0-9]+$ ]] || die "MIN_IOPS_PER_REP must be a non-negative integer"
+[[ "$MIN_MEAN_IOPS" =~ ^[0-9]+$ ]] || die "MIN_MEAN_IOPS must be a non-negative integer"
 if [ "$REPRESENTATIVE" = 1 ] && [ "$REPEATS" -lt 3 ]; then
 	die "representative block measurements require REPEATS>=3"
 fi
@@ -522,6 +544,20 @@ if [ "$BLOCK_FUA_WRITES" = 1 ] && [ "$MODE" = read ]; then
 fi
 [[ "$SHM_RING_ENTRIES" =~ ^[0-9]+$ ]] && [ "$SHM_RING_ENTRIES" -gt 0 ] || \
 	die "SHM_RING_ENTRIES must be a positive integer"
+[[ "$SHM_PAYLOAD_ENTRIES" =~ ^[0-9]+$ ]] && [ "$SHM_PAYLOAD_ENTRIES" -gt 0 ] || \
+	die "SHM_PAYLOAD_ENTRIES must be a positive integer"
+for index_shape in "descriptor:$SHM_RING_ENTRIES" "payload:$SHM_PAYLOAD_ENTRIES"; do
+	index_name="${index_shape%%:*}"
+	index_entries="${index_shape#*:}"
+	if (( (index_entries & (index_entries - 1)) != 0 )); then
+		printf 'PERF WARNING: shm %s entries=%s is not a power of two; the kernel block edge must use integer division for every corresponding ring index\n' \
+			"$index_name" "$index_entries" >&2
+		if [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
+			[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; then
+			die "representative/strict block runs require power-of-two shm $index_name entries"
+		fi
+	fi
+done
 [[ "$KERNEL_QUEUE_DEPTH" =~ ^[0-9]+$ ]] && [ "$KERNEL_QUEUE_DEPTH" -gt 0 ] || \
 	die "KERNEL_QUEUE_DEPTH must be a positive integer"
 [[ "$KERNEL_PIPELINE_DEPTH" =~ ^[0-9]+$ ]] && [ "$KERNEL_PIPELINE_DEPTH" -gt 0 ] || \
@@ -678,6 +714,19 @@ esac
 [[ "$SHM_OFI_RMA_READ_QD" =~ ^[0-9]+$ ]] && [ "$SHM_OFI_RMA_READ_QD" -gt 0 ] && \
 	[ "$SHM_OFI_RMA_READ_QD" -le 1024 ] || \
 	die "URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD must be in 1..=1024"
+[[ "$OFI_SELECTIVE_COMPLETION" =~ ^[01]$ ]] || \
+	die "URING_PLAY_OFI_SELECTIVE_COMPLETION must be zero or one"
+[[ "$OFI_RMA_DEFER_TAIL_COMPLETION" =~ ^[01]$ ]] || \
+	die "URING_PLAY_OFI_RMA_DEFER_TAIL_COMPLETION must be zero or one"
+[[ "$OFI_RMA_READ_MORE" =~ ^[01]$ ]] || \
+	die "URING_PLAY_OFI_RMA_READ_MORE must be zero or one"
+[[ "$OFI_RMA_READ_COMPLETION_STRIDE" =~ ^[0-9]+$ ]] && \
+	[ "$OFI_RMA_READ_COMPLETION_STRIDE" -ge 1 ] && \
+	[ "$OFI_RMA_READ_COMPLETION_STRIDE" -le 65536 ] || \
+	die "URING_PLAY_OFI_RMA_READ_COMPLETION_STRIDE must be in 1..=65536"
+if [ "$OFI_RMA_READ_COMPLETION_STRIDE" -gt 1 ] && [ "$OFI_SELECTIVE_COMPLETION" != 1 ]; then
+	die "RMA read completion stride above one requires URING_PLAY_OFI_SELECTIVE_COMPLETION=1"
+fi
 if [ "$SHM_OFI_RMA_READS" = 1 ]; then
 	[ "$REMOTE_TRANSPORT" = ofi ] || [ "$REMOTE_TRANSPORT" = rdm ] || [ "$REMOTE_TRANSPORT" = efa ] || \
 		die "OFI RMA reads require URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT=ofi"
@@ -688,6 +737,26 @@ if [ "$SHM_OFI_RMA_READS" = 1 ]; then
 		printf 'PERF WARNING: wal_lane_window=%s is below rma_read_qd=%s and caps lane overlap\n' \
 			"$WAL_LANE_WINDOW" "$SHM_OFI_RMA_READ_QD" >&2
 		[ "$REPRESENTATIVE" != 1 ] || die "representative OFI RMA runs require wal_lane_window >= rma_read_qd"
+	fi
+	if [ "$MIN_MEAN_IOPS" -ge 12000000 ]; then
+		[ "$REPRESENTATIVE" = 1 ] || \
+			die "12M OFI RMA read record gate requires REPRESENTATIVE=1"
+		[ "$MIN_IOPS_PER_REP" -ge 12000000 ] || \
+			die "12M OFI RMA read record gate requires MIN_IOPS_PER_REP>=12000000"
+		[ "$REMOTE_OFI_PROVIDER" = efa ] || \
+			die "12M OFI RMA read record gate requires the EFA provider"
+		[ "$OFI_EFA_FABRIC" = efa-direct ] || \
+			die "12M OFI RMA read record gate requires URING_PLAY_OFI_EFA_FABRIC=efa-direct"
+		[ "$EFA_USE_DEVICE_RDMA" = 1 ] || \
+			die "12M OFI RMA read record gate requires FI_EFA_USE_DEVICE_RDMA=1"
+		[ "$OFI_SELECTIVE_COMPLETION" = 1 ] || \
+			die "12M OFI RMA read record gate requires selective completion"
+		[ "$OFI_RMA_READ_COMPLETION_STRIDE" -ge "$SHM_OFI_RMA_READ_QD" ] || \
+			die "12M OFI RMA read record gate requires completion stride >= per-lane RMA read QD"
+		[ "$OFI_RMA_DEFER_TAIL_COMPLETION" = 1 ] || \
+			die "12M OFI RMA read record gate requires deferred real tail markers"
+		[ "$OFI_RMA_READ_MORE" = 1 ] || \
+			die "12M OFI RMA read record gate requires FI_MORE read doorbell batching"
 	fi
 fi
 if [ "$REMOTE_TRANSPORT" = ofi ] || [ "$REMOTE_TRANSPORT" = rdm ] || [ "$REMOTE_TRANSPORT" = efa ]; then
@@ -851,6 +920,7 @@ sudo -n insmod "$MODULE" transport=shm lanes="$LANES" connections_per_lane=1 \
 	max_frame_bytes="$MAX_FRAME_BYTES" \
 	pipeline_depth="$KERNEL_PIPELINE_DEPTH" shm_ring_entries="$SHM_RING_ENTRIES" \
 	shm_payload_entries="$SHM_PAYLOAD_ENTRIES" shm_poll_us="$KERNEL_POLL_US" \
+	shm_poll_clock_check_spins="$POLL_CLOCK_CHECK_SPINS" \
 	hctx_numa_node="$HCTX_NUMA_NODE" pin_threads=0
 for _ in $(seq 1 100); do
 	[ -e /dev/zcnblk0 ] && [ -e /dev/zcnblk-shmctl ] && break
@@ -869,6 +939,7 @@ fi
 roles_per_lane=3
 [ "$START_LOCAL_LEAF" != 1 ] || roles_per_lane=4
 [ "$WAL_SPLIT_TRANSPORT" != 1 ] || [ "$START_LOCAL_LEAF" = 1 ] || roles_per_lane=4
+if [ -z "$CLIENT_CPU_LIST$TARGET_CPU_LIST$KERNEL_CPU_LIST$LEAF_CPU_LIST" ]; then
 for ((lane = 0; lane < LANES; lane++)); do
 	hctx="/sys/block/zcnblk0/mq/$lane/cpu_list"
 	[ -r "$hctx" ] || die "missing hctx CPU map: $hctx"
@@ -895,6 +966,7 @@ for ((lane = 0; lane < LANES; lane++)); do
 	fi
 	all_cpus+=("${selected[@]}")
 done
+fi
 if [ -n "$CLIENT_CPU_LIST$TARGET_CPU_LIST$KERNEL_CPU_LIST$LEAF_CPU_LIST" ]; then
 	[ -n "$CLIENT_CPU_LIST" ] && [ -n "$TARGET_CPU_LIST" ] && [ -n "$KERNEL_CPU_LIST" ] || \
 		die "explicit topology requires CLIENT_CPU_LIST, TARGET_CPU_LIST, and KERNEL_CPU_LIST"
@@ -929,6 +1001,16 @@ if [ -n "$CLIENT_CPU_LIST$TARGET_CPU_LIST$KERNEL_CPU_LIST$LEAF_CPU_LIST" ]; then
 		done
 	done
 fi
+role_cpu_sharing=none
+for ((lane = 0; lane < LANES; lane++)); do
+	if [ "${client_cpus[$lane]}" = "${kernel_cpus[$lane]}" ]; then
+		role_cpu_sharing=client+kernel
+	elif [ "${client_cpus[$lane]}" = "${target_cpus[$lane]}" ]; then
+		role_cpu_sharing=client+target
+	elif [ "${target_cpus[$lane]}" = "${kernel_cpus[$lane]}" ]; then
+		role_cpu_sharing=target+kernel
+	fi
+done
 declare -a owner_hctx_lanes=()
 if [ "$WAL_OWNER_INGRESS" = 1 ]; then
 	owner_cpus=()
@@ -1086,8 +1168,11 @@ fi
 	printf 'coordination_scope=%s\n' "$COORDINATION_SCOPE"
 	printf 'bootstrap_manifest=%s\n' "$BOOTSTRAP_MANIFEST"
 	printf 'lane_count=%s\n' "$LANES"
+	printf 'role_cpu_sharing=%s\n' "$role_cpu_sharing"
 	printf 'block_per_worker_qd=%s block_workers=%s block_aggregate_outstanding_depth=%s\n' \
 		"$IODEPTH" "$LANES" "$((LANES * IODEPTH))"
+	printf 'minimum_iops_per_repeat=%s minimum_mean_iops=%s\n' \
+		"$MIN_IOPS_PER_REP" "$MIN_MEAN_IOPS"
 	printf 'topology_cpu_list=%s\n' "${TOPOLOGY_CPU_LIST:-unrestricted}"
 	printf 'coordinator_cpu=%s\n' "$coordinator_cpu"
 	for ((lane = 0; lane < LANES; lane++)); do
@@ -1126,11 +1211,11 @@ fi
 		"$BLOCK_ENGINE" "$BLOCK_FUA_WRITES" \
 		"$([ "$BLOCK_FUA_WRITES" = 1 ] && printf remote-fua-drain || printf ordinary-device-ack)"
 	printf 'block_latency_sample_rate=%s\n' "$LATENCY_SAMPLE_RATE"
-	printf 'block_ring_stats=%s block_wait_min_completions=%s block_cqe_spin=%s block_cqe_adaptive_spin=%s block_cqe_adaptive_spin_min=%s block_cqe_adaptive_spin_max=%s block_cqe_adaptive_wait_ns=%s block_cqe_hot_poll=%s block_cqe_hot_poll_progress_spins=%s\n' \
-		"$BLOCK_RING_STATS" "$BLOCK_WAIT_MIN_COMPLETIONS" "$BLOCK_CQE_SPIN" "$BLOCK_CQE_ADAPTIVE_SPIN" \
+	printf 'block_ring_stats=%s block_wait_min_completions=%s block_fused_submit_wait=%s block_cqe_spin=%s block_cqe_adaptive_spin=%s block_cqe_adaptive_spin_min=%s block_cqe_adaptive_spin_max=%s block_cqe_adaptive_wait_ns=%s block_cqe_hot_poll=%s block_cqe_hot_poll_progress_spins=%s\n' \
+		"$BLOCK_RING_STATS" "$BLOCK_WAIT_MIN_COMPLETIONS" "$BLOCK_FUSED_SUBMIT_WAIT" "$BLOCK_CQE_SPIN" "$BLOCK_CQE_ADAPTIVE_SPIN" \
 		"$BLOCK_CQE_ADAPTIVE_SPIN_MIN" "$BLOCK_CQE_ADAPTIVE_SPIN_MAX" \
 		"$BLOCK_CQE_ADAPTIVE_WAIT_NS" "$BLOCK_CQE_HOT_POLL" "$BLOCK_CQE_HOT_POLL_PROGRESS_SPINS"
-	printf 'shm_descriptor_entries_per_channel=%s\n' "$SHM_RING_ENTRIES"
+	printf 'shm_descriptor_entries_per_channel=%s index_operation=bit-mask\n' "$SHM_RING_ENTRIES"
 	printf 'kernel_queues=%s kernel_queue_depth=%s kernel_pipeline_depth=%s hctx_numa_node=%s\n' \
 		"$KERNEL_QUEUES" "$KERNEL_QUEUE_DEPTH" "$KERNEL_PIPELINE_DEPTH" "$HCTX_NUMA_NODE"
 	printf 'kernel_worker_batch_dequeue=%s\n' "$KERNEL_WORKER_BATCH_DEQUEUE"
@@ -1139,11 +1224,18 @@ fi
 	printf 'kernel_completion_batch=%s\n' "$KERNEL_COMPLETION_BATCH"
 	printf 'lane_local_sequences_requested=%s expected_sync_boundary=%s\n' \
 		"$LANE_LOCAL_SEQUENCES" \
-		"$([ "$LANE_LOCAL_SEQUENCES" = 1 ] && [ "$BACKEND" = memory ] && printf admitted-lane-vector-hwm || printf global-completion-hwm)"
+		"$([ "$LANE_LOCAL_SEQUENCES" = 1 ] && printf admitted-lane-vector-hwm || printf global-completion-hwm)"
 	printf 'application_arena_buffers=%s application_buffer_copy_on_block_edge=%s\n' \
 		"$APP_ARENA_BUFFERS" "$([ "$APP_ARENA_BUFFERS" = 1 ] && printf no || printf yes)"
 	printf 'shm_sector_order_slots=%s\n' "$SECTOR_ORDER_SLOTS"
-	printf 'shm_payload_entries_per_channel=%s\n' "$SHM_PAYLOAD_ENTRIES"
+	printf 'shm_payload_entries_per_channel=%s index_operation=bit-mask\n' "$SHM_PAYLOAD_ENTRIES"
+	printf 'ofi_selective_completion=%s ofi_rma_read_completion_stride=%s ofi_rma_defer_tail_completion=%s ofi_rma_read_more=%s ofi_rma_read_tail_marker=%s synthetic_partial_flush=fallback-only\n' \
+		"$OFI_SELECTIVE_COMPLETION" "$OFI_RMA_READ_COMPLETION_STRIDE" \
+		"$OFI_RMA_DEFER_TAIL_COMPLETION" "$OFI_RMA_READ_MORE" \
+		"$([ "$OFI_RMA_DEFER_TAIL_COMPLETION" = 1 ] && printf deferred-real-request || printf disabled)"
+	printf 'record_12m_rma_read_gate=%s record_mean_iops_floor=%s record_per_rep_iops_floor=%s\n' \
+		"$([ "$SHM_OFI_RMA_READS" = 1 ] && [ "$MIN_MEAN_IOPS" -ge 12000000 ] && printf enabled || printf disabled)" \
+		"$MIN_MEAN_IOPS" "$MIN_IOPS_PER_REP"
 	safe_writeback_limit=$((SHM_PAYLOAD_ENTRIES - SHM_RING_ENTRIES))
 	[ "$safe_writeback_limit" -gt 0 ] || safe_writeback_limit=1
 	case "$BACKEND" in
@@ -1187,6 +1279,7 @@ fi
 	printf 'wal_extent_records=%s wal_extent_fill_us=%s wal_split_min_batch_records=%s\n' \
 		"$WAL_EXTENT_RECORDS" "$WAL_EXTENT_FILL_US" "$WAL_SPLIT_MIN_BATCH_RECORDS"
 	printf 'wal_foreground_read_immediate=%s\n' "$WAL_FOREGROUND_READ_IMMEDIATE"
+	printf 'wal_cq_delay_spins=%s\n' "$WAL_CQ_DELAY_SPINS"
 	printf 'wal_compact_writes=%s\n' "$WAL_COMPACT_WRITES"
 	printf 'dirty_pressure_reserve=%s\n' "$DIRTY_PRESSURE_RESERVE"
 	printf 'remote_recv_spins=%s leaf_spin_reads=%s leaf_spin_policy=%s leaf_spin_budget=%s leaf_adaptive_spin_min=%s leaf_adaptive_spin_max=%s leaf_adaptive_wait_ns=%s leaf_adaptive_hysteresis_ns=%s\n' \
@@ -1325,7 +1418,7 @@ fi
 
 log "starting userspace shared target/fan; no placement decision exists in the kernel edge"
 app_arena_socket=""
-[ "$APP_ARENA_BUFFERS" != 1 ] || app_arena_socket="$OUTDIR/app-arena.sock"
+[ "$APP_ARENA_BUFFERS" != 1 ] || app_arena_socket="$APP_ARENA_SOCKET"
 target_priv=(sudo -n env)
 if [ "${TARGET_MEMLOCK_UNLIMITED:-0}" = 1 ]; then
 	command -v prlimit >/dev/null || die "TARGET_MEMLOCK_UNLIMITED=1 requires prlimit"
@@ -1387,6 +1480,11 @@ fi
 	URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT="$REMOTE_TRANSPORT" \
 	URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER="$REMOTE_OFI_PROVIDER" \
 	URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_ENDPOINT="$REMOTE_OFI_ENDPOINT" \
+	URING_PLAY_OFI_THREADING="$OFI_THREADING" \
+	URING_PLAY_OFI_SELECTIVE_COMPLETION="$OFI_SELECTIVE_COMPLETION" \
+	URING_PLAY_OFI_RMA_READ_COMPLETION_STRIDE="$OFI_RMA_READ_COMPLETION_STRIDE" \
+	URING_PLAY_OFI_RMA_DEFER_TAIL_COMPLETION="$OFI_RMA_DEFER_TAIL_COMPLETION" \
+	URING_PLAY_OFI_RMA_READ_MORE="$OFI_RMA_READ_MORE" \
 	URING_PLAY_ZCNBLK_SHM_OFI_DOMAINS="$SHM_OFI_DOMAINS" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS="$SHM_OFI_RMA_READS" \
 	URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD="$SHM_OFI_RMA_READ_QD" \
@@ -1411,6 +1509,7 @@ fi
 	URING_PLAY_ZCNBLK_SHM_WAL_EXTENT_FILL_US="$WAL_EXTENT_FILL_US" \
 	URING_PLAY_ZCNBLK_SHM_WAL_SPLIT_MIN_BATCH_RECORDS="$WAL_SPLIT_MIN_BATCH_RECORDS" \
 	URING_PLAY_ZCNBLK_SHM_WAL_FOREGROUND_READ_IMMEDIATE="$WAL_FOREGROUND_READ_IMMEDIATE" \
+	URING_PLAY_ZCNBLK_SHM_WAL_CQ_DELAY_SPINS="$WAL_CQ_DELAY_SPINS" \
 	URING_PLAY_ZCNBLK_SHM_WAL_COMPACT_WRITES="$WAL_COMPACT_WRITES" \
 	URING_PLAY_ZCNBLK_SHM_DIRTY_PRESSURE_RESERVE="$DIRTY_PRESSURE_RESERVE" \
 	URING_PLAY_ZCNBLK_SHM_WAL_DEBUG_STATE="$WAL_DEBUG_STATE" \
@@ -1440,7 +1539,7 @@ printf 'actual_%s\n' "$arena_line" | tee -a "$OUTDIR/topology.log"
 sequence_line="$(grep '^zcnblk-shm-target-sequencing:' "$OUTDIR/target.log" | tail -n 1 || true)"
 [ -n "$sequence_line" ] || die "target did not report its sequencing contract before benchmarking"
 printf 'actual_%s\n' "$sequence_line" | tee -a "$OUTDIR/topology.log"
-if [ "$LANE_LOCAL_SEQUENCES" = 1 ] && [ "$BACKEND" = memory ]; then
+if [ "$LANE_LOCAL_SEQUENCES" = 1 ]; then
 	grep -q ' mode=lane-local .* sync_boundary=admitted-lane-vector-hwm' <<<"$sequence_line" || \
 		die "target did not negotiate the requested lane-local sequencing contract"
 else
@@ -1571,6 +1670,7 @@ for ((rep = 1; rep <= REPEATS; rep++)); do
 		"URING_PLAY_TOPOLOGY_STRICT=$REPRESENTATIVE"
 		"URING_PLAY_BLOCKBENCH_RING_STATS=$BLOCK_RING_STATS"
 		"URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS=$BLOCK_WAIT_MIN_COMPLETIONS"
+		"URING_PLAY_BLOCKBENCH_FUSED_SUBMIT_WAIT=$BLOCK_FUSED_SUBMIT_WAIT"
 		"URING_PLAY_CQE_SPIN=$BLOCK_CQE_SPIN"
 		"URING_PLAY_CQE_ADAPTIVE_SPIN=$BLOCK_CQE_ADAPTIVE_SPIN"
 		"URING_PLAY_CQE_ADAPTIVE_SPIN_MIN=$BLOCK_CQE_ADAPTIVE_SPIN_MIN"
@@ -1635,6 +1735,11 @@ for ((rep = 1; rep <= REPEATS; rep++)); do
 	line="$(grep 'zcblockbench-result:' "$result_log" | tail -n 1)"
 	[ -n "$line" ] || die "repeat $rep produced no result"
 	printf 'repeat=%s %s\n' "$rep" "$line" | tee -a "$OUTDIR/results.log"
+	rep_iops="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^ops_per_sec=/) { split($i,a,"="); print a[2]; exit } }' <<<"$line")"
+	[ -n "$rep_iops" ] || die "repeat $rep result has no ops_per_sec field"
+	awk -v actual="$rep_iops" -v minimum="$MIN_IOPS_PER_REP" \
+		'BEGIN { exit !(actual + 0 >= minimum + 0) }' || \
+		die "repeat $rep IOPS $rep_iops is below required $MIN_IOPS_PER_REP"
 	latency_line="$(grep 'zcblockbench-latency:' "$result_log" | tail -n 1 || true)"
 	[ -z "$latency_line" ] || printf 'repeat=%s %s\n' "$rep" "$latency_line" | tee -a "$OUTDIR/results.log"
 	ring_line="$(grep 'zcblockbench-ring:' "$result_log" | tail -n 1 || true)"
@@ -1694,8 +1799,73 @@ awk '
     if (count) printf "runs=%d min_iops=%.0f mean_iops=%.0f max_iops=%.0f spread_pct=%.2f\n", count, min, total/count, max, (max-min)/(total/count)*100;
   }
 ' "$OUTDIR/results.log" | tee "$OUTDIR/summary.log"
+mean_iops="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^mean_iops=/) { split($i,a,"="); print a[2]; exit } }' "$OUTDIR/summary.log")"
+[ -n "$mean_iops" ] || die "summary has no mean_iops field"
+awk -v actual="$mean_iops" -v minimum="$MIN_MEAN_IOPS" \
+	'BEGIN { exit !(actual + 0 >= minimum + 0) }' || \
+	die "mean IOPS $mean_iops is below required $MIN_MEAN_IOPS"
 grep 'zcnblk-shm-target-summary:' "$OUTDIR/target.log" | tee -a "$OUTDIR/summary.log"
 grep 'zcnblk-shm-target-ofi-rma-queue:' "$OUTDIR/target.log" | tee -a "$OUTDIR/summary.log" || true
+if [ "$SHM_OFI_RMA_READS" = 1 ] && [ "$OFI_SELECTIVE_COMPLETION" = 1 ] &&
+	[ "$OFI_RMA_READ_COMPLETION_STRIDE" -gt 1 ] && [ "$OFI_RMA_DEFER_TAIL_COMPLETION" = 1 ]; then
+	grep -Eq 'rma_read_forced_markers=[1-9][0-9]*' "$OUTDIR/target.log" || \
+		die "deferred-tail run emitted no forced real-read completion marker"
+	awk '
+		/zcofi-endpoint-stats:/ {
+			posts = markers = fast = -1
+			for (i = 1; i <= NF; i++) {
+				split($i, field, "=")
+				if (field[1] == "read_posts") posts = field[2] + 0
+				if (field[1] == "rma_read_marker_posts") markers = field[2] + 0
+				if (field[1] == "rma_read_unsignaled_fast_posts") fast = field[2] + 0
+			}
+			if (posts > 0) {
+				seen++
+				if (markers <= 0 || fast <= 0 || markers + fast != posts) bad = 1
+			}
+		}
+		END { exit seen == 0 || bad }
+	' "$OUTDIR/target.log" || \
+		die "selective RMA read accounting did not prove marker plus unsignaled fast posts"
+	if [ "$OFI_RMA_READ_MORE" = 1 ]; then
+		grep -Eq 'rma_read_more_posts=[1-9][0-9]*' "$OUTDIR/target.log" || \
+			die "RMA read FI_MORE batching was requested but no staged posts were reported"
+	fi
+	if grep -Eq 'rma_read_flush_posts=[1-9][0-9]*' "$OUTDIR/target.log"; then
+		die "deferred-tail run posted a synthetic RMA read flush"
+	fi
+	if grep -Eq 'rma_read_markers_inflight=[1-9][0-9]*' "$OUTDIR/target.log"; then
+		die "deferred-tail run stopped with completion markers still in flight"
+	fi
+	printf 'rma_read_completion_gate=pass marker_source=real-read unsignaled_entry=%s marker_entry=fi_readmsg accounting=exact synthetic_flush_posts=0 marker_inflight=0\n' \
+		"$([ "$OFI_RMA_READ_MORE" = 1 ] && printf 'fi_readmsg+FI_MORE' || printf fi_read)" | \
+		tee -a "$OUTDIR/summary.log"
+fi
+if [ "$SHM_OFI_RMA_READS" = 1 ] && [ "$MIN_MEAN_IOPS" -ge 12000000 ]; then
+	awk '
+		/zcofi-endpoint-profile:/ {
+			selective = provider = fabric = direct = emulated = more = -1
+			for (i = 1; i <= NF; i++) {
+				split($i, field, "=")
+				if (field[1] == "selective_completion") selective = field[2] + 0
+				if (field[1] == "provider") provider = field[2]
+				if (field[1] == "fabric") fabric = field[2]
+				if (field[1] == "efa_direct") direct = field[2] + 0
+				if (field[1] == "efa_emulated_read") emulated = field[2] + 0
+				if (field[1] == "rma_read_more") more = field[2] + 0
+			}
+			if (selective == 1) {
+				seen++
+				if (provider != "efa" || fabric != "efa-direct" || direct != 1 ||
+				    emulated != 0 || more != 1) bad = 1
+			}
+		}
+		END { exit seen == 0 || bad }
+	' "$OUTDIR/target.log" || \
+		die "12M record did not prove EFA-direct device RMA reads with FI_MORE on every data endpoint"
+	printf 'record_12m_rma_read_gate=pass provider=efa fabric=efa-direct device_rdma=1 emulated_read=0 selective_completion=1 fi_more=1 per_rep_floor=12000000 mean_floor=12000000\n' | \
+		tee -a "$OUTDIR/summary.log"
+fi
 target_summary="$(grep 'zcnblk-shm-target-summary:' "$OUTDIR/target.log" | tail -n 1)"
 if [ "$ORDER_SMOKE_PAIRS" -gt 0 ]; then
 	grep -Eq 'syncs=[1-9][0-9]*' <<<"$target_summary" || \

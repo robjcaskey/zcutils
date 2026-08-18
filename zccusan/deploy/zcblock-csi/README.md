@@ -157,6 +157,8 @@ StorageClass parameters:
   images. Default: `/var/lib/zcblock-csi/files`.
 - `rawPartUUID` or `rawDevice`: required for `backend=raw-block`; the matching
   PARTUUID must be listed in `/etc/zcblock-csi/allowed-raw-partitions.txt`.
+  The exact `rawDevice=/dev/zcnblk0` client edge is also accepted for
+  block-mode PVCs; placement remains in its downstream userspace stage.
 
 Snapshots are stored under `/var/lib/zcblock-csi/snapshots`. For `backend=file-loop`,
 the driver uses a reflink/COW PIT snapshot when the state directory filesystem

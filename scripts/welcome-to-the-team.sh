@@ -5,7 +5,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_RELEASE=1
 INSTALL_APT=1
 INSTALL_EFA=0
-HUGEPAGES="${ZCUTILS_HUGEPAGES:-0}"
+HUGEPAGES="${ZCUTILS_HUGEPAGES:-}"
 TCP_TUNE=1
 MANIFEST_PATH="${ZCUTILS_BOOTSTRAP_MANIFEST:-$HOME/.local/state/zcutils/adhoc-bootstrap.env}"
 
@@ -19,7 +19,9 @@ synced to it.
 options:
   --no-apt              skip apt package installation
   --no-build            skip the project build (Rust is still installed)
-  --hugepages N         set vm.nr_hugepages to N, best effort
+  --hugepages N|auto    required unless --no-hugepages; auto reserves 1/16 of
+                        RAM, clamped to 128..8192 2-MiB pages
+  --no-hugepages        do not reserve explicit HugeTLB pages
   --install-efa         install the AWS EFA userspace stack, best effort
   --no-tcp-tune         skip TCP/memlock/sysctl tuning
   --manifest PATH       write machine/bootstrap provenance here
@@ -150,6 +152,28 @@ ensure_rust() {
 }
 
 tune_system() {
+	local hugepages_target="$HUGEPAGES"
+	if [ "$hugepages_target" = auto ]; then
+		local mem_kib huge_kib
+		mem_kib="$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo)"
+		huge_kib="$(awk '/^Hugepagesize:/ { print $2; exit }' /proc/meminfo)"
+		[ -n "$mem_kib" ] && [ -n "$huge_kib" ] || {
+			warn "cannot size the default HugeTLB pool from /proc/meminfo"
+			hugepages_target=0
+		}
+		if [ "$hugepages_target" != 0 ]; then
+			hugepages_target=$((mem_kib / 16 / huge_kib))
+			[ "$hugepages_target" -ge 128 ] || hugepages_target=128
+			[ "$hugepages_target" -le 8192 ] || hugepages_target=8192
+		fi
+	fi
+	case "$hugepages_target" in
+		''|*[!0-9]*)
+			printf 'invalid hugepage count: %s\n' "$hugepages_target" >&2
+			exit 2
+			;;
+	esac
+
 	log "applying benchmark host sysctls"
 	run_sudo sysctl -w \
 		net.core.rmem_max=134217728 \
@@ -164,9 +188,11 @@ tune_system() {
 		run_sudo sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null || true
 	fi
 
-	if [ "$HUGEPAGES" -gt 0 ] 2>/dev/null; then
-		log "setting vm.nr_hugepages=$HUGEPAGES"
-		run_sudo sysctl -w "vm.nr_hugepages=$HUGEPAGES" >/dev/null || \
+	if [ "$hugepages_target" -gt 0 ]; then
+		log "setting vm.nr_hugepages=$hugepages_target (requested=$HUGEPAGES)"
+		printf 'vm.nr_hugepages = %s\n' "$hugepages_target" |
+			run_sudo tee /etc/sysctl.d/99-zcutils-hugepages.conf >/dev/null
+		run_sudo sysctl -w "vm.nr_hugepages=$hugepages_target" >/dev/null || \
 			warn "hugepage allocation failed"
 	fi
 
@@ -341,6 +367,9 @@ while [ "$#" -gt 0 ]; do
 			shift
 			HUGEPAGES="${1:?missing hugepage count}"
 			;;
+		--no-hugepages)
+			HUGEPAGES=0
+			;;
 		--install-efa)
 			INSTALL_EFA=1
 			;;
@@ -363,6 +392,12 @@ while [ "$#" -gt 0 ]; do
 	esac
 	shift
 done
+
+if [ -z "$HUGEPAGES" ]; then
+	printf 'choose HugeTLB policy explicitly: --hugepages N, --hugepages auto, or --no-hugepages\n' >&2
+	usage >&2
+	exit 2
+fi
 
 if [ "$INSTALL_APT" -eq 1 ]; then
 	install_apt_packages

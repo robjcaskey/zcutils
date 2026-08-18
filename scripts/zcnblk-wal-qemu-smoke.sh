@@ -100,6 +100,7 @@ if [[ "$QEMU_CARGO_CLEAN" == 1 ]]; then
 fi
 CARGO_TARGET_DIR="$CARGO_TARGET_DIR" cargo build --release \
 	--bin zcnblk-shm-target \
+	--bin zcnblk-arena-io \
 	--bin zcnblk-wal-leaf \
 	--bin zcnblk-order-smoke \
 	--bin zcnblk-contract-smoke
@@ -127,7 +128,7 @@ verify_elf() {
 	readelf -h -- "$path" >/dev/null
 }
 
-bins=(zcnblk-shm-target zcnblk-wal-leaf zcnblk-order-smoke zcnblk-contract-smoke)
+bins=(zcnblk-shm-target zcnblk-arena-io zcnblk-wal-leaf zcnblk-order-smoke zcnblk-contract-smoke)
 for bin in "${bins[@]}"; do
 	verify_elf "$BIN_DIR/$bin"
 done

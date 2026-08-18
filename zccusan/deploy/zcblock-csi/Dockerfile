@@ -1,4 +1,4 @@
-FROM rust:1.89-bookworm AS builder
+FROM docker.io/library/rust:1.97-bookworm AS builder
 
 WORKDIR /work
 
@@ -13,12 +13,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-RUN cargo build --release --bin zcblock-csi --bin zcblock-control --bin zcblock-freeze --bin zcrepl --bin zcpit
+RUN RUST_MIN_STACK=33554432 cargo build --release --jobs 16 \
+    --bin zcblock-csi \
+    --bin zcblock-control \
+    --bin zcblock-freeze \
+    --bin zcrepl \
+    --bin zcpit
 
-FROM debian:bookworm-slim AS runtime-tools
+FROM docker.io/library/debian:bookworm-slim AS runtime-tools
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     e2fsprogs \
+    libfabric1 \
     util-linux \
     xfsprogs \
     && rm -rf /var/lib/apt/lists/*
@@ -40,7 +46,15 @@ RUN set -eux; \
       ldd "$bin" | awk '/=> \// {print $3} /^\// {print $1}'; \
     done | sort -u | while read -r lib; do \
       mkdir -p "/runtime-root$(dirname "$lib")"; \
-      cp -L "$lib" "/runtime-root$lib"; \
+      if [ -e "$lib" ]; then \
+        cp -L "$lib" "/runtime-root$lib"; \
+      fi; \
+    done; \
+    for loader in /lib/ld-linux-*.so.* /lib64/ld-linux-*.so.*; do \
+      if [ -e "$loader" ]; then \
+        mkdir -p "/runtime-root$(dirname "$loader")"; \
+        cp -L "$loader" "/runtime-root$loader"; \
+      fi; \
     done; \
     if [ -e /etc/mke2fs.conf ]; then \
       mkdir -p /runtime-root/etc; \

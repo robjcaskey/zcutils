@@ -71,6 +71,7 @@ struct zc_ofi_mr_table {
     struct zc_ofi_mr_arena *arenas;
     size_t capacity;
     size_t count;
+    size_t hot_index;
     uint64_t registrations;
     uint64_t closes;
     uint64_t lookups;
@@ -90,16 +91,28 @@ struct zc_ofi_op {
     uint8_t kind;
     uint8_t active;
     uint8_t completed;
+    uint8_t completion_requested;
+    uint8_t provider_cqe_seen;
 };
 
 struct zc_ofi_op_ring {
     struct zc_ofi_op *ops;
+    size_t *completed_slots;
+    size_t *posted_slots;
+    size_t *completion_groups;
     size_t depth;
     size_t active;
     size_t provider_inflight;
     size_t peak_active;
     size_t next_slot;
     size_t reap_cursor;
+    size_t completed_head;
+    size_t completed_count;
+    size_t posted_head;
+    size_t posted_count;
+    size_t completion_group_head;
+    size_t completion_group_count;
+    size_t open_completion_group_count;
     uint64_t posts;
     uint64_t completions;
     uint64_t post_eagain;
@@ -113,7 +126,6 @@ struct zc_ofi_cq_state {
     size_t batch_capacity;
     size_t configured_size;
     uint64_t polls;
-    uint64_t empty_polls;
     uint64_t nonempty_polls;
     uint64_t entries_read;
     uint64_t errors;
@@ -138,6 +150,13 @@ struct zc_ofi_endpoint {
     struct zc_ofi_mr_table recv_mrs;
     struct zc_ofi_mr_table read_mrs;
     struct zc_ofi_mr_table write_mrs;
+    /* The block read destination is one explicitly registered, stable shared
+     * arena.  Keep its descriptor directly on the endpoint so every 4 KiB
+     * post does not re-enter the generic MR table or dirty telemetry counters.
+     * Disjoint diagnostic buffers still fall back to the table. */
+    uintptr_t rma_read_arena_start;
+    uintptr_t rma_read_arena_end;
+    void *rma_read_arena_desc;
     struct fid_mr *rma_target_mr;
     const void *rma_target_buf;
     size_t rma_target_len;
@@ -175,6 +194,23 @@ struct zc_ofi_endpoint {
     int max_msg_size_query_rc;
     int max_rma_size_query_rc;
     int selective_completion;
+    size_t rma_read_completion_stride;
+    size_t rma_read_completion_remaining;
+    int rma_read_more_requested;
+    int rma_read_more_enabled;
+    struct fi_context2 rma_read_flush_context;
+    uint8_t rma_read_flush_byte;
+    void *rma_read_flush_desc;
+    uint64_t rma_read_last_remote_addr;
+    uint64_t rma_read_last_remote_key;
+    size_t rma_read_completion_markers_inflight;
+    uint64_t rma_read_periodic_markers;
+    uint64_t rma_read_full_window_markers;
+    uint64_t rma_read_forced_markers;
+    uint64_t rma_read_marker_posts;
+    uint64_t rma_read_flush_posts;
+    int rma_read_flush_inflight;
+    int rma_read_flush_cqe_seen;
     int rma_write_delivery_complete;
     int rma_write_more_enabled;
     int rma_write_force_flush;
@@ -194,6 +230,15 @@ struct zc_ofi_endpoint {
 };
 
 static void zc_ofi_write_err(char *err, size_t err_len, const char *fmt, ...);
+
+/* Ring callers keep both operands below depth, so their sum is below twice
+ * depth.  A conditional subtract is exact and avoids a runtime integer
+ * division in the per-operation post and completion paths. */
+static inline size_t zc_ofi_ring_index(size_t base, size_t delta,
+                                       size_t depth) {
+    size_t index = base + delta;
+    return index >= depth ? index - depth : index;
+}
 
 static uint64_t zc_ofi_now_ms(void) {
     struct timespec ts;
@@ -317,7 +362,14 @@ static int zc_ofi_init_ring(struct zc_ofi_op_ring *ring, size_t depth,
         return -FI_EINVAL;
     }
     struct zc_ofi_op *ops = calloc(depth, sizeof(*ops));
-    if (!ops) {
+    size_t *completed_slots = calloc(depth, sizeof(*completed_slots));
+    size_t *posted_slots = calloc(depth, sizeof(*posted_slots));
+    size_t *completion_groups = calloc(depth, sizeof(*completion_groups));
+    if (!ops || !completed_slots || !posted_slots || !completion_groups) {
+        free(completion_groups);
+        free(posted_slots);
+        free(completed_slots);
+        free(ops);
         zc_ofi_write_err(err, err_len, "calloc(OFI %u ring depth=%zu) failed",
                          (unsigned)kind, depth);
         return -FI_ENOMEM;
@@ -326,9 +378,15 @@ static int zc_ofi_init_ring(struct zc_ofi_op_ring *ring, size_t depth,
         ops[i].kind = (uint8_t)kind;
         ops[i].src_addr = FI_ADDR_UNSPEC;
     }
+    free(ring->completed_slots);
+    free(ring->posted_slots);
+    free(ring->completion_groups);
     free(ring->ops);
     memset(ring, 0, sizeof(*ring));
     ring->ops = ops;
+    ring->completed_slots = completed_slots;
+    ring->posted_slots = posted_slots;
+    ring->completion_groups = completion_groups;
     ring->depth = depth;
     return 0;
 }
@@ -345,6 +403,7 @@ static int zc_ofi_init_mr_table(struct zc_ofi_mr_table *table, size_t capacity,
         return -FI_ENOMEM;
     }
     table->capacity = capacity;
+    table->hot_index = SIZE_MAX;
     return 0;
 }
 
@@ -392,12 +451,16 @@ static void zc_ofi_close_mr_table(struct zc_ofi_mr_table *table) {
     table->arenas = NULL;
     table->capacity = 0;
     table->count = 0;
+    table->hot_index = SIZE_MAX;
 }
 
 static void zc_ofi_free_ring(struct zc_ofi_op_ring *ring) {
     if (!ring) {
         return;
     }
+    free(ring->completed_slots);
+    free(ring->posted_slots);
+    free(ring->completion_groups);
     free(ring->ops);
     memset(ring, 0, sizeof(*ring));
 }
@@ -518,7 +581,8 @@ int zc_ofi_format_profile(struct zc_ofi_endpoint *ep, char *buf,
         "provider_rx_queue_requested=%zu provider_rx_queue_size=%zu "
         "tx_cq_size=%zu tx_cq_required=%zu "
         "rx_cq_size=%zu rx_cq_required=%zu tx_cq_batch=%zu rx_cq_batch=%zu "
-        "cq_headroom=%zu cq_sleep_ns=%ld strict_topology=%d selective_completion=%d "
+        "cq_headroom=%zu cq_sleep_ns=%ld threading=%d strict_topology=%d selective_completion=%d "
+        "rma_read_completion_stride=%zu rma_read_more_requested=%d rma_read_more=%d "
         "rma_write_delivery_complete=%d rma_write_more=%d rma_write_more_burst=%zu",
         provider, fabric, domain, device,
         ep->info->ep_attr ? ep->info->ep_attr->type : FI_EP_UNSPEC,
@@ -543,7 +607,10 @@ int zc_ofi_format_profile(struct zc_ofi_endpoint *ep, char *buf,
         ep->rx_cq_state.configured_size, ep->rx_cq_required,
         ep->tx_cq_state.batch_capacity, ep->rx_cq_state.batch_capacity,
         ep->cq_headroom, ep->cq_sleep_ns,
+        ep->info->domain_attr ? ep->info->domain_attr->threading : FI_THREAD_UNSPEC,
         ep->strict_topology, ep->selective_completion,
+        ep->rma_read_completion_stride,
+        ep->rma_read_more_requested, ep->rma_read_more_enabled,
         ep->rma_write_delivery_complete, ep->rma_write_more_enabled,
         ep->rma_write_more_burst);
     return zc_ofi_finish_format(ep, buf, capacity, written,
@@ -579,6 +646,11 @@ int zc_ofi_format_stats(struct zc_ofi_endpoint *ep, char *buf,
         "rma_write_more_burst=%zu rma_write_more_posts=%llu "
         "rma_write_flush_posts=%llu rma_write_forced_flush_posts=%llu "
         "rma_write_more_followup_eagain=%llu rma_write_force_flush=%d "
+        "rma_read_periodic_markers=%llu rma_read_full_window_markers=%llu "
+        "rma_read_forced_markers=%llu rma_read_marker_posts=%llu "
+        "rma_read_unsignaled_fast_posts=%llu rma_read_more_posts=%llu "
+        "rma_read_flush_posts=%llu "
+        "rma_read_markers_inflight=%zu "
         "tx_cq_avg_cqes_per_nonempty=%.2f rx_cq_avg_cqes_per_nonempty=%.2f",
         ep->send_ring.depth, ep->send_ring.active,
         ep->send_ring.provider_inflight, ep->send_ring.peak_active,
@@ -609,13 +681,17 @@ int zc_ofi_format_stats(struct zc_ofi_endpoint *ep, char *buf,
         (unsigned long long)ep->write_ring.post_retries,
         (unsigned long long)ep->write_ring.errors,
         (unsigned long long)ep->tx_cq_state.polls,
-        (unsigned long long)ep->tx_cq_state.empty_polls,
+        (unsigned long long)(ep->tx_cq_state.polls -
+                             ep->tx_cq_state.nonempty_polls -
+                             ep->tx_cq_state.errors),
         (unsigned long long)ep->tx_cq_state.nonempty_polls,
         (unsigned long long)ep->tx_cq_state.entries_read,
         (unsigned long long)ep->tx_cq_state.errors,
         (unsigned long long)ep->tx_cq_state.sleeps,
         (unsigned long long)ep->rx_cq_state.polls,
-        (unsigned long long)ep->rx_cq_state.empty_polls,
+        (unsigned long long)(ep->rx_cq_state.polls -
+                             ep->rx_cq_state.nonempty_polls -
+                             ep->rx_cq_state.errors),
         (unsigned long long)ep->rx_cq_state.nonempty_polls,
         (unsigned long long)ep->rx_cq_state.entries_read,
         (unsigned long long)ep->rx_cq_state.errors,
@@ -652,6 +728,20 @@ int zc_ofi_format_stats(struct zc_ofi_endpoint *ep, char *buf,
         (unsigned long long)ep->rma_write_forced_flush_posts,
         (unsigned long long)ep->rma_write_more_followup_eagain,
         ep->rma_write_force_flush,
+        (unsigned long long)ep->rma_read_periodic_markers,
+        (unsigned long long)ep->rma_read_full_window_markers,
+        (unsigned long long)ep->rma_read_forced_markers,
+        (unsigned long long)ep->rma_read_marker_posts,
+        (unsigned long long)(ep->rma_read_completion_stride > 1
+                                 ? ep->read_ring.posts -
+                                       ep->rma_read_marker_posts
+                                 : 0),
+        (unsigned long long)(ep->rma_read_more_enabled
+                                 ? ep->read_ring.posts -
+                                       ep->rma_read_marker_posts
+                                 : 0),
+        (unsigned long long)ep->rma_read_flush_posts,
+        ep->rma_read_completion_markers_inflight,
         ep->tx_cq_state.nonempty_polls
             ? (double)ep->tx_cq_state.entries_read /
                   (double)ep->tx_cq_state.nonempty_polls
@@ -816,6 +906,20 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
                                     ? FI_FORMAT_UNSPEC
                                     : FI_SOCKADDR);
     hints->ep_attr->type = ep_type;
+    const char *threading = getenv("URING_PLAY_OFI_THREADING");
+    if (threading && strcmp(threading, "domain") == 0) {
+        hints->domain_attr->threading = FI_THREAD_DOMAIN;
+    } else if (threading && strcmp(threading, "endpoint") == 0) {
+        hints->domain_attr->threading = FI_THREAD_ENDPOINT;
+    } else if (threading && strcmp(threading, "safe") == 0) {
+        hints->domain_attr->threading = FI_THREAD_SAFE;
+    } else if (threading && threading[0] != '\0' &&
+               strcmp(threading, "unspec") != 0) {
+        zc_ofi_write_err(err, err_len,
+                         "URING_PLAY_OFI_THREADING must be unspec, safe, domain, or endpoint");
+        fi_freeinfo(hints);
+        return -FI_EINVAL;
+    }
     if (provider && provider[0] != '\0') {
         const char *query_provider = efa_direct ? "efa" : provider;
         hints->fabric_attr->prov_name = strdup(query_provider);
@@ -940,6 +1044,29 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
                           zc_ofi_env_enabled("URING_PLAY_TOPOLOGY_FATAL");
     ep->selective_completion =
         zc_ofi_env_enabled("URING_PLAY_OFI_SELECTIVE_COMPLETION");
+    rc = zc_ofi_env_size("URING_PLAY_OFI_RMA_READ_COMPLETION_STRIDE", 1, 1,
+                         65536, &ep->rma_read_completion_stride, err, err_len);
+    if (rc) {
+        zc_ofi_close(ep);
+        return rc;
+    }
+    if (ep->rma_read_completion_stride > 1 && !ep->selective_completion) {
+        zc_ofi_write_err(
+            err, err_len,
+            "RMA read completion stride=%zu requires URING_PLAY_OFI_SELECTIVE_COMPLETION=1",
+            ep->rma_read_completion_stride);
+        zc_ofi_close(ep);
+        return -FI_EINVAL;
+    }
+    ep->rma_read_completion_remaining = ep->rma_read_completion_stride;
+    const char *rma_read_more_env = getenv("URING_PLAY_OFI_RMA_READ_MORE");
+    ep->rma_read_more_requested = rma_read_more_env
+                                      ? zc_ofi_env_u64(
+                                            "URING_PLAY_OFI_RMA_READ_MORE", 0) != 0
+                                      : ep->efa_direct;
+    ep->rma_read_more_enabled = ep->rma_read_more_requested &&
+                                ep->selective_completion &&
+                                ep->rma_read_completion_stride > 1;
     ep->rma_write_delivery_complete =
         zc_ofi_env_u64("URING_PLAY_OFI_RMA_WRITE_DELIVERY_COMPLETE", 1) != 0;
     ep->rma_write_more_enabled =
@@ -1307,20 +1434,14 @@ static struct zc_ofi_op *zc_ofi_find_context(
     return NULL;
 }
 
-static int zc_ofi_complete_op(struct zc_ofi_endpoint *ep, int receive_cq,
-                              void *context, size_t len, fi_addr_t source,
-                              int completion_rc, int prov_errno) {
-    struct zc_ofi_op_ring *ring = NULL;
-    size_t slot = 0;
-    struct zc_ofi_op *op =
-        zc_ofi_find_context(ep, receive_cq, context, &ring, &slot);
-    if (!op) {
-        snprintf(ep->err, sizeof(ep->err),
-                 "unexpected OFI %s CQ context=%p",
-                 receive_cq ? "RX" : "TX", context);
-        ep->fatal_rc = -FI_EPROTO;
-        return -FI_EPROTO;
+static int zc_ofi_complete_slot(struct zc_ofi_endpoint *ep,
+                                struct zc_ofi_op_ring *ring, size_t slot,
+                                size_t len, fi_addr_t source,
+                                int completion_rc, int prov_errno) {
+    if (!ep || !ring || !ring->ops || slot >= ring->depth) {
+        return -FI_EINVAL;
     }
+    struct zc_ofi_op *op = &ring->ops[slot];
     if (!op->active || op->completed || ring->provider_inflight == 0) {
         snprintf(ep->err, sizeof(ep->err),
                  "invalid OFI CQ state kind=%u slot=%zu active=%u completed=%u inflight=%zu",
@@ -1329,11 +1450,22 @@ static int zc_ofi_complete_op(struct zc_ofi_endpoint *ep, int receive_cq,
         ep->fatal_rc = -FI_EPROTO;
         return -FI_EPROTO;
     }
+    if (!ring->completed_slots || ring->completed_count >= ring->depth) {
+        snprintf(ep->err, sizeof(ep->err),
+                 "OFI completed-slot FIFO overflow kind=%u slot=%zu count=%zu depth=%zu",
+                 (unsigned)op->kind, slot, ring->completed_count,
+                 ring->depth);
+        ep->fatal_rc = -FI_EOVERFLOW;
+        return -FI_EOVERFLOW;
+    }
     op->len = len;
     op->src_addr = source;
     op->completion_rc = completion_rc;
     op->prov_errno = prov_errno;
     op->completed = 1;
+    ring->completed_slots[zc_ofi_ring_index(
+        ring->completed_head, ring->completed_count, ring->depth)] = slot;
+    ring->completed_count++;
     ring->provider_inflight--;
     ring->completions++;
     if (completion_rc) {
@@ -1348,24 +1480,221 @@ static int zc_ofi_complete_op(struct zc_ofi_endpoint *ep, int receive_cq,
     return 0;
 }
 
-static int zc_ofi_dispatch_cq(struct zc_ofi_endpoint *ep, int receive_cq,
-                              size_t *out_count) {
-    if (!ep || !out_count) {
+static int zc_ofi_complete_one(struct zc_ofi_endpoint *ep, int receive_cq,
+                               void *context, size_t len, fi_addr_t source,
+                               int completion_rc, int prov_errno) {
+    struct zc_ofi_op_ring *ring = NULL;
+    size_t slot = 0;
+    struct zc_ofi_op *op =
+        zc_ofi_find_context(ep, receive_cq, context, &ring, &slot);
+    if (!op) {
+        snprintf(ep->err, sizeof(ep->err),
+                 "unexpected OFI %s CQ context=%p",
+                 receive_cq ? "RX" : "TX", context);
+        ep->fatal_rc = -FI_EPROTO;
+        return -FI_EPROTO;
+    }
+    return zc_ofi_complete_slot(ep, ring, slot, len, source, completion_rc,
+                                prov_errno);
+}
+
+static int zc_ofi_drain_moderated_reads(struct zc_ofi_endpoint *ep) {
+    struct zc_ofi_op_ring *ring = &ep->read_ring;
+    for (;;) {
+        size_t group_count = 0;
+        int marker_group = 0;
+        if (ring->completion_group_count != 0) {
+            group_count = ring->completion_groups[ring->completion_group_head];
+            if (group_count == 0 || group_count > ring->posted_count) {
+                snprintf(ep->err, sizeof(ep->err),
+                         "invalid moderated OFI read group=%zu posted=%zu groups=%zu",
+                         group_count, ring->posted_count,
+                         ring->completion_group_count);
+                ep->fatal_rc = -FI_EPROTO;
+                return -FI_EPROTO;
+            }
+            size_t marker_index = zc_ofi_ring_index(
+                ring->posted_head, group_count - 1, ring->depth);
+            size_t marker_slot = ring->posted_slots[marker_index];
+            if (marker_slot >= ring->depth) {
+                snprintf(ep->err, sizeof(ep->err),
+                         "invalid moderated OFI marker slot=%zu depth=%zu",
+                         marker_slot, ring->depth);
+                ep->fatal_rc = -FI_EPROTO;
+                return -FI_EPROTO;
+            }
+            struct zc_ofi_op *marker = &ring->ops[marker_slot];
+            if (!marker->completion_requested) {
+                snprintf(ep->err, sizeof(ep->err),
+                         "moderated OFI group tail is not a marker slot=%zu group=%zu",
+                         marker_slot, group_count);
+                ep->fatal_rc = -FI_EPROTO;
+                return -FI_EPROTO;
+            }
+            if (!marker->provider_cqe_seen) {
+                return 0;
+            }
+            marker_group = 1;
+        }
+        if (group_count == 0) {
+            if (!ep->rma_read_flush_cqe_seen) {
+                return 0;
+            }
+            group_count = ring->posted_count;
+            ep->rma_read_flush_cqe_seen = 0;
+            ep->rma_read_flush_inflight = 0;
+            if (group_count == 0) {
+                return 0;
+            }
+        }
+        if (marker_group) {
+            if (ep->rma_read_completion_markers_inflight == 0) {
+                return zc_ofi_fail(ep, -FI_EPROTO,
+                                   "moderated-read marker count underflow");
+            }
+            ep->rma_read_completion_markers_inflight--;
+            ring->completion_group_head = zc_ofi_ring_index(
+                ring->completion_group_head, 1, ring->depth);
+            ring->completion_group_count--;
+        } else {
+            /* A synthetic fence closes the only open partial group. Closed
+             * real-marker groups keep markers_inflight nonzero and cannot
+             * enter this branch. */
+            ring->open_completion_group_count = 0;
+        }
+        const size_t depth = ring->depth;
+        size_t *restrict completed_slots = ring->completed_slots;
+        const size_t *restrict posted_slots = ring->posted_slots;
+        struct zc_ofi_op *restrict ops = ring->ops;
+        if (!completed_slots || ring->completed_count > depth ||
+            group_count > ring->provider_inflight ||
+            group_count > depth - ring->completed_count) {
+            snprintf(ep->err, sizeof(ep->err),
+                     "OFI moderated-read group accounting overflow group=%zu inflight=%zu completed=%zu depth=%zu",
+                     group_count, ring->provider_inflight,
+                     ring->completed_count, depth);
+            ep->fatal_rc = -FI_EOVERFLOW;
+            return -FI_EOVERFLOW;
+        }
+        size_t posted_head = ring->posted_head;
+        size_t completed_tail = zc_ofi_ring_index(
+            ring->completed_head, ring->completed_count, depth);
+        size_t remaining = group_count;
+        while (remaining) {
+            size_t span = depth - posted_head;
+            if (span > depth - completed_tail) {
+                span = depth - completed_tail;
+            }
+            if (span > remaining) {
+                span = remaining;
+            }
+            for (size_t i = 0; i < span; i++) {
+                size_t slot = posted_slots[posted_head + i];
+                if (slot >= depth) {
+                    snprintf(ep->err, sizeof(ep->err),
+                             "invalid moderated OFI read slot=%zu depth=%zu",
+                             slot, depth);
+                    ep->fatal_rc = -FI_EPROTO;
+                    return -FI_EPROTO;
+                }
+                struct zc_ofi_op *op = &ops[slot];
+                if (!op->active || op->completed) {
+                    snprintf(ep->err, sizeof(ep->err),
+                             "invalid moderated OFI read state slot=%zu active=%u completed=%u inflight=%zu",
+                             slot, (unsigned)op->active,
+                             (unsigned)op->completed,
+                             ring->provider_inflight);
+                    ep->fatal_rc = -FI_EPROTO;
+                    return -FI_EPROTO;
+                }
+                /* The fenced marker proves the successful unsignaled prefix.
+                 * Publish per-slot ownership here, then account the entire
+                 * group once below rather than dirtying four ring counters per
+                 * 4 KiB read. */
+                op->completed = 1;
+                completed_slots[completed_tail + i] = slot;
+            }
+            posted_head += span;
+            completed_tail += span;
+            remaining -= span;
+            if (posted_head == depth) {
+                posted_head = 0;
+            }
+            if (completed_tail == depth) {
+                completed_tail = 0;
+            }
+        }
+        ring->posted_head = posted_head;
+        ring->posted_count -= group_count;
+        ring->completed_count += group_count;
+        ring->provider_inflight -= group_count;
+        ring->completions += group_count;
+    }
+}
+
+static int zc_ofi_complete_op(struct zc_ofi_endpoint *ep, int receive_cq,
+                              void *context, size_t len, fi_addr_t source,
+                              int completion_rc, int prov_errno) {
+    if (!receive_cq && context == &ep->rma_read_flush_context) {
+        if (completion_rc) {
+            ep->fatal_rc = completion_rc;
+            snprintf(ep->err, sizeof(ep->err),
+                     "moderated OFI read flush CQ failed rc=%d prov_errno=%d",
+                     completion_rc, prov_errno);
+            return completion_rc;
+        }
+        ep->rma_read_flush_cqe_seen = 1;
+        return zc_ofi_drain_moderated_reads(ep);
+    }
+    if (receive_cq || completion_rc || ep->rma_read_completion_stride <= 1) {
+        return zc_ofi_complete_one(ep, receive_cq, context, len, source,
+                                   completion_rc, prov_errno);
+    }
+
+    struct zc_ofi_op_ring *ring = &ep->read_ring;
+    size_t marker_slot = 0;
+    struct zc_ofi_op *marker =
+        zc_ofi_find_context_in_ring(ring, context, &marker_slot);
+    if (!marker) {
+        /* The TX CQ is shared with SEND and WRITE. Those much less frequent
+         * completions retain the fully generic dispatcher, while successful
+         * moderated read markers avoid probing the SEND ring first. */
+        return zc_ofi_complete_one(ep, 0, context, len, source, 0, 0);
+    }
+    if (!marker->completion_requested) {
+        snprintf(ep->err, sizeof(ep->err),
+                 "unexpected moderated OFI read CQ context=%p slot=%zu",
+                 context, marker_slot);
+        ep->fatal_rc = -FI_EPROTO;
+        return -FI_EPROTO;
+    }
+    if (!ring->posted_slots || ring->posted_count == 0) {
+        snprintf(ep->err, sizeof(ep->err),
+                 "empty moderated OFI read posting FIFO at marker slot=%zu",
+                 marker_slot);
+        ep->fatal_rc = -FI_EPROTO;
+        return -FI_EPROTO;
+    }
+
+    marker->provider_cqe_seen = 1;
+    marker->len = len;
+    return zc_ofi_drain_moderated_reads(ep);
+}
+
+static int zc_ofi_dispatch_cq(struct zc_ofi_endpoint *ep, int receive_cq) {
+    if (!ep) {
         return -FI_EINVAL;
     }
-    *out_count = 0;
     struct zc_ofi_cq_state *state =
         receive_cq ? &ep->rx_cq_state : &ep->tx_cq_state;
     struct fid_cq *cq = receive_cq ? ep->rx_cq : ep->tx_cq;
     if (!cq || !state->entries || state->batch_capacity == 0) {
         return -FI_EINVAL;
     }
-    memset(state->entries, 0,
-           state->batch_capacity * sizeof(*state->entries));
-    for (size_t i = 0; i < state->batch_capacity; i++) {
-        state->sources[i] = FI_ADDR_UNSPEC;
-    }
-    state->polls++;
+    /* fi_cq_read{,from} initializes exactly the positive return count.  Do
+     * not dirty the entire batch arrays before every nonblocking poll: empty
+     * EFA CQ polls dominate the high-IOPS path, and unused/stale tail entries
+     * are never inspected below. */
     ssize_t rc = receive_cq
                      ? fi_cq_readfrom(cq, state->entries, state->batch_capacity,
                                       state->sources)
@@ -1382,11 +1711,9 @@ static int zc_ofi_dispatch_cq(struct zc_ofi_endpoint *ep, int receive_cq,
                 return complete_rc;
             }
         }
-        *out_count = (size_t)rc;
-        return 0;
+        return (int)rc;
     }
     if (rc == -FI_EAGAIN) {
-        state->empty_polls++;
         return 0;
     }
     if (rc == -FI_EAVAIL) {
@@ -1447,7 +1774,6 @@ static int zc_ofi_dispatch_cq(struct zc_ofi_endpoint *ep, int receive_cq,
                          err_entry.op_context);
             }
 #endif
-            *out_count = 1;
             return complete_rc ? complete_rc : completion_rc;
         }
         return zc_ofi_fail(ep, (int)erc,
@@ -1455,6 +1781,14 @@ static int zc_ofi_dispatch_cq(struct zc_ofi_endpoint *ep, int receive_cq,
     }
     return zc_ofi_fail(ep, (int)rc,
                        receive_cq ? "fi_cq_readfrom(rx)" : "fi_cq_read(tx)");
+}
+
+static int zc_ofi_dispatch_cq_counted(struct zc_ofi_endpoint *ep,
+                                      int receive_cq) {
+    struct zc_ofi_cq_state *state =
+        receive_cq ? &ep->rx_cq_state : &ep->tx_cq_state;
+    state->polls++;
+    return zc_ofi_dispatch_cq(ep, receive_cq);
 }
 
 static struct zc_ofi_op *zc_ofi_prepare_slot(struct zc_ofi_endpoint *ep,
@@ -1484,12 +1818,48 @@ static struct zc_ofi_op *zc_ofi_prepare_slot(struct zc_ofi_endpoint *ep,
     return op;
 }
 
+static inline struct zc_ofi_op *
+zc_ofi_prepare_read_slot(struct zc_ofi_endpoint *ep, size_t slot,
+                         uint64_t user_data) {
+    struct zc_ofi_op_ring *ring = &ep->read_ring;
+    if (ep->fatal_rc) {
+        return NULL;
+    }
+    struct zc_ofi_op *op = &ring->ops[slot];
+    if (op->active) {
+        snprintf(ep->err, sizeof(ep->err),
+                 "OFI kind=%u slot=%zu is already active",
+                 (unsigned)op->kind, slot);
+        return NULL;
+    }
+    /* Providers own fi_context2 between post and CQE, so reset all of it.
+     * The read path does not consume stale length/source diagnostics and sets
+     * length plus completion policy immediately before posting; clear only
+     * the remaining lifecycle fields instead of the full 104-byte record. */
+    memset(&op->context, 0, sizeof(op->context));
+    op->user_data = user_data;
+    op->src_addr = FI_ADDR_UNSPEC;
+    op->completion_rc = 0;
+    op->prov_errno = 0;
+    op->completed = 0;
+    op->completion_requested = 0;
+    op->provider_cqe_seen = 0;
+    op->active = 1;
+    ring->active++;
+    if (ring->active > ring->peak_active) {
+        ring->peak_active = ring->active;
+    }
+    return op;
+}
+
 static void zc_ofi_release_slot(struct zc_ofi_op_ring *ring, size_t slot) {
     struct zc_ofi_op *op = &ring->ops[slot];
-    uint8_t kind = op->kind;
-    memset(op, 0, sizeof(*op));
-    op->kind = kind;
-    op->src_addr = FI_ADDR_UNSPEC;
+    /* zc_ofi_prepare_slot() fully clears the record immediately before the
+     * provider can observe it again.  Clearing the same cache line here as
+     * well doubled metadata stores on every completion.  `active` is the
+     * sole free-slot ownership bit; leave diagnostic fields intact until the
+     * next preparation pass. */
+    op->active = 0;
     if (ring->active > 0) {
         ring->active--;
     }
@@ -1500,9 +1870,9 @@ static int zc_ofi_find_free_slot(struct zc_ofi_op_ring *ring, size_t *out_slot) 
         return -FI_EAGAIN;
     }
     for (size_t i = 0; i < ring->depth; i++) {
-        size_t slot = (ring->next_slot + i) % ring->depth;
+        size_t slot = zc_ofi_ring_index(ring->next_slot, i, ring->depth);
         if (!ring->ops[slot].active) {
-            ring->next_slot = (slot + 1) % ring->depth;
+            ring->next_slot = zc_ofi_ring_index(slot, 1, ring->depth);
             *out_slot = slot;
             return 0;
         }
@@ -1518,13 +1888,14 @@ static int zc_ofi_reap_ring(struct zc_ofi_op_ring *ring, size_t *out_slots,
         return -FI_EINVAL;
     }
     *out_count = 0;
-    size_t cursor = ring->reap_cursor;
-    for (size_t scanned = 0; scanned < ring->depth && *out_count < capacity;
-         scanned++) {
-        size_t slot = (cursor + scanned) % ring->depth;
+    while (ring->completed_count && *out_count < capacity) {
+        size_t slot = ring->completed_slots[ring->completed_head];
+        ring->completed_head = zc_ofi_ring_index(ring->completed_head, 1,
+                                                  ring->depth);
+        ring->completed_count--;
         struct zc_ofi_op *op = &ring->ops[slot];
         if (!op->active || !op->completed) {
-            continue;
+            return -FI_EPROTO;
         }
         size_t index = *out_count;
         if (out_slots) {
@@ -1541,13 +1912,37 @@ static int zc_ofi_reap_ring(struct zc_ofi_op_ring *ring, size_t *out_slots,
         }
         int completion_rc = op->completion_rc;
         zc_ofi_release_slot(ring, slot);
-        ring->reap_cursor = (slot + 1) % ring->depth;
+        ring->reap_cursor = zc_ofi_ring_index(slot, 1, ring->depth);
         (*out_count)++;
         if (completion_rc) {
             return completion_rc;
         }
     }
     return 0;
+}
+
+static int zc_ofi_remove_completed_slot(struct zc_ofi_op_ring *ring,
+                                        size_t slot) {
+    if (!ring || !ring->completed_slots || ring->completed_count == 0) {
+        return -FI_EPROTO;
+    }
+    for (size_t i = 0; i < ring->completed_count; i++) {
+        size_t index = zc_ofi_ring_index(ring->completed_head, i,
+                                         ring->depth);
+        if (ring->completed_slots[index] != slot) {
+            continue;
+        }
+        for (size_t j = i + 1; j < ring->completed_count; j++) {
+            size_t from = zc_ofi_ring_index(ring->completed_head, j,
+                                            ring->depth);
+            size_t to = zc_ofi_ring_index(ring->completed_head, j - 1,
+                                          ring->depth);
+            ring->completed_slots[to] = ring->completed_slots[from];
+        }
+        ring->completed_count--;
+        return 0;
+    }
+    return -FI_EPROTO;
 }
 
 static int zc_ofi_poll_ring(struct zc_ofi_endpoint *ep,
@@ -1564,6 +1959,9 @@ static int zc_ofi_poll_ring(struct zc_ofi_endpoint *ep,
     }
     uint64_t start = zc_ofi_now_ms();
     uint64_t spins = 0;
+    uint64_t cq_polls = 0;
+    struct zc_ofi_cq_state *state =
+        receive_cq ? &ep->rx_cq_state : &ep->tx_cq_state;
     for (;;) {
         size_t reaped = 0;
         int rc = zc_ofi_reap_ring(ring, out_slots, out_user_data, out_lengths,
@@ -1571,18 +1969,21 @@ static int zc_ofi_poll_ring(struct zc_ofi_endpoint *ep,
         *out_count = reaped;
         if (rc || reaped > 0 || ring->provider_inflight == 0 || !wait) {
             if (reaped > 0 || rc || ring->provider_inflight == 0) {
+                state->polls += cq_polls;
                 return rc;
             }
         }
-        size_t dispatched = 0;
-        rc = zc_ofi_dispatch_cq(ep, receive_cq, &dispatched);
-        if (rc) {
-            return rc;
+        cq_polls++;
+        int dispatched = zc_ofi_dispatch_cq(ep, receive_cq);
+        if (dispatched < 0) {
+            state->polls += cq_polls;
+            return dispatched;
         }
         if (dispatched > 0) {
             continue;
         }
         if (!wait) {
+            state->polls += cq_polls;
             return 0;
         }
         if (zc_ofi_poll_timed_out(ep, spins, start, timeout_ms)) {
@@ -1591,10 +1992,9 @@ static int zc_ofi_poll_ring(struct zc_ofi_endpoint *ep,
                      receive_cq ? "RX" : "TX", timeout_ms,
                      ring->ops ? (unsigned)ring->ops[0].kind : 0,
                      ring->provider_inflight);
+            state->polls += cq_polls;
             return -ETIMEDOUT;
         }
-        struct zc_ofi_cq_state *state =
-            receive_cq ? &ep->rx_cq_state : &ep->tx_cq_state;
         if (ep->cq_sleep_ns != 0) {
             state->sleeps++;
         }
@@ -1624,13 +2024,20 @@ static int zc_ofi_wait_slot(struct zc_ofi_endpoint *ep,
             if (out_source) {
                 *out_source = op->src_addr;
             }
+            int remove_rc = zc_ofi_remove_completed_slot(ring, slot);
+            if (remove_rc) {
+                snprintf(ep->err, sizeof(ep->err),
+                         "OFI completed slot=%zu missing from completion FIFO",
+                         slot);
+                ep->fatal_rc = remove_rc;
+                return remove_rc;
+            }
             zc_ofi_release_slot(ring, slot);
             return rc;
         }
-        size_t dispatched = 0;
-        int rc = zc_ofi_dispatch_cq(ep, receive_cq, &dispatched);
-        if (rc) {
-            return rc;
+        int dispatched = zc_ofi_dispatch_cq_counted(ep, receive_cq);
+        if (dispatched < 0) {
+            return dispatched;
         }
         if (dispatched > 0) {
             continue;
@@ -1668,13 +2075,31 @@ static int zc_ofi_register_cached(struct zc_ofi_endpoint *ep, const void *buf,
         snprintf(ep->err, sizeof(ep->err), "OFI MR lookup range overflow");
         return -FI_EINVAL;
     }
+    /* The registered shared arena supplies essentially every data-plane post.
+     * Check its last successful descriptor first instead of re-scanning the
+     * startup/control registrations on every 4 KiB operation. */
+    if (table->hot_index < table->count) {
+        struct zc_ofi_mr_arena *arena = &table->arenas[table->hot_index];
+        uintptr_t arena_start = (uintptr_t)arena->buf;
+        uintptr_t arena_end = arena_start + arena->len;
+        if (arena_end >= arena_start && arena->access == access &&
+            requested_start >= arena_start && requested_end <= arena_end) {
+            table->lookup_hits++;
+            *desc = arena->desc;
+            return 0;
+        }
+    }
     for (size_t i = 0; i < table->count; i++) {
+        if (i == table->hot_index) {
+            continue;
+        }
         struct zc_ofi_mr_arena *arena = &table->arenas[i];
         uintptr_t arena_start = (uintptr_t)arena->buf;
         uintptr_t arena_end = arena_start + arena->len;
         if (arena_end >= arena_start && arena->access == access &&
             requested_start >= arena_start && requested_end <= arena_end) {
             table->lookup_hits++;
+            table->hot_index = i;
             *desc = arena->desc;
             return 0;
         }
@@ -1700,12 +2125,14 @@ static int zc_ofi_register_cached(struct zc_ofi_endpoint *ep, const void *buf,
     if (rc) {
         return zc_ofi_fail(ep, rc, "fi_mr_reg");
     }
-    struct zc_ofi_mr_arena *arena = &table->arenas[table->count++];
+    size_t arena_index = table->count++;
+    struct zc_ofi_mr_arena *arena = &table->arenas[arena_index];
     arena->buf = buf;
     arena->len = len;
     arena->access = access;
     arena->mr = mr;
     arena->desc = fi_mr_desc(mr);
+    table->hot_index = arena_index;
     table->registrations++;
     *desc = arena->desc;
     return 0;
@@ -1743,7 +2170,33 @@ int zc_ofi_rma_register_read_buffer(struct zc_ofi_endpoint *ep, void *buf, size_
         return -FI_EINVAL;
     }
     void *desc = NULL;
-    return zc_ofi_register_cached(ep, buf, len, FI_READ, &ep->read_mrs, &desc);
+    int rc = zc_ofi_register_cached(ep, buf, len, FI_READ,
+                                    &ep->read_mrs, &desc);
+    if (!rc) {
+        ep->rma_read_arena_start = (uintptr_t)buf;
+        ep->rma_read_arena_end = (uintptr_t)buf + len;
+        ep->rma_read_arena_desc = desc;
+    }
+    return rc;
+}
+
+static inline int zc_ofi_rma_read_desc(struct zc_ofi_endpoint *ep,
+                                       const void *buf, size_t len,
+                                       void **desc) {
+    *desc = NULL;
+    if (!ep->mr_local) {
+        return 0;
+    }
+    uintptr_t requested_start = (uintptr_t)buf;
+    uintptr_t requested_end = requested_start + len;
+    if (requested_end >= requested_start &&
+        requested_start >= ep->rma_read_arena_start &&
+        requested_end <= ep->rma_read_arena_end) {
+        *desc = ep->rma_read_arena_desc;
+        return 0;
+    }
+    return zc_ofi_register_cached(ep, buf, len, FI_READ,
+                                  &ep->read_mrs, desc);
 }
 
 int zc_ofi_rma_read_queue_init(struct zc_ofi_endpoint *ep, size_t depth) {
@@ -1775,12 +2228,26 @@ int zc_ofi_rma_read_queue_init(struct zc_ofi_endpoint *ep, size_t depth) {
     }
     if (ep->read_ring.depth == depth) {
         ep->tx_cq_required = required;
+        if (ep->rma_read_completion_stride > 1 &&
+            !ep->rma_read_flush_desc) {
+            int register_rc = zc_ofi_register_cached(
+                ep, &ep->rma_read_flush_byte, 1, FI_READ,
+                &ep->read_mrs, &ep->rma_read_flush_desc);
+            if (register_rc) {
+                return register_rc;
+            }
+        }
         return 0;
     }
     int rc = zc_ofi_init_ring(&ep->read_ring, depth, ZC_OFI_OP_READ,
                               ep->err, sizeof(ep->err));
     if (!rc) {
         ep->tx_cq_required = required;
+        if (ep->rma_read_completion_stride > 1) {
+            rc = zc_ofi_register_cached(
+                ep, &ep->rma_read_flush_byte, 1, FI_READ,
+                &ep->read_mrs, &ep->rma_read_flush_desc);
+        }
     }
     return rc;
 }
@@ -1788,8 +2255,13 @@ int zc_ofi_rma_read_queue_init(struct zc_ofi_endpoint *ep, size_t depth) {
 static int zc_ofi_read_post_call(struct zc_ofi_endpoint *ep, void *buf,
                                  size_t len, void *desc,
                                  uint64_t remote_addr, uint64_t remote_key,
-                                 void *context) {
-    if (!ep->selective_completion) {
+                                 void *context, int completion_requested) {
+    /* FI_SELECTIVE_COMPLETION makes the flag-less fi_read() entry point
+     * unsignaled. Use that provider fast path for the ordinary prefix and
+     * pay to construct fi_msg_rma only for the fenced FI_COMPLETION marker.
+     * Asynchronous failures still generate CQ errors by libfabric contract. */
+    if (!ep->selective_completion ||
+        (!completion_requested && !ep->rma_read_more_enabled)) {
         return (int)fi_read(ep->ep, buf, len, desc, ep->peer_addr,
                             remote_addr, remote_key, context);
     }
@@ -1813,12 +2285,16 @@ static int zc_ofi_read_post_call(struct zc_ofi_endpoint *ep, void *buf,
         .context = context,
         .data = 0,
     };
-    return (int)fi_readmsg(ep->ep, &message, FI_COMPLETION);
+    uint64_t flags = completion_requested ? FI_COMPLETION : FI_MORE;
+    if (ep->rma_read_completion_stride > 1 && completion_requested) {
+        flags |= FI_FENCE;
+    }
+    return (int)fi_readmsg(ep->ep, &message, flags);
 }
 
 int zc_ofi_rma_read_post(struct zc_ofi_endpoint *ep, void *buf, size_t len,
                          uint64_t remote_addr, uint64_t remote_key, size_t slot,
-                         uint64_t user_data) {
+                         uint64_t user_data, int force_completion) {
     if (!ep || !buf || len == 0 || !ep->read_ring.ops ||
         slot >= ep->read_ring.depth) {
         return -FI_EINVAL;
@@ -1834,17 +2310,47 @@ int zc_ofi_rma_read_post(struct zc_ofi_endpoint *ep, void *buf, size_t len,
         return -EMSGSIZE;
     }
     void *desc = NULL;
-    int rc = zc_ofi_register_cached(ep, buf, len, FI_READ, &ep->read_mrs, &desc);
+    int rc = zc_ofi_rma_read_desc(ep, buf, len, &desc);
     if (rc) {
         return rc;
     }
-    struct zc_ofi_op *op =
-        zc_ofi_prepare_slot(ep, &ep->read_ring, slot, user_data);
+    struct zc_ofi_op *op = zc_ofi_prepare_read_slot(ep, slot, user_data);
     if (!op) {
         return ep->fatal_rc ? ep->fatal_rc : -FI_EBUSY;
     }
+    /* A full posting window cannot admit the next periodic marker until some
+     * reads retire.  Make the last real read in that window the fenced marker
+     * instead of forcing the polling side to issue a synthetic one-byte RMA
+     * read merely to close a partial stride.  Besides removing that provider
+     * operation, this guarantees progress when the configured stride exceeds
+     * the queue depth. */
+    int moderated = ep->rma_read_completion_stride > 1;
+    int periodic_marker = moderated && ep->rma_read_completion_remaining == 1;
+    int full_window_marker = moderated &&
+                             ep->read_ring.posted_count + 1 ==
+                                 ep->read_ring.depth;
+    int forced_marker = moderated && force_completion;
+    int completion_requested = !moderated ||
+                               periodic_marker || full_window_marker ||
+                               forced_marker;
+    if (moderated &&
+        (!ep->read_ring.posted_slots || !ep->read_ring.completion_groups ||
+         ep->read_ring.posted_count >= ep->read_ring.depth ||
+         (completion_requested &&
+          ep->read_ring.completion_group_count >= ep->read_ring.depth))) {
+        snprintf(ep->err, sizeof(ep->err),
+                 "OFI moderated read FIFO overflow slot=%zu posted=%zu groups=%zu depth=%zu",
+                 slot, ep->read_ring.posted_count,
+                 ep->read_ring.completion_group_count,
+                 ep->read_ring.depth);
+        ep->fatal_rc = -FI_EOVERFLOW;
+        zc_ofi_release_slot(&ep->read_ring, slot);
+        return -FI_EOVERFLOW;
+    }
+    op->len = len;
+    op->completion_requested = (uint8_t)completion_requested;
     rc = zc_ofi_read_post_call(ep, buf, len, desc, remote_addr, remote_key,
-                               &op->context);
+                               &op->context, completion_requested);
     if (rc) {
         zc_ofi_release_slot(&ep->read_ring, slot);
         if (rc == -FI_EAGAIN) {
@@ -1854,9 +2360,52 @@ int zc_ofi_rma_read_post(struct zc_ofi_endpoint *ep, void *buf, size_t len,
         }
         return zc_ofi_fail(ep, rc, "fi_read(async)");
     }
-    ep->read_mrs.posts_started = 1;
+    if (!ep->read_mrs.posts_started) {
+        ep->read_mrs.posts_started = 1;
+    }
+    if (moderated &&
+        ep->rma_read_completion_remaining ==
+            ep->rma_read_completion_stride) {
+        /* A synthetic fence, if a partial group ever needs the liveness
+         * fallback, may read any valid byte from that group. Preserve its
+         * address once at group open instead of dirtying two endpoint words
+         * for every 4 KiB operation. */
+        ep->rma_read_last_remote_addr = remote_addr;
+        ep->rma_read_last_remote_key = remote_key;
+    }
+    if (moderated) {
+        ep->read_ring.posted_slots[zc_ofi_ring_index(
+            ep->read_ring.posted_head, ep->read_ring.posted_count,
+            ep->read_ring.depth)] = slot;
+        ep->read_ring.posted_count++;
+        ep->read_ring.open_completion_group_count++;
+        if (completion_requested) {
+            size_t group_tail = zc_ofi_ring_index(
+                ep->read_ring.completion_group_head,
+                ep->read_ring.completion_group_count,
+                ep->read_ring.depth);
+            ep->read_ring.completion_groups[group_tail] =
+                ep->read_ring.open_completion_group_count;
+            ep->read_ring.completion_group_count++;
+            ep->read_ring.open_completion_group_count = 0;
+        }
+    }
     ep->read_ring.provider_inflight++;
     ep->read_ring.posts++;
+    if (moderated && completion_requested) {
+        /* Every fenced real read closes the outstanding unsignaled prefix.
+         * Restart the periodic budget at that boundary.  Besides matching
+         * the actual completion group, this avoids a runtime division on
+         * every RMA read. */
+        ep->rma_read_completion_remaining = ep->rma_read_completion_stride;
+        ep->rma_read_completion_markers_inflight++;
+        ep->rma_read_marker_posts++;
+        ep->rma_read_periodic_markers += periodic_marker ? 1 : 0;
+        ep->rma_read_full_window_markers += full_window_marker ? 1 : 0;
+        ep->rma_read_forced_markers += forced_marker ? 1 : 0;
+    } else if (moderated) {
+        ep->rma_read_completion_remaining--;
+    }
     return 0;
 }
 
@@ -1866,6 +2415,47 @@ int zc_ofi_rma_read_poll(struct zc_ofi_endpoint *ep, size_t *out_slots,
     if (!ep || !out_slots || !out_user_data || !out_count || capacity == 0 ||
         !ep->read_ring.ops || capacity > ep->read_ring.depth) {
         return -FI_EINVAL;
+    }
+    if (ep->rma_read_completion_stride > 1 &&
+        ep->rma_read_completion_remaining != ep->rma_read_completion_stride && wait &&
+        ep->rma_read_completion_markers_inflight == 0 &&
+        !ep->rma_read_flush_inflight) {
+        struct iovec local_iov = {
+            .iov_base = &ep->rma_read_flush_byte,
+            .iov_len = 1,
+        };
+        struct fi_rma_iov remote_iov = {
+            .addr = ep->rma_read_last_remote_addr,
+            .len = 1,
+            .key = ep->rma_read_last_remote_key,
+        };
+        void *descriptors[1] = {ep->rma_read_flush_desc};
+        struct fi_msg_rma message = {
+            .msg_iov = &local_iov,
+            .desc = descriptors,
+            .iov_count = 1,
+            .addr = ep->peer_addr,
+            .rma_iov = &remote_iov,
+            .rma_iov_count = 1,
+            .context = &ep->rma_read_flush_context,
+            .data = 0,
+        };
+        int flush_rc =
+            (int)fi_readmsg(ep->ep, &message, FI_FENCE | FI_COMPLETION);
+        if (flush_rc) {
+            return zc_ofi_fail(ep, flush_rc, "fi_readmsg(partial-read-fence)");
+        }
+        ep->rma_read_flush_inflight = 1;
+        ep->rma_read_flush_posts++;
+    }
+    if (ep->rma_read_completion_stride > 1 &&
+        ep->rma_read_completion_remaining != ep->rma_read_completion_stride &&
+        ep->rma_read_completion_markers_inflight == 0 &&
+        !ep->rma_read_flush_inflight) {
+        /* The next fenced marker has not been posted yet.  A blocking poll
+         * here would prevent the caller from admitting enough descriptors to
+         * close the group. */
+        wait = 0;
     }
     return zc_ofi_poll_ring(ep, &ep->read_ring, 0, out_slots,
                             out_user_data, NULL, NULL, capacity, out_count,
@@ -1968,15 +2558,15 @@ static int zc_ofi_post_send(struct zc_ofi_endpoint *ep, const void *buf,
         }
         ep->send_ring.post_eagain++;
         ep->send_ring.post_retries++;
-        size_t dispatched = 0;
-        int progress_rc = zc_ofi_dispatch_cq(ep, 0, &dispatched);
-        if (progress_rc) {
+        int dispatched = zc_ofi_dispatch_cq_counted(ep, 0);
+        if (dispatched < 0) {
             zc_ofi_release_slot(&ep->send_ring, slot);
-            return progress_rc;
+            return dispatched;
         }
         size_t reaped = 0;
-        progress_rc = zc_ofi_reap_ring(&ep->send_ring, NULL, NULL, NULL,
-                                       NULL, ep->send_ring.depth, &reaped);
+        int progress_rc = zc_ofi_reap_ring(
+            &ep->send_ring, NULL, NULL, NULL, NULL, ep->send_ring.depth,
+            &reaped);
         if (progress_rc) {
             zc_ofi_release_slot(&ep->send_ring, slot);
             return progress_rc;
@@ -2225,10 +2815,9 @@ int zc_ofi_rma_write(struct zc_ofi_endpoint *ep, const void *buf, size_t len,
         if (rc != -FI_EAGAIN) {
             break;
         }
-        size_t dispatched = 0;
-        rc = zc_ofi_dispatch_cq(ep, 0, &dispatched);
-        if (rc) {
-            return rc;
+        int dispatched = zc_ofi_dispatch_cq_counted(ep, 0);
+        if (dispatched < 0) {
+            return dispatched;
         }
         if (zc_ofi_poll_timed_out(ep, spins, start, timeout_ms)) {
             snprintf(ep->err, sizeof(ep->err),
@@ -2263,14 +2852,13 @@ int zc_ofi_rma_read(struct zc_ofi_endpoint *ep, void *buf, size_t len,
     uint64_t spins = 0;
     for (;;) {
         rc = zc_ofi_rma_read_post(ep, buf, len, remote_addr, remote_key,
-                                  slot, 0);
+                                  slot, 0, 0);
         if (rc != -FI_EAGAIN) {
             break;
         }
-        size_t dispatched = 0;
-        rc = zc_ofi_dispatch_cq(ep, 0, &dispatched);
-        if (rc) {
-            return rc;
+        int dispatched = zc_ofi_dispatch_cq_counted(ep, 0);
+        if (dispatched < 0) {
+            return dispatched;
         }
         if (zc_ofi_poll_timed_out(ep, spins, start, timeout_ms)) {
             snprintf(ep->err, sizeof(ep->err),
@@ -2625,10 +3213,9 @@ int zc_ofi_recv(struct zc_ofi_endpoint *ep, void *buf, size_t cap, size_t *out_l
         if (rc != -FI_EAGAIN) {
             break;
         }
-        size_t dispatched = 0;
-        rc = zc_ofi_dispatch_cq(ep, 1, &dispatched);
-        if (rc) {
-            return rc;
+        int dispatched = zc_ofi_dispatch_cq_counted(ep, 1);
+        if (dispatched < 0) {
+            return dispatched;
         }
         if (zc_ofi_poll_timed_out(ep, spins, start, timeout_ms)) {
             snprintf(ep->err, sizeof(ep->err),
@@ -2674,10 +3261,9 @@ int zc_ofi_recv_start(struct zc_ofi_endpoint *ep, void *buf, size_t cap, int tim
         if (rc != -FI_EAGAIN) {
             break;
         }
-        size_t dispatched = 0;
-        rc = zc_ofi_dispatch_cq(ep, 1, &dispatched);
-        if (rc) {
-            return rc;
+        int dispatched = zc_ofi_dispatch_cq_counted(ep, 1);
+        if (dispatched < 0) {
+            return dispatched;
         }
         if (zc_ofi_poll_timed_out(ep, spins, start, timeout_ms)) {
             snprintf(ep->err, sizeof(ep->err),

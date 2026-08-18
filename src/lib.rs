@@ -23,15 +23,21 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub mod block;
+pub mod change_log;
+pub mod cloud_topology;
 pub mod dirty_pool;
 pub mod enterprise_workload;
 pub mod fanout;
+pub mod ha_metadata;
 pub mod integrity_contract;
 mod io_slots;
 pub mod ofi_pipe;
 pub mod persistent_wal;
 pub mod racing_mirror;
 pub mod readcache_bench;
+pub mod topology;
+pub mod topology_controller;
+pub mod volume_partition;
 pub(crate) mod wal_contract;
 pub mod window;
 pub mod zcnblk_app_arena;
@@ -531,6 +537,7 @@ struct RawRingStats {
     cqes_popped: u64,
     try_pop_empty: u64,
     wait_cqe_calls: u64,
+    fused_submit_wait_calls: u64,
     submit_short: u64,
     cqe_spin_loops: u64,
     cqe_hot_poll_waits: u64,
@@ -1788,6 +1795,52 @@ impl RawRing {
 
     fn wait_cqe(&mut self) -> io::Result<IoUringCqe32> {
         self.wait_cqe_min(1)
+    }
+
+    fn submit_and_wait_cqe_min(&mut self, min_complete: u32) -> io::Result<IoUringCqe32> {
+        let min_complete = min_complete.max(1);
+        if self.pending_submit == 0 || self.sq_mode.is_sqpoll() || self.sq_mode.is_sq_rewind() {
+            return self.wait_cqe_min(min_complete);
+        }
+
+        let pending = self.pending_submit;
+        fence(Ordering::Release);
+        if self.stats_enabled {
+            self.stats.submit_syscalls = self.stats.submit_syscalls.saturating_add(1);
+            self.stats.wait_syscalls = self.stats.wait_syscalls.saturating_add(1);
+            self.stats.wait_cqe_calls = self.stats.wait_cqe_calls.saturating_add(1);
+            self.stats.fused_submit_wait_calls =
+                self.stats.fused_submit_wait_calls.saturating_add(1);
+        }
+        let ret = io_uring_enter(
+            self.enter_fd,
+            pending,
+            min_complete,
+            IORING_ENTER_GETEVENTS | self.enter_flags,
+        )?;
+        if ret <= 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "fused io_uring submit-and-wait submitted zero SQEs",
+            ));
+        }
+        let submitted = ret as u32;
+        if self.stats_enabled {
+            self.stats.sqes_submitted = self.stats.sqes_submitted.saturating_add(submitted as u64);
+            if submitted < pending {
+                self.stats.submit_short = self.stats.submit_short.saturating_add(1);
+            }
+        }
+        self.pending_submit = self.pending_submit.saturating_sub(submitted);
+        if self.pending_submit > 0 {
+            self.submit_pending()?;
+        }
+        if self.cq_ready() < min_complete {
+            return self.wait_cqe_min(min_complete);
+        }
+        Ok(self
+            .try_pop_cqe()
+            .expect("fused enter satisfied CQ minimum"))
     }
 
     fn wait_cqe_min(&mut self, min_complete: u32) -> io::Result<IoUringCqe32> {
@@ -10464,6 +10517,7 @@ unsafe extern "C" {
         remote_key: u64,
         slot: usize,
         user_data: u64,
+        force_completion: c_int,
     ) -> c_int;
     fn zc_ofi_rma_read_poll(
         ep: *mut ZcOfiRawEndpoint,
@@ -10549,8 +10603,11 @@ impl Drop for ZcOfiEndpoint {
 }
 
 fn zcofi_timeout_ms() -> c_int {
-    let timeout = env_usize_or("URING_PLAY_OFI_TIMEOUT_MS", 30_000).max(1);
-    c_int::try_from(timeout).unwrap_or(c_int::MAX)
+    static TIMEOUT_MS: OnceLock<c_int> = OnceLock::new();
+    *TIMEOUT_MS.get_or_init(|| {
+        let timeout = env_usize_or("URING_PLAY_OFI_TIMEOUT_MS", 30_000).max(1);
+        c_int::try_from(timeout).unwrap_or(c_int::MAX)
+    })
 }
 
 fn zcofi_cstring(value: &str, name: &str) -> io::Result<CString> {
@@ -11229,6 +11286,7 @@ impl ZcOfiEndpoint {
         remote_key: u64,
         slot: usize,
         user_data: u64,
+        force_completion: bool,
     ) -> io::Result<bool> {
         let rc = unsafe {
             zc_ofi_rma_read_post(
@@ -11239,6 +11297,7 @@ impl ZcOfiEndpoint {
                 remote_key,
                 slot,
                 user_data,
+                c_int::from(force_completion),
             )
         };
         if rc == -libc::EAGAIN {
@@ -11807,6 +11866,7 @@ impl ZcOfiEndpoint {
         _remote_key: u64,
         _slot: usize,
         _user_data: u64,
+        _force_completion: bool,
     ) -> io::Result<bool> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -12379,10 +12439,18 @@ impl ZcOfiMessageStream {
         remote_key: u64,
         slot: usize,
         user_data: u64,
+        force_completion: bool,
     ) -> io::Result<bool> {
         unsafe {
-            self.endpoint
-                .rma_read_post_raw(target, len, remote_addr, remote_key, slot, user_data)
+            self.endpoint.rma_read_post_raw(
+                target,
+                len,
+                remote_addr,
+                remote_key,
+                slot,
+                user_data,
+                force_completion,
+            )
         }
     }
 
@@ -12646,10 +12714,12 @@ mod zcnblk_ofi_message_stream_tests {
 
     #[test]
     #[ignore = "requires a local libfabric sockets provider with FI_RMA"]
-    fn queued_rma_reads_batch_local_cq_completions_by_stable_slot() {
+    fn queued_rma_reads_use_forced_real_tail_completion() {
         let _guard = ofi_test_guard();
         unsafe {
             env::set_var("URING_PLAY_OFI_CQ_SLEEP_NS", "0");
+            env::set_var("URING_PLAY_OFI_SELECTIVE_COMPLETION", "1");
+            env::set_var("URING_PLAY_OFI_RMA_READ_COMPLETION_STRIDE", "8");
             env::set_var("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", "65536");
         }
         const QD: usize = 4;
@@ -12698,6 +12768,7 @@ mod zcnblk_ofi_message_stream_tests {
                     key,
                     slot,
                     100 + slot as u64,
+                    slot + 1 == QD,
                 )
             }
             .unwrap();
@@ -12725,8 +12796,16 @@ mod zcnblk_ofi_message_stream_tests {
                 completed += 1;
             }
         }
+        let stats = client.endpoint.stats().unwrap();
+        assert!(stats.contains("rma_read_forced_markers=1"), "{stats}");
+        assert!(stats.contains("rma_read_flush_posts=0"), "{stats}");
+        assert!(stats.contains("rma_read_markers_inflight=0"), "{stats}");
         client.write_all(&[1]).unwrap();
         server.join().unwrap().unwrap();
+        unsafe {
+            env::remove_var("URING_PLAY_OFI_SELECTIVE_COMPLETION");
+            env::remove_var("URING_PLAY_OFI_RMA_READ_COMPLETION_STRIDE");
+        }
     }
 
     #[test]
@@ -12883,6 +12962,7 @@ mod zcnblk_ofi_message_stream_tests {
                     key,
                     0,
                     301,
+                    false,
                 )
             }
             .unwrap()
@@ -14697,6 +14777,7 @@ impl ZcOfiRmaReadLane {
                     self.meta.remote_key,
                     slot,
                     token,
+                    false,
                 )?
             };
             if !posted {
@@ -15731,6 +15812,9 @@ fn zcofi_wal_sender_worker(
                     extents += 1;
                     records += record_count as usize;
                 }
+                if ack_enabled {
+                    ep.recv_start(&mut ack_buf)?;
+                }
                 if use_payload_inject {
                     for slot in 0..batch {
                         let slot_start = slot * message_bytes;
@@ -15748,7 +15832,7 @@ fn zcofi_wal_sender_worker(
                 if ack_enabled {
                     let mut next_ack_seq = seq_base;
                     while next_ack_seq < seq_base + batch {
-                        let got = ep.recv(&mut ack_buf)?;
+                        let got = ep.recv_finish()?;
                         if got != ZC_WAL_ACK_HEADER_LEN {
                             return Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
@@ -15773,6 +15857,9 @@ fn zcofi_wal_sender_worker(
                         }
                         acks += 1;
                         next_ack_seq += covered;
+                        if next_ack_seq < seq_base + batch {
+                            ep.recv_start(&mut ack_buf)?;
+                        }
                     }
                 }
                 seq_base += batch;
@@ -15883,6 +15970,43 @@ fn zcofi_wal_sender_worker(
     })
 }
 
+fn zcofi_wal_post_receive_batch(
+    ep: &mut ZcOfiEndpoint,
+    arena: &mut [u8],
+    message_bytes: usize,
+    sequence_base: usize,
+    batch: usize,
+) -> io::Result<()> {
+    for slot in 0..batch {
+        let offset = slot.checked_mul(message_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "OFI receive slot offset overflow",
+            )
+        })?;
+        let sequence = sequence_base.checked_add(slot).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "OFI receive sequence overflow")
+        })?;
+        let posted = unsafe {
+            ep.recv_post_raw(
+                arena.as_mut_ptr().add(offset),
+                message_bytes,
+                slot,
+                sequence as u64,
+            )?
+        };
+        if !posted {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!(
+                    "OFI receive queue rejected prepost slot={slot} sequence={sequence} batch={batch}"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn zcofi_wal_recv_worker(
     worker: usize,
     provider: Arc<String>,
@@ -15940,9 +16064,32 @@ fn zcofi_wal_recv_worker(
     let ack_inject = ack_enabled && env_enabled_or("URING_PLAY_OFI_ACK_INJECT", false);
     let requested_ack_window = zcofi_ack_window();
     let ack_window = if ack_enabled { requested_ack_window } else { 1 };
+    let queued_receive = ack_window > 1;
     let mut ack_buf = [0u8; ZC_WAL_ACK_HEADER_LEN];
+    let mut receive_slots = if queued_receive {
+        vec![
+            0u8;
+            ack_window.checked_mul(message_bytes).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "OFI receive arena size overflow",
+                )
+            })?
+        ]
+    } else {
+        Vec::new()
+    };
+    let mut completion_slots = vec![0usize; ack_window];
+    let mut completion_tokens = vec![0u64; ack_window];
+    let mut completion_lengths = vec![0usize; ack_window];
+    let mut completion_sources = vec![0u64; ack_window];
     for (_, ep) in &mut endpoints {
-        ep.register_recv_buffer(&mut message)?;
+        if queued_receive {
+            ep.register_recv_buffer(&mut receive_slots)?;
+            ep.recv_queue_init(ack_window)?;
+        } else {
+            ep.register_recv_buffer(&mut message)?;
+        }
         if ack_enabled {
             ep.register_send_buffer(&ack_buf)?;
         }
@@ -15957,6 +16104,163 @@ fn zcofi_wal_recv_worker(
     for (spec, mut ep) in endpoints {
         let mut expected_logical = 0u64;
         let mut seq_base = 0usize;
+        if queued_receive {
+            let mut batch = ack_window.min(extents_per_lane);
+            zcofi_wal_post_receive_batch(
+                &mut ep,
+                &mut receive_slots,
+                message_bytes,
+                seq_base,
+                batch,
+            )?;
+            while seq_base < extents_per_lane {
+                let mut headers = vec![None; batch];
+                let mut completed = 0usize;
+                while completed < batch {
+                    let count = ep.recv_poll(
+                        &mut completion_slots[..batch],
+                        &mut completion_tokens[..batch],
+                        &mut completion_lengths[..batch],
+                        &mut completion_sources[..batch],
+                        true,
+                    )?;
+                    for completion in 0..count {
+                        let physical_slot = completion_slots[completion];
+                        if physical_slot >= batch || completion_lengths[completion] != message_bytes
+                        {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "OFI queued receive completion mismatch lane={} slot={} len={} expected_len={message_bytes} batch={batch}",
+                                    spec.lane, physical_slot, completion_lengths[completion]
+                                ),
+                            ));
+                        }
+                        let slot_start = physical_slot * message_bytes;
+                        let slot_message = &receive_slots[slot_start..slot_start + message_bytes];
+                        let header = if compact_4k {
+                            let sequence =
+                                usize::try_from(completion_tokens[completion]).map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "OFI receive token does not fit usize",
+                                    )
+                                })?;
+                            ZcWalExtentHeader {
+                                flags: 0,
+                                lane_id: spec.lane as u32,
+                                lane_count: lane_count as u32,
+                                shard_id: spec.lane as u32,
+                                record_size: ZC_WAL_RECORD_SIZE as u32,
+                                record_count: 1,
+                                payload_len: extent_bytes as u32,
+                                table_len: 0,
+                                base_logical_index: sequence as u64,
+                                extent_sequence: sequence as u64,
+                                base_wal_offset: (sequence * extent_bytes) as u64,
+                                wal_epoch: 0,
+                                descriptor_id: ((spec.lane as u64) << 32) | sequence as u64,
+                                payload_crc32c: 0,
+                            }
+                        } else {
+                            let mut header_buf = [0u8; ZC_WAL_EXTENT_HEADER_LEN];
+                            header_buf.copy_from_slice(&slot_message[..ZC_WAL_EXTENT_HEADER_LEN]);
+                            ZcWalExtentHeader::decode(&header_buf)?
+                        };
+                        let sequence = usize::try_from(header.extent_sequence).map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "OFI extent sequence does not fit usize",
+                            )
+                        })?;
+                        if sequence < seq_base || sequence >= seq_base + batch {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "OFI queued receive sequence outside batch lane={} seq={} batch={}..{}",
+                                    spec.lane,
+                                    sequence,
+                                    seq_base,
+                                    seq_base + batch
+                                ),
+                            ));
+                        }
+                        let logical = (sequence * (extent_bytes / ZC_WAL_RECORD_SIZE)) as u64;
+                        if header.flags & ZC_WAL_EXTENT_F_STREAM_FRAME != 0
+                            || header.lane_id as usize != spec.lane
+                            || header.lane_count as usize != lane_count
+                            || header.shard_id != header.lane_id
+                            || header.record_size != ZC_WAL_RECORD_SIZE as u32
+                            || header.payload_len as usize != extent_bytes
+                            || header.record_count as usize != extent_bytes / ZC_WAL_RECORD_SIZE
+                            || header.table_len != 0
+                            || header.base_logical_index != logical
+                        {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "OFI queued WAL header mismatch lane={} seq={} base={} expected_base={logical}",
+                                    spec.lane, sequence, header.base_logical_index
+                                ),
+                            ));
+                        }
+                        let relative = sequence - seq_base;
+                        if headers[relative].replace(header).is_some() {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "OFI queued receive duplicate lane={} seq={sequence}",
+                                    spec.lane
+                                ),
+                            ));
+                        }
+                        payload_bytes += extent_bytes;
+                        wire_bytes += message_bytes;
+                        extents += 1;
+                        records += header.record_count as usize;
+                    }
+                    completed += count;
+                }
+
+                let first = headers[0].ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "OFI receive missing first extent",
+                    )
+                })?;
+                let last = headers[batch - 1].ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "OFI receive missing last extent",
+                    )
+                })?;
+                let next_seq_base = seq_base + batch;
+                let next_batch = ack_window.min(extents_per_lane - next_seq_base);
+                if next_batch > 0 {
+                    zcofi_wal_post_receive_batch(
+                        &mut ep,
+                        &mut receive_slots,
+                        message_bytes,
+                        next_seq_base,
+                        next_batch,
+                    )?;
+                }
+                let ack = zcofi_relay_make_range_ack(
+                    zcofi_ack_from_extent_header(first),
+                    zcofi_ack_from_extent_header(last),
+                )?;
+                ack_buf.copy_from_slice(&ack.encode());
+                if ack_inject && ack_buf.len() <= ep.inject_size() {
+                    ep.inject_to_last(&ack_buf)?;
+                } else {
+                    ep.send_to_last(&ack_buf)?;
+                }
+                acks += 1;
+                seq_base = next_seq_base;
+                batch = next_batch;
+            }
+            continue;
+        }
         while seq_base < extents_per_lane {
             let batch = ack_window.min(extents_per_lane - seq_base);
             let mut first_ack = None;
@@ -16162,7 +16466,7 @@ fn zcofi_wal_send(
         yes(tx_nowait_requested),
         yes(tx_nowait_requested && !windowed_acks),
         yes(prepost_ack_requested),
-        yes(prepost_ack_requested && !windowed_acks),
+        yes(ack_enabled && (windowed_acks || prepost_ack_requested)),
         yes(compact_4k),
         yes(!compact_4k),
         yes(env_enabled_or("URING_PLAY_OFI_PAYLOAD_INJECT", false)),
@@ -16252,7 +16556,8 @@ fn zcofi_wal_recv(
     let workers = tcp_bench_auto_workers(workers, lanes);
     let message_bytes = zcofi_wal_message_bytes(provider, extent_bytes, ack_enabled);
     let compact_4k = zcofi_compact_4k_enabled(provider, extent_bytes, ack_enabled);
-    zcofi_queue_depth_preflight("zcofi-wal-recv", 1, 1)?;
+    let per_lane_rx_qd = if ack_enabled { zcofi_ack_window() } else { 1 };
+    zcofi_queue_depth_preflight("zcofi-wal-recv", 1, per_lane_rx_qd)?;
     zcofi_report_wire_profile("zcofi-wal-recv", provider, extent_bytes, ack_enabled);
     zcwal_extent_perf_warnings("zcofi-wal-recv", lanes, 1, workers)?;
     zcofi_perf_contract_warnings(
@@ -16267,7 +16572,6 @@ fn zcofi_wal_recv(
     let lane_ids = (0..lanes).collect::<Vec<_>>();
     let domain = env::var("URING_PLAY_OFI_DOMAIN").unwrap_or_else(|_| "auto".to_string());
     zcofi_print_lane_worker_cpu_map("zcofi-wal-recv", &lane_ids, workers, &domain);
-    let per_lane_rx_qd = 1usize;
     println!(
         "zcofi-wal-recv: provider={provider} endpoint={endpoint} bind={bind} \
          base_service={base_service} lanes={lanes} bytes_per_lane={bytes_per_lane} \
@@ -34495,6 +34799,47 @@ const ZCNBLK_FAN_WAL_FLAG_OFI_RMA_READ_RESULT: u16 = 1 << 6;
 const ZCNBLK_FAN_WAL_FLAG_TOPOLOGY_INTEGRITY_ADMITTED: u16 = 1 << 7;
 const ZCNBLK_FAN_WAL_COMPACT_WRITE_EXTENT_LEN: usize = 48;
 
+fn zcnblk_fan_wal_mark_direct_memory_write_layout(
+    mut batch: ZcnblkFanWalFrame,
+    descriptor_bytes: &[u8],
+) -> io::Result<ZcnblkFanWalFrame> {
+    if batch.op != ZCNBLK_FAN_WAL_OP_REQUEST_BATCH
+        || descriptor_bytes.len()
+            != (batch.segment_count as usize)
+                .checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fan WAL direct-layout descriptor size overflow",
+                    )
+                })?
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "fan WAL direct-layout marker requires a complete request descriptor table",
+        ));
+    }
+    for descriptor in descriptor_bytes.chunks_exact(ZCNBLK_FAN_WAL_HEADER_LEN) {
+        let frame = zcnblk_fan_wal_decode_frame_slice(descriptor)?;
+        match frame.op {
+            ZCNBLK_FAN_WAL_OP_WRITE_DESC => {
+                if frame.io_contract()?.atomic_write {
+                    return Ok(batch);
+                }
+            }
+            ZCNBLK_FAN_WAL_OP_READ_DESC => {}
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fan WAL request descriptor table contains an unsupported operation",
+                ));
+            }
+        }
+    }
+    batch.flags |= ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT;
+    Ok(batch)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ZcnblkFanEngine {
     Sync,
@@ -42137,6 +42482,7 @@ fn zcnblk_fan_wal_submit_request_batch(
                 ),
                 plan,
             );
+            let batch = zcnblk_fan_wal_mark_direct_memory_write_layout(batch, &descriptor_bytes)?;
             phase.leaf_prepare = phase.leaf_prepare.saturating_add(phase_started.elapsed());
             if let Some(leaves) = leaves.as_deref_mut() {
                 let phase_started = Instant::now();
@@ -42514,8 +42860,10 @@ fn zcnblk_fan_wal_sync_local_leaves(
     let Some(local_leaves) = local_leaves else {
         return Ok(());
     };
+    let allow_volatile_sync =
+        env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC", false);
     for (leaf_idx, backend) in local_leaves.iter().enumerate() {
-        backend.sync(false).map_err(|err| {
+        backend.sync(allow_volatile_sync).map_err(|err| {
             io::Error::new(
                 err.kind(),
                 format!(
@@ -45600,6 +45948,12 @@ fn zcnblk_fan_wal_write_merged_async_leaf_batches(
             let mut payload_len = 0usize;
             while group_end < owned_batches.len() {
                 let owned = &owned_batches[group_end];
+                if group_end > group_start
+                    && (frame.flags & ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT)
+                        != (owned.frame.flags & ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT)
+                {
+                    break;
+                }
                 if !compatible(frame, owned.frame) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -54959,11 +55313,7 @@ fn zcnblk_wal_leaf_ring_label(options: RawRingOptions) -> String {
     }
 }
 
-fn zcnblk_wal_leaf_lane_env(
-    name: &str,
-    lane: usize,
-    lanes: usize,
-) -> io::Result<Option<String>> {
+fn zcnblk_wal_leaf_lane_env(name: &str, lane: usize, lanes: usize) -> io::Result<Option<String>> {
     let Ok(value) = env::var(name) else {
         return Ok(None);
     };
@@ -54978,9 +55328,7 @@ fn zcnblk_wal_leaf_lane_env(
         count if count == lanes => Ok(Some(entries[lane].to_string())),
         count => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!(
-                "{name} must contain one entry or one per lane: got {count} for {lanes} lanes"
-            ),
+            format!("{name} must contain one entry or one per lane: got {count} for {lanes} lanes"),
         )),
     }
 }
@@ -54990,8 +55338,10 @@ fn zcnblk_wal_leaf_lane_domain(lane: usize, lanes: usize) -> io::Result<Option<S
 }
 
 fn zcnblk_wal_leaf_lane_bind(bind: &str, lane: usize, lanes: usize) -> io::Result<String> {
-    Ok(zcnblk_wal_leaf_lane_env("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ADDRS", lane, lanes)?
-        .unwrap_or_else(|| bind.to_string()))
+    Ok(
+        zcnblk_wal_leaf_lane_env("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ADDRS", lane, lanes)?
+            .unwrap_or_else(|| bind.to_string()),
+    )
 }
 
 fn zcnblk_wal_leaf_spin_reads_enabled() -> bool {
@@ -59891,15 +60241,124 @@ fn raft_follower(
     Ok(())
 }
 
+/// Persistent metadata-replica benchmark. Unlike `raft-follower`, an ACK from
+/// this endpoint means the complete prefix through that index has passed
+/// `fdatasync` on the explicitly named WAL file.
+fn raft_durable_follower(
+    wal_path: &Path,
+    bind: &str,
+    port: u16,
+    expected_entries: u64,
+    expected_payload_bytes: usize,
+    sync_stride: u64,
+) -> io::Result<()> {
+    if expected_entries == 0 || sync_stride == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "raft-durable-follower entries and sync-stride must be nonzero",
+        ));
+    }
+    let mut wal = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_CLOEXEC)
+        .open(wal_path)?;
+    let listener = TcpListener::bind((bind, port))?;
+    println!(
+        "raft-durable-follower: listening on {bind}:{port} wal={} \
+         expected_entries={expected_entries} payload_bytes={expected_payload_bytes} \
+         sync_stride={sync_stride} ack_contract=fdatasync-prefix",
+        wal_path.display()
+    );
+    let (mut stream, peer_addr) = listener.accept()?;
+    stream.set_nodelay(true)?;
+    println!("raft-durable-follower: accepted {peer_addr}");
+
+    let started = Instant::now();
+    let mut header = [0u8; RAFT_APPEND_HEADER_LEN];
+    let mut payload = vec![0u8; expected_payload_bytes.max(1)];
+    let mut durable_batch = Vec::new();
+    let mut entries = 0u64;
+    let mut syncs = 0u64;
+    let mut payload_bytes = 0u64;
+    while entries < expected_entries {
+        stream.read_exact(&mut header)?;
+        if &header[..8] != RAFT_APPEND_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid durable Raft append magic",
+            ));
+        }
+        let index = parse_be_u64(&header[16..24]);
+        let payload_len = parse_be_u32(&header[24..28]) as usize;
+        if index != entries + 1 || payload_len != expected_payload_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "non-contiguous or malformed durable append: index={index} \
+                     expected_index={} payload={payload_len}/{expected_payload_bytes}",
+                    entries + 1
+                ),
+            ));
+        }
+        stream.read_exact(&mut payload[..payload_len])?;
+        durable_batch.extend_from_slice(&header);
+        durable_batch.extend_from_slice(&payload[..payload_len]);
+        entries += 1;
+        payload_bytes += payload_len as u64;
+        if entries % sync_stride == 0 || entries == expected_entries {
+            wal.write_all(&durable_batch)?;
+            wal.sync_data()?;
+            syncs += 1;
+            durable_batch.clear();
+            stream.write_all(&raft_ack_frame(index))?;
+        }
+    }
+    let wal_bytes = wal.stream_position()?;
+    let elapsed = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    println!(
+        "raft-durable-follower: ok wal={} entries={entries} payload_bytes={payload_bytes} \
+         wal_bytes={wal_bytes} syncs={syncs} sync_stride={sync_stride} \
+         seconds={elapsed:.6} entries_per_sec={:.0} syncs_per_sec={:.0} \
+         ack_contract=fdatasync-prefix",
+        wal_path.display(),
+        entries as f64 / elapsed,
+        syncs as f64 / elapsed
+    );
+    Ok(())
+}
+
 fn raft_replicate_to_peer(
     peer: String,
     entries: u64,
     payload_bytes: usize,
-    ack_stride: u64,
+    _ack_stride: u64,
 ) -> io::Result<(String, u64, u64, f64)> {
     let mut stream = TcpStream::connect(&peer)?;
     stream.set_nodelay(true)?;
     let started = Instant::now();
+    // ACKs must be drained while appends are being written. Waiting to read
+    // until the entire stream is sent can deadlock once the follower's reverse
+    // socket buffer fills (especially with ack_stride=1).
+    let expected_last_ack = entries;
+    let mut ack_stream = stream.try_clone()?;
+    let ack_peer = peer.clone();
+    let ack_reader = thread::spawn(move || -> io::Result<()> {
+        let mut ack = [0u8; RAFT_ACK_LEN];
+        let mut last_ack = 0u64;
+        while last_ack < expected_last_ack {
+            ack_stream.read_exact(&mut ack)?;
+            if &ack[..8] != RAFT_ACK_MAGIC {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid raft ack magic from {ack_peer}"),
+                ));
+            }
+            last_ack = parse_be_u64(&ack[8..16]);
+        }
+        Ok(())
+    });
     let payload = vec![0xa5u8; payload_bytes];
     let mut batch = Vec::with_capacity((payload_bytes + RAFT_APPEND_HEADER_LEN) * 64);
     let batch_limit = 4 * 1024 * 1024usize;
@@ -59920,28 +60379,97 @@ fn raft_replicate_to_peer(
         wire_bytes += batch.len() as u64;
     }
     stream.shutdown(Shutdown::Write)?;
-
-    let expected_last_ack = entries - (entries % ack_stride.max(1));
-    let expected_last_ack = if expected_last_ack == 0 {
-        entries
-    } else {
-        entries.max(expected_last_ack)
-    };
-    let mut ack = [0u8; RAFT_ACK_LEN];
-    let mut last_ack = 0u64;
-    while last_ack < expected_last_ack {
-        stream.read_exact(&mut ack)?;
-        if &ack[..8] != RAFT_ACK_MAGIC {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid raft ack magic from {peer}"),
-            ));
-        }
-        last_ack = parse_be_u64(&ack[8..16]);
-    }
+    ack_reader
+        .join()
+        .map_err(|_| io::Error::other("raft ACK reader panicked"))??;
 
     let elapsed = started.elapsed().as_secs_f64();
     Ok((peer, entries, wire_bytes, elapsed))
+}
+
+fn raft_persist_generated_wal(
+    wal_path: &Path,
+    entries: u64,
+    payload_bytes: usize,
+    sync_stride: u64,
+) -> io::Result<f64> {
+    if entries == 0 || sync_stride == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "durable Raft leader entries and sync-stride must be nonzero",
+        ));
+    }
+    let mut wal = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_CLOEXEC)
+        .open(wal_path)?;
+    let payload = vec![0xa5u8; payload_bytes];
+    let mut batch = Vec::new();
+    let started = Instant::now();
+    let mut syncs = 0u64;
+    for index in 1..=entries {
+        batch.extend_from_slice(&raft_append_header(index, payload_bytes)?);
+        batch.extend_from_slice(&payload);
+        if index % sync_stride == 0 || index == entries {
+            wal.write_all(&batch)?;
+            wal.sync_data()?;
+            batch.clear();
+            syncs += 1;
+        }
+    }
+    let elapsed = started.elapsed().as_secs_f64().max(f64::MIN_POSITIVE);
+    println!(
+        "raft-durable-leader-local: wal={} entries={entries} syncs={syncs} \
+         sync_stride={sync_stride} seconds={elapsed:.6} entries_per_sec={:.0} \
+         completion=fdatasync-prefix",
+        wal_path.display(),
+        entries as f64 / elapsed
+    );
+    Ok(elapsed)
+}
+
+fn raft_inspect_durable_wal(wal_path: &Path, expected_payload_bytes: usize) -> io::Result<()> {
+    let file = OpenOptions::new().read(true).open(wal_path)?;
+    let wal_bytes = file.metadata()?.len();
+    let mut reader = BufReader::new(file);
+    let mut header = [0u8; RAFT_APPEND_HEADER_LEN];
+    let mut payload = vec![0u8; expected_payload_bytes.max(1)];
+    let mut entries = 0u64;
+    loop {
+        let first = reader.read(&mut header[..1])?;
+        if first == 0 {
+            break;
+        }
+        reader.read_exact(&mut header[1..])?;
+        if &header[..8] != RAFT_APPEND_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid durable WAL magic after entry {entries}"),
+            ));
+        }
+        let index = parse_be_u64(&header[16..24]);
+        let payload_len = parse_be_u32(&header[24..28]) as usize;
+        if index != entries + 1 || payload_len != expected_payload_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "invalid durable WAL frame index={index} expected={} \
+                     payload={payload_len}/{expected_payload_bytes}",
+                    entries + 1
+                ),
+            ));
+        }
+        reader.read_exact(&mut payload[..payload_len])?;
+        entries += 1;
+    }
+    println!(
+        "raft-durable-inspect: ok wal={} entries={entries} last_index={entries} \
+         payload_bytes={expected_payload_bytes} wal_bytes={wal_bytes} framing=contiguous",
+        wal_path.display()
+    );
+    Ok(())
 }
 
 fn raft_leader(
@@ -59949,6 +60477,7 @@ fn raft_leader(
     entries: u64,
     payload_bytes: usize,
     ack_stride: u64,
+    local_wal: Option<&Path>,
 ) -> io::Result<()> {
     if entries == 0 {
         return Err(io::Error::new(
@@ -59977,28 +60506,75 @@ fn raft_leader(
         payload_bytes,
         ack_stride
     );
+    let configured_peer_count = peers.len();
     let started = Instant::now();
     let mut handles = Vec::with_capacity(peers.len());
     for peer in peers {
-        handles.push(thread::spawn(move || {
-            raft_replicate_to_peer(peer, entries, payload_bytes, ack_stride)
-        }));
+        let peer_label = peer.clone();
+        handles.push((
+            peer_label,
+            thread::spawn(move || raft_replicate_to_peer(peer, entries, payload_bytes, ack_stride)),
+        ));
     }
+    let local_handle = local_wal.map(|path| {
+        let path = path.to_path_buf();
+        thread::spawn(move || raft_persist_generated_wal(&path, entries, payload_bytes, ack_stride))
+    });
 
     let mut total_wire_bytes = 0u64;
-    for handle in handles {
-        let (peer, peer_entries, wire_bytes, elapsed) = handle
-            .join()
-            .map_err(|_| io::Error::other("raft peer thread panicked"))??;
-        total_wire_bytes += wire_bytes;
-        println!(
-            "raft-leader: peer={peer} ok entries={peer_entries} wire_bytes={wire_bytes} \
-             seconds={elapsed:.6} MiBps={:.2}",
-            (wire_bytes as f64 / (1024.0 * 1024.0)) / elapsed.max(f64::MIN_POSITIVE)
-        );
+    let mut peer_elapsed = Vec::with_capacity(handles.len());
+    let mut failed_peers = 0usize;
+    for (peer_label, handle) in handles {
+        match handle.join() {
+            Ok(Ok((peer, peer_entries, wire_bytes, elapsed))) => {
+                total_wire_bytes += wire_bytes;
+                peer_elapsed.push(elapsed);
+                println!(
+                    "raft-leader: peer={peer} ok entries={peer_entries} wire_bytes={wire_bytes} \
+                     seconds={elapsed:.6} MiBps={:.2}",
+                    (wire_bytes as f64 / (1024.0 * 1024.0)) / elapsed.max(f64::MIN_POSITIVE)
+                );
+            }
+            Ok(Err(error)) => {
+                failed_peers += 1;
+                eprintln!("raft-leader: peer={peer_label} unavailable error={error}");
+            }
+            Err(_) => {
+                failed_peers += 1;
+                eprintln!("raft-leader: peer={peer_label} unavailable error=worker-panicked");
+            }
+        }
     }
 
     let elapsed = started.elapsed().as_secs_f64();
+    let local_elapsed = local_handle
+        .map(|handle| {
+            handle
+                .join()
+                .map_err(|_| io::Error::other("durable Raft leader WAL thread panicked"))?
+        })
+        .transpose()?;
+    let durable = local_elapsed.is_some();
+    let mut voter_elapsed = peer_elapsed.clone();
+    if let Some(elapsed) = local_elapsed {
+        voter_elapsed.push(elapsed);
+    } else {
+        voter_elapsed.push(0.0);
+    }
+    voter_elapsed.sort_by(f64::total_cmp);
+    let voter_count = configured_peer_count + 1;
+    let majority = voter_count / 2 + 1;
+    let available_voters = voter_elapsed.len();
+    if available_voters < majority {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            format!(
+                "Raft quorum unavailable: available_voters={available_voters} \
+                 majority={majority} configured_voters={voter_count}"
+            ),
+        ));
+    }
+    let majority_elapsed = voter_elapsed[majority - 1];
     println!(
         "raft-leader: ok peers={} total_wire_bytes={} seconds={elapsed:.6} MiBps={:.2}",
         peers_csv
@@ -60007,6 +60583,18 @@ fn raft_leader(
             .count(),
         total_wire_bytes,
         (total_wire_bytes as f64 / (1024.0 * 1024.0)) / elapsed.max(f64::MIN_POSITIVE)
+    );
+    println!(
+        "raft-leader-majority: voters={voter_count} majority={majority} \
+         available_voters={available_voters} failed_peers={failed_peers} durable={durable} \
+         seconds={majority_elapsed:.6} entries_per_sec={:.0} \
+         completion={}",
+        entries as f64 / majority_elapsed.max(f64::MIN_POSITIVE),
+        if durable {
+            "majority-fdatasync-prefix"
+        } else {
+            "transport-ack"
+        }
     );
     Ok(())
 }
@@ -64425,6 +65013,55 @@ EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_grou
     }
 
     #[test]
+    fn zcnblk_fan_wal_marks_non_atomic_request_batches_for_direct_memory_receive() {
+        let descriptor = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+            payload_len: 4096,
+            logical_len: 4096,
+            ..ZcnblkFanWalFrame::default()
+        }
+        .encode();
+        let batch = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_REQUEST_BATCH,
+            segment_count: 1,
+            payload_len: (ZCNBLK_FAN_WAL_HEADER_LEN + 4096) as u32,
+            ..ZcnblkFanWalFrame::default()
+        };
+        let marked = zcnblk_fan_wal_mark_direct_memory_write_layout(batch, &descriptor).unwrap();
+        assert_ne!(
+            marked.flags & ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT,
+            0
+        );
+    }
+
+    #[test]
+    fn zcnblk_fan_wal_keeps_atomic_request_batches_on_submit_path() {
+        let descriptor = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+            payload_len: 4096,
+            logical_len: 4096,
+            ..ZcnblkFanWalFrame::default()
+        }
+        .with_io_contract(ZcnblkWalIoContract {
+            atomic_write: true,
+            ..ZcnblkWalIoContract::default()
+        })
+        .unwrap()
+        .encode();
+        let batch = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_REQUEST_BATCH,
+            segment_count: 1,
+            payload_len: (ZCNBLK_FAN_WAL_HEADER_LEN + 4096) as u32,
+            ..ZcnblkFanWalFrame::default()
+        };
+        let marked = zcnblk_fan_wal_mark_direct_memory_write_layout(batch, &descriptor).unwrap();
+        assert_eq!(
+            marked.flags & ZCNBLK_FAN_WAL_FLAG_DIRECT_MEMORY_WRITE_LAYOUT,
+            0
+        );
+    }
+
+    #[test]
     fn zcnblk_fan_wal_request_round_trips_all_io_contract_fields() {
         let contract = ZcnblkWalIoContract {
             fua: true,
@@ -66433,6 +67070,29 @@ EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_grou
         let frame = raft_wal_frame_bytes(4096).unwrap();
         assert_eq!(frame, 4096 + RAFT_APPEND_HEADER_LEN);
         assert_eq!(raft_wal_entry_bytes(frame).unwrap(), 4608);
+    }
+
+    #[test]
+    fn durable_raft_wal_replays_contiguous_frames_and_rejects_torn_tail() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = env::temp_dir().join(format!(
+            "zc-raft-durable-{}-{nonce}.wal",
+            std::process::id()
+        ));
+        raft_persist_generated_wal(&path, 17, 64, 4).unwrap();
+        raft_inspect_durable_wal(&path, 64).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), 17 * 96);
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(17 * 96 - 1)
+            .unwrap();
+        assert!(raft_inspect_durable_wal(&path, 64).is_err());
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -70819,6 +71479,7 @@ fn zcblockbench_uring_fixed_worker(
         env_usize_or("URING_PLAY_BLOCKBENCH_COMPLETION_BATCH", 64).clamp(1, pipeline);
     let wait_min_completions =
         env_usize_or("URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS", 1).clamp(1, completion_batch);
+    let fused_submit_wait = env_enabled_or("URING_PLAY_BLOCKBENCH_FUSED_SUBMIT_WAIT", false);
     let chunk_bytes_u32 = u32::try_from(chunk_bytes).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -70917,21 +71578,25 @@ fn zcblockbench_uring_fixed_worker(
             submitted += 1;
         }
 
-        ring.submit_pending()?;
+        if !fused_submit_wait {
+            ring.submit_pending()?;
+        }
         for batch_idx in 0..completion_batch {
             let cqe = if batch_idx == 0 {
-                match ring.try_pop_cqe() {
-                    Some(cqe) => cqe,
-                    None => {
-                        let outstanding = submitted.saturating_sub(completed).max(1);
-                        ring.wait_cqe_min(
-                            u32::try_from(wait_min_completions.min(outstanding)).map_err(|_| {
-                                io::Error::new(
-                                    io::ErrorKind::InvalidInput,
-                                    "zcblockbench wait minimum exceeds u32",
-                                )
-                            })?,
-                        )?
+                let outstanding = submitted.saturating_sub(completed).max(1);
+                let wait_min =
+                    u32::try_from(wait_min_completions.min(outstanding)).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "zcblockbench wait minimum exceeds u32",
+                        )
+                    })?;
+                if fused_submit_wait {
+                    ring.submit_and_wait_cqe_min(wait_min)?
+                } else {
+                    match ring.try_pop_cqe() {
+                        Some(cqe) => cqe,
+                        None => ring.wait_cqe_min(wait_min)?,
                     }
                 }
             } else {
@@ -71584,6 +72249,7 @@ fn zcblockbench_print_results(
     if results.iter().any(|result| result.ring_stats_enabled) {
         println!(
             "zcblockbench-ring: workers={} submit_syscalls={} wait_cqe_calls={} \
+             fused_submit_wait_calls={} \
              wait_syscalls={} cqes_popped={} try_pop_empty={} cqe_spin_loops={} \
              cqe_adaptive_grows={} cqe_adaptive_shrinks={} \
              cqe_adaptive_spin_max_seen={} cqe_final_spin_max={}",
@@ -71595,6 +72261,10 @@ fn zcblockbench_print_results(
             results
                 .iter()
                 .map(|result| result.ring_stats.wait_cqe_calls)
+                .sum::<u64>(),
+            results
+                .iter()
+                .map(|result| result.ring_stats.fused_submit_wait_calls)
                 .sum::<u64>(),
             results
                 .iter()
@@ -99986,6 +100656,53 @@ pub fn main_entry() -> io::Result<()> {
                 path_kind,
             )
         }
+        Some("raft-durable-follower") => {
+            let wal_path = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: raft-durable-follower <new-wal-file> <bind> [port] \
+                     [entries] [payload-bytes] [sync-stride]",
+                )
+            })?;
+            let bind = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "raft-durable-follower requires a bind address",
+                )
+            })?;
+            let port = args
+                .next()
+                .map(|value| value.parse::<u16>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(9100);
+            let entries = args
+                .next()
+                .map(|value| value.parse::<u64>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(4096);
+            let payload_bytes = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(64);
+            let sync_stride = args
+                .next()
+                .map(|value| value.parse::<u64>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(64);
+            raft_durable_follower(
+                Path::new(&wal_path),
+                &bind,
+                port,
+                entries,
+                payload_bytes,
+                sync_stride,
+            )
+        }
         Some("raft-follower") => {
             let bind = args.next().ok_or_else(|| {
                 io::Error::new(
@@ -100019,6 +100736,61 @@ pub fn main_entry() -> io::Result<()> {
                 .unwrap_or(64);
             raft_follower(&bind, port, entries, payload_bytes, ack_stride)
         }
+        Some("raft-durable-inspect") => {
+            let wal_path = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: raft-durable-inspect <wal-file> [payload-bytes]",
+                )
+            })?;
+            let payload_bytes = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(64);
+            raft_inspect_durable_wal(Path::new(&wal_path), payload_bytes)
+        }
+        Some("raft-durable-leader") => {
+            let wal_path = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: raft-durable-leader <new-local-wal-file> \
+                     <peer1:port,peer2:port,...> [entries] [payload-bytes] [sync-stride]",
+                )
+            })?;
+            let peers = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "raft-durable-leader requires at least one peer",
+                )
+            })?;
+            let entries = args
+                .next()
+                .map(|value| value.parse::<u64>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(4096);
+            let payload_bytes = args
+                .next()
+                .map(|value| value.parse::<usize>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(64);
+            let sync_stride = args
+                .next()
+                .map(|value| value.parse::<u64>())
+                .transpose()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                .unwrap_or(64);
+            raft_leader(
+                &peers,
+                entries,
+                payload_bytes,
+                sync_stride,
+                Some(Path::new(&wal_path)),
+            )
+        }
         Some("raft-leader") => {
             let peers = args.next().ok_or_else(|| {
                 io::Error::new(
@@ -100045,7 +100817,7 @@ pub fn main_entry() -> io::Result<()> {
                 .transpose()
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
                 .unwrap_or(64);
-            raft_leader(&peers, entries, payload_bytes, ack_stride)
+            raft_leader(&peers, entries, payload_bytes, ack_stride, None)
         }
         Some(other) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -100064,7 +100836,8 @@ pub fn main_entry() -> io::Result<()> {
                  slot-wal-bench, slot-rand-bench, slot-rand-sharded-bench, \
                  zckv-page-bench, zckv-compact-bench, slot-rw-same-slot-test, \
                  slot-wal-sharded-bench, slot-topology-plan, \
-                 raft-wal-follower, raft-wal-leader, raft-follower, or raft-leader"
+                 raft-wal-follower, raft-wal-leader, raft-durable-follower, \
+                 raft-durable-leader, raft-durable-inspect, raft-follower, or raft-leader"
             ),
         )),
     }

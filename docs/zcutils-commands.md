@@ -14,6 +14,35 @@ zcutils zcmux --peer-addr 10.0.1.12 --lanes 128
 zcmux --peer-addr 10.0.1.12 --lanes 128
 ```
 
+## Topology characteristics
+
+`zctopology-detect` discovers permissionless local EC2 facts through IMDSv2
+and accepts arbitrary typed overrides:
+
+```bash
+zctopology-detect --set durability.role=hop --set failure.rack='"rack-7"'
+ZC_TOPOLOGY_CHARACTERISTICS='durability.role=leaf,failure.foo="bar"' \
+  zctopology-detect
+```
+
+Use the resulting map in `UpsertEntity` or
+`PatchEntityCharacteristics` commands committed to `TopologyStore`. See
+[dynamic-topology.md](dynamic-topology.md) for ownership and handoff semantics.
+
+Persistent metadata quorum benchmarking uses a new file per voter. The leader
+counts its own WAL and a follower only after the prefix has completed
+`fdatasync`:
+
+```bash
+zcutils raft-durable-follower voter-b.wal 0.0.0.0 9100 100000 64 64
+zcutils raft-durable-follower voter-c.wal 0.0.0.0 9100 100000 64 64
+zcutils raft-durable-leader voter-a.wal B:9100,C:9100 100000 64 64
+zcutils raft-durable-inspect voter-a.wal 64
+```
+
+The last argument is records per physical flush. Use `1` to measure one flush
+per record and a larger value to measure group commit.
+
 For external-WAL QD1-QD16 measurements on dedicated EC2 ad-hoc nodes, run
 `scripts/adhoc-nic-low-latency.sh apply OUTDIR` on every client and leaf through
 `scripts/ec2_perf_spot.py exec`. It disables ENA adaptive RX moderation and
@@ -164,10 +193,40 @@ filesystem/block bios still copy into the shared slot. The client module has a
 strictly opt-in exception: with an imported external HugeTLB arena,
 transferred payload leases, `shm_bio_arena_zero_copy=1`, and an O_DIRECT bio
 whose pages exactly alias the selected lane-local payload slot, it leases those
-same pages and skips the write/read copy. Mismatched or busy slots fall back to
-the copy path. `/sys/kernel/debug/zcnblk/state` reports
-`bio_alias_writes`, `bio_alias_reads`, and `bio_alias_busy_fallbacks`; do not
-claim this operation was exercised unless the relevant alias counter advances.
+same pages and skips the write/read copy.
+
+For application-originated buffers, set
+`URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET=/run/zcnblk/arena.sock` on
+`zcnblk-shm-target`. The target retains the imported HugeTLB memfd and exports
+that fd plus the validated lane/slot layout over the mode-0660 Unix socket.
+`ZcnblkAppArena::connect` maps it, and `allocate(lane)` atomically reserves a
+lane-local slot. The returned buffer hands its application owner token to the
+kernel on an O_DIRECT `read_at` or `write_at`; it cannot be accessed again until
+`wait_reacquire` (or `sync_and_reacquire`) observes target release and reserves
+it again. Pin the submitting thread to a CPU whose blk-mq hctx maps to that lane.
+The blocking helpers are a correctness interface; an io_uring application can
+register the arena mapping, call `handoff_to_kernel`, submit the returned exact
+pointer, and call `wait_reacquire` after CQ completion. This adds no allocator
+copy and no per-I/O heap allocation.
+This interface maps the complete transport arena and is therefore a trusted
+local application interface; restrict socket ownership and permissions as
+needed.
+Arena export currently requires the independently releasable per-slot WAL path:
+`URING_PLAY_ZCNBLK_SHM_WAL_LANE_BATCH=1` and
+`URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1`. Startup fails if export is requested
+with a legacy contiguous-HWM mode that cannot return an individual application
+buffer.
+
+Set `shm_bio_arena_zero_copy_required=1` on the kernel client to make the
+contract fail closed: an arena-backed bio with the wrong alignment, extent, or
+lane fails instead of copying, and a busy exact slot is requeued rather than
+bounced. Ordinary non-arena bios retain the compatible copy path.
+`/sys/kernel/debug/zcnblk/state` reports `bio_alias_writes`,
+`bio_alias_reads`, `bio_alias_busy_fallbacks`,
+`bio_alias_required_retries`, and `bio_alias_required_rejects`; do not claim
+this operation was exercised unless the relevant alias counter advances and
+the fallback/reject counters remain zero. `zcnblk-arena-io` performs a
+write/fsync/read data check and enforces that counter contract.
 This is buffer ownership only: placement remains in the userspace target.
 `scripts/zcnblk-shm-block-bench.sh` exposes
 the same variables for correctness and QD curves. `scripts/zcnblk-pgbench.sh`
@@ -259,9 +318,70 @@ The main controls are:
 - `URING_PLAY_OFI_CQ_BATCH` and `URING_PLAY_OFI_CQ_HEADROOM` for CQ progress
   and safety capacity;
 - `URING_PLAY_OFI_MR_ARENA_COUNT` for the explicit stable-arena table; and
-- `URING_PLAY_OFI_SELECTIVE_COMPLETION=1` for an A/B profile that binds
-  selective completion but still requests every completion needed for safe
-  slot recycling. Periodic completion suppression is not implemented.
+- `URING_PLAY_OFI_SELECTIVE_COMPLETION=1` binds selective completion.
+  `URING_PLAY_OFI_RMA_READ_COMPLETION_STRIDE` (default 1) controls fenced RMA
+  read CQ markers. Values above one retire every prior operation through the
+  next marker in posting order. The userspace read queue retains its newest
+  real request so a blocking drain can make that request the fence marker;
+  this avoids a synthetic network operation on the saturated path. A private
+  one-byte fenced read remains only as a liveness fallback when no real tail
+  request or outstanding marker exists. Endpoint stats distinguish periodic,
+  full-window, forced-real-tail, and synthetic-fallback markers.
+  `URING_PLAY_OFI_RMA_DEFER_TAIL_COMPLETION=0` disables the real-tail policy
+  for controlled A/B diagnosis without disabling selective completion.
+  The moderated-read implementation retires the provider-proven posting FIFO
+  directly. The block target registers its whole shared payload mapping once;
+  posts inside that stable arena use the endpoint's bounds-checked descriptor
+  directly, without an MR-table scan or per-I/O lookup-counter store. Disjoint
+  diagnostic buffers retain the generic MR-table fallback. Live read batches
+  use direct FIFO indexing by contiguous monotonic identifier instead of keyed
+  hashing, queued/active slots retain only the fields needed through CQ
+  retirement, and attached-mapping CQ progress borrows the stable mapping
+  directly instead of cloning its shared reference count on every poll.
+  Disabled latency telemetry allocates no timestamp state in active slots;
+  those slots use a zero-token sentinel and retain only batch/token words.
+  A fenced marker validates each retired slot but advances posting,
+  completion, provider-inflight, and completion-total counters once for the
+  proven group rather than once per 4 KiB read. The Rust lane queue likewise
+  subtracts in-flight ownership once per returned group and coalesces
+  consecutive completions for the same request batch into one remaining-count
+  update. Returned free slots are initialized in the preallocated QD array and
+  its length is published once per group; active-slot retirement clears only
+  the token ownership sentinel. Optional latency timestamps are retired in a
+  separate diagnostics-only pass selected once per group. Independently
+  wrapped posting and completion FIFOs are divided into contiguous spans,
+  keeping ring-wrap arithmetic outside the per-slot loop.
+  Submission records each known fence boundary in a preallocated group-length
+  FIFO, so CQ retirement checks the oldest marker directly instead of rescanning
+  every operation in its prefix. Without doorbell batching, ordinary unsignaled
+  reads use the provider's flag-less `fi_read` entry point and only the real
+  group marker constructs `fi_readmsg` with `FI_FENCE | FI_COMPLETION`.
+  `URING_PLAY_OFI_RMA_READ_MORE=1` instead posts the unsignaled prefix with
+  `fi_readmsg(FI_MORE)` and leaves `FI_MORE` off the marker. This is the default
+  for EFA-direct: its data-path source stages each `FI_MORE` WQE and rings the
+  submission doorbell on the final non-`FI_MORE` marker (or at the provider's
+  maximum batch boundary), instead of ringing once per 4 KiB read. An explicit
+  zero restores the unbatched A/B path. Libfabric
+  still reports asynchronous errors for unsignaled operations and requires a
+  provider to flush delayed operations when a subsequent post returns an error.
+  The endpoint summary reports the unique `rma_read_marker_posts` count and derives
+  `rma_read_unsignaled_fast_posts` from total accepted read posts, so a hardware
+  artifact proves which entry point carried the workload; `rma_read_more_posts`
+  proves how many accepted reads used doorbell staging.
+  Latency telemetry selects a compile-time-specialized posting loop once per
+  group; the production variant contains no timestamp call or per-post telemetry
+  branch. Interior descriptors bypass the real-tail liveness policy until either
+  the pending queue or free-slot stack reaches its last entry. Payload ranges are
+  validated once at batch admission, after which the stable registered mapping
+  requires only a pointer addition at provider submission.
+  Blocking ring polls accumulate provider-poll calls in a local register and
+  commit the total once when the API returns; `tx_cq_empty`/`rx_cq_empty` are
+  derived exactly from total, nonempty, and error polls, avoiding redundant
+  endpoint-counter stores on the dominant empty-CQ path. The internal CQ
+  dispatcher returns empty/progress/error directly, so that loop also avoids
+  spilling an output-count pointer on every empty provider poll.
+  The post, poll, and group-retirement routines are
+  release-assembly checked to contain no runtime integer division.
 
 Before `fi_getinfo`, the shim now requests a provider TX work-request capacity
 equal to the sum of the SEND, RMA READ, and RMA WRITE rings, and an RX capacity
@@ -853,6 +973,20 @@ claiming TCP or block-device throughput:
 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST=0-31 \
   zcfanout-logzip-bench mirror-write 32 2 1000000 4K 8192 32 64 true
 ```
+
+`zcha-readview-bench` isolates the HA read-authority snapshot. It validates a
+cached leader hash, term, configuration epoch, lease expiry, and committed HWM
+using a cache-line-aligned atomic view. It does not perform block I/O and must
+not be reported as `/dev/zcnblk0` IOPS:
+
+```bash
+URING_PLAY_PIN_CPU_LIST=0 URING_PLAY_TOPOLOGY_STRICT=1 \
+  target/release/zcha-readview-bench 1000000000 1
+```
+
+The first positional argument is total checks and the second is worker count.
+Supply at least one pinned CPU per worker. Strict/fatal topology mode rejects an
+unpinned run before printing a benchmark result.
 
 `zcwal-reduce-bench` isolates the local WAL-combination and reduce-blockstore
 problem without using a block device, TCP, RDMA, or terminal media. It measures
@@ -2189,6 +2323,23 @@ outstanding depth exceeds 128, the default owner queue depth is that aggregate
 (`LANES * IODEPTH`); an explicit
 `URING_PLAY_ZCNBLK_SHM_OWNER_QUEUE_DEPTH` still takes precedence.
 
+Keep `SHM_RING_ENTRIES` and `SHM_PAYLOAD_ENTRIES` powers of two for block
+performance runs. The kernel edge then indexes descriptor, completion,
+inflight, and payload rings with masks; other positive geometries remain
+compatible but require division. The harness prints a performance warning for
+those geometries and rejects them under representative, topology-strict, or
+topology-fatal execution. `MIN_IOPS_PER_REP` and `MIN_MEAN_IOPS` are optional
+integer hard gates; use both when a hardware result must prove a floor rather
+than merely print measurements. An OFI RMA-read run with
+`MIN_MEAN_IOPS>=12000000` activates the physical-block 12M record gate. It
+also requires `MIN_IOPS_PER_REP>=12000000`, representative mode, EFA-direct
+device RDMA, selective completion with a stride at least as large as per-lane
+RMA QD, deferred real-tail markers, and FI_MORE read doorbell staging. After
+the repetitions, the gate checks every selective data-endpoint profile for
+`provider=efa`, `fabric=efa-direct`, `efa_direct=1`,
+`efa_emulated_read=0`, and `rma_read_more=1`; a requested environment setting
+without matching provider evidence cannot produce a record artifact.
+
 The benchmark harness enables the explicit volatile-sync option for its default
 `zcmem` leaf. Ordinary writes complete after userspace dirty-lease admission;
 they do not wait for a leaf result. Flush/FUA completion remains remote: it is
@@ -2229,6 +2380,8 @@ then emitted in descriptor order. The sender's sector-predecessor boundary
 prevents an overlapping write and dependent read from sharing a batch. Verify
 the fast path with nonzero `direct_memory_recv_bytes` and zero
 `heap_payload_data_bytes` and `copy_submit_bytes` in the leaf summary.
+Atomic-write batches deliberately omit the direct-receive marker and retain the
+leaf submit path required by their all-or-nothing completion contract.
 
 The high-IOPS `wal-tcp` harness defaults
 `URING_PLAY_ZCNBLK_SHM_WAL_COMPACT_WRITES=1`, encoding an all-write batch as
@@ -2435,6 +2588,23 @@ contracts, latency, throughput, and context switches; the wrapper records the
 target, kernel-lane, leaf-lane, application CPU, and hctx mappings. See
 [zcnblk-application-benchmarks.md](zcnblk-application-benchmarks.md) for setup,
 commands, completion semantics, and current local proof results.
+
+## Dynamic Topology Evolution QEMU Harness
+
+`scripts/zctopology-evolution-qemu.sh` runs the controller and five TCP
+userspace tier/replica stages in six tiny QEMU guests. It injects physical TAP
+failures and validates isolated supervisor-quorum loss, data-layer loss,
+overlapping supervisor/data loss, snapshot-plus-WAL PITR, cold-DR growth, hot
+promotion, replica replacement, cost-driven collapse, HWM-gated release, and
+exact topology plus PITR committed-log replay.
+`zctopology-emu` is the guest test driver; it is not a production daemon.
+
+```bash
+scripts/zctopology-evolution-qemu.sh
+```
+
+The harness is correctness-only and prints no representative storage
+performance number. See [dynamic-topology.md](dynamic-topology.md).
 
 ## Compatibility
 

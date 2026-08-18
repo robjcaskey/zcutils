@@ -143,6 +143,23 @@ setup_softroce()
 		"$role" "$message_domain"
 }
 
+setup_sockets_rma()
+{
+	case "$role" in
+		target)
+			local_ip=10.84.0.2
+			peer_ip=10.84.0.1
+			;;
+		client)
+			local_ip=10.84.0.1
+			peer_ip=10.84.0.2
+			;;
+		*) return 1 ;;
+	esac
+	$IP addr add "${local_ip}/24" dev eth0
+	wait_for_peer "$peer_ip"
+}
+
 run_softroce_rc_probe()
 {
 	gid_index=$(
@@ -355,6 +372,22 @@ run_leaf()
 			"$leaf_ip" "$LEAF_PORT" 1 1 4096 1 true blocking > /leaf.log 2>&1
 		leaf_status=$?
 		set -e
+	elif [ "$phase" = socketsrma ]; then
+		set +e
+		URING_PLAY_OFI_DOMAIN=eth0 \
+		URING_PLAY_OFI_CQ_SLEEP_NS=0 \
+		URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT=ofi \
+		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_PROVIDER=sockets \
+		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ENDPOINT=rdm \
+		URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS=1 \
+		URING_PLAY_ZCNBLK_WAL_RESULT_RANGES=1 \
+		URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC=1 \
+		URING_PLAY_PIN_CPU_LIST=1 \
+		URING_PLAY_TOPOLOGY_STRICT=0 \
+		/bin/timeout 150 "$URING_PLAY" zcnblk-wal-leaf "zcmem:${SIZE_MIB}M" \
+			"$leaf_ip" "$LEAF_PORT" 1 1 4096 1 true blocking > /leaf.log 2>&1
+		leaf_status=$?
+		set -e
 	else
 		set +e
 		phase_net_exec /bin/env \
@@ -369,8 +402,12 @@ run_leaf()
 	cat /leaf.log
 	[ "$leaf_status" -eq 0 ]
 	grep -q '^zcnblk-wal-leaf-summary:' /leaf.log
-	printf 'ZCCUSAN_LEAF_PASS phase=%s transport=%s\n' "$phase" \
-		"$( [ "$phase" = softroce ] && printf ofi-verbs-rxd-message || printf tcp-zcnet )"
+	case "$phase" in
+		softroce) leaf_transport=ofi-verbs-rxd-message ;;
+		socketsrma) leaf_transport=ofi-sockets-rma ;;
+		*) leaf_transport=tcp-zcnet ;;
+	esac
+	printf 'ZCCUSAN_LEAF_PASS phase=%s transport=%s\n' "$phase" "$leaf_transport"
 }
 
 run_block_client()
@@ -406,6 +443,26 @@ run_block_client()
 		URING_PLAY_TOPOLOGY_STRICT=0 \
 		/zcnblk-shm-target /dev/zcnblk-shmctl wal-tcp 64 1 1000 1000 10000 \
 			> /onramp.log 2>&1 &
+	elif [ "$phase" = socketsrma ]; then
+		URING_PLAY_OFI_DOMAIN=eth0 \
+		URING_PLAY_OFI_CQ_SLEEP_NS=0 \
+		URING_PLAY_OFI_SELECTIVE_COMPLETION=1 \
+		URING_PLAY_OFI_RMA_READ_COMPLETION_STRIDE=65536 \
+		URING_PLAY_OFI_RMA_DEFER_TAIL_COMPLETION=1 \
+		URING_PLAY_OFI_RMA_READ_MORE=1 \
+		URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT=ofi \
+		URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_PROVIDER=sockets \
+		URING_PLAY_ZCNBLK_SHM_REMOTE_OFI_ENDPOINT=rdm \
+		URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS=1 \
+		URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD=8 \
+		URING_PLAY_ZCNBLK_SHM_LEAF_ADDR="${leaf_ip}:${LEAF_PORT}" \
+		URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
+		URING_PLAY_ZCNBLK_SHM_WRITEBACK_BATCH=64 \
+		URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS=1 \
+		URING_PLAY_ZCNBLK_SHM_REMOTE_SEND_MODE=blocking \
+		URING_PLAY_TOPOLOGY_STRICT=0 \
+		/zcnblk-shm-target /dev/zcnblk-shmctl wal-tcp 64 1 1000 1000 10000 \
+			2>&1 | tee /onramp.log &
 	else
 		phase_net_exec /bin/env \
 			URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT=tcp \
@@ -430,10 +487,63 @@ run_block_client()
 	[ -s "$pid_file" ]
 	grep -q '^zcnblk-shm-target:' /onramp.log
 
-	/bin/timeout 90 /zcnblk-order-smoke /dev/zcnblk0 8 > /order-smoke.log 2>&1
-	cat /order-smoke.log
-	grep -q 'zcnblk-order-smoke: PASS' /order-smoke.log
-	grep -q 'sync_terminal_state=true' /order-smoke.log
+	if [ "$phase" = socketsrma ]; then
+		stress_ops=$(cmdline_value zccusan_stress_ops || printf '10000\n')
+		stress_timeout=$(cmdline_value zccusan_stress_timeout || printf '90\n')
+		case "$stress_ops:$stress_timeout" in
+			*[!0-9:]*|:*|*:|0:*|*:0) return 1 ;;
+		esac
+		printf 'sockets-rma-block-read-probe: blocks=8 bytes_per_block=4096\n'
+		/bin/timeout 30 dd if=/dev/zcnblk0 of=/dev/null bs=4096 count=8
+		printf 'sockets-rma-block-read-probe: PASS\n'
+		printf 'sockets-rma-block-read-stress: ops=%s qd=8 timeout_seconds=%s\n' \
+			"$stress_ops" "$stress_timeout"
+		blockbench_pass=0
+		URING_PLAY_TOPOLOGY_STRICT=0 \
+		URING_PLAY_BLOCKBENCH_RING_STATS=1 \
+		URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS=8 \
+		/bin/timeout "$stress_timeout" /zcblockbench /dev/zcnblk0 \
+			--engine uring-fixed --mode read --workers 1 \
+			--ops-per-worker "$stress_ops" --bs 4096 --iodepth 8 \
+			--region-bytes-per-worker 67108864 --ring-entries 32 \
+			--buffer-mode small-pages --pin false 2>&1 | tee /blockbench.log
+		cat /blockbench.log
+		if grep -q "zcblockbench-result:.*total_ops=$stress_ops .*pipeline_per_worker=8" /blockbench.log; then
+			blockbench_pass=1
+		else
+			printf 'sockets-rma-block-read-stress: FAIL ops=%s; preserving shutdown telemetry\n' \
+				"$stress_ops" >&2
+			onramp_pid=$(cat "$pid_file")
+			for task in /proc/"$onramp_pid"/task/*; do
+				printf 'sockets-rma-onramp-task: tid=%s comm=%s wchan=%s syscall=' \
+					"${task##*/}" "$(cat "$task/comm")" "$(cat "$task/wchan")"
+				cat "$task/syscall" 2>/dev/null || printf 'unavailable\n'
+				cat "$task/stack" 2>/dev/null || true
+			done
+		fi
+		printf 'sockets-rma-block-read-stress-kernel-state:\n'
+		cat /sys/kernel/debug/zcnblk/state | tee /kernel-state.log
+		kernel_state=$(grep '^conn=0 ' /kernel-state.log)
+		req_prod=$(printf '%s\n' "$kernel_state" | sed -n 's/.* req_prod=\([0-9]*\) .*/\1/p')
+		req_cons=$(printf '%s\n' "$kernel_state" | sed -n 's/.* req_cons=\([0-9]*\) .*/\1/p')
+		comp_prod=$(printf '%s\n' "$kernel_state" | sed -n 's/.* comp_prod=\([0-9]*\) .*/\1/p')
+		comp_cons=$(printf '%s\n' "$kernel_state" | sed -n 's/.* comp_cons=\([0-9]*\) .*/\1/p')
+		kernel_state_pass=0
+		case "$kernel_state" in
+			*' failed=0 pending=0 inflight_count=0 inflight_slots=0 '*\
+' req_used=0 '*' comp_ready=0 '*)
+				if [ -n "$req_prod" ] && [ "$req_prod" = "$req_cons" ] &&
+					[ -n "$comp_prod" ] && [ "$comp_prod" = "$comp_cons" ]; then
+					kernel_state_pass=1
+				fi
+				;;
+		esac
+	else
+		/bin/timeout 90 /zcnblk-order-smoke /dev/zcnblk0 8 > /order-smoke.log 2>&1
+		cat /order-smoke.log
+		grep -q 'zcnblk-order-smoke: PASS' /order-smoke.log
+		grep -q 'sync_terminal_state=true' /order-smoke.log
+	fi
 
 	onramp_pid=$(cat "$pid_file")
 	case "$onramp_pid" in ''|*[!0-9]*) return 1 ;; esac
@@ -452,12 +562,46 @@ run_block_client()
 	grep -q '^zcnblk-shm-target-remote-leaf-summary:' /onramp.log
 	if [ "$phase" = softroce ]; then
 		grep -q 'remote_transport=ofi' /onramp.log
+	elif [ "$phase" = socketsrma ]; then
+		grep -q 'remote_transport=ofi' /onramp.log
+		grep -Eq 'read_posts=[1-9][0-9]* .*rma_read_forced_markers=[1-9][0-9]* .*rma_read_flush_posts=0' /onramp.log
+		grep -Eq 'rma_read_marker_posts=[1-9][0-9]* rma_read_unsignaled_fast_posts=[1-9][0-9]*' /onramp.log
+		grep -Eq 'rma_read_more_posts=[1-9][0-9]*' /onramp.log
+		awk '
+			/zcofi-endpoint-stats:/ {
+				posts = markers = fast = -1
+				for (i = 1; i <= NF; i++) {
+					split($i, field, "=")
+					if (field[1] == "read_posts") posts = field[2] + 0
+					if (field[1] == "rma_read_marker_posts") markers = field[2] + 0
+					if (field[1] == "rma_read_unsignaled_fast_posts") fast = field[2] + 0
+				}
+				if (posts > 0) {
+					seen++
+					if (markers <= 0 || fast <= 0 || markers + fast != posts) bad = 1
+				}
+			}
+			END { exit seen == 0 || bad }
+		' /onramp.log
+		grep -q 'deferred_real_tail_marker=true synthetic_partial_flush_policy=fallback-only' /onramp.log
+		[ "$blockbench_pass" -eq 1 ]
+		[ "$kernel_state_pass" -eq 1 ]
 	else
 		grep -q 'remote_transport=tcp' /onramp.log
 	fi
 	rmmod zcnblk_client_mod
-	printf 'ZCCUSAN_BLOCK_PATH_PASS phase=%s block_edge=/dev/zcnblk0 userspace_stage=zcnblk-shm-target placement_owner=leaf transport=%s order_pairs=8 sync_terminal_state=true\n' \
-		"$phase" "$( [ "$phase" = softroce ] && printf ofi-verbs-rxd-message || printf tcp-zcnet )"
+	case "$phase" in
+		softroce) block_transport=ofi-verbs-rxd-message ;;
+		socketsrma) block_transport=ofi-sockets-rma ;;
+		*) block_transport=tcp-zcnet ;;
+	esac
+	if [ "$phase" = socketsrma ]; then
+		printf 'ZCCUSAN_BLOCK_PATH_PASS phase=%s block_edge=/dev/zcnblk0 userspace_stage=zcnblk-shm-target placement_owner=leaf transport=%s probe_blocks=8 stress_ops=%s workers=1 lanes=1 per_worker_qd=8 aggregate_outstanding_depth=8 raw_transport_rtt=not-measured theoretical_iops_ceiling=not-computed actual_theoretical_efficiency=not-reported classification=correctness-only selective_completion=true deferred_real_tail=true synthetic_flushes=0\n' \
+			"$phase" "$block_transport" "$stress_ops"
+	else
+		printf 'ZCCUSAN_BLOCK_PATH_PASS phase=%s block_edge=/dev/zcnblk0 userspace_stage=zcnblk-shm-target placement_owner=leaf transport=%s order_pairs=8 sync_terminal_state=true\n' \
+			"$phase" "$block_transport"
+	fi
 }
 
 mount -t proc proc /proc
@@ -486,6 +630,15 @@ case "$phase:$role" in
 		run_softroce_rc_probe
 		sleep 2
 		run_block_client 10.82.0.2 10.82.0.1
+		;;
+	socketsrma:target)
+		setup_sockets_rma
+		run_leaf 10.84.0.2
+		;;
+	socketsrma:client)
+		setup_sockets_rma
+		sleep 2
+		run_block_client 10.84.0.2 10.84.0.1
 		;;
 	zcnet:target)
 		setup_zcnet

@@ -1,0 +1,210 @@
+host_kernel=7.2.0-rc1-io-slots-nvme
+guest_kernel=7.2.0-rc1-io-slots-nvme
+guest_kernel_image=/boot/vmlinuz-7.2.0-rc1-io-slots-nvme
+phases=socketsrma
+classification=correctness-only
+representative=false
+ M Cargo.lock
+ M Cargo.toml
+ M docs/zcutils-commands.md
+ M kmods/zcnblk_client_mod.c
+ M scripts/welcome-to-the-team.sh
+ M scripts/zccusan-qemu-pair-init.sh
+ M scripts/zccusan-qemu-pair-smoke.sh
+ M scripts/zcnblk-shm-block-bench.sh
+ M scripts/zcnblk-wal-qemu-init.sh
+ M scripts/zcnblk-wal-qemu-smoke.sh
+ M src/bin/zcblock-control.rs
+ M src/bin/zcblock-csi.rs
+ M src/block/logstream.rs
+ M src/lib.rs
+ M src/ofi_shim.c
+ M src/persistent_wal.rs
+ M src/zcnblk_shm_target.rs
+ M zccusan/deploy/zcblock-csi/Dockerfile
+ M zccusan/deploy/zcblock-csi/README.md
+?? bench-results/local-ha-readview-20260816/
+?? bench-results/local-zcnblk-app-arena-debug-20260817/
+?? bench-results/local-zcnblk-app-arena-long-20260817/
+?? bench-results/local-zcnblk-app-arena-read-smoke-20260817/
+?? bench-results/local-zcnblk-app-arena-return-token-20260817/
+?? bench-results/local-zcnblk-app-arena-smoke-20260817/
+?? bench-results/local-zcnblk-app-arena-smoke2-20260817/
+?? bench-results/local-zcnblk-completion-batch-20260817/
+?? bench-results/local-zcnblk-completion-batch-order-20260817/
+?? bench-results/local-zcnblk-completion-single-20260817/
+?? bench-results/local-zcnblk-final-default-20260817/
+?? bench-results/local-zcnblk-final-stable-20260817/context-results.log
+?? bench-results/local-zcnblk-final-stable-20260817/coordination.log
+?? bench-results/local-zcnblk-final-stable-20260817/hot-contexts.initial
+?? bench-results/local-zcnblk-final-stable-20260817/kthreads.log
+?? bench-results/local-zcnblk-final-stable-20260817/preflight.log
+?? bench-results/local-zcnblk-final-stable-20260817/process-noise.after
+?? bench-results/local-zcnblk-final-stable-20260817/process-noise.before
+?? bench-results/local-zcnblk-final-stable-20260817/rep1.context.after
+?? bench-results/local-zcnblk-final-stable-20260817/rep1.context.before
+?? bench-results/local-zcnblk-final-stable-20260817/rep1.context.delta
+?? bench-results/local-zcnblk-final-stable-20260817/rep1.log
+?? bench-results/local-zcnblk-final-stable-20260817/rep2.context.after
+?? bench-results/local-zcnblk-final-stable-20260817/rep2.context.before
+?? bench-results/local-zcnblk-final-stable-20260817/rep2.context.delta
+?? bench-results/local-zcnblk-final-stable-20260817/rep2.log
+?? bench-results/local-zcnblk-final-stable-20260817/rep3.context.after
+?? bench-results/local-zcnblk-final-stable-20260817/rep3.context.before
+?? bench-results/local-zcnblk-final-stable-20260817/rep3.context.delta
+?? bench-results/local-zcnblk-final-stable-20260817/rep3.log
+?? bench-results/local-zcnblk-final-stable-20260817/target.log
+?? bench-results/local-zcnblk-indexmask-control-20260818/
+?? bench-results/local-zcnblk-lane-seq-20260817/
+?? bench-results/local-zcnblk-lane-seq-long-20260817/
+?? bench-results/local-zcnblk-lane-seq-order-20260817/
+?? bench-results/local-zcnblk-lane-seq-smoke-20260817/
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/context-results.log
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/coordination.log
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/hot-contexts.initial
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/kthreads.log
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/preflight.log
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/process-noise.after
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/process-noise.before
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/rep1.context.after
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/rep1.context.before
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/rep1.context.delta
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/rep1.log
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/rep2.context.after
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/rep2.context.before
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/rep2.context.delta
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/rep2.log
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/rep3.context.after
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/rep3.context.before
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/rep3.context.delta
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/rep3.log
+?? bench-results/local-zcnblk-seqtelemetry-256-20260817/target.log
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/context-results.log
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/coordination.log
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/hot-contexts.initial
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/kthreads.log
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/preflight.log
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/process-noise.after
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/process-noise.before
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/rep1.context.after
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/rep1.context.before
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/rep1.context.delta
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/rep1.log
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/rep2.context.after
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/rep2.context.before
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/rep2.context.delta
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/rep2.log
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/rep3.context.after
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/rep3.context.before
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/rep3.context.delta
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/rep3.log
+?? bench-results/local-zcnblk-seqtelemetry-every-io-20260817/target.log
+?? bench-results/local-zcnblk-shm-20260818T024141Z/
+?? bench-results/local-zcnblk-worker-baseline-20260817/
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/context-results.log
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/coordination.log
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/hot-contexts.initial
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/kthreads.log
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/preflight.log
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/process-noise.after
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/process-noise.before
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/rep1.context.after
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/rep1.context.before
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/rep1.context.delta
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/rep1.log
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/rep2.context.after
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/rep2.context.before
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/rep2.context.delta
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/rep2.log
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/rep3.context.after
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/rep3.context.before
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/rep3.context.delta
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/rep3.log
+?? bench-results/local-zcnblk-worker-baseline-long-20260817/target.log
+?? bench-results/local-zcnblk-worker-batch-only-20260817/
+?? bench-results/local-zcnblk-worker-combined-long-20260817/
+?? bench-results/local-zcnblk-worker-optimized-20260817/
+?? bench-results/local-zcnblk-worker-wake-only-20260817/
+?? bench-results/zc-block-live-migration-c8gn48-20260817T222354Z/
+?? bench-results/zc-efa-direct-qpfix-c8gn16-20260817T213754Z/
+?? bench-results/zc-efa-direct-rdma-msg-adhoc-c8gn16-20260817T203836Z/
+?? bench-results/zc-record-efa-direct-c8gn48-20260817T215604Z/
+?? bench-results/zc-rma-regression-adhoc-c8gn48-20260817T154213Z/
+?? bench-results/zc-zcnblk-dualefa-adhoc-c8gn48-20260817T234924Z/
+?? bench-results/zc-zcnblk-laneseq-adhoc-c8gn48-20260818T003054Z/
+?? bench-results/zccusan-qemu-selective-tail-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-12m-gate-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-baseline-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-batched-retire-final-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-contiguous-span-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-fi-read-accounted-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-fi-read-fastpath-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-group-account-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-group-both-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-group-restrict-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-groupfifo-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-natural-markers-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-batchfifo-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-compactactive-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-compactslots-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-countdown-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-cqpoll-local-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-cqreturn-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-cqstore-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-direct-retire-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-directarena-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-fastpath-cache-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-fastpath-final-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-finalgate-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-indexmask-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-lanehwm-fix-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-noarc-progress-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-nodiv-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-10k-readprep-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-128-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-16-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-1k-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-256-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-256-lanehwm-fix-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-256-selected-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-256-sequence-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-256-state-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-256-taskstate-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-256-telemetry-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-256-walstate-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-q8-stress-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-read-more-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-submission-fast-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-tail-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-tail-pass-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-tail2-20260818/
+?? bench-results/zccusan-qemu-sockets-rma-tail3-20260818/
+?? bench-results/zcnblk-wal-qemu-cqreturn-20260818/
+?? bench-results/zcnblk-wal-qemu-fastpath-20260818/
+?? bench-results/zcnblk-wal-qemu-fastpath-gate-20260818/
+?? bench-results/zcnblk-wal-qemu-legacy-gate-20260818/
+?? bench-results/zctopology-evolution-qemu-20260816T141414Z/
+?? bench-results/zctopology-evolution-qemu-20260816T142626Z/
+?? bench-results/zcutils-ha-phase1-adhoc-c8gn48-20260816T123601Z/
+?? bench-results/zcutils-raft-topologies-20260816/
+?? docs/dynamic-topology.md
+?? docs/ha-pitr-consensus.md
+?? docs/live-volume-migration.md
+?? scripts/CassandraPitrClient.java
+?? scripts/zctopology-evolution-qemu-init.sh
+?? scripts/zctopology-evolution-qemu.sh
+?? src/bin/zccassandra-qemu-agent.rs
+?? src/bin/zcha-readview-bench.rs
+?? src/bin/zcnblk-arena-io.rs
+?? src/bin/zcnblk-live-cutover-smoke.rs
+?? src/bin/zctopology-detect.rs
+?? src/bin/zctopology-emu.rs
+?? src/bin/zcvolume-live-bench.rs
+?? src/bin/zcwal-route-gateway.rs
+?? src/change_log.rs
+?? src/cloud_topology.rs
+?? src/ha_metadata.rs
+?? src/topology.rs
+?? src/topology_controller.rs
+?? src/volume_partition.rs
+?? zccusan/deploy/zcblock-csi/Dockerfile.prebuilt

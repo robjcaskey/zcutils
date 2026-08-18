@@ -63,6 +63,7 @@ const FREEZE_COMMAND_TIMEOUT_MS: u64 = 250;
 const DEFAULT_CONFIGFS_ROOT: &str = "/sys/kernel/config/zcbrd";
 const DEFAULT_DEV_ROOT: &str = "/dev";
 const DEFAULT_RAW_ALLOWLIST: &str = "/etc/zcblock-csi/allowed-raw-partitions.txt";
+const ZCNBLK_CLIENT_EDGE: &str = "/dev/zcnblk0";
 const DEFAULT_SIZE_MIB: u64 = 256;
 const DEFAULT_BLOCKSIZE: u64 = 4096;
 const DEFAULT_QUEUES: u64 = 8;
@@ -1898,6 +1899,9 @@ impl ZcblockCsi {
             Status::invalid_argument("backend=raw-block requires rawPartUUID or rawDevice")
         })?;
         let path = canonical_block_device(Path::new(raw_device))?;
+        if path == Path::new(ZCNBLK_CLIENT_EDGE) {
+            return Ok(path);
+        }
         let partuuid = partuuid_for_device(&path).ok_or_else(|| {
             Status::permission_denied(format!(
                 "{} has no PARTUUID allowlist identity",
@@ -2372,6 +2376,9 @@ impl ZcblockCsi {
             .as_ref()
             .ok_or_else(|| Status::internal("raw-block volume missing raw_device"))?;
         let path = canonical_block_device(Path::new(raw_device))?;
+        if path == Path::new(ZCNBLK_CLIENT_EDGE) {
+            return Ok(path);
+        }
         let partuuid = partuuid_for_device(&path).ok_or_else(|| {
             Status::permission_denied(format!(
                 "{} has no PARTUUID allowlist identity",

@@ -20,6 +20,15 @@ pub trait DurableLogStream: Send + Sync {
         value: serde_json::Value,
     ) -> io::Result<ZccusanLogEntry>;
 
+    fn append_value_at_term(
+        &self,
+        stream: &str,
+        kind: &str,
+        key: &str,
+        term: u64,
+        value: serde_json::Value,
+    ) -> io::Result<ZccusanLogEntry>;
+
     fn replay(&self) -> io::Result<Vec<ZccusanLogEntry>>;
 }
 
@@ -91,6 +100,18 @@ impl FileLogStream {
         self.append_value(stream, kind, key, value)
     }
 
+    pub fn append_at_term<T: Serialize>(
+        &self,
+        stream: &str,
+        kind: &str,
+        key: &str,
+        term: u64,
+        value: &T,
+    ) -> io::Result<ZccusanLogEntry> {
+        let value = serde_json::to_value(value).map_err(invalid_data)?;
+        self.append_value_at_term(stream, kind, key, term, value)
+    }
+
     pub fn append_state<T: Serialize>(
         &self,
         kind: &str,
@@ -109,6 +130,17 @@ impl DurableLogStream for FileLogStream {
         key: &str,
         value: serde_json::Value,
     ) -> io::Result<ZccusanLogEntry> {
+        self.append_value_at_term(stream, kind, key, 0, value)
+    }
+
+    fn append_value_at_term(
+        &self,
+        stream: &str,
+        kind: &str,
+        key: &str,
+        term: u64,
+        value: serde_json::Value,
+    ) -> io::Result<ZccusanLogEntry> {
         validate_record_field(stream, "stream")?;
         validate_record_field(kind, "kind")?;
         validate_record_field(key, "key")?;
@@ -119,7 +151,7 @@ impl DurableLogStream for FileLogStream {
             schema_version: 1,
             stream: stream.to_string(),
             sequence: state.next_sequence,
-            term: 0,
+            term,
             offset,
             timestamp_secs: unix_now_secs(),
             kind: kind.to_string(),

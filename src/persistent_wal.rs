@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::mem;
@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 const BLOCK: usize = 4096;
 const SUPER_SLOTS: usize = 2;
@@ -126,6 +127,8 @@ struct WalState {
     reduced_sequence: u64,
     next_sequence: u64,
     frames: VecDeque<FrameRef>,
+    retained_frames: VecDeque<FrameRef>,
+    retention_pins: BTreeMap<u64, usize>,
 }
 
 pub struct PersistentWal {
@@ -150,6 +153,17 @@ pub struct PersistentWalRuntime {
     wal: Arc<PersistentWal>,
     reduce_tx: SyncSender<ReduceCommand>,
     reduce_worker: Mutex<Option<JoinHandle<io::Result<()>>>>,
+}
+
+pub struct PersistentWalRetention {
+    wal: Arc<PersistentWal>,
+    start_sequence: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PersistentWalReplayStats {
+    pub records_replayed: u64,
+    pub bytes_replayed: u64,
 }
 
 impl PersistentWalRuntime {
@@ -245,6 +259,14 @@ impl PersistentWalRuntime {
     pub fn stats(&self) -> PersistentWalStats {
         self.wal.stats()
     }
+
+    pub fn pin_retained_tail(&self) -> PersistentWalRetention {
+        PersistentWal::pin_retained_tail(&self.wal)
+    }
+
+    pub fn pin_retained_from(&self, start_sequence: u64) -> io::Result<PersistentWalRetention> {
+        PersistentWal::pin_retained_from(&self.wal, start_sequence)
+    }
 }
 
 impl Drop for PersistentWalRuntime {
@@ -262,6 +284,41 @@ impl Drop for PersistentWalRuntime {
 }
 
 impl PersistentWal {
+    pub fn pin_retained_tail(wal: &Arc<Self>) -> PersistentWalRetention {
+        let mut state = wal.state.lock().expect("persistent WAL mutex poisoned");
+        let start_sequence = state.next_sequence;
+        *state.retention_pins.entry(start_sequence).or_insert(0) += 1;
+        drop(state);
+        PersistentWalRetention {
+            wal: Arc::clone(wal),
+            start_sequence,
+        }
+    }
+
+    pub fn pin_retained_from(
+        wal: &Arc<Self>,
+        start_sequence: u64,
+    ) -> io::Result<PersistentWalRetention> {
+        let mut state = wal.state.lock().expect("persistent WAL mutex poisoned");
+        if start_sequence == 0 || start_sequence > state.next_sequence {
+            return Err(invalid("retained WAL pin sequence is outside the journal"));
+        }
+        let oldest_available = state
+            .retained_frames
+            .front()
+            .or_else(|| state.frames.front())
+            .map_or(state.next_sequence, |frame| frame.sequence);
+        if start_sequence < oldest_available {
+            return Err(invalid("requested retained WAL suffix has been reclaimed"));
+        }
+        *state.retention_pins.entry(start_sequence).or_insert(0) += 1;
+        drop(state);
+        Ok(PersistentWalRetention {
+            wal: Arc::clone(wal),
+            start_sequence,
+        })
+    }
+
     pub fn open(
         journal_path: impl AsRef<Path>,
         base_path: impl AsRef<Path>,
@@ -351,6 +408,8 @@ impl PersistentWal {
                 reduced_sequence: 0,
                 next_sequence: 1,
                 frames: VecDeque::new(),
+                retained_frames: VecDeque::new(),
+                retention_pins: BTreeMap::new(),
             }),
         };
         wal.recover_or_initialize()?;
@@ -533,6 +592,13 @@ impl PersistentWal {
                     Ordering::Acquire,
                 );
             }
+            if state
+                .retention_pins
+                .first_key_value()
+                .is_some_and(|(start, _)| frame.sequence >= *start)
+            {
+                state.retained_frames.push_back(frame.clone());
+            }
             state.frames.pop_front();
             state.reduced_tail = frame.frame_end;
             state.reduced_sequence = frame.sequence;
@@ -545,6 +611,8 @@ impl PersistentWal {
     pub fn reset_if_drained(&self) -> io::Result<bool> {
         let mut state = self.state.lock().expect("persistent WAL mutex poisoned");
         if !state.frames.is_empty()
+            || !state.retained_frames.is_empty()
+            || !state.retention_pins.is_empty()
             || state.reduced_tail != state.tail
             || state.durable_tail != state.tail
         {
@@ -635,6 +703,8 @@ impl PersistentWal {
                 .max(superblock.durable_sequence)
                 .saturating_add(1),
             frames,
+            retained_frames: VecDeque::new(),
+            retention_pins: BTreeMap::new(),
         };
         Ok(())
     }
@@ -681,6 +751,16 @@ impl PersistentWal {
     fn persist_super_locked(&self, state: &mut WalState) -> io::Result<()> {
         state.super_generation = state.super_generation.saturating_add(1);
         let slot = (state.active_super_slot + 1) % SUPER_SLOTS;
+        // A retention pin is also a crash-recovery boundary. Even when the
+        // reducer has applied these frames to `base`, the durable checkpoint
+        // cannot move beyond the oldest pinned frame or recovery would no
+        // longer be able to reconstruct that migration suffix.
+        let (published_reduced_tail, published_reduced_sequence) = state
+            .retained_frames
+            .front()
+            .map_or((state.reduced_tail, state.reduced_sequence), |frame| {
+                (frame.frame_start, frame.sequence.saturating_sub(1))
+            });
         let bytes = encode_super(Superblock {
             super_generation: state.super_generation,
             generation: state.generation,
@@ -688,8 +768,8 @@ impl PersistentWal {
             journal_bytes: self.journal_bytes,
             durable_tail: state.durable_tail,
             durable_sequence: state.durable_sequence,
-            reduced_tail: state.reduced_tail,
-            reduced_sequence: state.reduced_sequence,
+            reduced_tail: published_reduced_tail,
+            reduced_sequence: published_reduced_sequence,
             integrity: self.integrity,
         });
         write_all_at(&self.journal, &bytes.0, (slot * BLOCK) as u64)?;
@@ -715,6 +795,121 @@ impl PersistentWal {
             ));
         }
         Ok(())
+    }
+}
+
+impl PersistentWalRetention {
+    pub fn start_sequence(&self) -> u64 {
+        self.start_sequence
+    }
+
+    pub fn durable_hwm(&self) -> u64 {
+        self.wal
+            .state
+            .lock()
+            .expect("persistent WAL mutex poisoned")
+            .durable_sequence
+    }
+
+    /// Replay the retained ordered suffix directly into a staged terminal.
+    /// The caller fences new admissions, syncs the WAL, obtains `through`, and
+    /// invokes this method before publishing the destination route.
+    pub fn replay_into(
+        &self,
+        through: u64,
+        destination: &File,
+    ) -> io::Result<PersistentWalReplayStats> {
+        self.replay_range_into(self.start_sequence, through, destination, 0)
+    }
+
+    /// Replay a retained subrange, coalescing repeated writes so only the
+    /// latest payload for each logical page in that interval is materialized.
+    /// This can run opportunistically before cutover; the fenced replay then
+    /// needs only the suffix after the caller's last completed HWM.
+    pub fn replay_range_into(
+        &self,
+        from_sequence: u64,
+        through: u64,
+        destination: &File,
+        max_bytes_per_second: u64,
+    ) -> io::Result<PersistentWalReplayStats> {
+        if from_sequence < self.start_sequence {
+            return Err(invalid("retained replay starts before its pin"));
+        }
+        let latest_pages = {
+            let state = self
+                .wal
+                .state
+                .lock()
+                .expect("persistent WAL mutex poisoned");
+            if through > state.durable_sequence {
+                return Err(invalid("retained replay HWM is not durable"));
+            }
+            let mut latest = BTreeMap::new();
+            for frame in state
+                .retained_frames
+                .iter()
+                .chain(state.frames.iter())
+                .filter(|frame| frame.sequence >= from_sequence && frame.sequence <= through)
+            {
+                for (index, logical_page) in frame.logical_pages.iter().copied().enumerate() {
+                    latest.insert(logical_page, frame.payload_start + (index * BLOCK) as u64);
+                }
+            }
+            latest
+        };
+        let mut page = AlignedBlock::zeroed();
+        let mut records = 0u64;
+        let mut bytes = 0u64;
+        let started = Instant::now();
+        for (logical_page, payload_offset) in latest_pages {
+            read_exact_at(&self.wal.journal, &mut page.0, payload_offset)?;
+            write_all_at(destination, &page.0, logical_page * BLOCK as u64)?;
+            records += 1;
+            bytes += BLOCK as u64;
+            pace_retained_replay(started, bytes, max_bytes_per_second);
+        }
+        Ok(PersistentWalReplayStats {
+            records_replayed: records,
+            bytes_replayed: bytes,
+        })
+    }
+}
+
+fn pace_retained_replay(started: Instant, bytes: u64, max_bytes_per_second: u64) {
+    if max_bytes_per_second == 0 {
+        return;
+    }
+    let target = Duration::from_secs_f64(bytes as f64 / max_bytes_per_second as f64);
+    if let Some(delay) = target.checked_sub(started.elapsed()) {
+        thread::sleep(delay);
+    }
+}
+
+impl Drop for PersistentWalRetention {
+    fn drop(&mut self) {
+        let mut state = self
+            .wal
+            .state
+            .lock()
+            .expect("persistent WAL mutex poisoned");
+        if let Some(count) = state.retention_pins.get_mut(&self.start_sequence) {
+            *count -= 1;
+            if *count == 0 {
+                state.retention_pins.remove(&self.start_sequence);
+            }
+        }
+        let floor = state
+            .retention_pins
+            .first_key_value()
+            .map(|(start, _)| *start);
+        while state
+            .retained_frames
+            .front()
+            .is_some_and(|frame| floor.is_none_or(|floor| frame.sequence < floor))
+        {
+            state.retained_frames.pop_front();
+        }
     }
 }
 
@@ -1461,6 +1656,54 @@ mod tests {
         let mut base_page = vec![0xff; BLOCK];
         read_exact_at(&wal.base, &mut base_page, 0).unwrap();
         assert_eq!(base_page, vec![0; BLOCK]);
+        let _ = fs::remove_dir_all(journal.parent().unwrap());
+    }
+
+    #[test]
+    fn retained_tail_survives_reduction_and_replays_to_staged_terminal() {
+        let (journal, base) = paths("retained-tail");
+        let destination = journal.parent().unwrap().join("destination.img");
+        let wal = Arc::new(
+            PersistentWal::open(&journal, &base, (BLOCK * 4) as u64, (BLOCK * 16) as u64).unwrap(),
+        );
+        let pin = PersistentWal::pin_retained_tail(&wal);
+        assert_eq!(pin.start_sequence(), 1);
+        let payload = vec![0x6d; BLOCK];
+        wal.append_contiguous(BLOCK as u64, &payload).unwrap();
+        let latest_payload = vec![0x7e; BLOCK];
+        wal.append_contiguous(BLOCK as u64, &latest_payload)
+            .unwrap();
+        let durable = wal.sync().unwrap();
+        assert_eq!(wal.reduce(16).unwrap(), 2);
+        assert!(!wal.reset_if_drained().unwrap());
+        drop(pin);
+        drop(wal);
+
+        // The published reduced HWM remained behind the retained suffix, so a
+        // restart can reconstruct and re-pin it from migration metadata.
+        let wal = Arc::new(
+            PersistentWal::open(&journal, &base, (BLOCK * 4) as u64, (BLOCK * 16) as u64).unwrap(),
+        );
+        assert_eq!(wal.stats().reduced_sequence, 0);
+        assert_eq!(wal.stats().pending_frames, 2);
+        let pin = PersistentWal::pin_retained_from(&wal, 1).unwrap();
+
+        let destination_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+            .unwrap();
+        destination_file.set_len((BLOCK * 4) as u64).unwrap();
+        let replay = pin.replay_into(durable, &destination_file).unwrap();
+        assert_eq!(replay.records_replayed, 1);
+        assert_eq!(replay.bytes_replayed, BLOCK as u64);
+        let mut page = vec![0; BLOCK];
+        read_exact_at(&destination_file, &mut page, BLOCK as u64).unwrap();
+        assert_eq!(page, latest_payload);
+        assert_eq!(wal.reduce(16).unwrap(), 2);
+        drop(pin);
+        assert!(wal.reset_if_drained().unwrap());
         let _ = fs::remove_dir_all(journal.parent().unwrap());
     }
 

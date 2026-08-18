@@ -7,6 +7,8 @@ KREL="${KREL:-$(uname -r)}"
 KERNEL="${KERNEL:-/boot/vmlinuz-${KREL}}"
 MODULE_ROOT="${MODULE_ROOT:-/lib/modules/${KREL}}"
 PHASES="${PHASES:-softroce zcnet}"
+SOCKETSRMA_STRESS_OPS="${SOCKETSRMA_STRESS_OPS:-10000}"
+SOCKETSRMA_STRESS_TIMEOUT="${SOCKETSRMA_STRESS_TIMEOUT:-90}"
 QEMU_BIN="${QEMU_BIN:-qemu-system-x86_64}"
 OUTDIR="${OUTDIR:-${ROOT}/bench-results/zccusan-qemu-pair-$(date -u +%Y%m%dT%H%M%SZ)}"
 ROOTFS="${OUTDIR}/rootfs"
@@ -21,6 +23,13 @@ CLIENT_PIDFILE=""
 TARGET_JOB_PID=""
 CLIENT_JOB_PID=""
 NETWORK_CREATED=0
+
+case "$SOCKETSRMA_STRESS_OPS:$SOCKETSRMA_STRESS_TIMEOUT" in
+	*[!0-9:]*|:*|*:|0:*|*:0)
+		printf 'SOCKETSRMA_STRESS_OPS and SOCKETSRMA_STRESS_TIMEOUT must be positive integers\n' >&2
+		exit 2
+		;;
+esac
 
 log()
 {
@@ -101,7 +110,7 @@ build_guest_artifacts()
 {
 	log "building current zcutils binaries"
 	cargo build --release --manifest-path "${ROOT}/Cargo.toml" \
-		--bin zcutils --bin zcnblk-shm-target --bin zcnblk-order-smoke
+		--bin zcutils --bin zcnblk-shm-target --bin zcnblk-order-smoke --bin zcblockbench
 
 	mkdir -p \
 		"${ROOTFS}/bin" \
@@ -132,6 +141,7 @@ build_guest_artifacts()
 	copy_binary "${ROOT}/target/release/zcutils" /uring-play
 	copy_binary "${ROOT}/target/release/zcnblk-shm-target" /zcnblk-shm-target
 	copy_binary "${ROOT}/target/release/zcnblk-order-smoke" /zcnblk-order-smoke
+	copy_binary "${ROOT}/target/release/zcblockbench" /zcblockbench
 
 	rxe_provider=/usr/lib/x86_64-linux-gnu/libibverbs/librxe-rdmav34.so
 	[ -r "$rxe_provider" ]
@@ -162,7 +172,8 @@ build_guest_artifacts()
 
 	cp "${ROOT}/scripts/zccusan-qemu-pair-init.sh" "${ROOTFS}/init"
 	chmod 0755 "${ROOTFS}/init" "${ROOTFS}/uring-play" \
-		"${ROOTFS}/zcnblk-shm-target" "${ROOTFS}/zcnblk-order-smoke"
+		"${ROOTFS}/zcnblk-shm-target" "${ROOTFS}/zcnblk-order-smoke" \
+		"${ROOTFS}/zcblockbench"
 	ln -s /run "${ROOTFS}/var/run"
 
 	(
@@ -301,13 +312,14 @@ wait_for_vm_exit()
 run_phase()
 {
 	phase="$1"
-	case "$phase" in softroce|zcnet) ;; *) printf 'invalid phase: %s\n' "$phase" >&2; return 1 ;; esac
+	case "$phase" in softroce|socketsrma|zcnet) ;; *) printf 'invalid phase: %s\n' "$phase" >&2; return 1 ;; esac
 	ACTIVE_PHASE="$phase"
 	phase_dir="${OUTDIR}/${phase}"
 	mkdir "$phase_dir"
 	tag="$(printf '%04x' $(( $$ % 65536 )))"
 	case "$phase" in
 		softroce) suffix=s; mac_phase=82 ;;
+		socketsrma) suffix=r; mac_phase=84 ;;
 		zcnet) suffix=z; mac_phase=83 ;;
 	esac
 	BRIDGE="zq${tag}${suffix}b"
@@ -336,9 +348,17 @@ run_phase()
 		printf 'classification=correctness-only representative=false phase=%s kernel=%s lanes=1\n' "$phase" "$KREL"
 		printf 'target-map=guest-vcpu0:host-cpu3,guest-vcpu1:host-cpu4,emulator:host-cpu2\n'
 		printf 'client-map=guest-vcpu0:host-cpu6,guest-vcpu1:host-cpu7,emulator:host-cpu5\n'
+		case "$phase" in
+			softroce) transport_map=eth0-rxe0-ofi-verbs ;;
+			socketsrma) transport_map=eth0-ofi-sockets-rma ;;
+			*) transport_map=zcnode/zcnet0-netdevsim-zcsw0-bridge-eth0-tcp ;;
+		esac
 		printf 'lane0-map=client:/dev/zcnblk0:kernel-kthread-unpinned->userspace-onramp:guest-cpu1->transport:%s->target-leaf:guest-cpu1\n' \
-			"$( [ "$phase" = softroce ] && printf eth0-rxe0-ofi-verbs || printf zcnode/zcnet0-netdevsim-zcsw0-bridge-eth0-tcp )"
+			"$transport_map"
 		printf 'virtio-irq-affinity=guest-default hctx-affinity=single-queue-default memlock=guest-init hugetlb=not-configured benchmark_numbers=non-representative\n'
+		if [ "$phase" = socketsrma ]; then
+			printf 'latency-shape=per-worker-qd8 workers=1 lanes=1 aggregate-outstanding-depth=8 raw-transport-rtt=not-measured theoretical-iops-ceiling=not-computed actual-theoretical-efficiency=not-reported reason=correctness-only-qemu\n'
+		fi
 		for link in "$BRIDGE" "$TARGET_TAP" "$CLIENT_TAP"; do
 			ip -details link show dev "$link"
 		done
@@ -353,7 +373,7 @@ run_phase()
 			-display none -monitor none -serial "file:${phase_dir}/target-console.log" \
 			-no-reboot -nodefaults -pidfile "$TARGET_PIDFILE" \
 			-kernel "$KERNEL" -initrd "$INITRD" \
-			-append "console=ttyS0 panic=-1 oops=panic zccusan_phase=${phase} zccusan_role=target" \
+			-append "console=ttyS0 panic=-1 oops=panic zccusan_phase=${phase} zccusan_role=target zccusan_stress_ops=${SOCKETSRMA_STRESS_OPS} zccusan_stress_timeout=${SOCKETSRMA_STRESS_TIMEOUT}" \
 			-netdev "tap,id=link0,ifname=${TARGET_TAP},script=no,downscript=no" \
 			-device "virtio-net-pci,netdev=link0,mac=52:54:00:90:${mac_phase}:02" &
 	TARGET_JOB_PID=$!
@@ -369,7 +389,7 @@ run_phase()
 			-display none -monitor none -serial "file:${phase_dir}/client-console.log" \
 			-no-reboot -nodefaults -pidfile "$CLIENT_PIDFILE" \
 			-kernel "$KERNEL" -initrd "$INITRD" \
-			-append "console=ttyS0 panic=-1 oops=panic zccusan_phase=${phase} zccusan_role=client" \
+			-append "console=ttyS0 panic=-1 oops=panic zccusan_phase=${phase} zccusan_role=client zccusan_stress_ops=${SOCKETSRMA_STRESS_OPS} zccusan_stress_timeout=${SOCKETSRMA_STRESS_TIMEOUT}" \
 			-netdev "tap,id=link0,ifname=${CLIENT_TAP},script=no,downscript=no" \
 			-device "virtio-net-pci,netdev=link0,mac=52:54:00:90:${mac_phase}:01" &
 	CLIENT_JOB_PID=$!
@@ -403,7 +423,7 @@ run_phase()
 	if [ "$phase" = softroce ]; then
 		grep -q 'SOFTROCE_VERBS_RC_PASS role=client' "${phase_dir}/client-console.log"
 		grep -q 'SOFTROCE_VERBS_RC_PASS role=target' "${phase_dir}/target-console.log"
-	else
+	elif [ "$phase" = zcnet ]; then
 		grep -q 'ZCRX_STANDALONE_SEND_PASS' "${phase_dir}/client-console.log"
 		grep -q 'ZCRX_STANDALONE_PASS' "${phase_dir}/target-console.log"
 	fi
@@ -447,5 +467,5 @@ for phase in $PHASES; do
 done
 
 cat "${OUTDIR}"/*/validation-summary.log > "${OUTDIR}/validation-summary.log"
-printf 'ZCCUSAN_QEMU_PAIR_PASS kernel=%s phases=%s pair_count=2-per-phase softroce=verbs-rxe-rxd-message zcnet=netdevsim-zcrx-plus-storage-tcp representative=false artifact=%s\n' \
+printf 'ZCCUSAN_QEMU_PAIR_PASS kernel=%s phases=%s pair_count=2-per-phase softroce=verbs-rxe-rxd-message socketsrma=ofi-sockets-rma-physical-block-q8-stress zcnet=netdevsim-zcrx-plus-storage-tcp representative=false artifact=%s\n' \
 	"$KREL" "$(printf '%s' "$PHASES" | tr ' ' ',')" "$OUTDIR" | tee "${OUTDIR}/result.log"
