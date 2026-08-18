@@ -54959,26 +54959,39 @@ fn zcnblk_wal_leaf_ring_label(options: RawRingOptions) -> String {
     }
 }
 
-fn zcnblk_wal_leaf_lane_domain(lane: usize, lanes: usize) -> io::Result<Option<String>> {
-    let Ok(value) = env::var("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_DOMAINS") else {
+fn zcnblk_wal_leaf_lane_env(
+    name: &str,
+    lane: usize,
+    lanes: usize,
+) -> io::Result<Option<String>> {
+    let Ok(value) = env::var(name) else {
         return Ok(None);
     };
-    let domains = value
+    let entries = value
         .split(',')
         .map(str::trim)
-        .filter(|domain| !domain.is_empty())
+        .filter(|entry| !entry.is_empty())
         .collect::<Vec<_>>();
-    match domains.len() {
+    match entries.len() {
         0 => Ok(None),
-        1 => Ok(Some(domains[0].to_string())),
-        count if count == lanes => Ok(Some(domains[lane].to_string())),
+        1 => Ok(Some(entries[0].to_string())),
+        count if count == lanes => Ok(Some(entries[lane].to_string())),
         count => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "URING_PLAY_ZCNBLK_WAL_LEAF_OFI_DOMAINS must contain one domain or one per lane: got {count} for {lanes} lanes"
+                "{name} must contain one entry or one per lane: got {count} for {lanes} lanes"
             ),
         )),
     }
+}
+
+fn zcnblk_wal_leaf_lane_domain(lane: usize, lanes: usize) -> io::Result<Option<String>> {
+    zcnblk_wal_leaf_lane_env("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_DOMAINS", lane, lanes)
+}
+
+fn zcnblk_wal_leaf_lane_bind(bind: &str, lane: usize, lanes: usize) -> io::Result<String> {
+    Ok(zcnblk_wal_leaf_lane_env("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ADDRS", lane, lanes)?
+        .unwrap_or_else(|| bind.to_string()))
 }
 
 fn zcnblk_wal_leaf_spin_reads_enabled() -> bool {
@@ -55947,20 +55960,13 @@ fn zcnblk_wal_leaf(
                 .unwrap_or_else(|_| "efa".to_string());
             let endpoint = env::var("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ENDPOINT")
                 .unwrap_or_else(|_| "rdm".to_string());
-            let bind_ip = match zcofi_control_bind_addr(bind).parse::<IpAddr>() {
-                Ok(ip) => ip,
-                Err(err) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("direct OFI WAL leaf bind must be an IP address: {bind:?}: {err}"),
-                    ));
-                }
-            };
             println!(
-                "zcnblk-wal-leaf-ofi-topology: provider={provider} endpoint={endpoint} lanes={ports} workers={workers} lane_to_worker=identity lane_to_domain={} service_range={}-{} affinity_map={} cq_sleep_ns={} message_bytes={} placement_owner=external-userspace-stage block_client_placement=no",
+                "zcnblk-wal-leaf-ofi-topology: provider={provider} endpoint={endpoint} lanes={ports} workers={workers} lane_to_worker=identity lane_to_domain={} lane_to_bind={} service_range={}-{} affinity_map={} cq_sleep_ns={} message_bytes={} placement_owner=external-userspace-stage block_client_placement=no",
                 env::var("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_DOMAINS")
                     .or_else(|_| env::var("URING_PLAY_OFI_DOMAIN"))
                     .unwrap_or_else(|_| "implicit".to_string()),
+                env::var("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ADDRS")
+                    .unwrap_or_else(|_| bind.to_string()),
                 base_port,
                 tcp_bench_port(base_port, ports - 1)?,
                 env::var("URING_PLAY_PIN_CPU_LIST").unwrap_or_else(|_| "implicit".to_string()),
@@ -55976,7 +55982,15 @@ fn zcnblk_wal_leaf(
                 let backend = Arc::clone(&backend);
                 let provider = provider.clone();
                 let endpoint = endpoint.clone();
-                let bind = bind.to_string();
+                let bind = zcnblk_wal_leaf_lane_bind(bind, lane, ports)?;
+                let bind_ip = zcofi_control_bind_addr(&bind).parse::<IpAddr>().map_err(|err| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "direct OFI WAL leaf lane {lane} bind must be an IP address: {bind:?}: {err}"
+                        ),
+                    )
+                })?;
                 let port = tcp_bench_port(base_port, lane)?;
                 let domain = zcnblk_wal_leaf_lane_domain(lane, ports)?;
                 handles.push(thread::spawn(move || {
