@@ -33,7 +33,8 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.chart_version }}"
           else
-            VERSION="${GITHUB_REF_NAME#chart-}"
+            VERSION="${GITHUB_REF_NAME#chart-v}"
+            VERSION="${VERSION%%-rc*}"
           fi
 
           if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
