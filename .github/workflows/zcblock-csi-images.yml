@@ -2,189 +2,169 @@ name: zcblock-csi image
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - 'v*'
-      - 'release-*'
+    branches: [main]
+    tags: ['v*', 'release-*']
   schedule:
     - cron: '15 4 * * *'
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git ref to build (defaults to the triggering ref)
+        required: false
+        type: string
+      image_tag:
+        description: Explicit image tag (for reproducible release rebuilds)
+        required: false
+        type: string
 
 permissions:
   contents: read
   id-token: write
 
 jobs:
-  build-images:
-    name: Build zcblock-csi image (${{ matrix.variant }} / ${{ matrix.profile }} / ${{ join(matrix.platforms, ', ') }})
-    runs-on: ubuntu-latest
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      tags: ${{ steps.tags.outputs.tags }}
+      source_sha: ${{ steps.source.outputs.sha }}
+      release: ${{ steps.tags.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Compute image tags
+        id: tags
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REQUESTED_TAG: ${{ inputs.image_tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          short_sha="${SOURCE_SHA::7}"
+          tags="sha-${short_sha}"
+          release=false
+          if [ -n "${REQUESTED_TAG}" ]; then
+            [[ "${REQUESTED_TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || exit 1
+            tags="${tags},${REQUESTED_TAG}"
+            [[ "${REQUESTED_TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && release=true
+          elif [ "${EVENT_NAME}" = schedule ]; then
+            tags="${tags},nightly,nightly-$(date -u +%Y%m%d)"
+          elif [ "${REF_TYPE}" = tag ]; then
+            semver="${REF_NAME#v}"
+            tags="${tags},${semver}"
+            release=true
+            if [[ "${semver}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              tags="${tags},${BASH_REMATCH[1]}.${BASH_REMATCH[2]},${BASH_REMATCH[1]}"
+            elif [[ "${semver}" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+              tags="${tags},${BASH_REMATCH[1]}.${BASH_REMATCH[2]},${BASH_REMATCH[1]}"
+            fi
+          elif [ "${REF_NAME}" = main ]; then
+            tags="${tags},main,latest"
+          else
+            safe_ref="${REF_NAME//\//-}"
+            tags="${tags},${safe_ref},${safe_ref}-sha-${short_sha}"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          echo "release=${release}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build zcblock-csi (${{ matrix.arch }})
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
         include:
-          - profile: distroless
-            variant: nonfips
-            dockerfile: zccusan/deploy/zcblock-csi/Dockerfile
-            repository: docker.io/robjcaskey/zcblock-csi
-            platforms:
-              - linux/amd64
-              - linux/arm64
-          # Future matrix entries (keep source for when we add more tracks/build types):
-          # - profile: distroless
-          #   variant: fips-aspiring
-          #   dockerfile: zccusan/deploy/zcblock-csi/Dockerfile.fips
-          #   repository: docker.io/robjcaskey/zcblock-csi-fips
-          #   platforms:
-          #     - linux/amd64
-          #     - linux/arm64
-          # - profile: ubi
-          #   variant: nonfips
-          #   dockerfile: zccusan/deploy/zcblock-csi/Dockerfile.ubi
-          #   repository: docker.io/robjcaskey/zcblock-csi-ubi
-          #   platforms:
-          #     - linux/amd64
-          #     - linux/arm64
-
+          - {arch: amd64, platform: linux/amd64, runner: ubuntu-24.04}
+          - {arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm}
+    runs-on: ${{ matrix.runner }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME || 'robjcaskey' }}
           password: ${{ secrets.ZCCUSAN_DOCKERHUB_PAT || secrets.DOCKERHUB_PAT || secrets.DOCKERHUB_TOKEN }}
-
-      - name: Compute image tags
-        id: image_tags
+      - name: Compute architecture tags
+        id: arch_tags
+        env:
+          TAGS: ${{ needs.prepare.outputs.tags }}
+          ARCH: ${{ matrix.arch }}
         shell: bash
         run: |
           set -euo pipefail
-
-          IMAGE_REPO='${{ matrix.repository }}'
-          SHORT_SHA="${GITHUB_SHA::7}"
-          BRANCH="${GITHUB_REF_NAME}"
-          DATE="$(date -u +%Y%m%d)"
-          REF_NAME="${{ github.ref_name }}"
-
-          tags="sha-${SHORT_SHA}"
-
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            tags="${tags},nightly,nightly-${DATE}"
-          elif [ "${{ github.ref_type }}" = "tag" ]; then
-            SEMVER="${REF_NAME#v}"
-            tags="${tags},${SEMVER}"
-            if [[ "${SEMVER}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-              tags="${tags},${BASH_REMATCH[1]}.${BASH_REMATCH[2]},${BASH_REMATCH[1]}"
-            elif [[ "${SEMVER}" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-              tags="${tags},${BASH_REMATCH[1]}.${BASH_REMATCH[2]},${BASH_REMATCH[1]}"
-            fi
-          elif [ "${BRANCH}" = "main" ]; then
-            tags="${tags},main,latest"
-          else
-            SAFE_BRANCH="${BRANCH//\//-}"
-            tags="${tags},${SAFE_BRANCH},${SAFE_BRANCH}-sha-${SHORT_SHA}"
-          fi
-
-          IFS=',' read -r -a tag_list <<< "${tags}"
-          full_tags=()
-          for tag in "${tag_list[@]}"; do
-            [[ -z "${tag}" ]] && continue
-            full_tags+=("${IMAGE_REPO}:${tag}")
-          done
-
-          echo "tags=$(IFS=','; echo "${full_tags[*]}")" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push
-        if: github.event_name != 'pull_request'
-        id: build
+          output=()
+          IFS=',' read -r -a tags <<< "${TAGS}"
+          for tag in "${tags[@]}"; do output+=("docker.io/robjcaskey/zcblock-csi:${tag}-${ARCH}"); done
+          echo "tags=$(IFS=,; echo "${output[*]}")" >> "$GITHUB_OUTPUT"
+      - name: Build and push architecture image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: ${{ join(matrix.platforms, ',') }}
+          file: zccusan/deploy/zcblock-csi/Dockerfile
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ steps.image_tags.outputs.tags }}
-          build-args: |
-            IMAGE_VARIANT=${{ matrix.variant }}
-          cache-from: >-
-            ${{ github.event_name == 'push' && github.ref_type != 'tag' && format(
-              'type=gha,scope=zcblock-csi-{0}-{1}',
-              matrix.profile,
-              matrix.variant
-            ) || '' }}
-          cache-to: >-
-            ${{ github.event_name == 'push' && github.ref_type != 'tag' && format(
-              'type=gha,mode=max,scope=zcblock-csi-{0}-{1}',
-              matrix.profile,
-              matrix.variant
-            ) || '' }}
+          tags: ${{ steps.arch_tags.outputs.tags }}
+          build-args: IMAGE_VARIANT=nonfips
           labels: |
             org.opencontainers.image.title=zcblock-csi
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.source_sha }}
           provenance: false
           sbom: false
 
-      - name: Install cosign
-        if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v3
+  publish-manifests:
+    name: Publish and sign multi-architecture manifests
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
-          cosign-release: 'v2.5.3'
-
-      - name: Sign built images with Sigstore
-        if: github.event_name != 'pull_request'
+          username: ${{ secrets.DOCKERHUB_USERNAME || 'robjcaskey' }}
+          password: ${{ secrets.ZCCUSAN_DOCKERHUB_PAT || secrets.DOCKERHUB_PAT || secrets.DOCKERHUB_TOKEN }}
+      - name: Publish multi-architecture manifests
         env:
-          IMAGE_TAGS: ${{ steps.image_tags.outputs.tags }}
-          SECONDARY_SIGN_KEY: ${{ secrets.ZCCUSAN_COSIGN_RELEASE_PRIVATE_KEY }}
-          SECONDARY_SIGN_PASSWORD: ${{ secrets.ZCCUSAN_COSIGN_RELEASE_PRIVATE_KEY_PASSWORD }}
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-          COSIGN_EXPERIMENTAL: "1"
+          TAGS: ${{ needs.prepare.outputs.tags }}
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ -z "${IMAGE_TAGS}" ]; then
-            echo "No image tags to sign."
-            exit 0
-          fi
-
-          for image in ${IMAGE_TAGS//,/ }; do
-            cosign sign --yes "${image}"
+          IFS=',' read -r -a tags <<< "${TAGS}"
+          for tag in "${tags[@]}"; do
+            image="docker.io/robjcaskey/zcblock-csi:${tag}"
+            docker buildx imagetools create --tag "${image}" "${image}-amd64" "${image}-arm64"
           done
-
-          if [ "${REF_TYPE}" != "tag" ]; then
-            exit 0
-          fi
-
-          if [[ ! "${REF_NAME}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ && ! "${REF_NAME}" =~ ^release- ]]; then
-            exit 0
-          fi
-
-          if [ -z "${SECONDARY_SIGN_KEY}" ]; then
-            echo "No secondary release signing key configured; skipping extra release signature."
-            exit 0
-          fi
-
-          SIGN_KEY_PATH="$(mktemp)"
-          printf '%s' "${SECONDARY_SIGN_KEY}" > "${SIGN_KEY_PATH}"
-          trap 'rm -f "${SIGN_KEY_PATH}"' EXIT
-          export COSIGN_PASSWORD="${SECONDARY_SIGN_PASSWORD}"
-
-          for image in ${IMAGE_TAGS//,/ }; do
-            cosign sign --yes --key "${SIGN_KEY_PATH}" "${image}"
-          done
-
-      - name: Print digest
-        if: github.event_name != 'pull_request'
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.5.3'
+      - name: Sign published manifests
+        env:
+          TAGS: ${{ needs.prepare.outputs.tags }}
+          RELEASE: ${{ needs.prepare.outputs.release }}
+          SECONDARY_SIGN_KEY: ${{ secrets.ZCCUSAN_COSIGN_RELEASE_PRIVATE_KEY }}
+          SECONDARY_SIGN_PASSWORD: ${{ secrets.ZCCUSAN_COSIGN_RELEASE_PRIVATE_KEY_PASSWORD }}
+          COSIGN_EXPERIMENTAL: '1'
+        shell: bash
         run: |
-          echo "Built image digest: ${{ steps.build.outputs.digest }}"
+          set -euo pipefail
+          IFS=',' read -r -a tags <<< "${TAGS}"
+          for tag in "${tags[@]}"; do cosign sign --yes "docker.io/robjcaskey/zcblock-csi:${tag}"; done
+          if [ "${RELEASE}" != true ] || [ -z "${SECONDARY_SIGN_KEY}" ]; then exit 0; fi
+          key_path="$(mktemp)"
+          trap 'rm -f "${key_path}"' EXIT
+          printf '%s' "${SECONDARY_SIGN_KEY}" > "${key_path}"
+          export COSIGN_PASSWORD="${SECONDARY_SIGN_PASSWORD}"
+          for tag in "${tags[@]}"; do cosign sign --yes --key "${key_path}" "docker.io/robjcaskey/zcblock-csi:${tag}"; done
+      - name: Print manifests
+        env:
+          TAGS: ${{ needs.prepare.outputs.tags }}
+        shell: bash
+        run: |
+          IFS=',' read -r -a tags <<< "${TAGS}"
+          for tag in "${tags[@]}"; do docker buildx imagetools inspect "docker.io/robjcaskey/zcblock-csi:${tag}"; done
