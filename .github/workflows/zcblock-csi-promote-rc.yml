@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   promote_rc:
@@ -123,6 +124,54 @@ jobs:
           fi
 
           docker buildx imagetools create "$@"
+
+      - name: Install cosign
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.5.3'
+
+      - name: Sign promoted image tags
+        env:
+          REPO: ${{ github.event.inputs.image_repository }}
+          RELEASE_IMAGE_TAG: ${{ steps.resolve.outputs.release_image_tag }}
+          RELEASE_MINOR_TAG: ${{ steps.resolve.outputs.release_minor_tag }}
+          RELEASE_MAJOR_TAG: ${{ steps.resolve.outputs.release_major_tag }}
+          SECONDARY_SIGN_KEY: ${{ secrets.ZCCUSAN_COSIGN_RELEASE_PRIVATE_KEY }}
+          SECONDARY_SIGN_PASSWORD: ${{ secrets.ZCCUSAN_COSIGN_RELEASE_PRIVATE_KEY_PASSWORD }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          COSIGN_EXPERIMENTAL: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "DRY RUN: skip release signing"
+            exit 0
+          fi
+
+          tags=(
+            "${REPO}:${RELEASE_IMAGE_TAG}"
+            "${REPO}:${RELEASE_MINOR_TAG}"
+            "${REPO}:${RELEASE_MAJOR_TAG}"
+          )
+
+          for image in "${tags[@]}"; do
+            cosign sign --yes "${image}"
+          done
+
+          if [ -n "${SECONDARY_SIGN_KEY}" ]; then
+            SIGN_KEY_PATH="$(mktemp)"
+            printf '%s' "${SECONDARY_SIGN_KEY}" > "${SIGN_KEY_PATH}"
+            trap 'rm -f "${SIGN_KEY_PATH}"' EXIT
+            export COSIGN_PASSWORD="${SECONDARY_SIGN_PASSWORD}"
+
+            for image in "${tags[@]}"; do
+              cosign sign --yes --key "${SIGN_KEY_PATH}" "${image}"
+            done
+          else
+            echo "No secondary release signing key configured; skipping extra release signature."
+          fi
 
       - name: Print promoted tags
         run: |

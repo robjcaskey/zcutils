@@ -11,11 +11,13 @@ license = "MIT OR Apache-2.0 OR BSD-2-Clause"
 arc-swap = "1.7"
 aws-lc-rs = "1.15"
 k8s-csi = "0.4.0"
+hdrhistogram = { version = "7.6", default-features = false }
 libc = "0.2"
 prost = "0.8"
 prost-types = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 sha2 = "0.10"
 tokio = { version = "1.0", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
@@ -300,3 +302,11 @@ path = "src/bin/zcrepl.rs"
 [[bin]]
 name = "zcpit"
 path = "src/bin/zcpit.rs"
+
+[[bin]]
+name = "zciops-migration-emu"
+path = "src/bin/zciops-migration-emu.rs"
+
+[[bin]]
+name = "zccusan-telemetry-server"
+path = "src/bin/zccusan-telemetry-server.rs"

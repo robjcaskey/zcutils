@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   promote_chart:
@@ -32,6 +33,11 @@ jobs:
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.5.3'
 
       - name: Resolve source chart tag
         id: resolve
@@ -141,6 +147,7 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run }}
           REPO_SLUG: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
+          COSIGN_EXPERIMENTAL: "1"
         run: |
           set -euo pipefail
 
@@ -148,6 +155,29 @@ jobs:
             echo "DRY RUN: package=${CHART_TGZ}"
             echo "DRY RUN: would publish chart release ${RELEASE_VERSION} from ${SOURCE_CHART_TAG} to ${GH_PAGES_URL}"
             exit 0
+          fi
+
+          if [ -z "${CHART_TGZ}" ]; then
+            echo "::error::No chart artifact provided."
+            exit 1
+          fi
+
+          KEY_PATH=""
+          SIGN_KEY="${{ secrets.ZCCUSAN_COSIGN_RELEASE_PRIVATE_KEY }}"
+          SIGN_PASSWORD="${{ secrets.ZCCUSAN_COSIGN_RELEASE_PRIVATE_KEY_PASSWORD }}"
+
+          # Primary signature (keyless, available on every promotion run)
+          cosign sign-blob --yes --output-signature "${CHART_TGZ}.sig" "${CHART_TGZ}"
+
+          # Optional secondary signature for release artifacts
+          if [ -n "${SIGN_KEY}" ]; then
+            KEY_PATH="$(mktemp)"
+            printf '%s' "${SIGN_KEY}" > "${KEY_PATH}"
+            export COSIGN_PASSWORD="${SIGN_PASSWORD}"
+            cosign sign-blob --yes --key "${KEY_PATH}" --output-signature "${CHART_TGZ}.sig.release" "${CHART_TGZ}"
+            rm -f "${KEY_PATH}"
+          else
+            echo "No secondary release signing key configured; skipping extra chart signature."
           fi
 
           TMP_DIR="$(mktemp -d)"
@@ -168,13 +198,24 @@ jobs:
           cd "${REPO_WORK}"
 
           cp "${CHART_TGZ}" .
+          cp "${CHART_TGZ}.sig" .
+          if [ -f "${CHART_TGZ}.sig.release" ]; then
+            cp "${CHART_TGZ}.sig.release" .
+          fi
+
+          CHART_FILE="${CHART_TGZ##*/}"
+          TRACKED_FILES=("${CHART_FILE}" "${CHART_FILE}.sig")
+          if [ -f "${CHART_TGZ}.sig.release" ]; then
+            TRACKED_FILES+=("${CHART_FILE}.sig.release")
+          fi
+
           if [ -f index.yaml ]; then
             helm repo index . --url "${GH_PAGES_URL}" --merge index.yaml
           else
             helm repo index . --url "${GH_PAGES_URL}"
           fi
 
-          git add index.yaml "${CHART_TGZ##*/}"
+          git add index.yaml "${TRACKED_FILES[@]}"
           if git diff --cached --quiet; then
             echo "No changes to publish."
             exit 0
@@ -182,7 +223,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add index.yaml "${CHART_TGZ##*/}"
+          git add index.yaml "${TRACKED_FILES[@]}"
           git commit -m "charts: promote ${RELEASE_VERSION} from ${SOURCE_CHART_TAG}"
           git push origin gh-pages
 

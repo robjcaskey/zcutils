@@ -1,0 +1,23 @@
+{{- if .Values.environment.enabled }}
+{{- $environmentId := include "zcblock-csi.environmentId" . | trim }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "zcblock-csi.environmentSecretName" . }}
+  namespace: {{ include "zcblock-csi.namespace" . }}
+  labels:
+    {{- include "zcblock-csi.labels" . | nindent 4 }}
+type: Opaque
+data:
+  ZCCU_ENVIRONMENT_ID: {{ $environmentId | b64enc | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "zcblock-csi.environmentConfigMapName" . }}
+  namespace: {{ include "zcblock-csi.namespace" . }}
+  labels:
+    {{- include "zcblock-csi.labels" . | nindent 4 }}
+data:
+  ZCCU_ENVIRONMENT_ID: {{ $environmentId | quote }}
+{{- end }}

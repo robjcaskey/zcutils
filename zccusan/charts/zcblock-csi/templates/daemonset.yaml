@@ -62,9 +62,25 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: ZCCUSAN_MANAGEMENT_CHECKIN_ENABLED
+              value: {{ .Values.management.checkin.enabled | quote }}
+            - name: ZCCUSAN_MANAGEMENT_CHECKIN_URL
+              value: {{ include "zcblock-csi.managementCheckinUrl" . | quote }}
+            - name: ZCCUSAN_SURVEY_ENABLED
+              value: {{ .Values.communitySurvey.enabled | quote }}
+            - name: ZCCUSAN_SURVEY_BACKEND_URL
+              value: {{ .Values.communitySurvey.backendUrl | quote }}
+          {{- if .Values.environment.enabled }}
+            - name: ZCCU_ENVIRONMENT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "zcblock-csi.environmentConfigMapName" . | quote }}
+                  key: ZCCU_ENVIRONMENT_ID
+          {{- end }}
           securityContext:
             privileged: true
             allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}
           volumeMounts:
             - name: plugin-dir
               mountPath: /csi
@@ -88,9 +104,31 @@ spec:
             - --state-dir={{ .Values.stateDir }}
             - --freeze-max-ttl-ms={{ .Values.freezeMaxTtlMs }}
             - --snapshot-mode={{ .Values.snapshotMode }}
-            {{- if .Values.logstream.path }}
+          {{- if .Values.logstream.path }}
             - --logstream-path={{ .Values.logstream.path }}
             {{- end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: ZCCUSAN_MANAGEMENT_CHECKIN_ENABLED
+              value: {{ .Values.management.checkin.enabled | quote }}
+            - name: ZCCUSAN_MANAGEMENT_CHECKIN_URL
+              value: {{ include "zcblock-csi.managementCheckinUrl" . | quote }}
+            - name: ZCCUSAN_SURVEY_ENABLED
+              value: {{ .Values.communitySurvey.enabled | quote }}
+            - name: ZCCUSAN_SURVEY_BACKEND_URL
+              value: {{ .Values.communitySurvey.backendUrl | quote }}
+          {{- if .Values.environment.enabled }}
+            - name: ZCCU_ENVIRONMENT_CONFIGMAP_NAME
+              value: {{ include "zcblock-csi.environmentConfigMapName" . | quote }}
+            - name: ZCCU_ENVIRONMENT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "zcblock-csi.environmentConfigMapName" . | quote }}
+                  key: ZCCU_ENVIRONMENT_ID
+          {{- end }}
           {{- if .Values.metrics.enabled }}
           ports:
             - name: metrics
@@ -100,6 +138,7 @@ spec:
           securityContext:
             privileged: true
             allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}
           volumeMounts:
             - name: state-dir
               mountPath: {{ .Values.stateDir }}
@@ -114,6 +153,8 @@ spec:
         - name: csi-provisioner
           image: {{ include "zcblock-csi.sidecarImage" .Values.sidecars.provisioner.image | quote }}
           imagePullPolicy: {{ .Values.sidecars.provisioner.image.pullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}
           args:
             - --csi-address=/csi/csi.sock
             - --node-deployment
@@ -137,6 +178,8 @@ spec:
         - name: csi-snapshotter
           image: {{ include "zcblock-csi.sidecarImage" .Values.sidecars.snapshotter.image | quote }}
           imagePullPolicy: {{ .Values.sidecars.snapshotter.image.pullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}
           args:
             - --csi-address=/csi/csi.sock
             - --node-deployment
@@ -161,6 +204,8 @@ spec:
         - name: node-driver-registrar
           image: {{ include "zcblock-csi.sidecarImage" .Values.sidecars.registrar.image | quote }}
           imagePullPolicy: {{ .Values.sidecars.registrar.image.pullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}
           args:
             - --csi-address=/csi/csi.sock
             - --kubelet-registration-path={{ include "zcblock-csi.pluginDir" . }}/csi.sock

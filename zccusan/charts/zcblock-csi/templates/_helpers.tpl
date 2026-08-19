@@ -52,6 +52,47 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
 {{- end -}}
 
+{{- define "zcblock-csi.telemetryServiceName" -}}
+{{- printf "%s-telemetry" (include "zcblock-csi.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "zcblock-csi.managementCheckinUrl" -}}
+{{- if .Values.management.checkin.url -}}
+{{- .Values.management.checkin.url -}}
+{{- else if .Values.telemetryServer.enabled -}}
+{{- printf "http://%s:%v/v1/events" (include "zcblock-csi.telemetryServiceName" .) .Values.telemetryServer.port -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "zcblock-csi.sidecarImage" -}}
 {{- printf "%s:%s" .repository .tag -}}
+{{- end -}}
+
+{{- define "zcblock-csi.environmentSecretName" -}}
+{{- printf "%s-zccu-environment-secret" (include "zcblock-csi.fullname" .) -}}
+{{- end -}}
+
+{{- define "zcblock-csi.environmentConfigMapName" -}}
+{{- printf "%s-zccu-environment-config" (include "zcblock-csi.fullname" .) -}}
+{{- end -}}
+
+{{- define "zcblock-csi.environmentId" -}}
+{{- if .Values.environment.id -}}
+{{- .Values.environment.id -}}
+{{- else -}}
+{{- $secret_name := include "zcblock-csi.environmentSecretName" . -}}
+{{- $namespace := include "zcblock-csi.namespace" . -}}
+{{- $secret := lookup "v1" "Secret" $namespace $secret_name -}}
+{{- if and $secret (hasKey $secret "data") -}}
+{{- $value := get $secret.data "ZCCU_ENVIRONMENT_ID" -}}
+{{- if $value -}}
+{{- $value | b64dec -}}
+{{- else -}}
+{{- randAlphaNum 20 -}}
+{{- end -}}
+{{- else -}}
+{{- randAlphaNum 20 -}}
+{{- end -}}
+{{- end -}}
+
 {{- end -}}

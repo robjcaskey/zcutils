@@ -37,6 +37,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use serde_json::{json, Map};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 use tokio::net::UnixListener;
 use tokio::process::Command;
@@ -52,6 +53,7 @@ use zcutils::{
     zc_stream_bind_listener, zc_stream_generate_token, zc_stream_receive_listener_to_writer,
     zc_stream_send_reader_to_tcp,
 };
+use zcutils::SurveyReporter;
 
 const DRIVER_NAME: &str = "io.zcutils.zcblock";
 const TOPOLOGY_KEY: &str = "topology.zcutils.io/node";
@@ -71,6 +73,8 @@ const DEFAULT_QUEUE_DEPTH: u64 = 512;
 const DEFAULT_DESCRIPTOR_MODE: &str = "advertise";
 const DEFAULT_REPLICATION_BUFFER_BYTES: usize = 1024 * 1024;
 const DEFAULT_SNAPSHOT_MODE: &str = "auto";
+const SURVEY_HOURLY_STATS_INTERVAL_SECS: u64 = 60 * 60;
+const IO_DISTRIBUTION_LABELS: [&str; 6] = ["0", "1-9", "10-99", "100-499", "500-1999", "2000+"];
 const MIB: u64 = 1024 * 1024;
 const BLKGETSIZE64: libc::c_ulong = 0x80081272;
 
@@ -298,6 +302,14 @@ impl Config {
 struct ZcblockCsi {
     cfg: Arc<Config>,
     repl: Arc<ReplicationManager>,
+    survey: SurveyReporter,
+    mgmt_clusters: Arc<StdMutex<BTreeMap<String, BTreeSet<String>>>>,
+}
+
+#[derive(Clone, Debug)]
+struct VolumeHourlySample {
+    sample_secs: u64,
+    total_ops: u64,
 }
 
 #[derive(Debug)]
@@ -417,6 +429,17 @@ enum ControlCommand {
     ReplStatus {
         repl_id: Option<String>,
     },
+    CreateManagementCluster {
+        cluster: String,
+    },
+    JoinManagementCluster {
+        cluster: String,
+        node: String,
+    },
+    LeaveManagementCluster {
+        cluster: String,
+        node: String,
+    },
 }
 
 #[tokio::main]
@@ -445,6 +468,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let driver = ZcblockCsi {
         cfg,
         repl: Arc::new(ReplicationManager::default()),
+        survey: SurveyReporter::new(),
+        mgmt_clusters: Arc::new(StdMutex::new(BTreeMap::new())),
     };
     tokio::spawn(run_control_server(control_listener, driver.clone(), freeze));
 
@@ -458,6 +483,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         driver.cfg.freeze_max_ttl_ms,
         driver.cfg.snapshot_mode
     );
+    let mut node_start_payload = Map::new();
+    node_start_payload.insert("phase".to_string(), json!("start"));
+    node_start_payload.insert("version".to_string(), json!(env!("CARGO_PKG_VERSION")));
+    node_start_payload.insert("node_id".to_string(), json!(driver.cfg.node_id.as_str()));
+    node_start_payload.insert("socket_path".to_string(), json!(driver.cfg.socket_path.display().to_string()));
+    node_start_payload.insert("control_socket_path".to_string(), json!(driver.cfg.control_socket_path.display().to_string()));
+    driver
+        .survey
+        .emit_event("csi_node_start", node_start_payload);
+
+    tokio::spawn(run_hourly_iops_summary_loop(driver.clone()));
 
     Server::builder()
         .add_service(IdentityServer::new(driver.clone()))
@@ -469,6 +505,187 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     Ok(())
+}
+
+async fn run_hourly_iops_summary_loop(driver: ZcblockCsi) {
+    let mut ticker = tokio::time::interval(Duration::from_secs(
+        SURVEY_HOURLY_STATS_INTERVAL_SECS,
+    ));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let mut last_samples: BTreeMap<String, VolumeHourlySample> = BTreeMap::new();
+    loop {
+        ticker.tick().await;
+
+        if !driver.survey.is_enabled() {
+            last_samples.clear();
+            continue;
+        }
+
+        let specs = match driver.list_volume_specs() {
+            Ok(specs) => specs,
+            Err(_) => continue,
+        };
+        let mut current_volume_ids = BTreeSet::new();
+
+        let sample_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|now| now.as_secs())
+            .unwrap_or(0);
+        if sample_secs == 0 {
+            continue;
+        }
+
+        let mut distribution = [0_u64; IO_DISTRIBUTION_LABELS.len()];
+        let mut backend_iops: BTreeMap<String, u64> = BTreeMap::new();
+        let mut total_iops: u64 = 0;
+        let mut sampled_volume_count: u64 = 0;
+        let mut missing_device_count: u64 = 0;
+
+        for spec in specs {
+            let Some(block_device) = resolve_block_device_for_spec(&driver, &spec).await else {
+                missing_device_count = missing_device_count.saturating_add(1);
+                continue;
+            };
+            let total_ops = match read_block_device_iops_total_ops(&block_device) {
+                Ok(total_ops) => total_ops,
+                Err(_) => {
+                    missing_device_count = missing_device_count.saturating_add(1);
+                    continue;
+                }
+            };
+
+            current_volume_ids.insert(spec.volume_id.clone());
+            let maybe_last = last_samples.get(&spec.volume_id).cloned();
+            if let Some(last) = maybe_last {
+                if total_ops >= last.total_ops && sample_secs > last.sample_secs {
+                    let delta_ops = total_ops.saturating_sub(last.total_ops);
+                    let elapsed_secs = sample_secs - last.sample_secs;
+                    if elapsed_secs > 0 {
+                        let iops = delta_ops / elapsed_secs;
+                        let bucket = iops_bucket(iops);
+                        distribution[bucket] = distribution[bucket].saturating_add(1);
+                        total_iops = total_iops.saturating_add(iops);
+                        sampled_volume_count = sampled_volume_count.saturating_add(1);
+                        let entry = backend_iops.entry(spec.backend.clone()).or_default();
+                        *entry = entry.saturating_add(iops);
+                    }
+                }
+            }
+
+            last_samples.insert(
+                spec.volume_id,
+                VolumeHourlySample {
+                    sample_secs,
+                    total_ops,
+                },
+            );
+        }
+
+        last_samples.retain(|volume_id, _sample| current_volume_ids.contains(volume_id));
+
+        let mut distribution_payload = Map::new();
+        for (idx, label) in IO_DISTRIBUTION_LABELS.iter().enumerate() {
+            distribution_payload.insert((*label).to_string(), json!(distribution[idx]));
+        }
+
+        let mut backend_payload = Map::new();
+        for (backend, count) in backend_iops {
+            backend_payload.insert(backend, json!(count));
+        }
+
+        let mut payload = Map::new();
+        payload.insert("phase".to_string(), json!("summary"));
+        payload.insert("version".to_string(), json!(env!("CARGO_PKG_VERSION")));
+        payload.insert("interval_secs".to_string(), json!(SURVEY_HOURLY_STATS_INTERVAL_SECS));
+        payload.insert(
+            "sampled_volume_count".to_string(),
+            json!(sampled_volume_count),
+        );
+        payload.insert("missing_device_volume_count".to_string(), json!(missing_device_count));
+        payload.insert("total_iops".to_string(), json!(total_iops));
+        payload.insert(
+            "avg_iops_per_volume".to_string(),
+            if sampled_volume_count > 0 {
+                json!(total_iops / sampled_volume_count)
+            } else {
+                json!(0_u64)
+            },
+        );
+        payload.insert("iops_distribution".to_string(), json!(distribution_payload));
+        payload.insert("backend_iops".to_string(), json!(backend_payload));
+        payload.insert(
+            "active_volume_count".to_string(),
+            json!(current_volume_ids.len()),
+        );
+
+        driver.survey.emit_event("csi_hourly_stats", payload);
+    }
+}
+
+async fn resolve_block_device_for_spec(driver: &ZcblockCsi, spec: &VolumeSpec) -> Option<PathBuf> {
+    match spec.backend.as_str() {
+        "zcbrd" => {
+            if spec.device_name.is_empty() {
+                return None;
+            }
+            let dev = driver.cfg.dev_root.join(&spec.device_name);
+            if dev.exists() {
+                Some(dev)
+            } else {
+                None
+            }
+        }
+        "file-loop" => {
+            let path = spec.file_path.as_ref()?;
+            let file_path = Path::new(path);
+            loop_device_for_file(file_path).await.ok().flatten()
+        }
+        "raw-block" => {
+            let path = spec.raw_device.as_ref()?;
+            let path = fs::canonicalize(path).ok()?;
+            let is_block = fs::metadata(&path)
+                .map(|metadata| metadata.file_type().is_block_device())
+                .unwrap_or(false);
+            if is_block { Some(path) } else { None }
+        }
+        _ => None,
+    }
+}
+
+fn iops_bucket(iops: u64) -> usize {
+    match iops {
+        0 => 0,
+        1..=9 => 1,
+        10..=99 => 2,
+        100..=499 => 3,
+        500..=1999 => 4,
+        _ => 5,
+    }
+}
+
+fn read_block_device_iops_total_ops(path: &Path) -> io::Result<u64> {
+    let device_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid block path"))?;
+    let stat_path = Path::new("/sys/class/block").join(device_name).join("stat");
+    let stat = fs::read_to_string(&stat_path)?;
+    let fields: Vec<_> = stat.split_whitespace().collect();
+    if fields.len() < 5 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid block stat format",
+        ));
+    }
+
+    let reads: u64 = fields[0]
+        .parse()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid reads counter"))?;
+    let writes: u64 = fields[4]
+        .parse()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid writes counter"))?;
+    Ok(reads.saturating_add(writes))
 }
 
 async fn run_control_server(
@@ -571,6 +788,66 @@ async fn handle_control_line(
             Err(e) => format!("ERR {}\n", e.message()),
         },
         Ok(ControlCommand::ReplStatus { repl_id }) => driver.repl.status_response(repl_id),
+        Ok(ControlCommand::CreateManagementCluster { cluster }) => {
+            match driver.create_management_cluster(cluster.clone()) {
+                Ok((created, node_count)) => {
+                    if created {
+                        driver.emit_management_cluster_event(
+                            "csi_management_cluster_created",
+                            cluster.as_str(),
+                            None,
+                            node_count,
+                        );
+                    }
+                    let status = if created { "created" } else { "exists" };
+                    format!(
+                        "OK cluster={} status={} node_count={}\n",
+                        cluster, status, node_count
+                    )
+                }
+                Err(e) => format!("ERR {e}\n"),
+            }
+        }
+        Ok(ControlCommand::JoinManagementCluster { cluster, node }) => {
+            match driver.join_management_cluster(cluster.clone(), node.clone()) {
+                Ok((added, node_count)) => {
+                    if added {
+                        driver.emit_management_cluster_event(
+                            "csi_management_cluster_node_joined",
+                            cluster.as_str(),
+                            Some(node.as_str()),
+                            node_count,
+                        );
+                    }
+                    let status = if added { "joined" } else { "already_member" };
+                    format!(
+                        "OK cluster={} node={} status={} node_count={}\n",
+                        cluster, node, status, node_count
+                    )
+                }
+                Err(e) => format!("ERR {e}\n"),
+            }
+        }
+        Ok(ControlCommand::LeaveManagementCluster { cluster, node }) => {
+            match driver.leave_management_cluster(cluster.clone(), node.clone()) {
+                Ok((removed, node_count)) => {
+                    if removed {
+                        driver.emit_management_cluster_event(
+                            "csi_management_cluster_node_left",
+                            cluster.as_str(),
+                            Some(node.as_str()),
+                            node_count,
+                        );
+                    }
+                    let status = if removed { "left" } else { "not_member" };
+                    format!(
+                        "OK cluster={} node={} status={} node_count={}\n",
+                        cluster, node, status, node_count
+                    )
+                }
+                Err(e) => format!("ERR {e}\n"),
+            }
+        }
         Err(e) => format!("ERR {e}\n"),
     }
 }
@@ -1006,13 +1283,87 @@ impl Controller for ZcblockCsi {
         request: Request<CreateVolumeRequest>,
     ) -> Result<Response<CreateVolumeResponse>, Status> {
         let req = request.into_inner();
+        let request_volume_id = if req.name.is_empty() {
+            "unknown".to_string()
+        } else {
+            format!("zcblk-csi-{}", short_hash(&req.name, 20))
+        };
+        self.emit_csi_volume_event(
+            "volume_create",
+            "attempt",
+            &request_volume_id,
+            None,
+            None,
+            "controller",
+            None,
+            None,
+            None,
+        );
         if req.name.is_empty() {
-            return Err(Status::invalid_argument("CreateVolume.name is required"));
+            let status = Status::invalid_argument("CreateVolume.name is required");
+            self.emit_csi_volume_event(
+                "volume_create",
+                "failed",
+                &request_volume_id,
+                None,
+                None,
+                "controller",
+                None,
+                Some(status.message()),
+                Some("CreateVolume.name is required"),
+            );
+            return Err(status);
         }
-        validate_volume_capabilities(&req.volume_capabilities)?;
+        if let Err(status) = validate_volume_capabilities(&req.volume_capabilities) {
+            self.emit_csi_volume_event(
+                "volume_create",
+                "failed",
+                &request_volume_id,
+                None,
+                None,
+                "controller",
+                None,
+                Some(status.message()),
+                Some("invalid volume_capabilities"),
+            );
+            return Err(status);
+        }
 
-        let spec = self.spec_from_create_request(&req).await?;
-        if let Some(existing) = self.load_volume(&spec.volume_id)? {
+        let spec = match self.spec_from_create_request(&req).await {
+            Ok(spec) => spec,
+            Err(status) => {
+                self.emit_csi_volume_event(
+                    "volume_create",
+                    "failed",
+                    &request_volume_id,
+                    None,
+                    None,
+                    "controller",
+                    None,
+                    Some(status.message()),
+                    Some(status.message()),
+                );
+                return Err(status);
+            }
+        };
+        let existing = match self.load_volume(&spec.volume_id) {
+            Ok(existing) => existing,
+            Err(status) => {
+                self.emit_csi_volume_event(
+                    "volume_create",
+                    "failed",
+                    &spec.volume_id,
+                    Some(&spec.backend),
+                    Some(spec.capacity_bytes),
+                    "controller",
+                    None,
+                    Some(status.message()),
+                    Some("load existing volume failed"),
+                );
+                return Err(status);
+            }
+        };
+        if let Some(existing) = existing {
             let mut compatible = existing.clone();
             compatible.staging_path = None;
             if compatible.restore_snapshot_id.is_none()
@@ -1022,27 +1373,113 @@ impl Controller for ZcblockCsi {
                 compatible.restore_snapshot_id = spec.restore_snapshot_id.clone();
             }
             if compatible != spec {
-                return Err(Status::already_exists(format!(
+                let status = Status::already_exists(format!(
                     "volume {} already exists with different parameters",
                     existing.volume_id
-                )));
+                ));
+                self.emit_csi_volume_event(
+                    "volume_create",
+                    "failed",
+                    &spec.volume_id,
+                    Some(&spec.backend),
+                    Some(spec.capacity_bytes),
+                    "controller",
+                    None,
+                    Some(status.message()),
+                    Some("existing volume mismatch"),
+                );
+                return Err(status);
             }
             if existing.restore_snapshot_id != spec.restore_snapshot_id {
                 let mut updated = existing.clone();
                 updated.restore_path = spec.restore_path.clone();
                 updated.restore_snapshot_id = spec.restore_snapshot_id.clone();
-                self.save_volume(&updated)?;
+                if let Err(status) = self.save_volume(&updated) {
+                    self.emit_csi_volume_event(
+                        "volume_create",
+                        "failed",
+                        &spec.volume_id,
+                        Some(&spec.backend),
+                        Some(spec.capacity_bytes),
+                        "controller",
+                        None,
+                        Some(status.message()),
+                        Some("refresh existing volume state failed"),
+                    );
+                    return Err(status);
+                }
             }
+            self.emit_csi_volume_event(
+                "volume_create",
+                "success",
+                &spec.volume_id,
+                Some(&spec.backend),
+                Some(spec.capacity_bytes),
+                "controller",
+                None,
+                None,
+                None,
+            );
             return Ok(Response::new(CreateVolumeResponse {
                 volume: Some(self.volume_from_spec(&spec)),
             }));
         }
 
         if spec.backend == "raw-block" {
-            self.ensure_raw_device_unclaimed(&spec)?;
+            if let Err(status) = self.ensure_raw_device_unclaimed(&spec) {
+                self.emit_csi_volume_event(
+                    "volume_create",
+                    "failed",
+                    &spec.volume_id,
+                    Some(&spec.backend),
+                    Some(spec.capacity_bytes),
+                    "controller",
+                    None,
+                    Some(status.message()),
+                    Some("raw backend already claimed"),
+                );
+                return Err(status);
+            }
         }
-        self.create_backend_storage(&spec).await?;
-        self.save_volume(&spec)?;
+        if let Err(status) = self.create_backend_storage(&spec).await {
+            self.emit_csi_volume_event(
+                "volume_create",
+                "failed",
+                &spec.volume_id,
+                Some(&spec.backend),
+                Some(spec.capacity_bytes),
+                "controller",
+                None,
+                Some(status.message()),
+                Some(status.message()),
+            );
+            return Err(status);
+        }
+        if let Err(status) = self.save_volume(&spec) {
+            self.emit_csi_volume_event(
+                "volume_create",
+                "failed",
+                &spec.volume_id,
+                Some(&spec.backend),
+                Some(spec.capacity_bytes),
+                "controller",
+                None,
+                Some(status.message()),
+                Some("save volume state failed"),
+            );
+            return Err(status);
+        }
+        self.emit_csi_volume_event(
+            "volume_create",
+            "success",
+            &spec.volume_id,
+            Some(&spec.backend),
+            Some(spec.capacity_bytes),
+            "controller",
+            None,
+            None,
+            None,
+        );
         Ok(Response::new(CreateVolumeResponse {
             volume: Some(self.volume_from_spec(&spec)),
         }))
@@ -1053,22 +1490,95 @@ impl Controller for ZcblockCsi {
         request: Request<DeleteVolumeRequest>,
     ) -> Result<Response<DeleteVolumeResponse>, Status> {
         let req = request.into_inner();
+        self.emit_csi_volume_event(
+            "volume_delete",
+            "attempt",
+            &req.volume_id,
+            None,
+            None,
+            "controller",
+            None,
+            None,
+            None,
+        );
         if req.volume_id.is_empty() {
-            return Err(Status::invalid_argument(
-                "DeleteVolume.volume_id is required",
-            ));
+            let status = Status::invalid_argument("DeleteVolume.volume_id is required");
+            self.emit_csi_volume_event(
+                "volume_delete",
+                "failed",
+                &req.volume_id,
+                None,
+                None,
+                "controller",
+                None,
+                Some(status.message()),
+                Some("DeleteVolume.volume_id is required"),
+            );
+            return Err(status);
         }
 
-        if let Some(spec) = self.load_volume(&req.volume_id)? {
-            self.delete_backend_storage(&spec).await?;
+        let existing = match self.load_volume(&req.volume_id) {
+            Ok(existing) => existing,
+            Err(status) => {
+                self.emit_csi_volume_event(
+                    "volume_delete",
+                    "failed",
+                    &req.volume_id,
+                    None,
+                    None,
+                    "controller",
+                    None,
+                    Some(status.message()),
+                    Some("load volume failed"),
+                );
+                return Err(status);
+            }
+        };
+        if let Some(spec) = existing {
+            if let Err(status) = self.delete_backend_storage(&spec).await {
+                self.emit_csi_volume_event(
+                    "volume_delete",
+                    "failed",
+                    &req.volume_id,
+                    Some(&spec.backend),
+                    Some(spec.capacity_bytes),
+                    "controller",
+                    None,
+                    Some(status.message()),
+                    Some(status.message()),
+                );
+                return Err(status);
+            }
             let path = self.cfg.state_path(&req.volume_id);
             if let Err(e) = fs::remove_file(&path) {
                 if e.kind() != io::ErrorKind::NotFound {
-                    return Err(io_status("remove volume state", e));
+                    let status = io_status("remove volume state", e);
+                    self.emit_csi_volume_event(
+                        "volume_delete",
+                        "failed",
+                        &req.volume_id,
+                        Some(&spec.backend),
+                        Some(spec.capacity_bytes),
+                        "controller",
+                        None,
+                        Some(status.message()),
+                        Some("remove volume state failed"),
+                    );
+                    return Err(status);
                 }
             }
         }
-
+        self.emit_csi_volume_event(
+            "volume_delete",
+            "success",
+            &req.volume_id,
+            None,
+            None,
+            "controller",
+            None,
+            None,
+            None,
+        );
         Ok(Response::new(DeleteVolumeResponse {}))
     }
 
@@ -1314,11 +1824,55 @@ impl Controller for ZcblockCsi {
 
     async fn controller_expand_volume(
         &self,
-        _request: Request<ControllerExpandVolumeRequest>,
+        request: Request<ControllerExpandVolumeRequest>,
     ) -> Result<Response<ControllerExpandVolumeResponse>, Status> {
-        Err(Status::unimplemented(
-            "zcblock-csi does not support expansion yet",
-        ))
+        let req = request.into_inner();
+        if req.volume_id.is_empty() {
+            let status = Status::invalid_argument("ControllerExpandVolume.volume_id is required");
+            self.emit_csi_volume_event(
+                "volume_resize",
+                "failed",
+                &req.volume_id,
+                None,
+                None,
+                "controller",
+                None,
+                Some(status.message()),
+                Some("missing volume_id"),
+            );
+            return Err(status);
+        }
+        let requested_bytes = req.capacity_range.as_ref().map(|range| {
+            if range.required_bytes > 0 {
+                range.required_bytes
+            } else {
+                range.limit_bytes
+            }
+        });
+        self.emit_csi_volume_event(
+            "volume_resize",
+            "attempt",
+            &req.volume_id,
+            None,
+            None,
+            "controller",
+            requested_bytes,
+            None,
+            None,
+        );
+        let status = Status::unimplemented("zcblock-csi does not support expansion yet");
+        self.emit_csi_volume_event(
+            "volume_resize",
+            "failed",
+            &req.volume_id,
+            None,
+            None,
+            "controller",
+            requested_bytes,
+            Some(status.message()),
+            Some("not implemented"),
+        );
+        Err(status)
     }
 
     async fn controller_get_volume(
@@ -1520,11 +2074,55 @@ impl Node for ZcblockCsi {
 
     async fn node_expand_volume(
         &self,
-        _request: Request<NodeExpandVolumeRequest>,
+        request: Request<NodeExpandVolumeRequest>,
     ) -> Result<Response<NodeExpandVolumeResponse>, Status> {
-        Err(Status::unimplemented(
-            "zcblock-csi does not support expansion yet",
-        ))
+        let req = request.into_inner();
+        if req.volume_id.is_empty() {
+            let status = Status::invalid_argument("NodeExpandVolume.volume_id is required");
+            self.emit_csi_volume_event(
+                "volume_resize",
+                "failed",
+                &req.volume_id,
+                None,
+                None,
+                "node",
+                None,
+                Some(status.message()),
+                Some("missing volume_id"),
+            );
+            return Err(status);
+        }
+        let requested_bytes = req.capacity_range.as_ref().map(|range| {
+            if range.required_bytes > 0 {
+                range.required_bytes
+            } else {
+                range.limit_bytes
+            }
+        });
+        self.emit_csi_volume_event(
+            "volume_resize",
+            "attempt",
+            &req.volume_id,
+            None,
+            None,
+            "node",
+            requested_bytes,
+            None,
+            None,
+        );
+        let status = Status::unimplemented("zcblock-csi does not support expansion yet");
+        self.emit_csi_volume_event(
+            "volume_resize",
+            "failed",
+            &req.volume_id,
+            None,
+            None,
+            "node",
+            requested_bytes,
+            Some(status.message()),
+            Some("not implemented"),
+        );
+        Err(status)
     }
 
     async fn node_get_capabilities(
@@ -1551,6 +2149,107 @@ impl Node for ZcblockCsi {
 }
 
 impl ZcblockCsi {
+    fn create_management_cluster(
+        &self,
+        cluster: String,
+    ) -> Result<(bool, usize), String> {
+        let mut clusters = self
+            .mgmt_clusters
+            .lock()
+            .map_err(|_| "management cluster state is unavailable".to_string())?;
+        let existed = clusters.contains_key(&cluster);
+        let members = clusters.entry(cluster).or_default();
+        let node_count = members.len();
+        Ok((!existed, node_count))
+    }
+
+    fn join_management_cluster(
+        &self,
+        cluster: String,
+        node: String,
+    ) -> Result<(bool, usize), String> {
+        let mut clusters = self
+            .mgmt_clusters
+            .lock()
+            .map_err(|_| "management cluster state is unavailable".to_string())?;
+        let members = clusters
+            .get_mut(&cluster)
+            .ok_or_else(|| format!("cluster {cluster} does not exist"))?;
+        let added = members.insert(node);
+        let node_count = members.len();
+        Ok((added, node_count))
+    }
+
+    fn leave_management_cluster(
+        &self,
+        cluster: String,
+        node: String,
+    ) -> Result<(bool, usize), String> {
+        let mut clusters = self
+            .mgmt_clusters
+            .lock()
+            .map_err(|_| "management cluster state is unavailable".to_string())?;
+        let members = clusters
+            .get_mut(&cluster)
+            .ok_or_else(|| format!("cluster {cluster} does not exist"))?;
+        let removed = members.remove(&node);
+        let node_count = members.len();
+        Ok((removed, node_count))
+    }
+
+    fn emit_management_cluster_event(
+        &self,
+        event_type: &str,
+        cluster: &str,
+        node: Option<&str>,
+        node_count: usize,
+    ) {
+        let mut payload = Map::new();
+        payload.insert("cluster".to_string(), json!(cluster));
+        payload.insert("cluster_node_count".to_string(), json!(node_count));
+        if let Some(node) = node {
+            payload.insert("node".to_string(), json!(node));
+        }
+        self.survey.emit_event(event_type, payload);
+    }
+
+    fn emit_csi_volume_event(
+        &self,
+        event_type: &str,
+        phase: &str,
+        volume_id: &str,
+        backend: Option<&str>,
+        size_bytes: Option<i64>,
+        component: &str,
+        requested_bytes: Option<i64>,
+        error: Option<&str>,
+        error_detail: Option<&str>,
+    ) {
+        let mut payload = Map::new();
+        payload.insert("phase".to_string(), json!(phase));
+        payload.insert("volume_id".to_string(), json!(volume_id));
+        payload.insert("component".to_string(), json!(component));
+        if let Some(backend) = backend {
+            payload.insert("backend".to_string(), json!(backend));
+        }
+        if let Some(size_bytes) = size_bytes {
+            payload.insert("size_bytes".to_string(), json!(size_bytes));
+        }
+        if let Some(requested_bytes) = requested_bytes {
+            payload.insert("requested_bytes".to_string(), json!(requested_bytes));
+        }
+        if let Some(error) = error {
+            payload.insert("status".to_string(), json!("failed"));
+            payload.insert("error".to_string(), json!(error));
+        } else {
+            payload.insert("status".to_string(), json!(phase));
+        }
+        if let Some(detail) = error_detail {
+            payload.insert("error_detail".to_string(), json!(detail));
+        }
+        self.survey.emit_event(event_type, payload);
+    }
+
     fn volume_from_spec(&self, spec: &VolumeSpec) -> Volume {
         Volume {
             capacity_bytes: spec.capacity_bytes,
@@ -3551,8 +4250,57 @@ fn parse_control_command(line: &str) -> Result<ControlCommand, String> {
         "REPL_STATUS" | "REPLICATION_STATUS" => Ok(ControlCommand::ReplStatus {
             repl_id: args.get("repl_id").or_else(|| args.get("id")).cloned(),
         }),
+        "MGMT_CLUSTER_CREATE" => {
+            let cluster = args
+                .get("cluster")
+                .or_else(|| args.get("cluster_id"))
+                .cloned()
+                .ok_or_else(|| "MGMT_CLUSTER_CREATE requires cluster=<name>".to_string())?;
+            if cluster.is_empty() {
+                return Err("MGMT_CLUSTER_CREATE requires non-empty cluster".to_string());
+            }
+            Ok(ControlCommand::CreateManagementCluster { cluster })
+        }
+        "MGMT_CLUSTER_JOIN" => {
+            let cluster = args
+                .get("cluster")
+                .or_else(|| args.get("cluster_id"))
+                .cloned()
+                .ok_or_else(|| "MGMT_CLUSTER_JOIN requires cluster=<name>".to_string())?;
+            let node = args
+                .get("node")
+                .or_else(|| args.get("node_id"))
+                .cloned()
+                .ok_or_else(|| "MGMT_CLUSTER_JOIN requires node=<id>".to_string())?;
+            if cluster.is_empty() {
+                return Err("MGMT_CLUSTER_JOIN requires non-empty cluster".to_string());
+            }
+            if node.is_empty() {
+                return Err("MGMT_CLUSTER_JOIN requires non-empty node".to_string());
+            }
+            Ok(ControlCommand::JoinManagementCluster { cluster, node })
+        }
+        "MGMT_CLUSTER_LEAVE" => {
+            let cluster = args
+                .get("cluster")
+                .or_else(|| args.get("cluster_id"))
+                .cloned()
+                .ok_or_else(|| "MGMT_CLUSTER_LEAVE requires cluster=<name>".to_string())?;
+            let node = args
+                .get("node")
+                .or_else(|| args.get("node_id"))
+                .cloned()
+                .ok_or_else(|| "MGMT_CLUSTER_LEAVE requires node=<id>".to_string())?;
+            if cluster.is_empty() {
+                return Err("MGMT_CLUSTER_LEAVE requires non-empty cluster".to_string());
+            }
+            if node.is_empty() {
+                return Err("MGMT_CLUSTER_LEAVE requires non-empty node".to_string());
+            }
+            Ok(ControlCommand::LeaveManagementCluster { cluster, node })
+        }
         other => Err(format!(
-            "unknown command {other}; expected FREEZE, RELEASE, STATUS, REPL_RECV, REPL_SEND, or REPL_STATUS"
+            "unknown command {other}; expected FREEZE, RELEASE, STATUS, REPL_RECV, REPL_SEND, REPL_STATUS, MGMT_CLUSTER_CREATE, MGMT_CLUSTER_JOIN, or MGMT_CLUSTER_LEAVE"
         )),
     }
 }

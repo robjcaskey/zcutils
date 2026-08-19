@@ -19,6 +19,73 @@ layering is descriptor primitives -> zero-copy streams -> zero-copy WALs ->
   `zccusan/deploy/zcblock-csi/install-snapshot-api.sh` for the snapshot CRDs and
   snapshot controller stair-step flow.
 
+## Container Filesystems
+
+The chart sets `security.readOnlyRootFilesystem=true` by default and applies it
+explicitly to the CSI driver, local control agent, provisioner, snapshotter,
+and node-driver registrar containers. Required writes go to explicit volumes:
+the CSI socket uses `plugin-dir`, while driver state and the durable state log
+use `state-dir`. A writable container image filesystem is not required by any
+current zcutils component and disabling this setting is not expected to improve
+data-plane performance.
+
+For a third-party image that cannot run with a read-only root filesystem, the
+global compatibility escape hatch is:
+
+```yaml
+security:
+  readOnlyRootFilesystem: false
+```
+
+Prefer fixing or replacing the incompatible image rather than leaving this
+override disabled.
+
+## Telemetry routing and community survey
+
+The CSI driver and control agent use one routing precedence for telemetry:
+
+1. When `management.checkin.enabled=true` and `management.checkin.url` is a
+   valid HTTP(S) event-ingestion URL, all events go to that management
+   telemetry server. The node processes do not contact the community survey
+   endpoint directly; the telemetry server forwards events on their behalf.
+2. When the management server URL is absent or management check-in is disabled,
+   events go directly to `communitySurvey.backendUrl`.
+3. `communitySurvey.enabled=false` disables only the direct community-survey
+   fallback. It does not suppress delivery to a configured management server.
+
+The chart deploys one cluster-local telemetry collector by default. If
+`management.checkin.url` is empty, node processes automatically use that
+collector's Service URL. An explicit URL overrides the generated URL. Disable
+`telemetryServer.enabled` to omit the Deployment and Service and use direct
+survey fallback instead.
+
+To use a separately managed collector, configure:
+
+```yaml
+management:
+  checkin:
+    enabled: true
+    url: http://zccusan-telemetry:9899/v1/events
+communitySurvey:
+  enabled: true
+  backendUrl: https://vdq4ma9dl2.execute-api.us-east-1.amazonaws.com/survey
+```
+
+For the deployed community endpoints, use the reviewed
+`values-telemetry-dev.yaml` or `values-telemetry-prod.yaml` profile. The
+getting-started installer selects one with `ZCCUSAN_TELEMETRY_ENV=dev|prod` and
+rejects missing or unknown environment names.
+
+The telemetry server logs accepted events to stdout as one-line NDJSON and
+forwards them to its configured survey upstream. It rejects individual inputs
+over 4 KiB and retries unacknowledged events from a bounded 4 MiB indexed memory
+ring. Ring eviction emits a `telemetry_buffer_overflow` event with the exact
+unacknowledged evicted index range and records that its NDJSON copies are
+already available in stdout before the new event is appended. Only that server needs
+public HTTPS egress when the management URL is configured. Edge publishers
+never perform network I/O in their calling path and bound explicit telemetry
+shutdown waiting to 1.5 seconds.
+
 ## Install
 
 ```sh

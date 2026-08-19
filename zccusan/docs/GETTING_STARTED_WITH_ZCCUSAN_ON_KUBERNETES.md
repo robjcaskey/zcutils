@@ -15,11 +15,46 @@ helm repo update
 helm upgrade --install zccusan zccusan/zcblock-csi \
   --namespace zccusan \
   --create-namespace \
-  --version "1.2.3" \
-  --set image.tag="1.2.3"
+  --version "0.1.1" \
+  --set-string image.tag="0.1.1"
 ```
 
 For first install, replace `upgrade --install` with `install`.
+
+## Select the dev or production telemetry endpoint
+
+Helm does not expand shell environment variables inside a values YAML file.
+The repository therefore includes one reviewed values file per deployed survey
+environment and a wrapper that selects exactly one from
+`ZCCUSAN_TELEMETRY_ENV`:
+
+```bash
+export ZCCUSAN_TELEMETRY_ENV=dev  # or: prod
+./zccusan/deploy/zcblock-csi/install-zccusan-kubernetes.sh
+```
+
+The wrapper defaults to the matching immutable `0.1.1` chart and container
+image. Set `ZCCUSAN_CHART_VERSION` and `ZCCUSAN_IMAGE_TAG` together when
+testing another release.
+
+The two profiles are:
+
+- `zccusan/charts/zcblock-csi/values-telemetry-dev.yaml`
+- `zccusan/charts/zcblock-csi/values-telemetry-prod.yaml`
+
+Both send node-local events to the in-cluster telemetry collector. Only that
+collector sends public HTTPS requests, to the selected environment's endpoint.
+The installer rejects unset or unknown environment names instead of silently
+falling back to production.
+
+For a one-off independently deployed endpoint, keep the selected profile and
+override its URL for both direct and collector delivery:
+
+```bash
+ZCCUSAN_TELEMETRY_ENV=dev \
+ZCCUSAN_SURVEY_BACKEND_URL=https://example.execute-api.us-east-1.amazonaws.com/survey \
+./zccusan/deploy/zcblock-csi/install-zccusan-kubernetes.sh
+```
 
 ## Image release workflow (decoupled)
 

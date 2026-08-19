@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   build-images:
@@ -132,6 +133,56 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           provenance: false
           sbom: false
+
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.5.3'
+
+      - name: Sign built images with Sigstore
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE_TAGS: ${{ steps.image_tags.outputs.tags }}
+          SECONDARY_SIGN_KEY: ${{ secrets.ZCCUSAN_COSIGN_RELEASE_PRIVATE_KEY }}
+          SECONDARY_SIGN_PASSWORD: ${{ secrets.ZCCUSAN_COSIGN_RELEASE_PRIVATE_KEY_PASSWORD }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          COSIGN_EXPERIMENTAL: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${IMAGE_TAGS}" ]; then
+            echo "No image tags to sign."
+            exit 0
+          fi
+
+          for image in ${IMAGE_TAGS//,/ }; do
+            cosign sign --yes "${image}"
+          done
+
+          if [ "${REF_TYPE}" != "tag" ]; then
+            exit 0
+          fi
+
+          if [[ ! "${REF_NAME}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ && ! "${REF_NAME}" =~ ^release- ]]; then
+            exit 0
+          fi
+
+          if [ -z "${SECONDARY_SIGN_KEY}" ]; then
+            echo "No secondary release signing key configured; skipping extra release signature."
+            exit 0
+          fi
+
+          SIGN_KEY_PATH="$(mktemp)"
+          printf '%s' "${SECONDARY_SIGN_KEY}" > "${SIGN_KEY_PATH}"
+          trap 'rm -f "${SIGN_KEY_PATH}"' EXIT
+          export COSIGN_PASSWORD="${SECONDARY_SIGN_PASSWORD}"
+
+          for image in ${IMAGE_TAGS//,/ }; do
+            cosign sign --yes --key "${SIGN_KEY_PATH}" "${image}"
+          done
 
       - name: Print digest
         if: github.event_name != 'pull_request'

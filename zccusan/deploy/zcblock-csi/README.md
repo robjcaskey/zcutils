@@ -13,12 +13,27 @@ storage network; the zccusan control protocol and local agent own snapshots,
 streams, freeze barriers, replication policy, topology, and later WAL/gateway
 behavior. See `zccusan/docs/zccusan.md`.
 
-Build the distroless image, import it into local containerd, install the
-snapshot API/controller, and apply the driver:
+Build and load a local image variant, install the snapshot API/controller, and
+apply the driver:
 
 ```sh
 zccusan/deploy/zcblock-csi/build-load-apply.sh
 ```
+
+By default this builds the non-FIPS image (`IMAGE_VARIANT=nonfips`). For the
+FIPS-aspiring variant, set:
+
+```sh
+IMAGE_VARIANT=fips-aspiring zccusan/deploy/zcblock-csi/build-load-apply.sh
+```
+
+`build-load-apply.sh` resolves these defaults:
+
+```text
+nonfips:        IMAGE_NONFIPS=localhost/zcblock-csi:dev
+fips-aspiring:  IMAGE_FIPS_ASPIRING=localhost/zcblock-csi-fips:dev
+```
+You can override either image with `IMAGE=<full-tag>` and/or `DOCKERFILE=<path>`.
 
 To simulate three regions in this same local cluster, install three independent
 CSI identities while sharing the snapshot CRDs/controller:
@@ -27,6 +42,12 @@ CSI identities while sharing the snapshot CRDs/controller:
 zccusan/deploy/zcblock-csi/install-local-regions.sh -a -b -c
 zccusan/deploy/zcblock-csi/test-local-regions-cohesive.sh
 zccusan/deploy/zcblock-csi/test-local-regions-stream-repl.sh
+```
+
+You can run both scripts against the FIPS-aspiring track with:
+
+```sh
+IMAGE_VARIANT=fips-aspiring zccusan/deploy/zcblock-csi/install-local-regions.sh -a -b -c
 ```
 
 The local region install creates `zcblock-csi-a`, `zcblock-csi-b`, and

@@ -31,6 +31,7 @@ pub mod fanout;
 pub mod ha_metadata;
 pub mod integrity_contract;
 mod io_slots;
+pub mod iops_policy;
 pub mod ofi_pipe;
 pub mod persistent_wal;
 pub mod racing_mirror;
@@ -42,6 +43,8 @@ pub(crate) mod wal_contract;
 pub mod window;
 pub mod zcnblk_app_arena;
 pub mod zcnblk_shm_target;
+mod survey;
+pub use survey::{DEFAULT_COMMUNITY_SURVEY_URL, SurveyReporter};
 
 use crate::block::zcnblk::{
     ZCNBLK_FRAME_HEADER_LEN, ZCNBLK_OP_BATCH, ZCNBLK_OP_BATCH_RESP, ZCNBLK_OP_READ,
@@ -97994,7 +97997,18 @@ pub fn main_entry() -> io::Result<()> {
     let argv0_command = zc_argv0_command(&argv0).map(str::to_string);
     let mut args = raw_args;
     let command = argv0_command.or_else(|| args.next());
-    match command.as_deref() {
+    let command_name = command.clone().unwrap_or_else(|| "help".to_string());
+    let survey = survey::SurveyReporter::new();
+
+    if survey.is_enabled() {
+        let mut startup_payload = serde_json::Map::new();
+        startup_payload.insert("command".to_string(), serde_json::Value::String(command_name.clone()));
+        startup_payload.insert("phase".to_string(), serde_json::Value::String("start".to_string()));
+        survey.emit_event("cli_invocation", startup_payload);
+    }
+
+    let command_result = (|| -> io::Result<()> {
+        match command.as_deref() {
         Some("help") | Some("--help") | Some("-h") => {
             print_zcutils_help();
             Ok(())
@@ -100840,5 +100854,20 @@ pub fn main_entry() -> io::Result<()> {
                  raft-durable-leader, raft-durable-inspect, raft-follower, or raft-leader"
             ),
         )),
+        }
+    })();
+
+    if survey.is_enabled() {
+        let mut completion_payload = serde_json::Map::new();
+        completion_payload.insert("command".to_string(), serde_json::Value::String(command_name));
+        completion_payload.insert(
+            "phase".to_string(),
+            serde_json::Value::String("finish".to_string()),
+        );
+        completion_payload.insert("ok".to_string(), serde_json::Value::Bool(command_result.is_ok()));
+        survey.emit_event("cli_completion", completion_payload);
     }
+    survey.shutdown();
+
+    command_result
 }

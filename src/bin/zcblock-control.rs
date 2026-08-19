@@ -12,10 +12,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde_json::{Map, json};
 use zcutils::block::control as api;
 use zcutils::block::logstream::{DurableLogStream, FileLogStream};
 use zcutils::{
-    ZcStreamEncryption, zc_pit_is_reflink_unsupported, zc_pit_reflink_file,
+    SurveyReporter, ZcStreamEncryption, zc_pit_is_reflink_unsupported, zc_pit_reflink_file,
     zc_stream_bind_listener, zc_stream_generate_token, zc_stream_receive_listener_to_writer,
     zc_stream_send_reader_to_tcp,
 };
@@ -166,6 +167,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     app.materialize_state_from_log()
         .map_err(|e| invalid_input(format!("replay logstream: {e}")))?;
+    let telemetry = SurveyReporter::new();
+    emit_startup_telemetry(&telemetry, &cfg);
 
     let listener = TcpListener::bind(&cfg.listen)?;
     eprintln!(
@@ -192,7 +195,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => eprintln!("control HTTP accept failed: {e}"),
         }
     }
+    telemetry.shutdown();
     Ok(())
+}
+
+fn emit_startup_telemetry(telemetry: &SurveyReporter, cfg: &Config) {
+    let raw_node_id = env::var("ZCCUSAN_NODE_ID")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| env::var("NODE_NAME").ok())
+        .or_else(|| env::var("HOSTNAME").ok())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    let node_id = hash_node_identifier(&raw_node_id);
+    let environment_id = env::var("ZCCU_ENVIRONMENT_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let mut payload = Map::new();
+    payload.insert("node_id".to_string(), json!(node_id));
+    payload.insert("environment_id".to_string(), json!(environment_id));
+    payload.insert("control_listen".to_string(), json!(cfg.listen));
+    payload.insert(
+        "fabric_device_name".to_string(),
+        json!(cfg.fabric_device_name),
+    );
+    payload.insert("version".to_string(), json!(env!("CARGO_PKG_VERSION")));
+    payload.insert("started_at_millis".to_string(), json!(unix_now_millis()));
+    telemetry.emit_event("control_node_start", payload);
+}
+
+fn hash_node_identifier(value: &str) -> String {
+    format!("node-{}", short_hash(value, 16))
 }
 
 impl Config {

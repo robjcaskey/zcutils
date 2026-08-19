@@ -2,7 +2,10 @@
 set -euo pipefail
 
 REGION="${1:?usage: render-region-install.sh <region>}"
-IMAGE="${IMAGE:-localhost/zcblock-csi:dev}"
+IMAGE_VARIANT="${IMAGE_VARIANT:-nonfips}"
+IMAGE_NONFIPS_DEFAULT="${IMAGE_NONFIPS:-localhost/zcblock-csi:dev}"
+IMAGE_FIPS_ASPIRING_DEFAULT="${IMAGE_FIPS_ASPIRING:-${IMAGE_FIPS:-localhost/zcblock-csi-fips:dev}}"
+IMAGE="${IMAGE:-}"
 FREEZE_MAX_TTL_MS="${FREEZE_MAX_TTL_MS:-5000}"
 SNAPSHOT_MODE="${SNAPSHOT_MODE:-auto}"
 RAW_PARTUUID="${RAW_PARTUUID:-6dfb2c34-e1a4-4cd5-a4f6-d82bfadcd363}"
@@ -10,6 +13,19 @@ RAW_PARTUUID="${RAW_PARTUUID:-6dfb2c34-e1a4-4cd5-a4f6-d82bfadcd363}"
 case "$REGION" in
   *[!a-z0-9-]* | "" )
     echo "region must contain only lowercase letters, digits, and '-': $REGION" >&2
+    exit 1
+    ;;
+esac
+
+case "$IMAGE_VARIANT" in
+  nonfips|non-fips)
+    IMAGE="${IMAGE:-$IMAGE_NONFIPS_DEFAULT}"
+    ;;
+  fips-aspiring)
+    IMAGE="${IMAGE:-$IMAGE_FIPS_ASPIRING_DEFAULT}"
+    ;;
+  *)
+    echo "unsupported IMAGE_VARIANT=$IMAGE_VARIANT (expected: nonfips, non-fips, fips-aspiring). Use IMAGE_VARIANT=fips-aspiring for the non-validated FIPS track." >&2
     exit 1
     ;;
 esac

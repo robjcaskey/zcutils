@@ -1,0 +1,76 @@
+{{- if .Values.telemetryServer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zcblock-csi.telemetryServiceName" . }}
+  namespace: {{ include "zcblock-csi.namespace" . }}
+  labels:
+    {{- include "zcblock-csi.labels" . | nindent 4 }}
+    app.kubernetes.io/component: telemetry
+spec:
+  replicas: {{ .Values.telemetryServer.replicas }}
+  selector:
+    matchLabels:
+      {{- include "zcblock-csi.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: telemetry
+  template:
+    metadata:
+      labels:
+        {{- include "zcblock-csi.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: telemetry
+    spec:
+      containers:
+        - name: telemetry-server
+          image: {{ include "zcblock-csi.mainImage" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/local/bin/zccusan-telemetry-server
+          env:
+            - name: ZCCUSAN_TELEMETRY_LISTEN
+              value: {{ printf "0.0.0.0:%v" .Values.telemetryServer.port | quote }}
+            - name: ZCCUSAN_TELEMETRY_UPSTREAM_URL
+              value: {{ .Values.telemetryServer.upstreamUrl | quote }}
+            - name: ZCCUSAN_SURVEY_ENABLED
+              value: {{ .Values.communitySurvey.enabled | quote }}
+            - name: ZCCUSAN_SURVEY_BACKEND_URL
+              value: {{ .Values.communitySurvey.backendUrl | quote }}
+            - name: ZCCUSAN_TELEMETRY_FLUSH_INTERVAL_MS
+              value: {{ .Values.telemetryServer.flushIntervalMs | quote }}
+            - name: ZCCUSAN_TELEMETRY_REQUEST_TIMEOUT_MS
+              value: {{ .Values.telemetryServer.requestTimeoutMs | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.telemetryServer.port }}
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          {{- with .Values.telemetryServer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zcblock-csi.telemetryServiceName" . }}
+  namespace: {{ include "zcblock-csi.namespace" . }}
+  labels:
+    {{- include "zcblock-csi.labels" . | nindent 4 }}
+    app.kubernetes.io/component: telemetry
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "zcblock-csi.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: telemetry
+  ports:
+    - name: http
+      port: {{ .Values.telemetryServer.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

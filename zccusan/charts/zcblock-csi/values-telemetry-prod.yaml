@@ -1,0 +1,14 @@
+# Production community-survey routing profile.
+# Select with ZCCUSAN_TELEMETRY_ENV=prod via install-zccusan-kubernetes.sh.
+management:
+  checkin:
+    enabled: true
+    url: ""
+
+telemetryServer:
+  enabled: true
+  upstreamUrl: "https://vdq4ma9dl2.execute-api.us-east-1.amazonaws.com/survey"
+
+communitySurvey:
+  enabled: true
+  backendUrl: "https://vdq4ma9dl2.execute-api.us-east-1.amazonaws.com/survey"
