@@ -1,0 +1,66 @@
+name: Sync chart version docs on tag
+
+on:
+  push:
+    tags:
+      - 'chart-v*'
+  workflow_dispatch:
+    inputs:
+      chart_version:
+        description: Chart version (MAJOR.MINOR.PATCH)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  sync_docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Resolve chart version
+        id: chart_version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.chart_version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#chart-}"
+          fi
+
+          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid chart version '${VERSION}'. Expected MAJOR.MINOR.PATCH."
+            exit 1
+          fi
+
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Update getting-started docs
+        run: |
+          bash scripts/update-chart-docs.sh \
+            zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md \
+            "${{ steps.chart_version.outputs.version }}"
+
+      - name: Commit and push docs update
+        env:
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md; then
+            echo "No documentation updates needed."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md
+          git commit -m "docs: sync getting-started versions to chart v${{ steps.chart_version.outputs.version }}"
+          git push origin "HEAD:${BRANCH}"

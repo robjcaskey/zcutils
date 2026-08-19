@@ -1,0 +1,132 @@
+name: Promote zcblock-csi RC image
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: Optional source RC tag (e.g. v2.3.1-rc.4). If omitted, uses the latest RC tag.
+        required: false
+        type: string
+      image_repository:
+        description: Docker image repository to promote inside Docker Hub
+        required: false
+        default: robjcaskey/zcblock-csi
+      dry_run:
+        description: Print planned promotion operations only
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  promote_rc:
+    name: Promote latest RC to stable image tags
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME || 'robjcaskey' }}
+          password: ${{ secrets.ZCCUSAN_DOCKERHUB_PAT || secrets.DOCKERHUB_PAT || secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve source RC tag
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INPUT_TAG="${{ github.event.inputs.source_tag }}"
+          if [ -n "${INPUT_TAG}" ]; then
+            SOURCE_TAG="${INPUT_TAG}"
+          else
+            git fetch --tags --prune --force >/dev/null
+            mapfile -t RC_TAGS < <(
+              git tag --list 'v*-rc*' |
+              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc([.-][0-9A-Za-z.-]+)?$' |
+              sed 's/^v//' |
+              sort -V
+            )
+            if [ "${#RC_TAGS[@]}" -eq 0 ]; then
+              echo "::error::No rc tags found (expected tag pattern vX.Y.Z-rc...)."
+              exit 1
+            fi
+            SOURCE_TAG="v${RC_TAGS[-1]}"
+          fi
+
+          if ! [[ "${SOURCE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::source tag ${SOURCE_TAG} is not an rc tag."
+            exit 1
+          fi
+
+          RC_SEMVER="${SOURCE_TAG#v}"
+          RELEASE_SEMVER="${RC_SEMVER%%-rc*}"
+          if [[ "${RELEASE_SEMVER}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            MINOR="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+            MAJOR="${BASH_REMATCH[1]}"
+          else
+            echo "::error::Unable to parse release semver from rc tag ${SOURCE_TAG}."
+            exit 1
+          fi
+
+          echo "source=${SOURCE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "source_image_tag=${RC_SEMVER}" >> "${GITHUB_OUTPUT}"
+          echo "release_image_tag=${RELEASE_SEMVER}" >> "${GITHUB_OUTPUT}"
+          echo "release_minor_tag=${MINOR}" >> "${GITHUB_OUTPUT}"
+          echo "release_major_tag=${MAJOR}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate source image exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_IMAGE_TAG="${{ steps.resolve.outputs.source_image_tag }}"
+          REPO="${{ github.event.inputs.image_repository }}"
+          if ! docker manifest inspect "${REPO}:${SOURCE_IMAGE_TAG}" >/dev/null 2>&1; then
+            echo "::error::Image ${REPO}:${SOURCE_IMAGE_TAG} not found."
+            exit 1
+          fi
+          echo "Found source image: ${REPO}:${SOURCE_IMAGE_TAG}"
+
+      - name: Promote rc image to stable tags
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_IMAGE_TAG="${{ steps.resolve.outputs.source_image_tag }}"
+          RELEASE_IMAGE_TAG="${{ steps.resolve.outputs.release_image_tag }}"
+          RELEASE_MINOR_TAG="${{ steps.resolve.outputs.release_minor_tag }}"
+          RELEASE_MAJOR_TAG="${{ steps.resolve.outputs.release_major_tag }}"
+          REPO="${{ github.event.inputs.image_repository }}"
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+
+          set -- \
+            -t "${REPO}:${RELEASE_IMAGE_TAG}" \
+            -t "${REPO}:${RELEASE_MINOR_TAG}" \
+            -t "${REPO}:${RELEASE_MAJOR_TAG}" \
+            "${REPO}:${SOURCE_IMAGE_TAG}"
+
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            echo "DRY RUN: docker buildx imagetools create $*"
+            exit 0
+          fi
+
+          docker buildx imagetools create "$@"
+
+      - name: Print promoted tags
+        run: |
+          echo "Promoted image tags for repo ${{ github.event.inputs.image_repository }}:"
+          echo "- ${{ github.event.inputs.image_repository }}:${{ steps.resolve.outputs.release_image_tag }}"
+          echo "- ${{ github.event.inputs.image_repository }}:${{ steps.resolve.outputs.release_minor_tag }}"
+          echo "- ${{ github.event.inputs.image_repository }}:${{ steps.resolve.outputs.release_major_tag }}"

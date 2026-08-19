@@ -1,0 +1,192 @@
+name: Promote zcblock-csi RC chart
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_chart_tag:
+        description: Optional source chart tag (for example chart-v2.3.1-rc.4). If omitted, uses latest chart-rc tag.
+        required: false
+        type: string
+      gh_pages_url:
+        description: GitHub Pages base URL for Helm index
+        required: false
+        default: https://robjcaskey.github.io/zcutils
+      dry_run:
+        description: Print planned promotion operations only
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  promote_chart:
+    name: Promote latest chart RC to stable chart version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Resolve source chart tag
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INPUT_TAG="${{ github.event.inputs.source_chart_tag }}"
+          if [ -n "${INPUT_TAG}" ]; then
+            SOURCE_TAG="${INPUT_TAG}"
+          else
+            git fetch --tags --prune --force >/dev/null
+            mapfile -t RC_TAGS < <(
+              git tag --list 'chart-v*' |
+              grep -E '^chart-v[0-9]+\.[0-9]+\.[0-9]+-rc([.-][0-9A-Za-z.-]+)?$' |
+              sort -V
+            )
+            if [ "${#RC_TAGS[@]}" -eq 0 ]; then
+              echo "::error::No chart rc tags found."
+              exit 1
+            fi
+            SOURCE_TAG="${RC_TAGS[-1]}"
+          fi
+
+          if ! [[ "${SOURCE_TAG}" =~ ^chart-v[0-9]+\.[0-9]+\.[0-9]+-rc([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::source tag '${SOURCE_TAG}' is not an rc chart tag."
+            exit 1
+          fi
+
+          SEMVER="${SOURCE_TAG#chart-v}"
+          RELEASE="${SEMVER%%-rc*}"
+          MINOR="${RELEASE%.*}"
+          MAJOR="${RELEASE%%.*}"
+
+          echo "source_chart_tag=${SOURCE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "release_version=${RELEASE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build release chart package from source tag
+        id: build
+        shell: bash
+        env:
+          SOURCE_CHART_TAG: ${{ steps.resolve.outputs.source_chart_tag }}
+          RELEASE_VERSION: ${{ steps.resolve.outputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          git checkout "${SOURCE_CHART_TAG}"
+
+          WORKDIR="$(mktemp -d)"
+          CHART_DIR="${WORKDIR}/zcblock-csi"
+          cp -R zccusan/charts/zcblock-csi "${CHART_DIR}"
+
+          CHART_FILE="${CHART_DIR}/Chart.yaml"
+          if [ ! -f "${CHART_FILE}" ]; then
+            echo "::error::Chart.yaml not found at ${CHART_FILE}"
+            exit 1
+          fi
+
+          awk -v ver="${RELEASE_VERSION}" '
+            BEGIN { version_set=0; app_version_set=0 }
+            /^version:/ {
+              print "version: " ver
+              version_set=1
+              next
+            }
+            /^appVersion:/ {
+              print "appVersion: \"" ver "\""
+              app_version_set=1
+              next
+            }
+            { print }
+            END {
+              if (!version_set) print "version: " ver
+              if (!app_version_set) print "appVersion: \"" ver "\""
+            }
+          ' "${CHART_FILE}" > "${CHART_FILE}.tmp"
+          mv "${CHART_FILE}.tmp" "${CHART_FILE}"
+
+          rm -rf /tmp/zcblock-csi-charts
+          mkdir -p /tmp/zcblock-csi-charts
+          PACKAGE_OUTPUT="$(helm package "${CHART_DIR}" --destination /tmp/zcblock-csi-charts)"
+          if [ -z "${PACKAGE_OUTPUT}" ]; then
+            echo "::error::helm package returned no output."
+            exit 1
+          fi
+          CHART_TGZ="$(echo "${PACKAGE_OUTPUT}" | tail -n 1 | awk '{print $NF}')"
+          if [ ! -f "${CHART_TGZ}" ]; then
+            # helm output can prepend status text; fallback to glob match.
+            CHART_TGZ=$(ls -1 /tmp/zcblock-csi-charts/zcblock-csi-"${RELEASE_VERSION}"*.tgz | head -n 1 || true)
+          fi
+          if [ -z "${CHART_TGZ}" ]; then
+            echo "::error::Expected chart package for version ${RELEASE_VERSION} not found."
+            exit 1
+          fi
+
+          echo "source_chart_tag=${SOURCE_CHART_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "release_version=${RELEASE_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "chart_tgz=${CHART_TGZ}" >> "${GITHUB_OUTPUT}"
+
+      - name: Publish promoted chart to gh-pages
+        shell: bash
+        env:
+          CHART_TGZ: ${{ steps.build.outputs.chart_tgz }}
+          RELEASE_VERSION: ${{ steps.resolve.outputs.release_version }}
+          SOURCE_CHART_TAG: ${{ steps.resolve.outputs.source_chart_tag }}
+          GH_PAGES_URL: ${{ github.event.inputs.gh_pages_url }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          REPO_SLUG: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "DRY RUN: package=${CHART_TGZ}"
+            echo "DRY RUN: would publish chart release ${RELEASE_VERSION} from ${SOURCE_CHART_TAG} to ${GH_PAGES_URL}"
+            exit 0
+          fi
+
+          TMP_DIR="$(mktemp -d)"
+          GH_PAGES_REPO="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO_SLUG}.git"
+          REPO_WORK="${TMP_DIR}/repo"
+
+          if git ls-remote --exit-code --heads "${GH_PAGES_REPO}" gh-pages >/dev/null 2>&1; then
+            git clone --depth 1 --branch gh-pages "${GH_PAGES_REPO}" "${REPO_WORK}"
+          else
+            git clone --depth 1 "${GH_PAGES_REPO}" "${REPO_WORK}"
+            cd "${REPO_WORK}"
+            git checkout --orphan gh-pages
+            git rm -rf . 2>/dev/null || true
+            rm -rf ./*
+            cd -
+          fi
+
+          cd "${REPO_WORK}"
+
+          cp "${CHART_TGZ}" .
+          if [ -f index.yaml ]; then
+            helm repo index . --url "${GH_PAGES_URL}" --merge index.yaml
+          else
+            helm repo index . --url "${GH_PAGES_URL}"
+          fi
+
+          git add index.yaml "${CHART_TGZ##*/}"
+          if git diff --cached --quiet; then
+            echo "No changes to publish."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.yaml "${CHART_TGZ##*/}"
+          git commit -m "charts: promote ${RELEASE_VERSION} from ${SOURCE_CHART_TAG}"
+          git push origin gh-pages
+
+      - name: Print promoted chart versions
+        run: |
+          echo "Promoted chart versions:"
+          echo "- ${{ steps.resolve.outputs.release_version }}"

@@ -1,0 +1,139 @@
+name: zcblock-csi image
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+      - 'release-*'
+  schedule:
+    - cron: '15 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-images:
+    name: Build zcblock-csi image (${{ matrix.variant }} / ${{ matrix.profile }} / ${{ join(matrix.platforms, ', ') }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: distroless
+            variant: nonfips
+            dockerfile: zccusan/deploy/zcblock-csi/Dockerfile
+            repository: docker.io/robjcaskey/zcblock-csi
+            platforms:
+              - linux/amd64
+              - linux/arm64
+          # Future matrix entries (keep source for when we add more tracks/build types):
+          # - profile: distroless
+          #   variant: fips-aspiring
+          #   dockerfile: zccusan/deploy/zcblock-csi/Dockerfile.fips
+          #   repository: docker.io/robjcaskey/zcblock-csi-fips
+          #   platforms:
+          #     - linux/amd64
+          #     - linux/arm64
+          # - profile: ubi
+          #   variant: nonfips
+          #   dockerfile: zccusan/deploy/zcblock-csi/Dockerfile.ubi
+          #   repository: docker.io/robjcaskey/zcblock-csi-ubi
+          #   platforms:
+          #     - linux/amd64
+          #     - linux/arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME || 'robjcaskey' }}
+          password: ${{ secrets.ZCCUSAN_DOCKERHUB_PAT || secrets.DOCKERHUB_PAT || secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: image_tags
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_REPO='${{ matrix.repository }}'
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BRANCH="${GITHUB_REF_NAME}"
+          DATE="$(date -u +%Y%m%d)"
+          REF_NAME="${{ github.ref_name }}"
+
+          tags="sha-${SHORT_SHA}"
+
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            tags="${tags},nightly,nightly-${DATE}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            SEMVER="${REF_NAME#v}"
+            tags="${tags},${SEMVER}"
+            if [[ "${SEMVER}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              tags="${tags},${BASH_REMATCH[1]}.${BASH_REMATCH[2]},${BASH_REMATCH[1]}"
+            elif [[ "${SEMVER}" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+              tags="${tags},${BASH_REMATCH[1]}.${BASH_REMATCH[2]},${BASH_REMATCH[1]}"
+            fi
+          elif [ "${BRANCH}" = "main" ]; then
+            tags="${tags},main,latest"
+          else
+            SAFE_BRANCH="${BRANCH//\//-}"
+            tags="${tags},${SAFE_BRANCH},${SAFE_BRANCH}-sha-${SHORT_SHA}"
+          fi
+
+          IFS=',' read -r -a tag_list <<< "${tags}"
+          full_tags=()
+          for tag in "${tag_list[@]}"; do
+            [[ -z "${tag}" ]] && continue
+            full_tags+=("${IMAGE_REPO}:${tag}")
+          done
+
+          echo "tags=$(IFS=','; echo "${full_tags[*]}")" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        if: github.event_name != 'pull_request'
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ join(matrix.platforms, ',') }}
+          push: true
+          tags: ${{ steps.image_tags.outputs.tags }}
+          build-args: |
+            IMAGE_VARIANT=${{ matrix.variant }}
+          cache-from: >-
+            ${{ github.event_name == 'push' && github.ref_type != 'tag' && format(
+              'type=gha,scope=zcblock-csi-{0}-{1}',
+              matrix.profile,
+              matrix.variant
+            ) || '' }}
+          cache-to: >-
+            ${{ github.event_name == 'push' && github.ref_type != 'tag' && format(
+              'type=gha,mode=max,scope=zcblock-csi-{0}-{1}',
+              matrix.profile,
+              matrix.variant
+            ) || '' }}
+          labels: |
+            org.opencontainers.image.title=zcblock-csi
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: Print digest
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "Built image digest: ${{ steps.build.outputs.digest }}"
