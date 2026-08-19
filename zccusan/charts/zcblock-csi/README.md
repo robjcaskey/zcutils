@@ -22,6 +22,20 @@ layering is descriptor primitives -> zero-copy streams -> zero-copy WALs ->
 ## Install
 
 ```sh
+helm repo add zcutils https://robjcaskey.github.io/zcutils
+helm repo update
+helm install zcblock-csi zcutils/zcblock-csi \
+  --version 0.1.0-nightly.20260819.1 \
+  --namespace zcblock-csi \
+  --create-namespace
+```
+
+The chart defaults to `docker.io/robjcaskey/zcblock-csi:nightly`. Pin the image
+and chart to dated versions for a reproducible deployment.
+
+For a checkout-local render instead:
+
+```sh
 helm lint zccusan/charts/zcblock-csi
 helm template zcblock-csi zccusan/charts/zcblock-csi --namespace zcblock-csi \
   | kubectl apply -f -
