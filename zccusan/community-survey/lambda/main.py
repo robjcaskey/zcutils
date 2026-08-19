@@ -1,18 +1,20 @@
 import base64
 import hashlib
+import hmac
 import json
 import os
+import re
+import socket
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import quote
 
-import boto3
-
-
-RDS_DATA = boto3.client("rds-data")
-CLUSTER_ARN = os.environ["SURVEY_DB_CLUSTER_ARN"]
-SECRET_ARN = os.environ["SURVEY_DB_SECRET_ARN"]
-DATABASE_NAME = os.environ.get("SURVEY_DB_NAME", "community_survey")
+DSQL_ENDPOINT = os.environ["SURVEY_DSQL_ENDPOINT"]
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+DATABASE_NAME = os.environ.get("SURVEY_DB_NAME", "postgres")
 TABLE_NAME = os.environ.get("SURVEY_DB_TABLE", "survey_events")
 ENVIRONMENTS_TABLE = os.environ.get("SURVEY_ENVIRONMENTS_TABLE", "community_environments")
 ACTIVE_WINDOW_HOURS = int(os.environ.get("SURVEY_ACTIVE_WINDOW_HOURS", "2"))
@@ -20,7 +22,10 @@ MAX_EVENT_BYTES = 4 * 1024
 INSERT_BATCH_SIZE = 64
 _DASHBOARD_HTML = (Path(__file__).with_name("dashboard.html").read_text(encoding="utf-8"))
 
-_SCHEMA_READY = False
+_SCHEMA_READY = os.environ.get("SURVEY_SCHEMA_PREPROVISIONED", "false").lower() == "true"
+_CONNECTION = None
+_CONNECTION_LOCK = threading.Lock()
+_NAMED_PARAMETER = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def _response(status: int, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -50,27 +55,160 @@ def _html_response(body: str) -> Dict[str, Any]:
     }
 
 
-def _execute_sql(sql: str, parameters=None):
-    return RDS_DATA.execute_statement(
-        resourceArn=CLUSTER_ARN,
-        secretArn=SECRET_ARN,
-        database=DATABASE_NAME,
-        sql=sql,
-        parameters=parameters or [],
+def _connect():
+    """Return a reusable IAM-authenticated Aurora DSQL connection."""
+    global _CONNECTION
+    with _CONNECTION_LOCK:
+        if _CONNECTION is not None and not _CONNECTION.closed:
+            return _CONNECTION
+
+        profile_started = time.monotonic()
+        import psycopg
+        psycopg_ready = time.monotonic()
+
+        token = _generate_dsql_admin_token()
+        token_ready = time.monotonic()
+        ipv4_addresses = list(dict.fromkeys(
+            address[4][0]
+            for address in socket.getaddrinfo(
+                DSQL_ENDPOINT,
+                5432,
+                family=socket.AF_INET,
+                type=socket.SOCK_STREAM,
+            )
+        ))
+        dns_ready = time.monotonic()
+        last_error = None
+        for ipv4_address in ipv4_addresses:
+            try:
+                _CONNECTION = psycopg.connect(
+                    host=DSQL_ENDPOINT,
+                    hostaddr=ipv4_address,
+                    port=5432,
+                    dbname=DATABASE_NAME,
+                    user="admin",
+                    password=token,
+                    sslmode="require",
+                    connect_timeout=2,
+                    autocommit=True,
+                )
+                connected = time.monotonic()
+                print(json.dumps({
+                    "event": "dsql_connection_profile",
+                    "psycopg_import_ms": round((psycopg_ready - profile_started) * 1000, 3),
+                    "token_sign_ms": round((token_ready - psycopg_ready) * 1000, 3),
+                    "dns_ms": round((dns_ready - token_ready) * 1000, 3),
+                    "postgres_connect_ms": round((connected - dns_ready) * 1000, 3),
+                }))
+                return _CONNECTION
+            except psycopg.OperationalError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Aurora DSQL endpoint returned no IPv4 addresses")
+
+
+def _generate_dsql_admin_token(expires_in: int = 900) -> str:
+    """Generate the DSQL DbConnectAdmin SigV4 token without loading an AWS SDK."""
+    access_key = os.environ["AWS_ACCESS_KEY_ID"]
+    secret_key = os.environ["AWS_SECRET_ACCESS_KEY"]
+    session_token = os.environ.get("AWS_SESSION_TOKEN")
+    now = datetime.now(timezone.utc)
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    date_stamp = now.strftime("%Y%m%d")
+    scope = f"{date_stamp}/{AWS_REGION}/dsql/aws4_request"
+
+    parameters = {
+        "Action": "DbConnectAdmin",
+        "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+        "X-Amz-Credential": f"{access_key}/{scope}",
+        "X-Amz-Date": amz_date,
+        "X-Amz-Expires": str(expires_in),
+        "X-Amz-SignedHeaders": "host",
+    }
+    if session_token:
+        parameters["X-Amz-Security-Token"] = session_token
+
+    canonical_query = "&".join(
+        f"{quote(key, safe='-_.~')}={quote(value, safe='-_.~')}"
+        for key, value in sorted(parameters.items())
     )
+    canonical_request = "\n".join((
+        "GET",
+        "/",
+        canonical_query,
+        f"host:{DSQL_ENDPOINT}\n",
+        "host",
+        hashlib.sha256(b"").hexdigest(),
+    ))
+    string_to_sign = "\n".join((
+        "AWS4-HMAC-SHA256",
+        amz_date,
+        scope,
+        hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+    ))
+
+    def sign(key: bytes, value: str) -> bytes:
+        return hmac.new(key, value.encode("utf-8"), hashlib.sha256).digest()
+
+    signing_key = sign(
+        sign(sign(sign(("AWS4" + secret_key).encode("utf-8"), date_stamp), AWS_REGION), "dsql"),
+        "aws4_request",
+    )
+    signature = hmac.new(
+        signing_key,
+        string_to_sign.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{DSQL_ENDPOINT}/?{canonical_query}&X-Amz-Signature={signature}"
+
+
+def _parameter_values(parameters) -> Dict[str, Any]:
+    values = {}
+    for parameter in parameters or []:
+        value = parameter["value"]
+        if value.get("isNull"):
+            values[parameter["name"]] = None
+        else:
+            values[parameter["name"]] = next(iter(value.values()))
+    return values
+
+
+def _psycopg_sql(sql: str) -> str:
+    return _NAMED_PARAMETER.sub(r"%(\1)s", sql)
+
+
+def _run_sql(sql: str, parameters=None, *, fetch=False):
+    """Run one DSQL transaction, retrying optimistic concurrency conflicts."""
+    global _CONNECTION
+    values = _parameter_values(parameters)
+    for attempt in range(4):
+        try:
+            connection = _connect()
+            with connection.cursor() as cursor:
+                cursor.execute(_psycopg_sql(sql), values)
+                if not fetch:
+                    return None
+                columns = [column.name for column in cursor.description]
+                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except Exception as exc:
+            sqlstate = getattr(exc, "sqlstate", None)
+            connection_failed = getattr(_CONNECTION, "closed", True)
+            if connection_failed:
+                _CONNECTION = None
+            retryable = connection_failed or sqlstate in ("40001", "08000", "08001", "08006")
+            if attempt == 3 or not retryable:
+                raise
+            time.sleep(0.01 * (2 ** attempt))
+    raise RuntimeError("unreachable DSQL retry state")
+
+
+def _execute_sql(sql: str, parameters=None):
+    return _run_sql(sql, parameters)
 
 
 def _query_sql(sql: str, parameters=None) -> List[Dict[str, Any]]:
-    result = RDS_DATA.execute_statement(
-        resourceArn=CLUSTER_ARN,
-        secretArn=SECRET_ARN,
-        database=DATABASE_NAME,
-        sql=sql,
-        parameters=parameters or [],
-        formatRecordsAs="JSON",
-    )
-    formatted = result.get("formattedRecords", "[]")
-    return json.loads(formatted)
+    return _run_sql(sql, parameters, fetch=True)
 
 
 def _ensure_schema() -> None:
@@ -80,8 +218,7 @@ def _ensure_schema() -> None:
 
     create_table_sql = f"""
     CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
-      id BIGSERIAL PRIMARY KEY,
-      event_id TEXT NOT NULL UNIQUE,
+      event_id TEXT PRIMARY KEY,
       event_type TEXT NOT NULL,
       region TEXT,
       received_at TIMESTAMPTZ NOT NULL,
@@ -91,27 +228,6 @@ def _ensure_schema() -> None:
     );
     """
     _execute_sql(create_table_sql)
-    _execute_sql(f"""
-    CREATE OR REPLACE FUNCTION {TABLE_NAME}_reject_mutation()
-    RETURNS trigger AS $$
-    BEGIN
-      RAISE EXCEPTION 'raw survey events are append-only';
-    END;
-    $$ LANGUAGE plpgsql;
-    """)
-    _execute_sql(f"""
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_trigger WHERE tgname = '{TABLE_NAME}_immutable'
-      ) THEN
-        CREATE TRIGGER {TABLE_NAME}_immutable
-        BEFORE UPDATE OR DELETE ON {TABLE_NAME}
-        FOR EACH ROW EXECUTE FUNCTION {TABLE_NAME}_reject_mutation();
-      END IF;
-    END
-    $$;
-    """)
     _execute_sql(f"""
     CREATE TABLE IF NOT EXISTS {ENVIRONMENTS_TABLE} (
       public_environment_id TEXT PRIMARY KEY,
@@ -125,10 +241,6 @@ def _ensure_schema() -> None:
       recent_iops BIGINT
     );
     """)
-    _execute_sql(
-        f"CREATE INDEX IF NOT EXISTS {ENVIRONMENTS_TABLE}_last_seen_idx "
-        f"ON {ENVIRONMENTS_TABLE} (last_seen DESC);"
-    )
     _SCHEMA_READY = True
 
 
@@ -203,6 +315,7 @@ def _event_parameters(
 
 
 def _insert_events(parameter_sets: List[List[Dict[str, Any]]]) -> None:
+    global _CONNECTION
     sql = f"""
         INSERT INTO {TABLE_NAME} (
           event_id, event_type, region, received_at, source_ip_hash, payload
@@ -210,14 +323,28 @@ def _insert_events(parameter_sets: List[List[Dict[str, Any]]]) -> None:
           :event_id, :event_type, :region, now(), :source_ip_hash, :payload::jsonb
         )
         """
+    statement = _psycopg_sql(sql)
     for start in range(0, len(parameter_sets), INSERT_BATCH_SIZE):
-        RDS_DATA.batch_execute_statement(
-            resourceArn=CLUSTER_ARN,
-            secretArn=SECRET_ARN,
-            database=DATABASE_NAME,
-            sql=sql,
-            parameterSets=parameter_sets[start:start + INSERT_BATCH_SIZE],
-        )
+        batch = [
+            _parameter_values(parameters)
+            for parameters in parameter_sets[start:start + INSERT_BATCH_SIZE]
+        ]
+        for attempt in range(4):
+            try:
+                connection = _connect()
+                with connection.transaction():
+                    with connection.cursor() as cursor:
+                        cursor.executemany(statement, batch)
+                break
+            except Exception as exc:
+                sqlstate = getattr(exc, "sqlstate", None)
+                connection_failed = getattr(_CONNECTION, "closed", True)
+                if connection_failed:
+                    _CONNECTION = None
+                retryable = connection_failed or sqlstate in ("40001", "08000", "08001", "08006")
+                if attempt == 3 or not retryable:
+                    raise
+                time.sleep(0.01 * (2 ** attempt))
 
 
 def _safe_nonnegative_int(value: Any):
@@ -310,6 +437,12 @@ def _community_environments() -> Dict[str, Any]:
 
 
 def handler(event, context):
+    if event.get("_terraform_bootstrap_schema") is True:
+        global _SCHEMA_READY
+        _SCHEMA_READY = False
+        _ensure_schema()
+        return {"schema_ready": True}
+
     request_http = event.get("requestContext", {}).get("http", {})
     method = request_http.get("method", "POST").upper()
     path = request_http.get("path", event.get("rawPath", "/survey"))

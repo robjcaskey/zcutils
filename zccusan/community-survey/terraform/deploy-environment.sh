@@ -24,8 +24,12 @@ case "${action}" in
     ;;
 esac
 
+shift "$(( $# >= 2 ? 2 : $# ))"
+
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "${script_dir}"
+
+"${script_dir}/build-lambda-package.sh"
 
 aws_profile="${AWS_PROFILE:-tf}"
 state_bucket="${ZCCUSAN_TERRAFORM_STATE_BUCKET:-caskey-terraform-state-storage}"
@@ -43,5 +47,5 @@ AWS_PROFILE="${aws_profile}" terraform init -reconfigure \
 if [[ "${action}" == "output" ]]; then
   AWS_PROFILE="${aws_profile}" terraform output
 else
-  AWS_PROFILE="${aws_profile}" terraform "${action}" -var-file="${tfvars}"
+  AWS_PROFILE="${aws_profile}" terraform "${action}" -var-file="${tfvars}" "$@"
 fi

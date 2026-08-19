@@ -18,17 +18,12 @@ output "lambda_name" {
   value       = aws_lambda_function.survey.function_name
 }
 
-output "rds_cluster_arn" {
-  description = "Aurora cluster ARN."
-  value       = aws_rds_cluster.survey.arn
+output "dsql_cluster_arn" {
+  description = "Request-metered Aurora DSQL cluster ARN."
+  value       = aws_dsql_cluster.survey.arn
 }
 
-output "rds_cluster_endpoint" {
-  description = "Aurora cluster write endpoint."
-  value       = aws_rds_cluster.survey.endpoint
-}
-
-output "db_credentials_secret_arn" {
-  description = "Secret ARN that stores Data API credentials."
-  value       = aws_rds_cluster.survey.master_user_secret[0].secret_arn
+output "dsql_cluster_endpoint" {
+  description = "PostgreSQL-compatible Aurora DSQL endpoint."
+  value       = "${aws_dsql_cluster.survey.identifier}.dsql.${var.aws_region}.on.aws"
 }

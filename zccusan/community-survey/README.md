@@ -1,4 +1,4 @@
-# ZCCUSAN Community Survey (Terraform + Lambda + Aurora)
+# ZCCUSAN Community Survey (Terraform + Lambda + Aurora DSQL)
 
 Provision this stack with Terraform:
 
@@ -34,9 +34,10 @@ Deployed environments:
 - Development: `https://g94w93q6w7.execute-api.us-east-1.amazonaws.com`
 - Production: `https://vdq4ma9dl2.execute-api.us-east-1.amazonaws.com`
 
-Each has independent API Gateway, Lambda, Aurora PostgreSQL, credentials, and
+Each has independent API Gateway, Lambda, request-metered Aurora DSQL, and
 Terraform state. The Helm telemetry values profiles select the corresponding
-`/survey` endpoint.
+`/survey` endpoint. DSQL has no database instances, capacity floor, pause, or
+resume delay; idle clusters consume zero DPUs.
 
 ## Success response shape
 
@@ -45,8 +46,8 @@ Terraform state. The Helm telemetry values profiles select the corresponding
 This uses:
 - AWS Lambda (Python runtime)
 - HTTP API Gateway route
-- Aurora PostgreSQL Serverless v2 (Data API)
-- Secrets Manager credential handoff for Data API
+- Aurora DSQL (PostgreSQL-compatible wire protocol, request-metered DPUs)
+- IAM database authentication with short-lived connection tokens
 
 ## Environment variable contract (client side)
 

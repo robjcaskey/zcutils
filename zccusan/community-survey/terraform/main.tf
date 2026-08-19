@@ -15,95 +15,16 @@ locals {
   }
 }
 
-data "aws_vpc" "main" {
-  default = true
-}
-
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.main.id]
-  }
-}
-
-resource "aws_db_subnet_group" "survey" {
-  name = "${local.base_name}-subnet-group"
-  subnet_ids = slice(
-    sort(data.aws_subnets.default.ids),
-    0,
-    min(2, length(data.aws_subnets.default.ids))
-  )
-
-  tags = local.selected_tags
-}
-
-resource "aws_security_group" "aurora" {
-  name        = "${local.base_name}-aurora"
-  description = "Aurora ingress controls for survey cluster"
-  vpc_id      = data.aws_vpc.main.id
-
-  ingress {
-    description = "No external workload traffic needed for Data API mode."
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    self        = true
-  }
-
-  tags = local.selected_tags
-}
-
-resource "aws_rds_cluster" "survey" {
-  cluster_identifier     = "${local.base_name}-cluster"
-  engine                 = "aurora-postgresql"
-  engine_version         = var.database_engine_version
-  db_subnet_group_name   = aws_db_subnet_group.survey.name
-  vpc_security_group_ids = [aws_security_group.aurora.id]
-
-  database_name               = var.database_name
-  master_username             = var.database_username
-  manage_master_user_password = true
-
-  enable_http_endpoint = true
-
-  serverlessv2_scaling_configuration {
-    min_capacity = var.database_min_capacity
-    max_capacity = var.database_max_capacity
-  }
-
-  storage_encrypted         = true
-  backup_retention_period   = var.database_backup_retention_days
-  copy_tags_to_snapshot     = true
-  deletion_protection       = var.database_deletion_protection
-  skip_final_snapshot       = var.database_skip_final_snapshot
-  final_snapshot_identifier = var.database_skip_final_snapshot ? null : "${local.base_name}-final"
-
-  tags = local.selected_tags
-}
-
-resource "aws_rds_cluster_instance" "writer" {
-  identifier          = "${local.base_name}-writer"
-  cluster_identifier  = aws_rds_cluster.survey.id
-  engine              = aws_rds_cluster.survey.engine
-  instance_class      = "db.serverless"
-  publicly_accessible = false
-
-  tags = local.selected_tags
+resource "aws_dsql_cluster" "survey" {
+  deletion_protection_enabled = var.dsql_deletion_protection
+  force_destroy               = var.dsql_force_destroy
+  tags                        = local.selected_tags
 }
 
 data "archive_file" "lambda_zip" {
   type        = "zip"
   output_path = "${path.module}/.terraform/zccusan_survey_lambda.zip"
-
-  source {
-    content  = file("${path.module}/../lambda/main.py")
-    filename = "main.py"
-  }
-
-  source {
-    content  = file("${path.module}/../lambda/dashboard.html")
-    filename = "dashboard.html"
-  }
+  source_dir  = "${path.module}/.terraform/lambda-package"
 }
 
 resource "aws_iam_role" "lambda" {
@@ -127,21 +48,9 @@ data "aws_iam_policy_document" "lambda_policy" {
   statement {
     effect = "Allow"
     actions = [
-      "secretsmanager:GetSecretValue"
+      "dsql:DbConnectAdmin"
     ]
-    resources = [aws_rds_cluster.survey.master_user_secret[0].secret_arn]
-  }
-
-  statement {
-    effect = "Allow"
-    actions = [
-      "rds-data:ExecuteStatement",
-      "rds-data:BatchExecuteStatement",
-      "rds-data:BeginTransaction",
-      "rds-data:CommitTransaction",
-      "rds-data:RollbackTransaction"
-    ]
-    resources = [aws_rds_cluster.survey.arn]
+    resources = [aws_dsql_cluster.survey.arn]
   }
 }
 
@@ -173,16 +82,28 @@ resource "aws_lambda_function" "survey" {
 
   environment {
     variables = {
-      SURVEY_DB_CLUSTER_ARN      = aws_rds_cluster.survey.arn
-      SURVEY_DB_SECRET_ARN       = aws_rds_cluster.survey.master_user_secret[0].secret_arn
-      SURVEY_DB_NAME             = var.database_name
-      SURVEY_DB_TABLE            = var.table_name
-      SURVEY_ENVIRONMENTS_TABLE  = "community_environments"
-      SURVEY_ACTIVE_WINDOW_HOURS = "2"
+      SURVEY_DSQL_ENDPOINT         = "${aws_dsql_cluster.survey.identifier}.dsql.${var.aws_region}.on.aws"
+      SURVEY_DB_NAME               = var.database_name
+      SURVEY_DB_TABLE              = var.table_name
+      SURVEY_ENVIRONMENTS_TABLE    = "community_environments"
+      SURVEY_ACTIVE_WINDOW_HOURS   = "2"
+      SURVEY_SCHEMA_PREPROVISIONED = "true"
     }
   }
 
   depends_on = [aws_cloudwatch_log_group.lambda]
+}
+
+resource "aws_lambda_invocation" "schema" {
+  function_name = aws_lambda_function.survey.function_name
+  input         = jsonencode({ _terraform_bootstrap_schema = true })
+
+  triggers = {
+    cluster_arn = aws_dsql_cluster.survey.arn
+    source_hash = data.archive_file.lambda_zip.output_base64sha256
+  }
+
+  depends_on = [aws_iam_role_policy.lambda_policy]
 }
 
 resource "aws_apigatewayv2_api" "survey" {

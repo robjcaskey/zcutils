@@ -59,55 +59,25 @@ variable "api_throttling_rate_limit" {
 }
 
 variable "database_name" {
-  description = "Database name used by the survey table."
+  description = "Aurora DSQL database name used by the survey tables."
   type        = string
-  default     = "community_survey"
+  default     = "postgres"
 }
 
-variable "database_username" {
-  description = "Master username for the Aurora PostgreSQL cluster."
-  type        = string
-  default     = "survey_admin"
-}
-
-variable "database_engine_version" {
-  description = "Pinned Aurora PostgreSQL engine version."
-  type        = string
-  default     = "16.14"
-}
-
-variable "database_min_capacity" {
-  description = "Aurora Serverless v2 minimum ACUs."
-  type        = number
-  default     = 0.5
-}
-
-variable "database_max_capacity" {
-  description = "Aurora Serverless v2 maximum ACUs."
-  type        = number
-  default     = 2.0
-}
-
-variable "database_backup_retention_days" {
-  description = "Number of days to retain automated Aurora backups."
-  type        = number
-  default     = 7
-}
-
-variable "database_deletion_protection" {
-  description = "Protect the Aurora cluster from accidental deletion."
+variable "dsql_deletion_protection" {
+  description = "Protect the Aurora DSQL cluster from accidental deletion."
   type        = bool
   default     = false
 }
 
-variable "database_skip_final_snapshot" {
-  description = "Skip a final Aurora snapshot when destroying the cluster."
+variable "dsql_force_destroy" {
+  description = "Permit Terraform to delete a non-empty Aurora DSQL cluster."
   type        = bool
   default     = true
 }
 
 variable "table_name" {
-  description = "Aurora table name for survey events."
+  description = "Aurora DSQL table name for raw survey events."
   type        = string
   default     = "survey_events"
 }

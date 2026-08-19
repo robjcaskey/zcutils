@@ -4,17 +4,18 @@ This Terraform stack deploys:
 
 - AWS Lambda (Python) ingester for survey payloads.
 - HTTP API Gateway endpoint (`POST /survey`).
-- Aurora PostgreSQL Serverless v2 cluster with Data API enabled.
-- Data API write path from Lambda with credentials stored in Secrets Manager.
+- Aurora DSQL single-Region cluster with no provisioned instances or idle DPUs.
+- PostgreSQL wire-protocol writes from Lambda using short-lived IAM tokens.
 
-The dependency-free Lambda source and dashboard are packaged directly by the
-archive provider. Archive inputs are deterministic, so switching Terraform
-between dev and prod state cannot create timestamp-only Lambda drift.
+`build-lambda-package.sh` builds the pinned Psycopg binary wheel for the Lambda
+Python runtime and stages it with the handler and dashboard. Terraform's archive
+provider packages that content-addressed directory, so switching between dev
+and prod state does not create timestamp-only Lambda drift.
 
 ## Files
 
-- `main.tf` – Terraform resources for VPC-backed Aurora + Lambda + API Gateway.
-- `variables.tf` – tunables for capacity, names, runtime, and table.
+- `main.tf` – Terraform resources for Aurora DSQL + Lambda + API Gateway.
+- `variables.tf` – tunables for names, runtime, protection, and table.
 - `outputs.tf` – endpoint names and cluster metadata.
 - `lambda/main.py` – handler that persists JSON payloads.
 - `lambda/requirements.txt` / `lambda/pyproject.toml` – Python package metadata.
@@ -52,13 +53,15 @@ AWS_PROFILE=tf terraform plan -var-file=production.tfvars
 AWS_PROFILE=tf terraform apply -var-file=production.tfvars
 ```
 
-Production uses remote, encrypted, versioned S3 state; Aurora-managed database
-credentials; deletion protection; a required final snapshot; 14-day database
-backup retention; 30-day Lambda/API log retention; and API Gateway throttling.
-Development uses a smaller maximum Aurora capacity, one-day backup retention,
+Production uses remote, encrypted, versioned S3 state, DSQL deletion protection,
+30-day Lambda/API log retention, and API Gateway throttling. Development uses
 seven-day log retention, lower public API throttles, and no deletion protection.
-Both environments keep Aurora at the service's 0.5 ACU minimum and therefore
-incur ongoing database charges while deployed.
+Both use single-Region Aurora DSQL: there are no provisioned database instances,
+no ACU floor, and no hourly database charge while idle. Database activity is
+metered in DPUs and retained data in GiB-month; the AWS monthly free tier
+currently includes 100,000 DPUs and 1 GiB of storage per management account.
+The Lambda uses 1,769 MB only while invoked, which grants one full vCPU and
+reduces cold PostgreSQL-driver startup without creating any standing capacity.
 
 After apply, capture:
 
@@ -122,11 +125,12 @@ Success response:
 
 ## Notes
 
-- This stack currently uses the AWS account's default VPC subnets.
+- Lambda connects to DSQL's PostgreSQL-compatible endpoint over TLS and uses
+  `dsql:DbConnectAdmin` solely to bootstrap and access the two application tables.
 - Keep `terraform` and AWS credentials scoped to least privilege when running this in CI/CD.
 - `survey_post_url` is the default backend endpoint you can pass to `ZCCUSAN_SURVEY_BACKEND_URL`.
-- Raw normalized events are retained as append-only JSONB for server-side replay.
-  They are not exposed by the public API or dashboard.
+- Raw normalized events are retained as application-append-only JSONB for
+  server-side replay. No public route performs raw reads, updates, or deletes.
 - `/community/environments` reads only a sanitized projection containing a
   one-way environment alias and coarse operational aggregates. `/dashboard`
   visualizes active and historical environments from that projection.
