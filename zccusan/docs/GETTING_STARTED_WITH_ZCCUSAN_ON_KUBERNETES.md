@@ -83,18 +83,18 @@ Charts are only published by the chart workflow.
 
 ### Triggering a chart release
 
-- Tag and push `chart-v1.2.3`:
+- Tag and push `chart-v0.1.1`:
 
 ```bash
-git tag chart-v1.2.3
-git push origin chart-v1.2.3
+git tag chart-v0.1.1
+git push origin chart-v0.1.1
 ```
 
 - Or run chart workflow manually with:
 
 ```bash
 gh workflow run "Promote zcblock-csi RC chart" \
-  -f source_chart_tag="chart-v1.2.3-rc.1" \
+  -f source_chart_tag="chart-v0.1.1-rc.1" \
   -f dry_run=false
 ```
 
@@ -102,7 +102,7 @@ The workflow packages `zccusan/charts/zcblock-csi` and publishes it to the repo'
 
 ### Chart versioning
 
-- Chart versions are independent and typically patch-level semver (`1.2.3`).
+- Chart versions are independent and typically patch-level semver (`0.1.1`).
 - For deterministic deployments, pin both chart `--version` and `--set image.tag`.
 - For mutable tracks in non-prod:
   - pin only chart `--version`
@@ -110,7 +110,7 @@ The workflow packages `zccusan/charts/zcblock-csi` and publishes it to the repo'
 
 ## Floating semver vs immutable tags
 
-- **Immutable:** `sha-<7>`, full patch tags (`1.2.3`) in both image and chart
+- **Immutable:** `sha-<7>`, full patch tags (`0.1.1`) in both image and chart
 - **Mutable by design:** `main`, `latest`, `nightly`, branch names, `1`, `1.2`
 - For strict reproducibility, use immutable patch tags for both image and chart.
 
@@ -175,10 +175,10 @@ COSIGN_EXPERIMENTAL=1 cosign verify-blob \
 
 ```bash
 helm upgrade --install zccusan zccusan/zcblock-csi \
-  --version "1.2.3" \
+  --version "0.1.1" \
   --namespace zccusan \
   --create-namespace \
-  --set image.tag="1.2.3"
+  --set image.tag="0.1.1"
 ```
 
 ```bash
