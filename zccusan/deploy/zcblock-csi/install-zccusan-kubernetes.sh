@@ -24,8 +24,8 @@ helm_repository_url="${ZCCUSAN_HELM_REPOSITORY_URL:-https://robjcaskey.github.io
 chart_reference="${ZCCUSAN_HELM_CHART:-${helm_repository_name}/zcblock-csi}"
 release_name="${ZCCUSAN_HELM_RELEASE:-zccusan}"
 namespace="${ZCCUSAN_HELM_NAMESPACE:-zccusan}"
-image_tag="${ZCCUSAN_IMAGE_TAG:-0.1.1}"
-chart_version="${ZCCUSAN_CHART_VERSION:-0.1.1}"
+image_tag="${ZCCUSAN_IMAGE_TAG:-0.1.2}"
+chart_version="${ZCCUSAN_CHART_VERSION:-0.1.2}"
 
 helm repo add "${helm_repository_name}" "${helm_repository_url}" --force-update >/dev/null
 helm repo update "${helm_repository_name}" >/dev/null

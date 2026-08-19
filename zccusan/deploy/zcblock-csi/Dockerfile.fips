@@ -36,7 +36,7 @@ COPY --from=builder /work/target/release/zcblock-freeze /runtime-root/usr/local/
 COPY --from=builder /work/target/release/zccusan-telemetry-server /runtime-root/usr/local/bin/zccusan-telemetry-server
 COPY --from=builder /work/target/release/zcrepl /runtime-root/usr/local/bin/zcrepl
 COPY --from=builder /work/target/release/zcpit /runtime-root/usr/local/bin/zcpit
-COPY allowed-raw-partitions.txt /runtime-root/etc/zcblock-csi/allowed-raw-partitions.txt
+COPY zccusan/deploy/zcblock-csi/allowed-raw-partitions.empty.txt /runtime-root/etc/zcblock-csi/allowed-raw-partitions.txt
 
 RUN set -eux; \
     bins="/runtime-root/usr/local/bin/zcblock-csi /runtime-root/usr/local/bin/zcblock-control /runtime-root/usr/local/bin/zcblock-freeze /runtime-root/usr/local/bin/zccusan-telemetry-server /runtime-root/usr/local/bin/zcrepl /runtime-root/usr/local/bin/zcpit /usr/bin/mount /usr/bin/umount /usr/bin/findmnt /usr/sbin/blkid /usr/sbin/losetup /usr/sbin/mkfs.ext4 /usr/sbin/mkfs.xfs /usr/sbin/fsfreeze"; \

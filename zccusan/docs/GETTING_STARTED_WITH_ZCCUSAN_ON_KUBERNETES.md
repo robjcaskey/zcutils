@@ -15,8 +15,8 @@ helm repo update
 helm upgrade --install zccusan zccusan/zcblock-csi \
   --namespace zccusan \
   --create-namespace \
-  --version "0.1.1" \
-  --set-string image.tag="0.1.1"
+  --version "0.1.2" \
+  --set-string image.tag="0.1.2"
 ```
 
 For first install, replace `upgrade --install` with `install`.
@@ -33,7 +33,7 @@ export ZCCUSAN_TELEMETRY_ENV=dev  # or: prod
 ./zccusan/deploy/zcblock-csi/install-zccusan-kubernetes.sh
 ```
 
-The wrapper defaults to the matching immutable `0.1.1` chart and container
+The wrapper defaults to the matching immutable `0.1.2` chart and container
 image. Set `ZCCUSAN_CHART_VERSION` and `ZCCUSAN_IMAGE_TAG` together when
 testing another release.
 
