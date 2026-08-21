@@ -42,19 +42,18 @@ override disabled.
 
 ## Telemetry routing and community survey
 
-The CSI driver and control agent use one routing precedence for telemetry:
+The CSI driver and control agent use two distinct endpoints:
 
-1. When `management.checkin.enabled=true` and `management.checkin.url` is a
-   valid HTTP(S) event-ingestion URL, all events go to that management
-   telemetry server. The node processes do not contact the community survey
-   endpoint directly; the telemetry server forwards events on their behalf.
-2. When the management server URL is absent or management check-in is disabled,
-   events go directly to `communitySurvey.backendUrl`.
-3. `communitySurvey.enabled=false` disables only the direct community-survey
-   fallback. It does not suppress delivery to a configured management server.
+1. When `telemetry.apiEndpoint` is defined, all raw telemetry goes only to that
+   API. Edge processes do not directly participate in the community survey.
+2. When no telemetry API is defined, `communitySurvey.enabled=true` permits a
+   direct submission to `communitySurvey.apiEndpoint`, but only after Rust has
+   transformed the record into `NonIdentifyingTelemetry`.
+3. A telemetry collector independently decides whether to export anonymized
+   signals to `communitySurvey.apiEndpoint`.
 
 The chart deploys one cluster-local telemetry collector by default. If
-`management.checkin.url` is empty, node processes automatically use that
+`telemetry.apiEndpoint` is empty, node processes automatically use that
 collector's Service URL. An explicit URL overrides the generated URL. Disable
 `telemetryServer.enabled` to omit the Deployment and Service and use direct
 survey fallback instead.
@@ -62,27 +61,27 @@ survey fallback instead.
 To use a separately managed collector, configure:
 
 ```yaml
-management:
-  checkin:
-    enabled: true
-    url: http://zccusan-telemetry:9899/v1/events
+telemetry:
+  apiEndpoint: http://zccusan-telemetry:9899/v1/events
 communitySurvey:
   enabled: true
-  backendUrl: https://vdq4ma9dl2.execute-api.us-east-1.amazonaws.com/survey
+  apiEndpoint: https://vdq4ma9dl2.execute-api.us-east-1.amazonaws.com/survey
 ```
 
 For the deployed community endpoints, use the reviewed
-`values-telemetry-dev.yaml` or `values-telemetry-prod.yaml` profile. The
-getting-started installer selects one with `ZCCUSAN_TELEMETRY_ENV=dev|prod` and
-rejects missing or unknown environment names.
+`values-community-survey-dev.yaml` or `values-community-survey-prod.yaml`
+profile, or set the community API endpoint explicitly.
 
 The telemetry server logs accepted events to stdout as one-line NDJSON and
-forwards them to its configured survey upstream. It rejects individual inputs
+can transform and export them to the configured community API. Before export,
+the collector hashes installation identity and removes sensitive and unknown
+fields; raw telemetry never leaves the installation for the community survey.
+It rejects individual inputs
 over 4 KiB and retries unacknowledged events from a bounded 4 MiB indexed memory
 ring. Ring eviction emits a `telemetry_buffer_overflow` event with the exact
 unacknowledged evicted index range and records that its NDJSON copies are
 already available in stdout before the new event is appended. Only that server needs
-public HTTPS egress when the management URL is configured. Edge publishers
+public HTTPS egress when the local telemetry API is configured. Edge publishers
 never perform network I/O in their calling path and bound explicit telemetry
 shutdown waiting to 1.5 seconds.
 
@@ -156,6 +155,48 @@ helm template zcblock-csi zccusan/charts/zcblock-csi \
   --set storageClasses.zcraw.parameters.rawPartUUID=6dfb2c34-e1a4-4cd5-a4f6-d82bfadcd363 \
   | kubectl apply -f -
 ```
+
+For a cross-node fabric volume, prepare `/dev/zcnblk0` on every eligible client
+node and connect each edge through the separate userspace onramp to the same
+logical volume. Then enable the topology-free fabric StorageClass:
+
+```sh
+helm upgrade --install zcblock-csi zccusan/charts/zcblock-csi \
+  --namespace zcblock-csi --create-namespace \
+  --set storageClasses.zcfabric.enabled=true
+```
+
+`backend=fabric` does not make placement, mirror, stripe, spill, or tier
+decisions. It only stages the node's `/dev/zcnblk0` client edge. The downstream
+userspace stage owns those decisions. Unlike `zcfile`, the resulting CSI volume
+does not advertise node-local accessible topology, so a workload can move to a
+different prepared client node without moving the remote leaf.
+
+### Direct userspace filesystem volumes (no local block edge)
+
+Kubernetes requires a block-special device only for `volumeMode: Block`. For an
+ordinary filesystem PVC, zcblock CSI can instead publish a FUSE filesystem that
+is owned by a separate userspace volume service. Enable the topology-free class:
+
+```sh
+helm upgrade --install zcblock-csi zccusan/charts/zcblock-csi \
+  --namespace zcblock-csi --create-namespace \
+  --set storageClasses.zcuserspace.enabled=true
+```
+
+For volume `<volume-id>`, the userspace service must create a FUSE mount at
+`<userspaceMountRoot>/<volume-id>` on every eligible client node. The chart
+shares that host directory with bidirectional mount propagation. During
+`NodeStageVolume`, CSI verifies that the source is an actual `fuse`/`fuse.*`
+mount and bind-mounts it into kubelet's staging tree. It never formats a device,
+creates a loop device, or makes userspace placement decisions.
+
+This backend intentionally rejects `volumeMode: Block`. It is the CSI adapter
+for a userspace filesystem service, not that filesystem implementation itself;
+the current zcutils WAL protocol is byte/block oriented and cannot truthfully be
+presented as POSIX storage without a filesystem layer. Local snapshot copying
+and byte-stream replication are likewise rejected; those operations must use
+the userspace volume control API.
 
 ## Durable State Log
 

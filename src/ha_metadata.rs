@@ -9,6 +9,7 @@ use crate::change_log::{
     CHANGE_BATCH_SCHEMA_VERSION, ChangeBatch, ChangeLogStore, CommittedChangeBatch,
     ComponentChange, content_hash,
 };
+use crate::htb_controller::{HtbBorrowingController, HtbGrantPlan, HtbPolicy};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -200,6 +201,14 @@ pub struct RecoveryPoint {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum HaCommand {
+    ConfigureRegionalHtb {
+        controller_id: String,
+        policy: HtbPolicy,
+    },
+    CheckpointRegionalHtb {
+        controller_id: String,
+        plan: HtbGrantPlan,
+    },
     ConfigureGroup {
         config: GroupConfig,
     },
@@ -243,6 +252,8 @@ pub enum HaCommand {
 impl HaCommand {
     fn key(&self) -> &str {
         match self {
+            Self::ConfigureRegionalHtb { controller_id, .. }
+            | Self::CheckpointRegionalHtb { controller_id, .. } => controller_id,
             Self::ConfigureGroup { config } => &config.group_id,
             Self::GrantLease { group_id, .. } | Self::PublishHwm { group_id, .. } => group_id,
             Self::CaptureSnapshot { snapshot_id, .. } | Self::DeleteSnapshot { snapshot_id } => {
@@ -330,6 +341,17 @@ pub struct HaState {
     pub groups: BTreeMap<String, GroupState>,
     pub snapshots: BTreeMap<String, SnapshotRecord>,
     pub recovery_points: BTreeMap<String, RecoveryPoint>,
+    /// Policy and the latest advisory grant checkpoint are consensus state.
+    /// Per-interval recomputation and lane-mailbox publication stay local to
+    /// the current Raft leader and never enter the I/O path.
+    #[serde(default)]
+    pub regional_htb: BTreeMap<String, RegionalHtbState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegionalHtbState {
+    pub policy: HtbPolicy,
+    pub last_plan: Option<HtbGrantPlan>,
 }
 
 impl HaState {
@@ -372,6 +394,14 @@ impl HaState {
 
     fn apply_command(&mut self, raft_term: u64, command: &HaCommand) -> io::Result<()> {
         match command {
+            HaCommand::ConfigureRegionalHtb {
+                controller_id,
+                policy,
+            } => self.configure_regional_htb(controller_id, policy),
+            HaCommand::CheckpointRegionalHtb {
+                controller_id,
+                plan,
+            } => self.checkpoint_regional_htb(controller_id, plan),
             HaCommand::ConfigureGroup { config } => self.configure(config),
             HaCommand::GrantLease {
                 group_id,
@@ -439,6 +469,82 @@ impl HaState {
                 Ok(())
             }
         }
+    }
+
+    fn configure_regional_htb(
+        &mut self,
+        controller_id: &str,
+        policy: &HtbPolicy,
+    ) -> io::Result<()> {
+        validate_id(controller_id, "controller_id")?;
+        HtbBorrowingController::new(policy.clone())?;
+        if let Some(current) = self.regional_htb.get(controller_id) {
+            if policy.revision <= current.policy.revision {
+                return Err(invalid(format!(
+                    "regional HTB policy revision must advance beyond {}",
+                    current.policy.revision
+                )));
+            }
+        }
+        self.regional_htb.insert(
+            controller_id.to_string(),
+            RegionalHtbState {
+                policy: policy.clone(),
+                last_plan: None,
+            },
+        );
+        Ok(())
+    }
+
+    fn checkpoint_regional_htb(
+        &mut self,
+        controller_id: &str,
+        plan: &HtbGrantPlan,
+    ) -> io::Result<()> {
+        let state = self
+            .regional_htb
+            .get_mut(controller_id)
+            .ok_or_else(|| invalid(format!("unknown regional HTB controller {controller_id}")))?;
+        if plan.policy_revision != state.policy.revision || plan.generation == 0 {
+            return Err(invalid(
+                "regional HTB checkpoint policy/generation mismatch",
+            ));
+        }
+        if state
+            .last_plan
+            .as_ref()
+            .is_some_and(|current| plan.generation <= current.generation)
+        {
+            return Err(invalid(
+                "regional HTB checkpoint generation did not advance",
+            ));
+        }
+        let leaves = state
+            .policy
+            .classes
+            .iter()
+            .filter(|class| class.lanes != 0)
+            .map(|class| (class.id.as_str(), class))
+            .collect::<BTreeMap<_, _>>();
+        if plan.grants.len() != leaves.len() {
+            return Err(invalid("regional HTB checkpoint does not cover every leaf"));
+        }
+        let mut seen = BTreeSet::new();
+        for grant in &plan.grants {
+            let class = leaves
+                .get(grant.class_id.as_str())
+                .ok_or_else(|| invalid(format!("unknown HTB grant leaf {}", grant.class_id)))?;
+            if !seen.insert(grant.class_id.as_str())
+                || grant.target_iops > class.ceiling_iops
+                || grant.ceiling_iops != class.ceiling_iops
+                || grant.guaranteed_iops != class.guaranteed_iops
+                || grant.borrowed_iops != grant.target_iops.saturating_sub(class.guaranteed_iops)
+            {
+                return Err(invalid(format!("invalid HTB grant for {}", grant.class_id)));
+            }
+        }
+        state.last_plan = Some(plan.clone());
+        Ok(())
     }
 
     fn configure(&mut self, config: &GroupConfig) -> io::Result<()> {
@@ -967,6 +1073,8 @@ impl HaMetadataStore {
 
 fn ha_operation(command: &HaCommand) -> &'static str {
     match command {
+        HaCommand::ConfigureRegionalHtb { .. } => "regional_htb.configure",
+        HaCommand::CheckpointRegionalHtb { .. } => "regional_htb.checkpoint",
         HaCommand::ConfigureGroup { .. } => "group.configure",
         HaCommand::GrantLease { .. } => "lease.grant",
         HaCommand::PublishHwm { .. } => "hwm.publish",
@@ -1517,6 +1625,79 @@ mod tests {
         let expected = store.state();
         drop(store);
         assert_eq!(HaMetadataStore::open(&path).unwrap().state(), expected);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn regional_htb_policy_and_grant_checkpoint_are_raft_ordered_and_replayable() {
+        use crate::htb_controller::{HtbClassGrant, HtbClassSpec};
+
+        let path = temp_path("regional-htb");
+        let store = HaMetadataStore::open(&path).unwrap();
+        let policy = HtbPolicy {
+            revision: 7,
+            root_id: "region".into(),
+            classes: vec![
+                HtbClassSpec {
+                    id: "region".into(),
+                    parent_id: None,
+                    guaranteed_iops: 4_000_000,
+                    ceiling_iops: 12_000_000,
+                    borrow_weight: 1,
+                    burst_seconds: 0,
+                    lanes: 0,
+                },
+                HtbClassSpec {
+                    id: "volume-a".into(),
+                    parent_id: Some("region".into()),
+                    guaranteed_iops: 4_000_000,
+                    ceiling_iops: 12_000_000,
+                    borrow_weight: 1,
+                    burst_seconds: 0,
+                    lanes: 64,
+                },
+            ],
+        };
+        store
+            .apply_committed(&entry(
+                1,
+                3,
+                HaCommand::ConfigureRegionalHtb {
+                    controller_id: "us-east-2".into(),
+                    policy: policy.clone(),
+                },
+            ))
+            .unwrap();
+        let plan = HtbGrantPlan {
+            generation: 11,
+            policy_revision: 7,
+            observed_interval_end_ns: 500,
+            effective_ns: 600,
+            grants: vec![HtbClassGrant {
+                class_id: "volume-a".into(),
+                target_iops: 8_000_000,
+                guaranteed_iops: 4_000_000,
+                borrowed_iops: 4_000_000,
+                ceiling_iops: 12_000_000,
+            }],
+        };
+        store
+            .apply_committed(&entry(
+                2,
+                3,
+                HaCommand::CheckpointRegionalHtb {
+                    controller_id: "us-east-2".into(),
+                    plan: plan.clone(),
+                },
+            ))
+            .unwrap();
+        assert_eq!(
+            store.state().regional_htb["us-east-2"].last_plan,
+            Some(plan)
+        );
+        drop(store);
+        let reopened = HaMetadataStore::open(&path).unwrap();
+        assert_eq!(reopened.state().regional_htb["us-east-2"].policy, policy);
         fs::remove_file(path).unwrap();
     }
 

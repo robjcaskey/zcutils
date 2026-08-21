@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use zcutils::TelemetryReporter;
 use zcutils::volume_partition::{
     CopyMethod, IO_ALIGNMENT, MigrationLocality, PartitionDefinition, PartitionedVolume,
 };
@@ -598,6 +599,39 @@ fn main() -> io::Result<()> {
         ),
         run_root.display()
     );
+    let telemetry = TelemetryReporter::new();
+    if telemetry.is_enabled() {
+        let migration_iops = rate(migration_ops, migration_elapsed).round() as u64;
+        let snapshot_iops = rate(snapshot_ops, snapshot_elapsed).round() as u64;
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "component".to_string(),
+            serde_json::Value::String("zcvolume-live-bench".to_string()),
+        );
+        payload.insert(
+            "phase".to_string(),
+            serde_json::Value::String("result".to_string()),
+        );
+        payload.insert(
+            "backend".to_string(),
+            serde_json::Value::String("userspace-volume".to_string()),
+        );
+        payload.insert(
+            "total_iops".to_string(),
+            serde_json::Value::from(migration_iops.min(snapshot_iops)),
+        );
+        payload.insert(
+            "size_bytes".to_string(),
+            serde_json::Value::from(logical_bytes),
+        );
+        payload.insert(
+            "active_volume_count".to_string(),
+            serde_json::Value::from(0_u64),
+        );
+        payload.insert("ok".to_string(), serde_json::Value::Bool(true));
+        telemetry.emit_event("volume_live_operation_result", payload);
+        telemetry.shutdown();
+    }
     Ok(())
 }
 

@@ -1,0 +1,11 @@
+zcwal-extent-send: addr=10.83.1.163 base_port=28100 lanes=2 connections_per_lane=1 total_connections=2 bytes_per_connection=805306368 extent_bytes=393216 record_size=4096 records_per_extent=96 workers=2 framing=stream data_path=uring ack_enabled=yes sync_acks=no tcp_nodelay=yes socket_buffer_bytes=16777216 uring_send_bytes=1048576 uring_pipeline=32 uring_entries=64 source_ports=kernel-ephemeral
+zcwal-extent-send-worker: affinity_index=0 target_cpu=0 status=ok
+zcwal-extent-send-worker: affinity_index=1 target_cpu=1 status=ok
+zcwal-extent-send-stream: worker=1 lane=1 port=28101 conn=0
+zcwal-extent-send-stream: worker=0 lane=0 port=28100 conn=0
+zcwal-extent-send-worker: worker=0 streams=1 payload_bytes=805306368 wire_bytes=805306496 extents=2048 logical_records=196608 acks=1 seconds=2.596273 payload_Gbitps=2.481 logical_iops=75727 thread_cpu_seconds=0.298248 cpu_wall_pct=11.5 target_cpu=0 affinity_applied=true start_cpu=0 end_cpu=0 voluntary_ctxt_switches=268 involuntary_ctxt_switches=67 migrations=0
+zcwal-extent-send-worker-latency: worker=0 ack_count=1 ack_avg_ns=2596113169 ack_min_ns=2596113169 ack_p50_ns=18446744073709551615 ack_p95_ns=18446744073709551615 ack_p99_ns=18446744073709551615 ack_p999_ns=18446744073709551615 ack_max_ns=2596113169
+zcwal-extent-send-worker: worker=1 streams=1 payload_bytes=805306368 wire_bytes=805306496 extents=2048 logical_records=196608 acks=1 seconds=2.576239 payload_Gbitps=2.501 logical_iops=76316 thread_cpu_seconds=0.271704 cpu_wall_pct=10.5 target_cpu=1 affinity_applied=true start_cpu=1 end_cpu=1 voluntary_ctxt_switches=258 involuntary_ctxt_switches=30 migrations=0
+zcwal-extent-send-worker-latency: worker=1 ack_count=1 ack_avg_ns=2575911497 ack_min_ns=2575911497 ack_p50_ns=18446744073709551615 ack_p95_ns=18446744073709551615 ack_p99_ns=18446744073709551615 ack_p999_ns=18446744073709551615 ack_max_ns=2575911497
+zcwal-extent-send-summary: payload_bytes=1610612736 wire_bytes=1610612992 extents=4096 logical_records=393216 acks=2 seconds=2.596795 payload_Gbitps=4.962 logical_iops=151424
+zcwal-extent-send-latency-summary: ack_count=2 ack_avg_ns=2586012333 ack_min_ns=2575911497 ack_p50_ns=18446744073709551615 ack_p95_ns=18446744073709551615 ack_p99_ns=18446744073709551615 ack_p999_ns=18446744073709551615 ack_max_ns=2596113169

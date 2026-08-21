@@ -18,6 +18,7 @@ use super::{
     zcnblk_fan_wal_recv_exact_spin_then_block, zcnblk_fan_wal_write_frame,
     zcnblk_fan_wal_write_leaf_batch_payload, zcnblk_fan_wal_write_rma_payload_doorbell,
 };
+use crate::iops_policy::{LaneBudgetMailbox, LaneBudgetSnapshot, LaneLimiter};
 use crate::wal_contract::{
     ZCNBLK_WAL_FEATURE_ALL, ZCNBLK_WAL_FEATURE_ATOMIC_WRITE, ZCNBLK_WAL_FEATURE_BATCH_SUBMISSION,
     ZCNBLK_WAL_FEATURE_FUA, ZCNBLK_WAL_FEATURE_IO_PRIORITY, ZCNBLK_WAL_FEATURE_POLLED_COMPLETION,
@@ -34,7 +35,7 @@ use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, IoSlice, Read, Write};
 use std::mem::{MaybeUninit, size_of};
-use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
@@ -47,6 +48,41 @@ use std::sync::mpsc::{
 use std::sync::{Arc, Mutex};
 use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct WalLaneRateUpdate {
+    generation: u64,
+    sustained_iops: u64,
+    peak_iops: u64,
+    burst_seconds: u64,
+    quantum_ops: u64,
+    #[serde(default = "default_metric_publish_ns")]
+    metric_publish_ns: u64,
+    #[serde(default)]
+    effective_after_ns: u64,
+}
+
+fn default_metric_publish_ns() -> u64 {
+    100_000_000
+}
+
+struct WalLaneRateControl {
+    mailboxes: Vec<Arc<LaneBudgetMailbox>>,
+    epoch: Arc<Instant>,
+    stop: Option<Arc<AtomicBool>>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for WalLaneRateControl {
+    fn drop(&mut self) {
+        if let Some(stop) = &self.stop {
+            stop.store(true, Ordering::Release);
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
 
 const ZCNBLK_SHM_MAGIC: u64 = 0x3130_4d48_534e_435a;
 const ZCNBLK_SHM_VERSION: u32 = 6;
@@ -104,6 +140,169 @@ const IOC_DIRSHIFT: u32 = 30;
 const ZCNBLK_MFD_CLOEXEC: libc::c_uint = 0x0001;
 const ZCNBLK_MFD_ALLOW_SEALING: libc::c_uint = 0x0002;
 const ZCNBLK_MFD_HUGETLB: libc::c_uint = 0x0004;
+
+fn wal_lane_rate_control_from_env(lane_count: u32) -> io::Result<Option<WalLaneRateControl>> {
+    let Some(sustained) = env::var("URING_PLAY_ZCNBLK_SHM_HTB_SUSTAINED_IOPS")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse::<u64>())
+        .transpose()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+    else {
+        return Ok(None);
+    };
+    if lane_count == 0 || sustained == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "HTB sustained IOPS and lane count must be nonzero",
+        ));
+    }
+    let peak = env::var("URING_PLAY_ZCNBLK_SHM_HTB_PEAK_IOPS")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse::<u64>())
+        .transpose()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+        .unwrap_or(sustained);
+    let quantum = env::var("URING_PLAY_ZCNBLK_SHM_HTB_QUANTUM_OPS")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse::<u64>())
+        .transpose()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+        .unwrap_or(256)
+        .max(1);
+    let burst_seconds = env::var("URING_PLAY_ZCNBLK_SHM_HTB_BURST_SECONDS")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse::<u64>())
+        .transpose()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+        .unwrap_or(1);
+    if peak < sustained {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "HTB peak IOPS must be at least sustained IOPS",
+        ));
+    }
+    let lanes = u64::from(lane_count);
+    let epoch = Arc::new(Instant::now());
+    let mailboxes = (0..lane_count)
+        .map(|lane| {
+            let lane = u64::from(lane);
+            let lane_sustained = sustained / lanes + u64::from(lane < sustained % lanes);
+            let lane_peak = peak / lanes + u64::from(lane < peak % lanes);
+            Arc::new(LaneBudgetMailbox::new(LaneBudgetSnapshot {
+                generation: 1,
+                sustained_iops: lane_sustained,
+                peak_iops: lane_peak,
+                burst_ops: quantum.saturating_add(
+                    lane_peak
+                        .saturating_sub(lane_sustained)
+                        .saturating_mul(burst_seconds),
+                ),
+                quantum_ops: quantum,
+                metric_publish_ns: 100_000_000,
+                effective_ns: 0,
+                fallback_sustained_iops: lane_sustained,
+                fallback_peak_iops: lane_peak,
+                valid_until_ns: 0,
+            }))
+        })
+        .collect::<Vec<_>>();
+    eprintln!(
+        "zcnblk-shm-target-htb: mode=lane-local-batch sustained_iops={sustained} peak_iops={peak} lanes={lane_count} quantum_ops={quantum} burst_seconds={burst_seconds} mailbox_poll=grant-boundary controller_path=off-hot-path"
+    );
+    let (stop, worker) = if let Some(path) =
+        env::var_os("URING_PLAY_ZCNBLK_SHM_HTB_CONTROL_FILE").filter(|path| !path.is_empty())
+    {
+        let path = PathBuf::from(path);
+        let worker_mailboxes = mailboxes.clone();
+        let worker_epoch = Arc::clone(&epoch);
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker = thread::Builder::new()
+            .name("zc-htb-control".into())
+            .spawn(move || {
+                let mut applied_generation = 1u64;
+                while !worker_stop.load(Ordering::Acquire) {
+                    if let Ok(bytes) = fs::read(&path) {
+                        match serde_json::from_slice::<WalLaneRateUpdate>(&bytes) {
+                            Ok(update)
+                                if update.generation > applied_generation
+                                    && update.sustained_iops > 0
+                                    && update.peak_iops >= update.sustained_iops
+                                    && update.quantum_ops > 0 =>
+                            {
+                                let effective_ns = (worker_epoch
+                                    .elapsed()
+                                    .as_nanos()
+                                    .min(u128::from(u64::MAX))
+                                    as u64)
+                                    .saturating_add(update.effective_after_ns);
+                                for (lane, mailbox) in worker_mailboxes.iter().enumerate() {
+                                    let lane_sustained = split_lane_rate(
+                                        update.sustained_iops,
+                                        worker_mailboxes.len(),
+                                        lane,
+                                    );
+                                    let lane_peak = split_lane_rate(
+                                        update.peak_iops,
+                                        worker_mailboxes.len(),
+                                        lane,
+                                    );
+                                    mailbox.publish(LaneBudgetSnapshot {
+                                        generation: update.generation,
+                                        sustained_iops: lane_sustained,
+                                        peak_iops: lane_peak,
+                                        burst_ops: update.quantum_ops.saturating_add(
+                                            lane_peak
+                                                .saturating_sub(lane_sustained)
+                                                .saturating_mul(update.burst_seconds),
+                                        ),
+                                        quantum_ops: update.quantum_ops.max(1),
+                                        metric_publish_ns: update.metric_publish_ns.max(1),
+                                        effective_ns,
+                                        fallback_sustained_iops: lane_sustained,
+                                        fallback_peak_iops: lane_peak,
+                                        valid_until_ns: 0,
+                                    });
+                                }
+                                applied_generation = update.generation;
+                                eprintln!(
+                                    "zcnblk-shm-target-htb-update: generation={} sustained_iops={} peak_iops={} effective_ns={effective_ns}",
+                                    update.generation, update.sustained_iops, update.peak_iops
+                                );
+                            }
+                            Ok(update) if update.generation > applied_generation => eprintln!(
+                                "zcnblk-shm-target-htb-control-warning: file={} generation={} invalid-rate-update",
+                                path.display(), update.generation
+                            ),
+                            Ok(_) => {}
+                            Err(error) => eprintln!(
+                                "zcnblk-shm-target-htb-control-warning: file={} error={error}",
+                                path.display()
+                            ),
+                        }
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            })?;
+        (Some(stop), Some(worker))
+    } else {
+        (None, None)
+    };
+    Ok(Some(WalLaneRateControl {
+        mailboxes,
+        epoch,
+        stop,
+        worker,
+    }))
+}
+
+fn split_lane_rate(total: u64, lanes: usize, lane: usize) -> u64 {
+    total / lanes as u64 + u64::from((lane as u64) < total % lanes as u64)
+}
 
 const fn ioctl_code(dir: u32, nr: u32, size: usize) -> libc::c_ulong {
     ((dir << IOC_DIRSHIFT)
@@ -366,7 +565,6 @@ impl Mapping {
         }
         Ok(unsafe { std::slice::from_raw_parts(self.ptr.add(start).cast_const(), len) })
     }
-
 }
 
 unsafe impl Send for Mapping {}
@@ -1069,15 +1267,9 @@ impl RemoteWalRmaReadQueue {
                     ),
                 ));
             }
-            let payload_end = request
-                .payload_offset
-                .checked_add(len)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "OFI RMA payload range overflow",
-                    )
-                })?;
+            let payload_end = request.payload_offset.checked_add(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "OFI RMA payload range overflow")
+            })?;
             if payload_end > mapping_len {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -1316,7 +1508,10 @@ impl RemoteWalRmaReadQueue {
         }
         let free_base = self.free_slots.len();
         let free_end = free_base.checked_add(completed).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "OFI RMA free-list length overflow")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OFI RMA free-list length overflow",
+            )
         })?;
         if free_end > self.free_slots.capacity() {
             return Err(io::Error::new(
@@ -1381,9 +1576,8 @@ impl RemoteWalRmaReadQueue {
             for index in 0..completed {
                 let slot = self.completion_slots[index];
                 if let Some(posted_at) = started[slot].take() {
-                    progress.completion_time = progress
-                        .completion_time
-                        .saturating_add(posted_at.elapsed());
+                    progress.completion_time =
+                        progress.completion_time.saturating_add(posted_at.elapsed());
                 }
             }
         }
@@ -1416,9 +1610,10 @@ impl RemoteWalRmaReadQueue {
             )
         })?;
         let batch = &mut self.batches[batch_index].batch;
-        batch.remaining = batch.remaining.checked_sub(records).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "OFI RMA batch underflow")
-        })?;
+        batch.remaining = batch
+            .remaining
+            .checked_sub(records)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "OFI RMA batch underflow"))?;
         batch.complete = batch.remaining == 0;
         Ok(())
     }
@@ -2353,12 +2548,7 @@ impl RemoteWalLeaf {
         let base_address = lane_env_entry("URING_PLAY_ZCNBLK_SHM_LEAF_ADDRS", lane_id, lane_count)?
             .or_else(|| env::var("URING_PLAY_ZCNBLK_SHM_LEAF_ADDR").ok())
             .unwrap_or_else(|| "127.0.0.1:29000".to_string());
-        let mut socket_address = base_address.parse::<SocketAddr>().map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("invalid remote WAL leaf address {base_address:?}: {err}"),
-            )
-        })?;
+        let mut socket_address = resolve_remote_wal_leaf_address(&base_address)?;
         let lane_offset = u16::try_from(lane_id).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidInput, "remote WAL lane exceeds u16")
         })?;
@@ -2387,10 +2577,7 @@ impl RemoteWalLeaf {
         let rma_writes_enabled = env_enabled_or("URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES", false);
         let (mut stream, address, tcp_nodelay, quickack) = match transport.as_str() {
             "tcp" => {
-                let tcp = match source_ip {
-                    Some(source_ip) => connect_tcp_bound_local_ip(socket_address, source_ip)?,
-                    None => TcpStream::connect(socket_address)?,
-                };
+                let tcp = connect_remote_wal_tcp(socket_address, source_ip)?;
                 set_tcp_bench_buffers(&tcp);
                 let local_address = tcp.local_addr()?;
                 let address = format!("{local_address}->{socket_address}");
@@ -3845,6 +4032,75 @@ impl RemoteWalLeaf {
             },
             &[],
         )
+    }
+}
+
+fn resolve_remote_wal_leaf_address(address: &str) -> io::Result<SocketAddr> {
+    address
+        .to_socket_addrs()
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid remote WAL leaf address {address:?}: {err}"),
+            )
+        })?
+        .next()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                format!("remote WAL leaf address {address:?} resolved to no addresses"),
+            )
+        })
+}
+
+fn connect_remote_wal_tcp(
+    socket_address: SocketAddr,
+    source_ip: Option<IpAddr>,
+) -> io::Result<TcpStream> {
+    let retry_ms = env::var("URING_PLAY_ZCNBLK_SHM_REMOTE_CONNECT_RETRY_MS")
+        .ok()
+        .map(|value| {
+            value.parse::<u64>().map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "invalid URING_PLAY_ZCNBLK_SHM_REMOTE_CONNECT_RETRY_MS={value:?}: {err}"
+                    ),
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let started = Instant::now();
+    let retry_for = Duration::from_millis(retry_ms);
+    let mut attempts = 0_u64;
+    loop {
+        attempts += 1;
+        let result = match source_ip {
+            Some(source_ip) => connect_tcp_bound_local_ip(socket_address, source_ip),
+            None => TcpStream::connect(socket_address),
+        };
+        match result {
+            Ok(stream) => {
+                if attempts > 1 {
+                    eprintln!(
+                        "zcnblk-shm-target-remote-connect-retry: address={socket_address} attempts={attempts} elapsed_ms={} status=connected",
+                        started.elapsed().as_millis()
+                    );
+                }
+                return Ok(stream);
+            }
+            Err(error) if started.elapsed() < retry_for => {
+                if attempts == 1 || attempts.is_multiple_of(50) {
+                    eprintln!(
+                        "zcnblk-shm-target-remote-connect-retry: address={socket_address} attempts={attempts} elapsed_ms={} status=waiting error={error}",
+                        started.elapsed().as_millis()
+                    );
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -7316,6 +7572,7 @@ struct SharedTarget {
     header: ZcnblkShmHeader,
     transfer_payload_slots: bool,
     dirty_read_payload_refs: bool,
+    subpage_reads: bool,
     backend: BackendMode,
     ram: Option<RamBacking>,
     wal_state: Option<WalWritebackState>,
@@ -7346,6 +7603,26 @@ struct SharedTarget {
 }
 
 impl SharedTarget {
+    fn valid_wal_data_request(&self, request: &ZcnblkShmRequest) -> bool {
+        match request.op {
+            ZCNBLK_SHM_OP_WRITE => {
+                !self.subpage_reads && request.len == 4096 && request.offset % 4096 == 0
+            }
+            ZCNBLK_SHM_OP_READ => {
+                request.len != 0
+                    && request.len <= 4096
+                    && request.len.is_power_of_two()
+                    && request.len >= 512
+                    // blk-mq may merge adjacent logical-block reads into a
+                    // larger frame whose start is aligned to the negotiated
+                    // logical block, not necessarily to the merged length.
+                    && request.offset % 512 == 0
+                    && (self.subpage_reads || request.len == 4096)
+            }
+            _ => false,
+        }
+    }
+
     fn first_touch_hugetlb_arena(mapping: &Mapping, header: &ZcnblkShmHeader) -> io::Result<()> {
         let Some(cpu_text) = env::var("URING_PLAY_ZCNBLK_SHM_ARENA_CPU_LIST")
             .ok()
@@ -7726,6 +8003,13 @@ impl SharedTarget {
         let dirty_read_payload_refs = transfer_payload_slots
             && header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] & ZCNBLK_SHM_CAP_READ_PAYLOAD_REF
                 != 0;
+        let subpage_reads = backend == BackendMode::WalTcp
+            && env_enabled_or("URING_PLAY_ZCNBLK_SHM_SUBPAGE_READS", false);
+        if subpage_reads {
+            eprintln!(
+                "zcnblk-shm-target-subpage: enabled=true minimum_bytes=512 maximum_bytes=4096 writes=disabled"
+            );
+        }
         if backend == BackendMode::WalMemory && header.channels != 1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -7832,6 +8116,7 @@ impl SharedTarget {
             header,
             transfer_payload_slots,
             dirty_read_payload_refs,
+            subpage_reads,
             backend,
             ram,
             wal_state,
@@ -8806,10 +9091,10 @@ impl SharedTarget {
             ZCNBLK_SHM_OP_READ => {
                 let out = unsafe { std::slice::from_raw_parts_mut(payload, request.len as usize) };
                 if self.backend == BackendMode::WalTcp {
-                    if request.len != 4096 {
+                    if !self.valid_wal_data_request(&request) {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
-                            "wal-tcp currently requires 4K request frames",
+                            "wal-tcp request violates its negotiated data-unit contract",
                         ));
                     }
                     let dirty = self
@@ -8951,8 +9236,7 @@ impl SharedTarget {
         if request.queue_id != channel
             || request.payload_slot
                 != (request_sequence % u64::from(self.header.payload_entries)) as u32
-            || request.len != 4096
-            || request.offset % 4096 != 0
+            || !self.valid_wal_data_request(&request)
             || request
                 .offset
                 .checked_add(u64::from(request.len))
@@ -8979,6 +9263,17 @@ impl SharedTarget {
     ) -> io::Result<Vec<usize>> {
         let channels = self.header.channels as usize;
         let window_limit = self.read_batch.saturating_mul(channels).max(1);
+        // A full completion ring is backpressure, not a malformed request
+        // window.  The single-request path already waits here; do the same
+        // before taking the batched capacity snapshot so a producer that
+        // refills immediately after a kick cannot terminate the target.
+        while !self.completion_has_capacity(first_channel)? && RUNNING.load(Ordering::Relaxed) {
+            self.kick(first_channel)?;
+            std::hint::spin_loop();
+        }
+        if !RUNNING.load(Ordering::Relaxed) {
+            return Ok(vec![0; channels]);
+        }
         let capacities = (0..self.header.channels)
             .map(|channel| self.completion_capacity(channel))
             .collect::<io::Result<Vec<_>>>()?;
@@ -9366,9 +9661,12 @@ impl SharedTarget {
                 ));
             }
             *completed += 1;
-        } else {
-            self.next_submit_sequence += 1;
         }
+        // Batched data requests index their global token window from this
+        // cursor even when lane-local sequencing is negotiated.  A sync or
+        // unsupported descriptor processed through this scalar path still
+        // consumes exactly one global token.
+        self.next_submit_sequence += 1;
         Ok(())
     }
 
@@ -9802,7 +10100,7 @@ impl SharedTarget {
         Ok((read_count, published))
     }
 
-    fn run_wal_lane_channel(
+    fn run_wal_lane_channel<const RATE_LIMITED: bool>(
         &self,
         channel: u32,
         completions: &WalCompletionTracker,
@@ -9816,11 +10114,25 @@ impl SharedTarget {
         transport_cpu: Option<usize>,
         remote: Option<RemoteWalLeaf>,
         owner_ingress: Option<WalOwnerIngressEndpoint>,
+        rate_mailbox: Option<Arc<LaneBudgetMailbox>>,
+        rate_epoch: Option<Arc<Instant>>,
     ) -> io::Result<(Stats, Duration, Option<RemoteWalLeaf>)> {
         if let Some(cpu) = cpu {
             pin_current_thread(cpu)?;
         }
         let started = Instant::now();
+        // Keep the unthrottled transport loop byte-for-byte free of HTB work.
+        // RATE_LIMITED is a monomorphization boundary, so LLVM removes the
+        // mailbox, clock, credit, and branch machinery from the normal path.
+        let rate_epoch = RATE_LIMITED
+            .then(|| rate_epoch.expect("rate-limited lane requires the shared rate epoch"));
+        let mut rate_limiter = RATE_LIMITED.then(|| {
+            let mailbox = rate_mailbox
+                .as_ref()
+                .expect("rate-limited lane requires a rate mailbox");
+            LaneLimiter::new(0, mailbox.load())
+        });
+        let mut rate_credit = 0usize;
         let mut active = Duration::ZERO;
         let mut active_epoch = None;
         let mut stats = Stats::default();
@@ -10148,9 +10460,7 @@ impl SharedTarget {
                     continue;
                 }
                 if request.queue_id != channel
-                    || request.len != 4096
-                    || request.offset % 4096 != 0
-                    || !matches!(request.op, ZCNBLK_SHM_OP_READ | ZCNBLK_SHM_OP_WRITE)
+                    || !self.valid_wal_data_request(&request)
                     || request
                         .offset
                         .checked_add(u64::from(request.len))
@@ -10158,7 +10468,15 @@ impl SharedTarget {
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "lane WAL request topology or range mismatch",
+                        format!(
+                            "lane WAL request topology or range mismatch: channel={channel} queue={} op={} len={} offset={} capacity={} valid_data={}",
+                            request.queue_id,
+                            request.op,
+                            request.len,
+                            request.offset,
+                            self.header.capacity_bytes,
+                            self.valid_wal_data_request(&request),
+                        ),
                     ));
                 }
                 if request.sector_predecessor != 0
@@ -10399,6 +10717,33 @@ impl SharedTarget {
                     || latency_sensitive_read
                     || (!channel_ready && (send_ready >= split_min_batch_records || fill_expired));
                 if should_send {
+                    if RATE_LIMITED {
+                        let mailbox = rate_mailbox
+                            .as_ref()
+                            .expect("rate-limited lane requires a rate mailbox");
+                        let limiter = rate_limiter
+                            .as_mut()
+                            .expect("rate-limited lane requires a limiter");
+                        if rate_credit == 0 {
+                            let now_ns = rate_epoch
+                                .as_ref()
+                                .expect("rate-limited lane requires the shared rate epoch")
+                                .elapsed()
+                                .as_nanos()
+                                .min(u128::from(u64::MAX))
+                                as u64;
+                            let _ = limiter.refresh(now_ns, mailbox);
+                            rate_credit = usize::try_from(limiter.admit(
+                                now_ns,
+                                limiter.budget().quantum_ops.min(u64::from(u32::MAX)) as u32,
+                            ))
+                            .expect("u32 rate grant fits usize");
+                        }
+                        send_ready = send_ready.min(rate_credit);
+                        if send_ready == 0 {
+                            continue;
+                        }
+                    }
                     let mut batch = Vec::with_capacity(send_ready);
                     for _ in 0..send_ready {
                         batch.push(
@@ -10407,7 +10752,9 @@ impl SharedTarget {
                                 .expect("send-ready count came from pending queue"),
                         );
                     }
+                    let submitted = batch.len();
                     transport.submit(self.mapping.as_ref(), batch)?;
+                    rate_credit = rate_credit.saturating_sub(submitted);
                     stats.remote_batches += 1;
                     fill_started = None;
                     progressed = true;
@@ -10638,6 +10985,7 @@ impl SharedTarget {
             self.header.channels as usize,
             self.header.payload_entries as usize,
         )?;
+        let rate_control = wal_lane_rate_control_from_env(self.header.channels)?;
         let mut leaves = std::mem::take(&mut self.remote_leaves);
         for remote in &mut leaves {
             remote.attach_mapping(Arc::clone(&self.mapping))?;
@@ -10748,21 +11096,49 @@ impl SharedTarget {
                 let transport_cpu = transport_cpus
                     .and_then(|values| values.get(channel))
                     .copied();
+                let rate_mailbox = rate_control
+                    .as_ref()
+                    .and_then(|control| control.mailboxes.get(channel))
+                    .cloned();
+                let rate_epoch = rate_control
+                    .as_ref()
+                    .map(|control| Arc::clone(&control.epoch));
                 handles.push(scope.spawn(move || {
-                    let result = target.run_wal_lane_channel(
-                        channel as u32,
-                        completions,
-                        remote_completions,
-                        lane_trackers,
-                        remote_lane_trackers,
-                        syncs,
-                        vector_hwm,
-                        dirty,
-                        cpu,
-                        transport_cpu,
-                        remote,
-                        owner_ingress,
-                    );
+                    let result = if rate_mailbox.is_some() {
+                        target.run_wal_lane_channel::<true>(
+                            channel as u32,
+                            completions,
+                            remote_completions,
+                            lane_trackers,
+                            remote_lane_trackers,
+                            syncs,
+                            vector_hwm,
+                            dirty,
+                            cpu,
+                            transport_cpu,
+                            remote,
+                            owner_ingress,
+                            rate_mailbox,
+                            rate_epoch,
+                        )
+                    } else {
+                        target.run_wal_lane_channel::<false>(
+                            channel as u32,
+                            completions,
+                            remote_completions,
+                            lane_trackers,
+                            remote_lane_trackers,
+                            syncs,
+                            vector_hwm,
+                            dirty,
+                            cpu,
+                            transport_cpu,
+                            remote,
+                            owner_ingress,
+                            None,
+                            None,
+                        )
+                    };
                     if result.is_err() {
                         RUNNING.store(false, Ordering::Release);
                     }
@@ -11666,9 +12042,7 @@ impl SharedTarget {
             match next {
                 Some((channel, sequence, request)) => {
                     let batchable = self.backend == BackendMode::WalTcp
-                        && (request.op == ZCNBLK_SHM_OP_READ || request.op == ZCNBLK_SHM_OP_WRITE)
-                        && request.len == 4096
-                        && request.offset % 4096 == 0
+                        && self.valid_wal_data_request(&request)
                         && request
                             .offset
                             .checked_add(u64::from(request.len))
@@ -12873,6 +13247,22 @@ mod tests {
     struct TestSharedLease(Vec<u8>);
 
     #[test]
+    fn remote_leaf_address_accepts_numeric_and_dns_hosts() {
+        assert_eq!(
+            resolve_remote_wal_leaf_address("127.0.0.1:29000").unwrap(),
+            "127.0.0.1:29000".parse::<SocketAddr>().unwrap()
+        );
+        let localhost = resolve_remote_wal_leaf_address("localhost:29000").unwrap();
+        assert_eq!(localhost.port(), 29000);
+        assert!(localhost.ip().is_loopback());
+    }
+
+    #[test]
+    fn remote_leaf_address_requires_a_port() {
+        assert!(resolve_remote_wal_leaf_address("localhost").is_err());
+    }
+
+    #[test]
     fn wal_transport_owner_is_stable_and_extent_local() {
         let owners = 8;
         let extent_records = 256;
@@ -12993,9 +13383,7 @@ mod tests {
         };
         let mut queue = RemoteWalRmaReadQueue::new(4096, 2).unwrap();
         let first = queue.submit_batch(window, 8192, &[read(0)]).unwrap();
-        let second = queue
-            .submit_batch(window, 8192, &[read(4096)])
-            .unwrap();
+        let second = queue.submit_batch(window, 8192, &[read(4096)]).unwrap();
         assert_eq!(queue.batch_index(first), Some(0));
         assert_eq!(queue.batch_index(second), Some(1));
         queue.batches[0].batch.complete = true;

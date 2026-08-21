@@ -23,6 +23,7 @@ use k8s_csi::v1_3_0::{
     list_snapshots_response, list_volumes_response, node_service_capability, plugin_capability,
     validate_volume_capabilities_response, volume_capability, volume_content_source, volume_usage,
 };
+use serde_json::{Map, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -37,7 +38,6 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use serde_json::{json, Map};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 use tokio::net::UnixListener;
 use tokio::process::Command;
@@ -47,13 +47,13 @@ use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 use tonic::transport::server::Connected;
 use tonic::{Request, Response, Status};
+use zcutils::TelemetryReporter;
 use zcutils::block::control as control_api;
 use zcutils::{
     ZcStreamEncryption, zc_pit_is_reflink_unsupported, zc_pit_reflink_file,
     zc_stream_bind_listener, zc_stream_generate_token, zc_stream_receive_listener_to_writer,
     zc_stream_send_reader_to_tcp,
 };
-use zcutils::SurveyReporter;
 
 const DRIVER_NAME: &str = "io.zcutils.zcblock";
 const TOPOLOGY_KEY: &str = "topology.zcutils.io/node";
@@ -65,6 +65,7 @@ const FREEZE_COMMAND_TIMEOUT_MS: u64 = 250;
 const DEFAULT_CONFIGFS_ROOT: &str = "/sys/kernel/config/zcbrd";
 const DEFAULT_DEV_ROOT: &str = "/dev";
 const DEFAULT_RAW_ALLOWLIST: &str = "/etc/zcblock-csi/allowed-raw-partitions.txt";
+const DEFAULT_USERSPACE_MOUNT_ROOT: &str = "/var/lib/zcutils/userspace-volumes";
 const ZCNBLK_CLIENT_EDGE: &str = "/dev/zcnblk0";
 const DEFAULT_SIZE_MIB: u64 = 256;
 const DEFAULT_BLOCKSIZE: u64 = 4096;
@@ -73,7 +74,7 @@ const DEFAULT_QUEUE_DEPTH: u64 = 512;
 const DEFAULT_DESCRIPTOR_MODE: &str = "advertise";
 const DEFAULT_REPLICATION_BUFFER_BYTES: usize = 1024 * 1024;
 const DEFAULT_SNAPSHOT_MODE: &str = "auto";
-const SURVEY_HOURLY_STATS_INTERVAL_SECS: u64 = 60 * 60;
+const TELEMETRY_HOURLY_STATS_INTERVAL_SECS: u64 = 60 * 60;
 const IO_DISTRIBUTION_LABELS: [&str; 6] = ["0", "1-9", "10-99", "100-499", "500-1999", "2000+"];
 const MIB: u64 = 1024 * 1024;
 const BLKGETSIZE64: libc::c_ulong = 0x80081272;
@@ -90,6 +91,7 @@ struct Config {
     configfs_root: PathBuf,
     dev_root: PathBuf,
     raw_allowlist: PathBuf,
+    userspace_mount_root: PathBuf,
     snapshot_mode: String,
 }
 
@@ -135,6 +137,10 @@ impl Config {
                 .or_else(|_| env::var("ZCBRD_RAW_ALLOWLIST"))
                 .unwrap_or_else(|_| DEFAULT_RAW_ALLOWLIST.into()),
         );
+        let mut userspace_mount_root = PathBuf::from(
+            env::var("ZCBLOCK_CSI_USERSPACE_MOUNT_ROOT")
+                .unwrap_or_else(|_| DEFAULT_USERSPACE_MOUNT_ROOT.into()),
+        );
         let mut snapshot_mode = env::var("ZCBLOCK_CSI_SNAPSHOT_MODE")
             .unwrap_or_else(|_| DEFAULT_SNAPSHOT_MODE.to_string());
         snapshot_mode = normalize_snapshot_mode(&snapshot_mode)?;
@@ -165,6 +171,8 @@ impl Config {
                 dev_root = PathBuf::from(value);
             } else if let Some(value) = arg.strip_prefix("--raw-allowlist=") {
                 raw_allowlist = PathBuf::from(value);
+            } else if let Some(value) = arg.strip_prefix("--userspace-mount-root=") {
+                userspace_mount_root = PathBuf::from(value);
             } else if let Some(value) = arg.strip_prefix("--snapshot-mode=") {
                 snapshot_mode = normalize_snapshot_mode(value)?;
             } else if arg == "--driver-name" {
@@ -215,6 +223,12 @@ impl Config {
                 i += 1;
                 raw_allowlist =
                     PathBuf::from(args.get(i).ok_or("--raw-allowlist requires a value")?);
+            } else if arg == "--userspace-mount-root" {
+                i += 1;
+                userspace_mount_root = PathBuf::from(
+                    args.get(i)
+                        .ok_or("--userspace-mount-root requires a value")?,
+                );
             } else if arg == "--snapshot-mode" {
                 i += 1;
                 snapshot_mode = normalize_snapshot_mode(
@@ -234,6 +248,12 @@ impl Config {
         }
         if freeze_max_ttl_ms == 0 {
             return Err("freeze max ttl must be greater than zero".to_string());
+        }
+        if !userspace_mount_root.is_absolute() {
+            return Err(format!(
+                "userspace mount root must be absolute: {}",
+                userspace_mount_root.display()
+            ));
         }
 
         let control_socket_path =
@@ -263,6 +283,7 @@ impl Config {
             configfs_root,
             dev_root,
             raw_allowlist,
+            userspace_mount_root,
             snapshot_mode,
         })
     }
@@ -302,8 +323,9 @@ impl Config {
 struct ZcblockCsi {
     cfg: Arc<Config>,
     repl: Arc<ReplicationManager>,
-    survey: SurveyReporter,
+    telemetry: TelemetryReporter,
     mgmt_clusters: Arc<StdMutex<BTreeMap<String, BTreeSet<String>>>>,
+    published_volumes: Arc<StdMutex<BTreeSet<(String, String)>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -468,8 +490,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let driver = ZcblockCsi {
         cfg,
         repl: Arc::new(ReplicationManager::default()),
-        survey: SurveyReporter::new(),
+        telemetry: TelemetryReporter::new(),
         mgmt_clusters: Arc::new(StdMutex::new(BTreeMap::new())),
+        published_volumes: Arc::new(StdMutex::new(BTreeSet::new())),
     };
     tokio::spawn(run_control_server(control_listener, driver.clone(), freeze));
 
@@ -487,10 +510,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     node_start_payload.insert("phase".to_string(), json!("start"));
     node_start_payload.insert("version".to_string(), json!(env!("CARGO_PKG_VERSION")));
     node_start_payload.insert("node_id".to_string(), json!(driver.cfg.node_id.as_str()));
-    node_start_payload.insert("socket_path".to_string(), json!(driver.cfg.socket_path.display().to_string()));
-    node_start_payload.insert("control_socket_path".to_string(), json!(driver.cfg.control_socket_path.display().to_string()));
+    node_start_payload.insert("active_volume_count".to_string(), json!(0_u64));
+    node_start_payload.insert(
+        "socket_path".to_string(),
+        json!(driver.cfg.socket_path.display().to_string()),
+    );
+    node_start_payload.insert(
+        "control_socket_path".to_string(),
+        json!(driver.cfg.control_socket_path.display().to_string()),
+    );
     driver
-        .survey
+        .telemetry
         .emit_event("csi_node_start", node_start_payload);
 
     tokio::spawn(run_hourly_iops_summary_loop(driver.clone()));
@@ -508,16 +538,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_hourly_iops_summary_loop(driver: ZcblockCsi) {
-    let mut ticker = tokio::time::interval(Duration::from_secs(
-        SURVEY_HOURLY_STATS_INTERVAL_SECS,
-    ));
+    let mut ticker =
+        tokio::time::interval(Duration::from_secs(TELEMETRY_HOURLY_STATS_INTERVAL_SECS));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut last_samples: BTreeMap<String, VolumeHourlySample> = BTreeMap::new();
     loop {
         ticker.tick().await;
 
-        if !driver.survey.is_enabled() {
+        if !driver.telemetry.is_enabled() {
             last_samples.clear();
             continue;
         }
@@ -597,12 +626,18 @@ async fn run_hourly_iops_summary_loop(driver: ZcblockCsi) {
         let mut payload = Map::new();
         payload.insert("phase".to_string(), json!("summary"));
         payload.insert("version".to_string(), json!(env!("CARGO_PKG_VERSION")));
-        payload.insert("interval_secs".to_string(), json!(SURVEY_HOURLY_STATS_INTERVAL_SECS));
+        payload.insert(
+            "interval_secs".to_string(),
+            json!(TELEMETRY_HOURLY_STATS_INTERVAL_SECS),
+        );
         payload.insert(
             "sampled_volume_count".to_string(),
             json!(sampled_volume_count),
         );
-        payload.insert("missing_device_volume_count".to_string(), json!(missing_device_count));
+        payload.insert(
+            "missing_device_volume_count".to_string(),
+            json!(missing_device_count),
+        );
         payload.insert("total_iops".to_string(), json!(total_iops));
         payload.insert(
             "avg_iops_per_volume".to_string(),
@@ -619,7 +654,7 @@ async fn run_hourly_iops_summary_loop(driver: ZcblockCsi) {
             json!(current_volume_ids.len()),
         );
 
-        driver.survey.emit_event("csi_hourly_stats", payload);
+        driver.telemetry.emit_event("csi_hourly_stats", payload);
     }
 }
 
@@ -630,18 +665,14 @@ async fn resolve_block_device_for_spec(driver: &ZcblockCsi, spec: &VolumeSpec) -
                 return None;
             }
             let dev = driver.cfg.dev_root.join(&spec.device_name);
-            if dev.exists() {
-                Some(dev)
-            } else {
-                None
-            }
+            if dev.exists() { Some(dev) } else { None }
         }
         "file-loop" => {
             let path = spec.file_path.as_ref()?;
             let file_path = Path::new(path);
             loop_device_for_file(file_path).await.ok().flatten()
         }
-        "raw-block" => {
+        "raw-block" | "fabric" => {
             let path = spec.raw_device.as_ref()?;
             let path = fs::canonicalize(path).ok()?;
             let is_block = fs::metadata(&path)
@@ -1425,7 +1456,7 @@ impl Controller for ZcblockCsi {
             }));
         }
 
-        if spec.backend == "raw-block" {
+        if spec.backend == "raw-block" || spec.backend == "fabric" {
             if let Err(status) = self.ensure_raw_device_unclaimed(&spec) {
                 self.emit_csi_volume_event(
                     "volume_create",
@@ -1910,6 +1941,23 @@ impl Node for ZcblockCsi {
         }
         let access = access_kind(req.volume_capability.as_ref())?;
         let spec = self.spec_for_node(&req.volume_id, &req.volume_context)?;
+        if spec.backend == "userspace-mount" {
+            if matches!(access, AccessKind::Block) {
+                return Err(Status::invalid_argument(
+                    "backend=userspace-mount supports filesystem-mode PVCs only; volumeMode: Block requires a block edge",
+                ));
+            }
+            fs::create_dir_all(&req.staging_target_path)
+                .map_err(|e| io_status("create userspace staging path", e))?;
+            let source = self.ensure_userspace_volume_mount(&spec).await?;
+            if !is_mountpoint(&req.staging_target_path).await {
+                bind_mount(&source, Path::new(&req.staging_target_path), false).await?;
+            }
+            let mut staged_spec = spec;
+            staged_spec.staging_path = Some(req.staging_target_path);
+            self.save_volume(&staged_spec)?;
+            return Ok(Response::new(NodeStageVolumeResponse {}));
+        }
         if spec.backend == "raw-block" && !matches!(access, AccessKind::Block) {
             return Err(Status::invalid_argument(
                 "backend=raw-block supports only volumeMode: Block",
@@ -2002,19 +2050,24 @@ impl Node for ZcblockCsi {
         }
         let access = access_kind(req.volume_capability.as_ref())?;
         let spec = self.spec_for_node(&req.volume_id, &req.volume_context)?;
+        if spec.backend == "userspace-mount" && matches!(access, AccessKind::Block) {
+            return Err(Status::invalid_argument(
+                "backend=userspace-mount supports filesystem-mode PVCs only; volumeMode: Block requires a block edge",
+            ));
+        }
         if spec.backend == "raw-block" && !matches!(access, AccessKind::Block) {
             return Err(Status::invalid_argument(
                 "backend=raw-block supports only volumeMode: Block",
             ));
         }
-        let device = self.ensure_backend_device(&spec).await?;
-
         if is_mountpoint(&req.target_path).await {
+            self.record_volume_connection(&req.volume_id, &req.target_path, true);
             return Ok(Response::new(NodePublishVolumeResponse {}));
         }
 
         match access {
             AccessKind::Block => {
+                let device = self.ensure_backend_device(&spec).await?;
                 let target = Path::new(&req.target_path);
                 if let Some(parent) = target.parent() {
                     fs::create_dir_all(parent)
@@ -2033,12 +2086,20 @@ impl Node for ZcblockCsi {
                         "NodePublishVolume.staging_target_path is required for mounted volumes",
                     ));
                 }
+                if spec.backend == "userspace-mount"
+                    && !is_mountpoint(&req.staging_target_path).await
+                {
+                    return Err(Status::failed_precondition(
+                        "userspace-mount staging path is not mounted; NodeStageVolume must complete before publish",
+                    ));
+                }
                 let target = Path::new(&req.target_path);
                 fs::create_dir_all(target).map_err(|e| io_status("create mount target", e))?;
                 bind_mount(Path::new(&req.staging_target_path), target, req.readonly).await?;
             }
         }
 
+        self.record_volume_connection(&req.volume_id, &req.target_path, true);
         Ok(Response::new(NodePublishVolumeResponse {}))
     }
 
@@ -2057,6 +2118,7 @@ impl Node for ZcblockCsi {
             umount_path(target).await?;
         }
         remove_path_if_exists(target).map_err(|e| io_status("remove publish target", e))?;
+        self.record_volume_connection(&req.volume_id, &req.target_path, false);
         Ok(Response::new(NodeUnpublishVolumeResponse {}))
     }
 
@@ -2149,10 +2211,46 @@ impl Node for ZcblockCsi {
 }
 
 impl ZcblockCsi {
-    fn create_management_cluster(
-        &self,
-        cluster: String,
-    ) -> Result<(bool, usize), String> {
+    fn record_volume_connection(&self, volume_id: &str, target_path: &str, connected: bool) {
+        let active_count = {
+            let Ok(mut published) = self.published_volumes.lock() else {
+                return;
+            };
+            let key = (volume_id.to_string(), target_path.to_string());
+            if connected {
+                published.insert(key);
+            } else {
+                published.remove(&key);
+            }
+            published.len()
+        };
+
+        let mut payload = Map::new();
+        payload.insert(
+            "phase".to_string(),
+            json!(if connected {
+                "connected"
+            } else {
+                "disconnected"
+            }),
+        );
+        payload.insert("component".to_string(), json!("node"));
+        // Kept in internal telemetry, but the community-survey type boundary
+        // deliberately removes this identifier before transmission.
+        payload.insert("volume_id".to_string(), json!(volume_id));
+        payload.insert("active_volume_count".to_string(), json!(active_count));
+        payload.insert("ok".to_string(), json!(true));
+        self.telemetry.emit_event(
+            if connected {
+                "volume_connected"
+            } else {
+                "volume_disconnected"
+            },
+            payload,
+        );
+    }
+
+    fn create_management_cluster(&self, cluster: String) -> Result<(bool, usize), String> {
         let mut clusters = self
             .mgmt_clusters
             .lock()
@@ -2210,7 +2308,7 @@ impl ZcblockCsi {
         if let Some(node) = node {
             payload.insert("node".to_string(), json!(node));
         }
-        self.survey.emit_event(event_type, payload);
+        self.telemetry.emit_event(event_type, payload);
     }
 
     fn emit_csi_volume_event(
@@ -2247,7 +2345,7 @@ impl ZcblockCsi {
         if let Some(detail) = error_detail {
             payload.insert("error_detail".to_string(), json!(detail));
         }
-        self.survey.emit_event(event_type, payload);
+        self.telemetry.emit_event(event_type, payload);
     }
 
     fn volume_from_spec(&self, spec: &VolumeSpec) -> Volume {
@@ -2264,7 +2362,11 @@ impl ZcblockCsi {
                     )),
                 }
             }),
-            accessible_topology: vec![self.cfg.topology()],
+            accessible_topology: if spec.is_node_local() {
+                vec![self.cfg.topology()]
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -2409,7 +2511,13 @@ impl ZcblockCsi {
         )?;
         if backend == "mux" {
             return Err(Status::unimplemented(
-                "backend=mux needs a separate mux gateway/control plane; use backend=zcbrd, backend=file-loop, or backend=raw-block for this driver",
+                "backend=mux needs a separate mux gateway/control plane; use backend=fabric or backend=userspace-mount for network storage",
+            ));
+        }
+
+        if backend == "userspace-mount" && restore_snapshot.is_some() {
+            return Err(Status::failed_precondition(
+                "userspace-mount restore requires the userspace volume control API; CSI cannot materialize a filesystem snapshot as a local block image",
             ));
         }
 
@@ -2438,6 +2546,10 @@ impl ZcblockCsi {
             "zcbrd" => spec_from_zcbrd_create_request(req, volume_id, requested_bytes),
             "file-loop" => self.spec_from_file_loop_create_request(req, volume_id, requested_bytes),
             "raw-block" => self.spec_from_raw_block_create_request(req, volume_id, requested_bytes),
+            "fabric" => self.spec_from_fabric_create_request(req, volume_id, requested_bytes),
+            "userspace-mount" => {
+                self.spec_from_userspace_mount_create_request(req, volume_id, requested_bytes)
+            }
             _ => Err(Status::invalid_argument(format!(
                 "unsupported backend: {backend}"
             ))),
@@ -2580,6 +2692,99 @@ impl ZcblockCsi {
         })
     }
 
+    fn spec_from_fabric_create_request(
+        &self,
+        req: &CreateVolumeRequest,
+        volume_id: String,
+        requested_bytes: i64,
+    ) -> Result<VolumeSpec, Status> {
+        let requested_device = req
+            .parameters
+            .get("rawDevice")
+            .map(String::as_str)
+            .unwrap_or(ZCNBLK_CLIENT_EDGE);
+        if requested_device != ZCNBLK_CLIENT_EDGE {
+            return Err(Status::invalid_argument(format!(
+                "backend=fabric requires rawDevice={ZCNBLK_CLIENT_EDGE}; block leaf placement belongs to the downstream userspace stage"
+            )));
+        }
+        let raw_device = canonical_block_device(Path::new(requested_device))?;
+        let capacity_bytes = block_device_size(&raw_device)?;
+        if requested_bytes > 0 && requested_bytes as u64 > capacity_bytes {
+            return Err(Status::out_of_range(format!(
+                "requested capacity {} exceeds fabric client edge capacity {}",
+                requested_bytes, capacity_bytes
+            )));
+        }
+        if let Some(range) = req.capacity_range.as_ref() {
+            if range.limit_bytes > 0 && capacity_bytes > range.limit_bytes as u64 {
+                return Err(Status::out_of_range(format!(
+                    "fabric client edge capacity {} exceeds requested limit {}",
+                    capacity_bytes, range.limit_bytes
+                )));
+            }
+        }
+        Ok(VolumeSpec {
+            backend: "fabric".to_string(),
+            volume_id,
+            name_hex: hex_encode(req.name.as_bytes()),
+            device_name: String::new(),
+            capacity_bytes: i64::try_from(capacity_bytes)
+                .map_err(|_| Status::out_of_range("fabric client edge is too large"))?,
+            size_mib: capacity_bytes / MIB,
+            blocksize: DEFAULT_BLOCKSIZE,
+            queues: 0,
+            queue_depth: 0,
+            descriptor_mode: "disabled".to_string(),
+            file_path: None,
+            raw_device: Some(raw_device.display().to_string()),
+            staging_path: None,
+            restore_path: None,
+            restore_snapshot_id: None,
+        })
+    }
+
+    fn spec_from_userspace_mount_create_request(
+        &self,
+        req: &CreateVolumeRequest,
+        volume_id: String,
+        requested_bytes: i64,
+    ) -> Result<VolumeSpec, Status> {
+        for cap in &req.volume_capabilities {
+            if matches!(
+                cap.access_type.as_ref(),
+                Some(volume_capability::AccessType::Block(_))
+            ) {
+                return Err(Status::invalid_argument(
+                    "backend=userspace-mount supports filesystem-mode PVCs only; volumeMode: Block requires a block edge",
+                ));
+            }
+        }
+        validate_volume_path_component(&volume_id)?;
+        let capacity_bytes = if requested_bytes > 0 {
+            requested_bytes
+        } else {
+            checked_mib_to_bytes(DEFAULT_SIZE_MIB)?
+        };
+        Ok(VolumeSpec {
+            backend: "userspace-mount".to_string(),
+            volume_id,
+            name_hex: hex_encode(req.name.as_bytes()),
+            device_name: String::new(),
+            capacity_bytes,
+            size_mib: bytes_to_mib(capacity_bytes)?,
+            blocksize: 0,
+            queues: 0,
+            queue_depth: 0,
+            descriptor_mode: "disabled".to_string(),
+            file_path: None,
+            raw_device: None,
+            staging_path: None,
+            restore_path: None,
+            restore_snapshot_id: None,
+        })
+    }
+
     fn raw_device_from_parameters(
         &self,
         parameters: &BTreeMap<String, String>,
@@ -2678,7 +2883,7 @@ impl ZcblockCsi {
         match spec.backend.as_str() {
             "zcbrd" => self.ensure_zcbrd_device(spec).await,
             "file-loop" => self.ensure_loop_device(spec).await,
-            "raw-block" => self.ensure_raw_block_device(spec),
+            "raw-block" | "fabric" => self.ensure_raw_block_device(spec),
             other => Err(Status::invalid_argument(format!(
                 "unsupported backend: {other}"
             ))),
@@ -2691,7 +2896,8 @@ impl ZcblockCsi {
                 Status::failed_precondition(format!("could not remove zcbrd device: {e}"))
             }),
             "file-loop" => detach_loop_for_spec(spec).await,
-            "raw-block" => Ok(()),
+            "raw-block" | "fabric" => Ok(()),
+            "userspace-mount" => Ok(()),
             other => Err(Status::invalid_argument(format!(
                 "unsupported backend: {other}"
             ))),
@@ -2714,7 +2920,8 @@ impl ZcblockCsi {
                 }
                 Ok(())
             }
-            "raw-block" => Ok(()),
+            "raw-block" | "fabric" => Ok(()),
+            "userspace-mount" => Ok(()),
             other => Err(Status::invalid_argument(format!(
                 "unsupported backend: {other}"
             ))),
@@ -2728,7 +2935,7 @@ impl ZcblockCsi {
                 Ok(())
             }
             "file-loop" => self.create_backing_file(spec),
-            "raw-block" => {
+            "raw-block" | "fabric" => {
                 let dev = self.ensure_raw_block_device(spec)?;
                 if let Some(restore_path) = spec.restore_path.as_ref() {
                     restore_image_to_device(
@@ -2741,6 +2948,10 @@ impl ZcblockCsi {
                 }
                 Ok(())
             }
+            // The userspace filesystem service owns allocation and placement.
+            // CSI only stages the FUSE mount it publishes beneath this node's
+            // configured userspace mount root.
+            "userspace-mount" => Ok(()),
             other => Err(Status::invalid_argument(format!(
                 "unsupported backend: {other}"
             ))),
@@ -2938,7 +3149,10 @@ impl ZcblockCsi {
                     Status::internal("file-loop volume missing file_path")
                 })?))
             }
-            "raw-block" => self.ensure_raw_block_device(spec),
+            "raw-block" | "fabric" => self.ensure_raw_block_device(spec),
+            "userspace-mount" => Err(Status::failed_precondition(
+                "userspace-mount replication must be performed by the userspace volume service; CSI has no byte-addressable block path",
+            )),
             other => Err(Status::invalid_argument(format!(
                 "unsupported backend: {other}"
             ))),
@@ -2951,6 +3165,11 @@ impl ZcblockCsi {
         snapshot_id: &str,
         name: &str,
     ) -> Result<SnapshotSpec, Status> {
+        if source.backend == "userspace-mount" {
+            return Err(Status::failed_precondition(
+                "userspace-mount snapshots require the userspace volume control API; CSI has no local block image to copy",
+            ));
+        }
         fs::create_dir_all(self.cfg.snapshot_images_dir())
             .map_err(|e| io_status("create snapshot image dir", e))?;
         let snapshot_path = self
@@ -2973,7 +3192,7 @@ impl ZcblockCsi {
                             Status::internal("file-loop volume missing file_path")
                         })?)
                     }
-                    "raw-block" => self.ensure_raw_block_device(source)?,
+                    "raw-block" | "fabric" => self.ensure_raw_block_device(source)?,
                     other => {
                         return Err(Status::invalid_argument(format!(
                             "unsupported backend: {other}"
@@ -3088,6 +3307,32 @@ impl ZcblockCsi {
         Ok(path)
     }
 
+    async fn ensure_userspace_volume_mount(&self, spec: &VolumeSpec) -> Result<PathBuf, Status> {
+        validate_volume_path_component(&spec.volume_id)?;
+        let source = self.cfg.userspace_mount_root.join(&spec.volume_id);
+        if !source.is_dir() {
+            return Err(Status::failed_precondition(format!(
+                "userspace volume service has not created {} for volume {}",
+                source.display(),
+                spec.volume_id
+            )));
+        }
+        let fs_type = mountpoint_fs_type(&source).await?.ok_or_else(|| {
+            Status::failed_precondition(format!(
+                "userspace volume service has not mounted volume {} at {}",
+                spec.volume_id,
+                source.display()
+            ))
+        })?;
+        if fs_type != "fuse" && !fs_type.starts_with("fuse.") {
+            return Err(Status::failed_precondition(format!(
+                "{} is mounted as {fs_type}, not a FUSE userspace filesystem",
+                source.display()
+            )));
+        }
+        Ok(source)
+    }
+
     async fn ensure_zcbrd_device(&self, spec: &VolumeSpec) -> Result<PathBuf, Status> {
         if !self.cfg.configfs_root.is_dir() {
             return Err(Status::failed_precondition(format!(
@@ -3148,6 +3393,14 @@ impl ZcblockCsi {
 }
 
 impl VolumeSpec {
+    fn is_node_local(&self) -> bool {
+        match self.backend.as_str() {
+            "fabric" | "userspace-mount" => false,
+            "raw-block" => self.raw_device.as_deref() != Some(ZCNBLK_CLIENT_EDGE),
+            _ => true,
+        }
+    }
+
     fn to_context(&self) -> BTreeMap<String, String> {
         let mut context = BTreeMap::new();
         context.insert("backend".to_string(), self.backend.clone());
@@ -3166,10 +3419,13 @@ impl VolumeSpec {
                 }
                 context.insert("sizeMiB".to_string(), self.size_mib.to_string());
             }
-            "raw-block" => {
+            "raw-block" | "fabric" => {
                 if let Some(path) = self.raw_device.as_ref() {
                     context.insert("rawDevice".to_string(), path.clone());
                 }
+            }
+            "userspace-mount" => {
+                context.insert("capacityBytes".to_string(), self.capacity_bytes.to_string());
             }
             _ => {}
         }
@@ -3322,12 +3578,17 @@ impl VolumeSpec {
                         .or_else(|| nonempty_value(context, "restore_snapshot_id")),
                 })
             }
-            "raw-block" => {
+            "raw-block" | "fabric" => {
                 let raw_device = nonempty_value(context, "rawDevice")
                     .or_else(|| nonempty_value(context, "raw_device"))
                     .ok_or_else(|| {
-                        Status::invalid_argument("raw-block context missing rawDevice")
+                        Status::invalid_argument(format!("{} context missing rawDevice", backend))
                     })?;
+                if backend == "fabric" && raw_device != ZCNBLK_CLIENT_EDGE {
+                    return Err(Status::invalid_argument(format!(
+                        "backend=fabric requires rawDevice={ZCNBLK_CLIENT_EDGE}"
+                    )));
+                }
                 Ok(Self {
                     backend,
                     volume_id: volume_id.to_string(),
@@ -3346,6 +3607,32 @@ impl VolumeSpec {
                         .or_else(|| nonempty_value(context, "restore_path")),
                     restore_snapshot_id: nonempty_value(context, "restoreSnapshotId")
                         .or_else(|| nonempty_value(context, "restore_snapshot_id")),
+                })
+            }
+            "userspace-mount" => {
+                validate_volume_path_component(volume_id)?;
+                Ok(Self {
+                    backend,
+                    volume_id: volume_id.to_string(),
+                    name_hex: String::new(),
+                    device_name: String::new(),
+                    capacity_bytes: context
+                        .get("capacityBytes")
+                        .or_else(|| context.get("capacity_bytes"))
+                        .map(|value| parse_i64(value, "capacityBytes"))
+                        .transpose()?
+                        .unwrap_or(0),
+                    size_mib: 0,
+                    blocksize: 0,
+                    queues: 0,
+                    queue_depth: 0,
+                    descriptor_mode: "disabled".to_string(),
+                    file_path: None,
+                    raw_device: None,
+                    staging_path: nonempty_value(context, "stagingPath")
+                        .or_else(|| nonempty_value(context, "staging_path")),
+                    restore_path: None,
+                    restore_snapshot_id: None,
                 })
             }
             other => Err(Status::invalid_argument(format!(
@@ -3630,6 +3917,38 @@ async fn is_mountpoint<P: AsRef<Path>>(target: P) -> bool {
         .await
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+async fn mountpoint_fs_type(target: &Path) -> Result<Option<String>, Status> {
+    let output = Command::new("findmnt")
+        .args(["-rn", "-o", "FSTYPE", "--mountpoint"])
+        .arg(target)
+        .output()
+        .await
+        .map_err(|e| io_status("inspect userspace mount", e))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let fs_type = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if fs_type.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(fs_type))
+    }
+}
+
+fn validate_volume_path_component(volume_id: &str) -> Result<(), Status> {
+    if volume_id.is_empty()
+        || volume_id == "."
+        || volume_id == ".."
+        || volume_id.contains('/')
+        || volume_id.contains('\0')
+    {
+        return Err(Status::invalid_argument(
+            "volume_id is not a safe userspace mount path component",
+        ));
+    }
+    Ok(())
 }
 
 async fn fsfreeze_path(
@@ -4065,6 +4384,10 @@ fn normalize_backend(value: &str) -> Result<String, Status> {
         "zcbrd" | "brd" => Ok("zcbrd".to_string()),
         "file-loop" | "file" | "loop" | "loop-file" => Ok("file-loop".to_string()),
         "raw-block" | "raw" | "block" => Ok("raw-block".to_string()),
+        "fabric" | "zcnblk" | "network" | "remote" => Ok("fabric".to_string()),
+        "userspace-mount" | "userspace" | "fuse" | "fuse-mount" => {
+            Ok("userspace-mount".to_string())
+        }
         "mux" => Ok("mux".to_string()),
         other => Err(Status::invalid_argument(format!(
             "unsupported backend: {other}"
@@ -4508,4 +4831,83 @@ fn device_string(path: &Path) -> String {
 
 fn io_status(action: &str, e: io::Error) -> Status {
     Status::internal(format!("{action}: {e}"))
+}
+
+#[cfg(test)]
+mod topology_tests {
+    use super::*;
+
+    fn volume_spec(backend: &str, raw_device: Option<&str>) -> VolumeSpec {
+        VolumeSpec {
+            backend: backend.to_string(),
+            volume_id: "test-volume".to_string(),
+            name_hex: String::new(),
+            device_name: String::new(),
+            capacity_bytes: 1024 * 1024,
+            size_mib: 1,
+            blocksize: DEFAULT_BLOCKSIZE,
+            queues: 0,
+            queue_depth: 0,
+            descriptor_mode: "disabled".to_string(),
+            file_path: None,
+            raw_device: raw_device.map(str::to_string),
+            staging_path: None,
+            restore_path: None,
+            restore_snapshot_id: None,
+        }
+    }
+
+    #[test]
+    fn local_backends_keep_node_affinity() {
+        assert!(volume_spec("zcbrd", None).is_node_local());
+        assert!(volume_spec("file-loop", None).is_node_local());
+        assert!(volume_spec("raw-block", Some("/dev/nvme1n1")).is_node_local());
+    }
+
+    #[test]
+    fn fabric_client_edges_do_not_advertise_node_affinity() {
+        assert!(!volume_spec("fabric", Some(ZCNBLK_CLIENT_EDGE)).is_node_local());
+        assert!(!volume_spec("raw-block", Some(ZCNBLK_CLIENT_EDGE)).is_node_local());
+        assert!(!volume_spec("userspace-mount", None).is_node_local());
+    }
+
+    #[test]
+    fn fabric_aliases_normalize_to_one_backend() {
+        for alias in ["fabric", "zcnblk", "network", "remote"] {
+            assert_eq!(normalize_backend(alias).unwrap(), "fabric");
+        }
+        for alias in ["userspace-mount", "userspace", "fuse", "fuse-mount"] {
+            assert_eq!(normalize_backend(alias).unwrap(), "userspace-mount");
+        }
+    }
+
+    #[test]
+    fn fabric_context_rejects_a_leaf_device_as_the_client_edge() {
+        let context = BTreeMap::from([
+            ("backend".to_string(), "fabric".to_string()),
+            ("rawDevice".to_string(), "/dev/nvme1n1".to_string()),
+        ]);
+        let error = VolumeSpec::from_context("test-volume", &context).unwrap_err();
+        assert!(error.message().contains(ZCNBLK_CLIENT_EDGE));
+    }
+
+    #[test]
+    fn userspace_mount_context_is_topology_free_and_preserves_capacity() {
+        let context = BTreeMap::from([
+            ("backend".to_string(), "userspace-mount".to_string()),
+            ("capacityBytes".to_string(), "1048576".to_string()),
+        ]);
+        let spec = VolumeSpec::from_context("test-volume", &context).unwrap();
+        assert_eq!(spec.capacity_bytes, 1_048_576);
+        assert!(!spec.is_node_local());
+        assert_eq!(spec.to_context(), context);
+    }
+
+    #[test]
+    fn userspace_mount_rejects_unsafe_volume_path_components() {
+        for volume_id in ["", ".", "..", "../escape", "nested/volume"] {
+            assert!(validate_volume_path_component(volume_id).is_err());
+        }
+        assert!(validate_volume_path_component("zcblk-csi-safe").is_ok());
+    }
 }

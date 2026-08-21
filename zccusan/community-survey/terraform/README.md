@@ -72,14 +72,14 @@ After apply, capture:
 Set these in your community survey publisher:
 
 ```bash
-export ZCCUSAN_SURVEY_ENABLED=true
-export ZCCUSAN_SURVEY_BACKEND_URL="$survey_post_url"
+export ZCCUSAN_COMMUNITY_SURVEY_ENABLED=true
+export ZCCUSAN_COMMUNITY_SURVEY_API_ENDPOINT="$survey_post_url"
 ```
 
 If you need to disable reporting without changing app code:
 
 ```bash
-export ZCCUSAN_SURVEY_ENABLED=false
+export ZCCUSAN_COMMUNITY_SURVEY_ENABLED=false
 ```
 
 Then post survey payloads:
@@ -87,7 +87,7 @@ Then post survey payloads:
 ```bash
 curl -s -X POST "$survey_post_url" \
   -H 'content-type: application/json' \
-  -d '{"event_type":"community_survey","cloud_region":"us-east-1","answers":{"q1":"yes"}}'
+  -d '{"telemetry_schema_version":1,"anonymization_schema_version":1,"event_type":"csi_hourly_stats","cloud_provider":"aws","cloud_region":"us-east-1","anonymous_installation_id":"anon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active_volume_count":2,"total_iops":1200}'
 ```
 
 Stream multiple events in a single POST using any of these formats:
@@ -97,8 +97,8 @@ Stream multiple events in a single POST using any of these formats:
 curl -s -X POST "$survey_post_url" \
   -H 'content-type: application/json' \
   -d '[
-    {"event_type":"community_survey","cloud_region":"us-east-1","answers":{"q1":"yes"}},
-    {"event_type":"community_survey","cloud_region":"us-west-2","answers":{"q2":"no"}}
+    {"telemetry_schema_version":1,"anonymization_schema_version":1,"event_type":"csi_hourly_stats","cloud_provider":"aws","cloud_region":"us-east-1","anonymous_installation_id":"anon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active_volume_count":2,"total_iops":1200},
+    {"telemetry_schema_version":1,"anonymization_schema_version":1,"event_type":"csi_hourly_stats","cloud_provider":"azure","cloud_region":"eastus","anonymous_installation_id":"anon-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","active_volume_count":1,"total_iops":400}
   ]'
 ```
 
@@ -107,7 +107,7 @@ curl -s -X POST "$survey_post_url" \
 curl -s -X POST "$survey_post_url" \
   -H 'content-type: application/json' \
   -d '{"events":[
-    {"event_type":"community_survey","cloud_region":"us-east-1","answers":{"q1":"yes"}}
+    {"telemetry_schema_version":1,"anonymization_schema_version":1,"event_type":"csi_hourly_stats","cloud_provider":"aws","cloud_region":"us-east-1","anonymous_installation_id":"anon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active_volume_count":2,"total_iops":1200}
   ]}'
 ```
 
@@ -128,9 +128,11 @@ Success response:
 - Lambda connects to DSQL's PostgreSQL-compatible endpoint over TLS and uses
   `dsql:DbConnectAdmin` solely to bootstrap and access the two application tables.
 - Keep `terraform` and AWS credentials scoped to least privilege when running this in CI/CD.
-- `survey_post_url` is the default backend endpoint you can pass to `ZCCUSAN_SURVEY_BACKEND_URL`.
-- Raw normalized events are retained as application-append-only JSONB for
-  server-side replay. No public route performs raw reads, updates, or deletes.
+- `survey_post_url` is the endpoint for `ZCCUSAN_COMMUNITY_SURVEY_API_ENDPOINT`.
+- Telemetry is transformed into `NonIdentifyingTelemetry` before it leaves an
+  installation. The API strictly validates that schema, stores only accepted
+  anonymous records as application-append-only JSONB, and never persists source
+  IPs. No public route performs raw reads, updates, or deletes.
 - `/community/environments` reads only a sanitized projection containing a
   one-way environment alias and coarse operational aggregates. `/dashboard`
   visualizes active and historical environments from that projection.

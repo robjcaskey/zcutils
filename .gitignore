@@ -1,4 +1,5 @@
 .cache/
+.local/
 target/
 systemd-fast-reboot/
 
@@ -14,3 +15,15 @@ qemu-zcrx/
 perf.data
 *.perf.data
 *.cpio
+*.iso
+*.qcow2
+*.raw
+
+# Generated VM roots and test credentials are reproducible local artifacts,
+# not source or benchmark evidence suitable for publication.
+bench-results/**/rootfs/
+bench-results/**/rootfs-*/
+bench-results/**/bin/
+bench-results/**/*.pid
+bench-results/**/*.token
+bench-results/**/admin-token

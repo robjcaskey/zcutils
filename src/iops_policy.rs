@@ -372,6 +372,10 @@ pub struct LaneBudgetMailbox {
     burst_ops: AtomicU64,
     quantum_ops: AtomicU64,
     metric_publish_ns: AtomicU64,
+    effective_ns: AtomicU64,
+    fallback_sustained_iops: AtomicU64,
+    fallback_peak_iops: AtomicU64,
+    valid_until_ns: AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -385,6 +389,15 @@ pub struct LaneBudgetSnapshot {
     /// Peak bucket capacity; at least the largest admitted descriptor batch.
     pub quantum_ops: u64,
     pub metric_publish_ns: u64,
+    /// A controller can publish every lane first and fence activation at one
+    /// common monotonic timestamp. This keeps a hierarchy generation coherent
+    /// without putting a shared lock or pointer swap in lane admission.
+    pub effective_ns: u64,
+    /// Borrowed capacity is a lease. Zero disables expiry; otherwise the lane
+    /// falls back locally without consulting a controller or shared lock.
+    pub fallback_sustained_iops: u64,
+    pub fallback_peak_iops: u64,
+    pub valid_until_ns: u64,
 }
 
 impl LaneBudgetMailbox {
@@ -397,6 +410,10 @@ impl LaneBudgetMailbox {
             burst_ops: AtomicU64::new(initial.burst_ops),
             quantum_ops: AtomicU64::new(initial.quantum_ops),
             metric_publish_ns: AtomicU64::new(initial.metric_publish_ns),
+            effective_ns: AtomicU64::new(initial.effective_ns),
+            fallback_sustained_iops: AtomicU64::new(initial.fallback_sustained_iops),
+            fallback_peak_iops: AtomicU64::new(initial.fallback_peak_iops),
+            valid_until_ns: AtomicU64::new(initial.valid_until_ns),
         }
     }
 
@@ -413,6 +430,14 @@ impl LaneBudgetMailbox {
             .store(budget.quantum_ops, Ordering::Relaxed);
         self.metric_publish_ns
             .store(budget.metric_publish_ns, Ordering::Relaxed);
+        self.effective_ns
+            .store(budget.effective_ns, Ordering::Relaxed);
+        self.fallback_sustained_iops
+            .store(budget.fallback_sustained_iops, Ordering::Relaxed);
+        self.fallback_peak_iops
+            .store(budget.fallback_peak_iops, Ordering::Relaxed);
+        self.valid_until_ns
+            .store(budget.valid_until_ns, Ordering::Relaxed);
         self.sequence
             .store(sequence.wrapping_add(1), Ordering::Release);
     }
@@ -431,6 +456,10 @@ impl LaneBudgetMailbox {
                 burst_ops: self.burst_ops.load(Ordering::Relaxed),
                 quantum_ops: self.quantum_ops.load(Ordering::Relaxed),
                 metric_publish_ns: self.metric_publish_ns.load(Ordering::Relaxed),
+                effective_ns: self.effective_ns.load(Ordering::Relaxed),
+                fallback_sustained_iops: self.fallback_sustained_iops.load(Ordering::Relaxed),
+                fallback_peak_iops: self.fallback_peak_iops.load(Ordering::Relaxed),
+                valid_until_ns: self.valid_until_ns.load(Ordering::Relaxed),
             };
             if before == self.sequence.load(Ordering::Acquire) {
                 return budget;
@@ -465,6 +494,9 @@ impl LaneLimiter {
     pub fn refresh(&mut self, now_ns: u64, mailbox: &LaneBudgetMailbox) -> bool {
         let next = mailbox.load();
         if next.generation == self.budget.generation {
+            return self.expire_borrowed_lease(now_ns);
+        }
+        if now_ns < next.effective_ns {
             return false;
         }
         self.refill(now_ns);
@@ -475,6 +507,28 @@ impl LaneLimiter {
         self.peak_token_nanos = self
             .peak_token_nanos
             .min(u128::from(next.quantum_ops) * NANOS_PER_SECOND);
+        let _ = self.expire_borrowed_lease(now_ns);
+        true
+    }
+
+    fn expire_borrowed_lease(&mut self, now_ns: u64) -> bool {
+        if self.budget.valid_until_ns == 0 || now_ns < self.budget.valid_until_ns {
+            return false;
+        }
+        self.refill(now_ns);
+        self.budget.sustained_iops = self.budget.fallback_sustained_iops;
+        self.budget.peak_iops = self
+            .budget
+            .fallback_peak_iops
+            .max(self.budget.fallback_sustained_iops);
+        self.budget.burst_ops = self.budget.quantum_ops;
+        self.budget.valid_until_ns = 0;
+        self.sustained_token_nanos = self
+            .sustained_token_nanos
+            .min(u128::from(self.budget.burst_ops) * NANOS_PER_SECOND);
+        self.peak_token_nanos = self
+            .peak_token_nanos
+            .min(u128::from(self.budget.quantum_ops) * NANOS_PER_SECOND);
         true
     }
 
@@ -1197,6 +1251,10 @@ mod tests {
             burst_ops: 100,
             quantum_ops: 100,
             metric_publish_ns: 100_000_000,
+            effective_ns: 0,
+            fallback_sustained_iops: 100_000,
+            fallback_peak_iops: 1_000_000,
+            valid_until_ns: 0,
         };
         let mailbox = LaneBudgetMailbox::new(initial);
         let mut limiter = LaneLimiter::new(0, initial);
@@ -1209,10 +1267,37 @@ mod tests {
             burst_ops: 1_000,
             quantum_ops: 1_000,
             metric_publish_ns: 50_000_000,
+            effective_ns: 20_000,
+            fallback_sustained_iops: 1_000_000,
+            fallback_peak_iops: 2_000_000,
+            valid_until_ns: 0,
         });
         assert!(limiter.refresh(20_000, &mailbox));
         assert_eq!(limiter.budget().sustained_iops, 1_000_000);
         assert_eq!(limiter.admit(1_020_000, 1_000), 1_000);
+    }
+
+    #[test]
+    fn borrowed_lane_budget_expires_to_its_protected_guarantee() {
+        let leased = LaneBudgetSnapshot {
+            generation: 9,
+            sustained_iops: 8_000_000,
+            peak_iops: 12_000_000,
+            burst_ops: 256,
+            quantum_ops: 256,
+            metric_publish_ns: 100_000_000,
+            effective_ns: 0,
+            fallback_sustained_iops: 2_000_000,
+            fallback_peak_iops: 2_000_000,
+            valid_until_ns: 5_000,
+        };
+        let mailbox = LaneBudgetMailbox::new(leased);
+        let mut limiter = LaneLimiter::new(0, leased);
+        assert!(!limiter.refresh(4_999, &mailbox));
+        assert!(limiter.refresh(5_000, &mailbox));
+        assert_eq!(limiter.budget().sustained_iops, 2_000_000);
+        assert_eq!(limiter.budget().peak_iops, 2_000_000);
+        assert_eq!(limiter.budget().valid_until_ns, 0);
     }
 
     #[test]
@@ -1284,6 +1369,10 @@ mod tests {
             burst_ops: 1_000_000,
             quantum_ops: 1_000_000,
             metric_publish_ns: 100_000_000,
+            effective_ns: 0,
+            fallback_sustained_iops: 20_000_000,
+            fallback_peak_iops: 20_000_000,
+            valid_until_ns: 0,
         };
         let mut limiter = LaneLimiter::new(0, budget);
         let mut now_ns = 0u64;

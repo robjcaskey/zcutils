@@ -1,0 +1,9 @@
+NAME                 READY   STATUS    RESTARTS   AGE   IP           NODE                                       NOMINATED NODE   READINESS GATES
+pod/zc-efa-bench-0   1/1     Running   0          13m   10.83.3.80   ip-10-83-3-80.us-east-2.compute.internal   <none>           <none>
+pod/zc-efa-bench-1   1/1     Running   0          13m   10.83.3.75   ip-10-83-3-75.us-east-2.compute.internal   <none>           <none>
+
+NAME                   TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/zc-efa-bench   ClusterIP   None         <none>        <none>    13m   app.kubernetes.io/name=zc-efa-bench
+
+NAME                            READY   AGE   CONTAINERS   IMAGES
+statefulset.apps/zc-efa-bench   2/2     13m   bench        ubuntu:24.04

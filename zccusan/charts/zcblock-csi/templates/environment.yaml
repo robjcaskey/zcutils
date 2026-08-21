@@ -1,23 +1,23 @@
-{{- if .Values.environment.enabled }}
-{{- $environmentId := include "zcblock-csi.environmentId" . | trim }}
+{{- if .Values.installation.enabled }}
+{{- $installationId := include "zcblock-csi.installationId" . | trim }}
 apiVersion: v1
 kind: Secret
 metadata:
-  name: {{ include "zcblock-csi.environmentSecretName" . }}
+  name: {{ include "zcblock-csi.installationSecretName" . }}
   namespace: {{ include "zcblock-csi.namespace" . }}
   labels:
     {{- include "zcblock-csi.labels" . | nindent 4 }}
 type: Opaque
 data:
-  ZCCU_ENVIRONMENT_ID: {{ $environmentId | b64enc | quote }}
+  ZCCUSAN_INSTALLATION_ID: {{ $installationId | b64enc | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "zcblock-csi.environmentConfigMapName" . }}
+  name: {{ include "zcblock-csi.installationConfigMapName" . }}
   namespace: {{ include "zcblock-csi.namespace" . }}
   labels:
     {{- include "zcblock-csi.labels" . | nindent 4 }}
 data:
-  ZCCU_ENVIRONMENT_ID: {{ $environmentId | quote }}
+  ZCCUSAN_INSTALLATION_ID: {{ $installationId | quote }}
 {{- end }}

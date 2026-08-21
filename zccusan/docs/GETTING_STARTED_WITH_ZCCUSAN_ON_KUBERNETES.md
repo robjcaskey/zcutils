@@ -21,15 +21,14 @@ helm upgrade --install zccusan zccusan/zcblock-csi \
 
 For first install, replace `upgrade --install` with `install`.
 
-## Select the dev or production telemetry endpoint
+## Select telemetry and community-survey API endpoints
 
 Helm does not expand shell environment variables inside a values YAML file.
-The repository therefore includes one reviewed values file per deployed survey
-environment and a wrapper that selects exactly one from
-`ZCCUSAN_TELEMETRY_ENV`:
+The repository includes reviewed community-survey values files. Pass one as a
+normal Helm values file; there is no telemetry environment or stage setting:
 
 ```bash
-export ZCCUSAN_TELEMETRY_ENV=dev  # or: prod
+export ZCCUSAN_HELM_VALUES_FILE="$PWD/zccusan/charts/zcblock-csi/values-community-survey-dev.yaml"
 ./zccusan/deploy/zcblock-csi/install-zccusan-kubernetes.sh
 ```
 
@@ -39,20 +38,20 @@ testing another release.
 
 The two profiles are:
 
-- `zccusan/charts/zcblock-csi/values-telemetry-dev.yaml`
-- `zccusan/charts/zcblock-csi/values-telemetry-prod.yaml`
+- `zccusan/charts/zcblock-csi/values-community-survey-dev.yaml`
+- `zccusan/charts/zcblock-csi/values-community-survey-prod.yaml`
 
-Both send node-local events to the in-cluster telemetry collector. Only that
-collector sends public HTTPS requests, to the selected environment's endpoint.
-The installer rejects unset or unknown environment names instead of silently
-falling back to production.
+Both send node-local events to the in-cluster telemetry API. Only that collector
+can send a community HTTPS request. It first transforms every mixed-version raw
+record into `NonIdentifyingTelemetry`: installation identity is hashed, safe
+cloud/region and aggregate signals are retained, and identifying or unknown
+fields are omitted before bytes leave the cluster.
 
 For a one-off independently deployed endpoint, keep the selected profile and
 override its URL for both direct and collector delivery:
 
 ```bash
-ZCCUSAN_TELEMETRY_ENV=dev \
-ZCCUSAN_SURVEY_BACKEND_URL=https://example.execute-api.us-east-1.amazonaws.com/survey \
+ZCCUSAN_COMMUNITY_SURVEY_API_ENDPOINT=https://example.execute-api.us-east-1.amazonaws.com/survey \
 ./zccusan/deploy/zcblock-csi/install-zccusan-kubernetes.sh
 ```
 

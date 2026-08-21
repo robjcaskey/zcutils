@@ -111,6 +111,10 @@ static uint logical_block_size = 4096;
 module_param(logical_block_size, uint, 0444);
 MODULE_PARM_DESC(logical_block_size, "Logical block size");
 
+static bool read_only;
+module_param(read_only, bool, 0444);
+MODULE_PARM_DESC(read_only, "Publish the client block edge read-only");
+
 static uint max_frame_bytes = 393216;
 module_param(max_frame_bytes, uint, 0444);
 MODULE_PARM_DESC(max_frame_bytes, "Maximum ZCNBLK payload bytes per frame");
@@ -3936,6 +3940,7 @@ static int __init zcnblk_init(void)
 	zcnblk_dev->disk->private_data = zcnblk_dev;
 	strscpy(zcnblk_dev->disk->disk_name, ZCNBLK_DISK_NAME, DISK_NAME_LEN);
 	set_capacity(zcnblk_dev->disk, capacity_bytes >> SECTOR_SHIFT);
+	set_disk_ro(zcnblk_dev->disk, read_only);
 
 	ret = add_disk(zcnblk_dev->disk);
 	if (ret)

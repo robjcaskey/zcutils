@@ -16,7 +16,7 @@ use serde_json::{Map, json};
 use zcutils::block::control as api;
 use zcutils::block::logstream::{DurableLogStream, FileLogStream};
 use zcutils::{
-    SurveyReporter, ZcStreamEncryption, zc_pit_is_reflink_unsupported, zc_pit_reflink_file,
+    TelemetryReporter, ZcStreamEncryption, zc_pit_is_reflink_unsupported, zc_pit_reflink_file,
     zc_stream_bind_listener, zc_stream_generate_token, zc_stream_receive_listener_to_writer,
     zc_stream_send_reader_to_tcp,
 };
@@ -167,7 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     app.materialize_state_from_log()
         .map_err(|e| invalid_input(format!("replay logstream: {e}")))?;
-    let telemetry = SurveyReporter::new();
+    let telemetry = TelemetryReporter::new();
     emit_startup_telemetry(&telemetry, &cfg);
 
     let listener = TcpListener::bind(&cfg.listen)?;
@@ -199,7 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn emit_startup_telemetry(telemetry: &SurveyReporter, cfg: &Config) {
+fn emit_startup_telemetry(telemetry: &TelemetryReporter, cfg: &Config) {
     let raw_node_id = env::var("ZCCUSAN_NODE_ID")
         .ok()
         .filter(|value| !value.is_empty())
@@ -208,14 +208,14 @@ fn emit_startup_telemetry(telemetry: &SurveyReporter, cfg: &Config) {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
     let node_id = hash_node_identifier(&raw_node_id);
-    let environment_id = env::var("ZCCU_ENVIRONMENT_ID")
+    let installation_id = env::var("ZCCUSAN_INSTALLATION_ID")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
 
     let mut payload = Map::new();
     payload.insert("node_id".to_string(), json!(node_id));
-    payload.insert("environment_id".to_string(), json!(environment_id));
+    payload.insert("installation_id".to_string(), json!(installation_id));
     payload.insert("control_listen".to_string(), json!(cfg.listen));
     payload.insert(
         "fabric_device_name".to_string(),
@@ -1371,7 +1371,7 @@ impl ControlApp {
                     "file-loop volume missing file_path".to_string()
                 })?))
             }
-            "raw-block" => self.ensure_raw_block_device(spec),
+            "raw-block" | "fabric" => self.ensure_raw_block_device(spec),
             other => Err(format!("unsupported backend: {other}")),
         }
     }
@@ -3455,7 +3455,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn volume_capacity_u64(spec: &VolumeSpec) -> Result<u64, String> {
     match spec.backend.as_str() {
-        "raw-block" => {
+        "raw-block" | "fabric" => {
             if let Some(raw) = spec.raw_device.as_ref() {
                 block_device_size(Path::new(raw)).or_else(|_| {
                     u64::try_from(spec.capacity_bytes)

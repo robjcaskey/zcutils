@@ -8,7 +8,8 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use zcutils::DEFAULT_COMMUNITY_SURVEY_URL;
+use zcutils::DEFAULT_COMMUNITY_SURVEY_API_ENDPOINT;
+use zcutils::telemetry::TelemetryRecord;
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:9899";
 const EVENT_BUFFER_CAPACITY_BYTES: usize = 4 * 1024 * 1024;
@@ -23,7 +24,7 @@ const EVENTS_PATH: &str = "/v1/events";
 #[derive(Clone, Debug)]
 struct Config {
     listen: String,
-    upstream_url: Option<String>,
+    community_survey_api_endpoint: Option<String>,
     flush_interval_ms: u64,
     request_timeout_ms: u64,
 }
@@ -69,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     spawn_sender_thread(
         Arc::clone(&state),
-        cfg.upstream_url.clone(),
+        cfg.community_survey_api_endpoint.clone(),
         cfg.flush_interval_ms,
         cfg.request_timeout_ms,
     );
@@ -77,8 +78,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(&cfg.listen)?;
     eprintln!("zccusan telemetry server listening on {}", cfg.listen);
     eprintln!(
-        "zccusan telemetry upstream: {}",
-        cfg.upstream_url
+        "zccusan community survey API endpoint: {}",
+        cfg.community_survey_api_endpoint
             .as_deref()
             .unwrap_or("disabled or not configured")
     );
@@ -115,16 +116,16 @@ impl Config {
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS);
 
-        let upstream_url = select_upstream(
-            env_enabled("ZCCUSAN_SURVEY_ENABLED", true),
-            read_http_url("ZCCUSAN_TELEMETRY_UPSTREAM_URL"),
-            read_http_url("ZCCUSAN_SURVEY_BACKEND_URL")
-                .or_else(|| Some(DEFAULT_COMMUNITY_SURVEY_URL.to_string())),
-        );
+        let community_survey_api_endpoint = env_enabled("ZCCUSAN_COMMUNITY_SURVEY_ENABLED", true)
+            .then(|| {
+                read_http_url("ZCCUSAN_COMMUNITY_SURVEY_API_ENDPOINT")
+                    .or_else(|| Some(DEFAULT_COMMUNITY_SURVEY_API_ENDPOINT.to_string()))
+            })
+            .flatten();
 
         Config {
             listen,
-            upstream_url,
+            community_survey_api_endpoint,
             flush_interval_ms,
             request_timeout_ms,
         }
@@ -160,7 +161,10 @@ impl EventServer {
 
         for event in events {
             let event_len = event.len();
-            if event_len == 0 || event_len > MAX_EVENT_BYTES {
+            if event_len == 0
+                || event_len > MAX_EVENT_BYTES
+                || TelemetryRecord::from_json(&event).is_none()
+            {
                 self.rejected_events = self.rejected_events.saturating_add(1);
                 rejected = rejected.saturating_add(1);
                 continue;
@@ -330,11 +334,11 @@ fn overflow_event(
 
 fn spawn_sender_thread(
     state: Arc<SharedState>,
-    upstream_url: Option<String>,
+    community_survey_api_endpoint: Option<String>,
     flush_interval_ms: u64,
     request_timeout_ms: u64,
 ) {
-    let Some(upstream_url) = upstream_url else {
+    let Some(community_survey_api_endpoint) = community_survey_api_endpoint else {
         return;
     };
 
@@ -377,9 +381,9 @@ fn spawn_sender_thread(
                 continue;
             }
 
-            let body = serialize_events(&batch);
+            let body = serialize_community_events(&batch);
             let response = client
-                .post(&upstream_url)
+                .post(&community_survey_api_endpoint)
                 .header(CONTENT_TYPE, "application/json")
                 .header("Connection", "close")
                 .body(body)
@@ -636,14 +640,20 @@ fn write_events_ndjson(output: &mut impl Write, events: &[Vec<u8>]) -> io::Resul
     output.flush()
 }
 
-fn serialize_events(events: &[EventRecord]) -> Vec<u8> {
+fn serialize_community_events(events: &[EventRecord]) -> Vec<u8> {
     let mut body = Vec::new();
     body.push(b'[');
-    for (i, event) in events.iter().enumerate() {
-        if i > 0 {
+    let mut emitted = 0usize;
+    for event in events {
+        let Some(record) = TelemetryRecord::from_json(&event.payload) else {
+            continue;
+        };
+        let anonymized = record.anonymize().to_json_bytes();
+        if emitted > 0 {
             body.push(b',');
         }
-        body.extend_from_slice(&event.payload);
+        body.extend_from_slice(&anonymized);
+        emitted += 1;
     }
     body.push(b']');
     body
@@ -670,16 +680,6 @@ fn read_http_url(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| is_http_url(value))
-}
-
-fn select_upstream(
-    survey_enabled: bool,
-    telemetry_upstream: Option<String>,
-    survey_backend: Option<String>,
-) -> Option<String> {
-    survey_enabled
-        .then_some(telemetry_upstream.or(survey_backend))
-        .flatten()
 }
 
 fn env_enabled(name: &str, default: bool) -> bool {
@@ -734,27 +734,27 @@ mod tests {
     }
 
     #[test]
-    fn explicit_upstream_precedes_survey_backend() {
-        assert_eq!(
-            select_upstream(
-                true,
-                Some("https://collector.example/events".to_string()),
-                Some("https://survey.example/survey".to_string()),
-            ),
-            Some("https://collector.example/events".to_string())
-        );
-    }
+    fn community_serialization_is_anonymized_and_allowlisted() {
+        let mut server = EventServer::new();
+        let result = server.enqueue_events(vec![
+            br#"{
+            "event_type":"csi_hourly_stats",
+            "environment_id":"private-installation",
+            "node_id":"private-node",
+            "volume_id":"private-volume",
+            "total_iops":12345
+        }"#
+            .to_vec(),
+        ]);
+        assert_eq!(result.accepted, 1);
 
-    #[test]
-    fn survey_opt_out_disables_outbound_forwarding_only() {
-        assert_eq!(
-            select_upstream(
-                false,
-                Some("https://collector.example/events".to_string()),
-                Some("https://survey.example/survey".to_string()),
-            ),
-            None
-        );
+        let body = String::from_utf8(serialize_community_events(&server.snapshot_batch()))
+            .expect("community JSON UTF-8");
+        assert!(body.contains("anonymous_installation_id"));
+        assert!(body.contains("12345"));
+        assert!(!body.contains("private-installation"));
+        assert!(!body.contains("private-node"));
+        assert!(!body.contains("private-volume"));
     }
 
     #[test]

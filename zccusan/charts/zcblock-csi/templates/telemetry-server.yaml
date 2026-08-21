@@ -28,12 +28,10 @@ spec:
           env:
             - name: ZCCUSAN_TELEMETRY_LISTEN
               value: {{ printf "0.0.0.0:%v" .Values.telemetryServer.port | quote }}
-            - name: ZCCUSAN_TELEMETRY_UPSTREAM_URL
-              value: {{ .Values.telemetryServer.upstreamUrl | quote }}
-            - name: ZCCUSAN_SURVEY_ENABLED
+            - name: ZCCUSAN_COMMUNITY_SURVEY_ENABLED
               value: {{ .Values.communitySurvey.enabled | quote }}
-            - name: ZCCUSAN_SURVEY_BACKEND_URL
-              value: {{ .Values.communitySurvey.backendUrl | quote }}
+            - name: ZCCUSAN_COMMUNITY_SURVEY_API_ENDPOINT
+              value: {{ .Values.communitySurvey.apiEndpoint | quote }}
             - name: ZCCUSAN_TELEMETRY_FLUSH_INTERVAL_MS
               value: {{ .Values.telemetryServer.flushIntervalMs | quote }}
             - name: ZCCUSAN_TELEMETRY_REQUEST_TIMEOUT_MS

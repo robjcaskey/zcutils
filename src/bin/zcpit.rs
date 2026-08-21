@@ -3,7 +3,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
 use std::path::PathBuf;
 
-use zcutils::{zc_pit_is_reflink_unsupported, zc_pit_reflink_file};
+use zcutils::{TelemetryReporter, zc_pit_is_reflink_unsupported, zc_pit_reflink_file};
 
 #[derive(Debug)]
 struct Args {
@@ -63,6 +63,32 @@ fn run() -> Result<(), String> {
             );
         }
         _ => return Err("mode must be reflink, auto, or copy".to_string()),
+    }
+    let telemetry = TelemetryReporter::new();
+    if telemetry.is_enabled() {
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "component".to_string(),
+            serde_json::Value::String("zcpit".to_string()),
+        );
+        payload.insert(
+            "phase".to_string(),
+            serde_json::Value::String("snapshot".to_string()),
+        );
+        payload.insert(
+            "backend".to_string(),
+            serde_json::Value::String(mode.to_string()),
+        );
+        if let Some(bytes) = args.bytes {
+            payload.insert("size_bytes".to_string(), serde_json::Value::from(bytes));
+        }
+        payload.insert(
+            "active_volume_count".to_string(),
+            serde_json::Value::from(0_u64),
+        );
+        payload.insert("ok".to_string(), serde_json::Value::Bool(true));
+        telemetry.emit_event("raw_volume_snapshot", payload);
+        telemetry.shutdown();
     }
     Ok(())
 }

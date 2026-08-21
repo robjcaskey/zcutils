@@ -51,6 +51,7 @@ spec:
             - --endpoint=unix:///csi/csi.sock
             - --node-id=$(NODE_NAME)
             - --state-dir={{ .Values.stateDir }}
+            - --userspace-mount-root={{ .Values.userspaceMountRoot }}
             - --control-socket={{ .Values.stateDir }}/control.sock
             {{- if .Values.control.enabled }}
             - --control-url={{ .Values.control.url }}
@@ -62,20 +63,18 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            - name: ZCCUSAN_MANAGEMENT_CHECKIN_ENABLED
-              value: {{ .Values.management.checkin.enabled | quote }}
-            - name: ZCCUSAN_MANAGEMENT_CHECKIN_URL
-              value: {{ include "zcblock-csi.managementCheckinUrl" . | quote }}
-            - name: ZCCUSAN_SURVEY_ENABLED
+            - name: ZCCUSAN_TELEMETRY_API_ENDPOINT
+              value: {{ include "zcblock-csi.telemetryApiEndpoint" . | quote }}
+            - name: ZCCUSAN_COMMUNITY_SURVEY_ENABLED
               value: {{ .Values.communitySurvey.enabled | quote }}
-            - name: ZCCUSAN_SURVEY_BACKEND_URL
-              value: {{ .Values.communitySurvey.backendUrl | quote }}
-          {{- if .Values.environment.enabled }}
-            - name: ZCCU_ENVIRONMENT_ID
+            - name: ZCCUSAN_COMMUNITY_SURVEY_API_ENDPOINT
+              value: {{ .Values.communitySurvey.apiEndpoint | quote }}
+          {{- if .Values.installation.enabled }}
+            - name: ZCCUSAN_INSTALLATION_ID
               valueFrom:
                 configMapKeyRef:
-                  name: {{ include "zcblock-csi.environmentConfigMapName" . | quote }}
-                  key: ZCCU_ENVIRONMENT_ID
+                  name: {{ include "zcblock-csi.installationConfigMapName" . | quote }}
+                  key: ZCCUSAN_INSTALLATION_ID
           {{- end }}
           securityContext:
             privileged: true
@@ -88,6 +87,9 @@ spec:
               mountPath: {{ .Values.stateDir }}
             - name: kubelet-dir
               mountPath: {{ .Values.kubeletDir }}
+              mountPropagation: Bidirectional
+            - name: userspace-mount-root
+              mountPath: {{ .Values.userspaceMountRoot }}
               mountPropagation: Bidirectional
             - name: configfs
               mountPath: {{ .Values.configfsDir }}
@@ -112,22 +114,18 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            - name: ZCCUSAN_MANAGEMENT_CHECKIN_ENABLED
-              value: {{ .Values.management.checkin.enabled | quote }}
-            - name: ZCCUSAN_MANAGEMENT_CHECKIN_URL
-              value: {{ include "zcblock-csi.managementCheckinUrl" . | quote }}
-            - name: ZCCUSAN_SURVEY_ENABLED
+            - name: ZCCUSAN_TELEMETRY_API_ENDPOINT
+              value: {{ include "zcblock-csi.telemetryApiEndpoint" . | quote }}
+            - name: ZCCUSAN_COMMUNITY_SURVEY_ENABLED
               value: {{ .Values.communitySurvey.enabled | quote }}
-            - name: ZCCUSAN_SURVEY_BACKEND_URL
-              value: {{ .Values.communitySurvey.backendUrl | quote }}
-          {{- if .Values.environment.enabled }}
-            - name: ZCCU_ENVIRONMENT_CONFIGMAP_NAME
-              value: {{ include "zcblock-csi.environmentConfigMapName" . | quote }}
-            - name: ZCCU_ENVIRONMENT_ID
+            - name: ZCCUSAN_COMMUNITY_SURVEY_API_ENDPOINT
+              value: {{ .Values.communitySurvey.apiEndpoint | quote }}
+          {{- if .Values.installation.enabled }}
+            - name: ZCCUSAN_INSTALLATION_ID
               valueFrom:
                 configMapKeyRef:
-                  name: {{ include "zcblock-csi.environmentConfigMapName" . | quote }}
-                  key: ZCCU_ENVIRONMENT_ID
+                  name: {{ include "zcblock-csi.installationConfigMapName" . | quote }}
+                  key: ZCCUSAN_INSTALLATION_ID
           {{- end }}
           {{- if .Values.metrics.enabled }}
           ports:
@@ -232,6 +230,10 @@ spec:
           hostPath:
             path: {{ .Values.kubeletDir }}
             type: Directory
+        - name: userspace-mount-root
+          hostPath:
+            path: {{ .Values.userspaceMountRoot }}
+            type: DirectoryOrCreate
         - name: configfs
           hostPath:
             path: {{ .Values.configfsDir }}

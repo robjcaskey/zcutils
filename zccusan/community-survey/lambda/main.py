@@ -26,6 +26,68 @@ _SCHEMA_READY = os.environ.get("SURVEY_SCHEMA_PREPROVISIONED", "false").lower() 
 _CONNECTION = None
 _CONNECTION_LOCK = threading.Lock()
 _NAMED_PARAMETER = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
+_SAFE_STRING_FIELDS = (
+    "event_type", "cloud_provider", "cloud_region", "version", "phase",
+    "component", "backend", "status", "latency_scope",
+)
+_SAFE_INTEGER_FIELDS = (
+    "event_at_ms", "started_at_millis", "interval_secs", "active_volume_count",
+    "sampled_volume_count", "missing_device_volume_count", "total_iops",
+    "avg_iops_per_volume", "cluster_node_count", "size_bytes", "io_size_bytes", "requested_bytes",
+    "evicted_first_message_index", "evicted_last_message_index", "evicted_count",
+    "hop_count", "path_count", "latency_sample_count", "latency_p50_ns",
+    "latency_p95_ns", "latency_p99_ns", "latency_p995_ns", "latency_p999_ns",
+    "latency_jitter_p995_ns",
+    "lane_count", "worker_count", "numa_node_count", "nic_count",
+)
+_SAFE_BOOLEAN_FIELDS = (
+    "ok", "evicted_events_were_logged_to_stdout",
+    "upstream_acknowledged_before_eviction",
+    "cpu_pinned", "numa_local",
+)
+_SAFE_INTEGER_MAP_FIELDS = ("iops_distribution", "backend_iops")
+_TOPOLOGY_STRING_FIELDS = (
+    "kernel_family", "topology_class", "placement_scope", "frontend",
+    "virtualization_family", "lane_mapping",
+)
+_COMMUNITY_ALLOWED_FIELDS = frozenset(
+    ("telemetry_schema_version", "anonymization_schema_version", "anonymous_installation_id")
+    + _SAFE_STRING_FIELDS
+    + _SAFE_INTEGER_FIELDS
+    + _SAFE_BOOLEAN_FIELDS
+    + _SAFE_INTEGER_MAP_FIELDS
+    + _TOPOLOGY_STRING_FIELDS
+    + ("transport_paths", "topology_hops")
+)
+_ANONYMOUS_INSTALLATION_ID = re.compile(r"^anon-[0-9a-f]{64}$")
+_APPROVED_KERNEL = re.compile(
+    r"^linux-(?:custom|\d+(?:\.\d+){1,3}|\d+(?:\.\d+){1,3}(?:-\d+)+-(?:aws|generic|azure|gcp))$"
+)
+_TOPOLOGY_CLASSES = frozenset(("direct", "client-leaf", "client-hop-leaf", "multi-hop", "unknown"))
+_PLACEMENT_SCOPES = frozenset((
+    "same-placement-group", "same-az", "same-region", "cross-region", "unknown",
+))
+_HOP_ROLES = frozenset(("client-edge", "userspace-hop", "storage-service", "terminal-leaf"))
+_TRANSPORTS = frozenset((
+    "tcp", "efa-direct", "efa", "rdma", "libfabric-sockets", "unix",
+    "shared-memory", "in-process", "unknown",
+))
+_HOP_INTEGER_FIELDS = frozenset((
+    "ordinal", "path_count", "latency_sample_count", "latency_p50_ns", "latency_p95_ns",
+    "latency_p99_ns", "latency_p995_ns", "latency_p999_ns", "latency_jitter_p995_ns",
+))
+_FRONTENDS = frozenset((
+    "userspace-client", "linux-block", "kubernetes-csi", "libvirt-disk",
+    "qemu-block", "qemu-virtio-blk", "qemu-virtio-scsi", "qemu-nvme",
+    "vhost-user-blk", "spdk-bdev", "nvme-of", "unknown",
+))
+_VIRTUALIZATION_FAMILIES = frozenset((
+    "bare-metal", "nitro-vm", "qemu", "firecracker", "xen", "hyper-v",
+    "vmware", "container", "unknown",
+))
+_LANE_MAPPINGS = frozenset((
+    "one-lane-per-worker", "shared-workers", "dedicated-with-spares", "unknown",
+))
 
 
 def _response(status: int, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -222,7 +284,6 @@ def _ensure_schema() -> None:
       event_type TEXT NOT NULL,
       region TEXT,
       received_at TIMESTAMPTZ NOT NULL,
-      source_ip_hash TEXT,
       payload JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
@@ -234,12 +295,92 @@ def _ensure_schema() -> None:
       first_seen TIMESTAMPTZ NOT NULL,
       last_seen TIMESTAMPTZ NOT NULL,
       event_count BIGINT NOT NULL DEFAULT 0,
+      cloud_provider TEXT,
       region TEXT,
       version TEXT,
       last_event_type TEXT,
       active_volume_count BIGINT,
-      recent_iops BIGINT
+      lifecycle_active BOOLEAN,
+      recent_iops BIGINT,
+      io_size_bytes BIGINT,
+      kernel_family TEXT,
+      topology_class TEXT,
+      placement_scope TEXT,
+      transport_paths JSONB,
+      topology_hops JSONB,
+      latency_sample_count BIGINT,
+      latency_p50_ns BIGINT,
+      latency_p99_ns BIGINT,
+      latency_p995_ns BIGINT,
+      latency_p999_ns BIGINT,
+      latency_jitter_p995_ns BIGINT,
+      frontend TEXT,
+      virtualization_family TEXT,
+      lane_count BIGINT,
+      worker_count BIGINT,
+      nic_count BIGINT,
+      numa_node_count BIGINT,
+      lane_mapping TEXT,
+      cpu_pinned BOOLEAN,
+      numa_local BOOLEAN
     );
+    """)
+    _execute_sql(f"""
+    ALTER TABLE {ENVIRONMENTS_TABLE}
+      ADD COLUMN IF NOT EXISTS cloud_provider TEXT;
+    """)
+    _execute_sql(f"""
+    ALTER TABLE {ENVIRONMENTS_TABLE}
+      ADD COLUMN IF NOT EXISTS lifecycle_active BOOLEAN;
+    """)
+    for column, sql_type in (
+        ("kernel_family", "TEXT"),
+        ("io_size_bytes", "BIGINT"),
+        ("topology_class", "TEXT"),
+        ("placement_scope", "TEXT"),
+        ("transport_paths", "JSONB"),
+        ("topology_hops", "JSONB"),
+        ("latency_sample_count", "BIGINT"),
+        ("latency_p50_ns", "BIGINT"),
+        ("latency_p99_ns", "BIGINT"),
+        ("latency_p995_ns", "BIGINT"),
+        ("latency_p999_ns", "BIGINT"),
+        ("latency_jitter_p995_ns", "BIGINT"),
+        ("frontend", "TEXT"),
+        ("virtualization_family", "TEXT"),
+        ("lane_count", "BIGINT"),
+        ("worker_count", "BIGINT"),
+        ("nic_count", "BIGINT"),
+        ("numa_node_count", "BIGINT"),
+        ("lane_mapping", "TEXT"),
+        ("cpu_pinned", "BOOLEAN"),
+        ("numa_local", "BOOLEAN"),
+    ):
+        _execute_sql(f"""
+        ALTER TABLE {ENVIRONMENTS_TABLE}
+          ADD COLUMN IF NOT EXISTS {column} {sql_type};
+        """)
+    # 1.0.0 was briefly emitted by incorrect package metadata before any 1.x
+    # compatibility promise existed. Correct only this known bad literal in
+    # the public projection; append-only raw events remain untouched.
+    _execute_sql(f"""
+    UPDATE {ENVIRONMENTS_TABLE}
+       SET version = '0.1.2'
+     WHERE version = '1.0.0';
+    """)
+    # Backfill terminal one-shot operations written by clients predating the
+    # explicit active-volume field. Their results remain queryable, but they
+    # must not linger in Active until the freshness timeout expires.
+    _execute_sql(f"""
+    UPDATE {ENVIRONMENTS_TABLE}
+       SET lifecycle_active = FALSE,
+           active_volume_count = COALESCE(active_volume_count, 0)
+     WHERE lifecycle_active IS NULL
+       AND last_event_type IN (
+         'block_benchmark_result',
+         'volume_live_operation_result',
+         'raw_volume_snapshot'
+       );
     """)
     _SCHEMA_READY = True
 
@@ -248,6 +389,133 @@ def _hash_value(value: str) -> str:
     if not value:
         return ""
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _bounded_string(value: Any, maximum: int = 128):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()[:maximum]
+
+
+def _validate_non_identifying_telemetry(event: Dict[str, Any]):
+    """Reject anything outside the versioned community-safe wire schema."""
+    if event.get("anonymization_schema_version") != 1:
+        return "unsupported_anonymization_schema_version"
+    telemetry_schema_version = event.get("telemetry_schema_version")
+    if (
+        isinstance(telemetry_schema_version, bool)
+        or not isinstance(telemetry_schema_version, int)
+        or telemetry_schema_version < 0
+    ):
+        return "invalid_telemetry_schema_version"
+    unknown_fields = sorted(set(event) - _COMMUNITY_ALLOWED_FIELDS)
+    if unknown_fields:
+        # Do not reflect a potentially identifying field name back through logs
+        # or intermediary error capture.
+        return "fields_not_permitted"
+
+    anonymous_id = event.get("anonymous_installation_id")
+    if anonymous_id is not None and (
+        not isinstance(anonymous_id, str)
+        or not _ANONYMOUS_INSTALLATION_ID.fullmatch(anonymous_id)
+    ):
+        return "invalid_anonymous_installation_id"
+    for name in _SAFE_STRING_FIELDS:
+        value = event.get(name)
+        if value is not None and (
+            not isinstance(value, str) or not value.strip() or len(value) > 128
+        ):
+            return f"invalid_{name}"
+    for name in _SAFE_INTEGER_FIELDS:
+        value = event.get(name)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            return f"invalid_{name}"
+    for name in _SAFE_BOOLEAN_FIELDS:
+        value = event.get(name)
+        if value is not None and not isinstance(value, bool):
+            return f"invalid_{name}"
+    for name in _SAFE_INTEGER_MAP_FIELDS:
+        value = event.get(name)
+        if value is None:
+            continue
+        if not isinstance(value, dict) or len(value) > 64:
+            return f"invalid_{name}"
+        if any(
+            not isinstance(key, str)
+            or not key
+            or len(key) > 64
+            or any(not (character.isalnum() or character in "_-") for character in key)
+            or isinstance(item, bool)
+            or not isinstance(item, int)
+            or item < 0
+            for key, item in value.items()
+        ):
+            return f"invalid_{name}"
+    kernel_family = event.get("kernel_family")
+    if kernel_family is not None and (
+        not isinstance(kernel_family, str) or not _APPROVED_KERNEL.fullmatch(kernel_family)
+    ):
+        return "invalid_kernel_family"
+    topology_class = event.get("topology_class")
+    if topology_class is not None and topology_class not in _TOPOLOGY_CLASSES:
+        return "invalid_topology_class"
+    placement_scope = event.get("placement_scope")
+    if placement_scope is not None and placement_scope not in _PLACEMENT_SCOPES:
+        return "invalid_placement_scope"
+    frontend = event.get("frontend")
+    if frontend is not None and frontend not in _FRONTENDS:
+        return "invalid_frontend"
+    virtualization_family = event.get("virtualization_family")
+    if virtualization_family is not None and virtualization_family not in _VIRTUALIZATION_FAMILIES:
+        return "invalid_virtualization_family"
+    lane_mapping = event.get("lane_mapping")
+    if lane_mapping is not None and lane_mapping not in _LANE_MAPPINGS:
+        return "invalid_lane_mapping"
+    transport_paths = event.get("transport_paths")
+    if transport_paths is not None and (
+        not isinstance(transport_paths, dict)
+        or not transport_paths
+        or len(transport_paths) > 16
+        or any(
+            transport not in _TRANSPORTS
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or not 1 <= count <= 256
+            for transport, count in transport_paths.items()
+        )
+    ):
+        return "invalid_transport_paths"
+    topology_hops = event.get("topology_hops")
+    if topology_hops is not None:
+        if not isinstance(topology_hops, list) or not 1 <= len(topology_hops) <= 8:
+            return "invalid_topology_hops"
+        allowed_hop_fields = _HOP_INTEGER_FIELDS | {
+            "role", "transport", "kernel_family",
+        }
+        for ordinal, hop in enumerate(topology_hops):
+            if not isinstance(hop, dict) or set(hop) - allowed_hop_fields:
+                return "invalid_topology_hops"
+            if hop.get("role") not in _HOP_ROLES or hop.get("transport") not in _TRANSPORTS:
+                return "invalid_topology_hops"
+            if hop.get("ordinal") != ordinal:
+                return "invalid_topology_hops"
+            if "kernel_family" in hop and (
+                not isinstance(hop["kernel_family"], str)
+                or not _APPROVED_KERNEL.fullmatch(hop["kernel_family"])
+            ):
+                return "invalid_topology_hops"
+            if any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+                for name, value in hop.items()
+                if name in _HOP_INTEGER_FIELDS
+            ):
+                return "invalid_topology_hops"
+            path_count = hop.get("path_count")
+            if path_count is not None and not 1 <= path_count <= 256:
+                return "invalid_topology_hops"
+    return None
 
 
 def _extract_body_text(event):
@@ -302,14 +570,12 @@ def _event_parameters(
     event_id: str,
     event_type: str,
     region: str,
-    source_ip_hash: str,
     payload: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
     return [
         {"name": "event_id", "value": {"stringValue": event_id}},
         {"name": "event_type", "value": {"stringValue": event_type}},
         {"name": "region", "value": {"stringValue": region} if region else {"isNull": True}},
-        {"name": "source_ip_hash", "value": {"stringValue": source_ip_hash} if source_ip_hash else {"isNull": True}},
         {"name": "payload", "value": {"stringValue": json.dumps(payload, separators=(",", ":"))}},
     ]
 
@@ -318,9 +584,9 @@ def _insert_events(parameter_sets: List[List[Dict[str, Any]]]) -> None:
     global _CONNECTION
     sql = f"""
         INSERT INTO {TABLE_NAME} (
-          event_id, event_type, region, received_at, source_ip_hash, payload
+          event_id, event_type, region, received_at, payload
         ) VALUES (
-          :event_id, :event_type, :region, now(), :source_ip_hash, :payload::jsonb
+          :event_id, :event_type, :region, now(), :payload::jsonb
         )
         """
     statement = _psycopg_sql(sql)
@@ -362,41 +628,120 @@ def _upsert_environment(
     region: str,
     event_increment: int,
 ) -> None:
-    environment_id = payload_event.get("environment_id")
-    if not isinstance(environment_id, str) or not environment_id.strip():
+    anonymous_installation_id = payload_event.get("anonymous_installation_id")
+    if not isinstance(anonymous_installation_id, str) or not anonymous_installation_id.strip():
         return
 
-    public_id = "env-" + _hash_value(environment_id.strip())[:12]
+    public_id = "env-" + _hash_value(anonymous_installation_id.strip())[:12]
+    cloud_provider = _bounded_string(payload_event.get("cloud_provider"), 32)
     version = payload_event.get("version")
     version = version[:64] if isinstance(version, str) and version else None
     active_volumes = _safe_nonnegative_int(payload_event.get("active_volume_count"))
     recent_iops = _safe_nonnegative_int(payload_event.get("total_iops"))
+    io_size_bytes = _safe_nonnegative_int(payload_event.get("io_size_bytes"))
+    kernel_family = _bounded_string(payload_event.get("kernel_family"), 96)
+    topology_class = _bounded_string(payload_event.get("topology_class"), 32)
+    placement_scope = _bounded_string(payload_event.get("placement_scope"), 32)
+    frontend = _bounded_string(payload_event.get("frontend"), 32)
+    virtualization_family = _bounded_string(payload_event.get("virtualization_family"), 32)
+    lane_mapping = _bounded_string(payload_event.get("lane_mapping"), 32)
+    transport_paths = payload_event.get("transport_paths")
+    topology_hops = payload_event.get("topology_hops")
+    transport_paths_json = json.dumps(transport_paths, separators=(",", ":")) if transport_paths else None
+    topology_hops_json = json.dumps(topology_hops, separators=(",", ":")) if topology_hops else None
+    lane_count = _safe_nonnegative_int(payload_event.get("lane_count"))
+    worker_count = _safe_nonnegative_int(payload_event.get("worker_count"))
+    nic_count = _safe_nonnegative_int(payload_event.get("nic_count"))
+    numa_node_count = _safe_nonnegative_int(payload_event.get("numa_node_count"))
+    latency_sample_count = _safe_nonnegative_int(payload_event.get("latency_sample_count"))
+    latency_p50_ns = _safe_nonnegative_int(payload_event.get("latency_p50_ns"))
+    latency_p99_ns = _safe_nonnegative_int(payload_event.get("latency_p99_ns"))
+    latency_p995_ns = _safe_nonnegative_int(payload_event.get("latency_p995_ns"))
+    latency_p999_ns = _safe_nonnegative_int(payload_event.get("latency_p999_ns"))
+    latency_jitter_p995_ns = _safe_nonnegative_int(payload_event.get("latency_jitter_p995_ns"))
+    cpu_pinned = payload_event.get("cpu_pinned") if isinstance(payload_event.get("cpu_pinned"), bool) else None
+    numa_local = payload_event.get("numa_local") if isinstance(payload_event.get("numa_local"), bool) else None
     _execute_sql(
         f"""
         INSERT INTO {ENVIRONMENTS_TABLE} (
-          public_environment_id, first_seen, last_seen, event_count, region,
-          version, last_event_type, active_volume_count, recent_iops
+          public_environment_id, first_seen, last_seen, event_count, cloud_provider, region,
+          version, last_event_type, active_volume_count, lifecycle_active, recent_iops, io_size_bytes,
+          kernel_family, topology_class, placement_scope, transport_paths, topology_hops,
+          latency_sample_count, latency_p50_ns, latency_p99_ns, latency_p995_ns,
+          latency_p999_ns, latency_jitter_p995_ns, frontend, virtualization_family,
+          lane_count, worker_count, nic_count, numa_node_count, lane_mapping, cpu_pinned, numa_local
         ) VALUES (
-          :public_id, now(), now(), :event_increment, :region, :version, :event_type,
-          :active_volumes, :recent_iops
+          :public_id, now(), now(), :event_increment, :cloud_provider, :region, :version, :event_type,
+          :active_volumes,
+          CASE WHEN :active_volumes IS NULL THEN NULL ELSE :active_volumes > 0 END,
+          :recent_iops, :io_size_bytes, :kernel_family, :topology_class, :placement_scope,
+          :transport_paths::jsonb, :topology_hops::jsonb, :latency_sample_count,
+          :latency_p50_ns, :latency_p99_ns, :latency_p995_ns, :latency_p999_ns,
+          :latency_jitter_p995_ns, :frontend, :virtualization_family, :lane_count,
+          :worker_count, :nic_count, :numa_node_count, :lane_mapping, :cpu_pinned, :numa_local
         )
         ON CONFLICT (public_environment_id) DO UPDATE SET
           last_seen = now(),
           event_count = {ENVIRONMENTS_TABLE}.event_count + :event_increment,
+          cloud_provider = COALESCE(EXCLUDED.cloud_provider, {ENVIRONMENTS_TABLE}.cloud_provider),
           region = COALESCE(EXCLUDED.region, {ENVIRONMENTS_TABLE}.region),
           version = COALESCE(EXCLUDED.version, {ENVIRONMENTS_TABLE}.version),
           last_event_type = EXCLUDED.last_event_type,
           active_volume_count = COALESCE(EXCLUDED.active_volume_count, {ENVIRONMENTS_TABLE}.active_volume_count),
-          recent_iops = COALESCE(EXCLUDED.recent_iops, {ENVIRONMENTS_TABLE}.recent_iops)
+          lifecycle_active = COALESCE(EXCLUDED.lifecycle_active, {ENVIRONMENTS_TABLE}.lifecycle_active),
+          recent_iops = COALESCE(EXCLUDED.recent_iops, {ENVIRONMENTS_TABLE}.recent_iops),
+          io_size_bytes = COALESCE(EXCLUDED.io_size_bytes, {ENVIRONMENTS_TABLE}.io_size_bytes),
+          kernel_family = COALESCE(EXCLUDED.kernel_family, {ENVIRONMENTS_TABLE}.kernel_family),
+          topology_class = COALESCE(EXCLUDED.topology_class, {ENVIRONMENTS_TABLE}.topology_class),
+          placement_scope = COALESCE(EXCLUDED.placement_scope, {ENVIRONMENTS_TABLE}.placement_scope),
+          transport_paths = COALESCE(EXCLUDED.transport_paths, {ENVIRONMENTS_TABLE}.transport_paths),
+          topology_hops = COALESCE(EXCLUDED.topology_hops, {ENVIRONMENTS_TABLE}.topology_hops),
+          latency_sample_count = COALESCE(EXCLUDED.latency_sample_count, {ENVIRONMENTS_TABLE}.latency_sample_count),
+          latency_p50_ns = COALESCE(EXCLUDED.latency_p50_ns, {ENVIRONMENTS_TABLE}.latency_p50_ns),
+          latency_p99_ns = COALESCE(EXCLUDED.latency_p99_ns, {ENVIRONMENTS_TABLE}.latency_p99_ns),
+          latency_p995_ns = COALESCE(EXCLUDED.latency_p995_ns, {ENVIRONMENTS_TABLE}.latency_p995_ns),
+          latency_p999_ns = COALESCE(EXCLUDED.latency_p999_ns, {ENVIRONMENTS_TABLE}.latency_p999_ns),
+          latency_jitter_p995_ns = COALESCE(EXCLUDED.latency_jitter_p995_ns, {ENVIRONMENTS_TABLE}.latency_jitter_p995_ns),
+          frontend = COALESCE(EXCLUDED.frontend, {ENVIRONMENTS_TABLE}.frontend),
+          virtualization_family = COALESCE(EXCLUDED.virtualization_family, {ENVIRONMENTS_TABLE}.virtualization_family),
+          lane_count = COALESCE(EXCLUDED.lane_count, {ENVIRONMENTS_TABLE}.lane_count),
+          worker_count = COALESCE(EXCLUDED.worker_count, {ENVIRONMENTS_TABLE}.worker_count),
+          nic_count = COALESCE(EXCLUDED.nic_count, {ENVIRONMENTS_TABLE}.nic_count),
+          numa_node_count = COALESCE(EXCLUDED.numa_node_count, {ENVIRONMENTS_TABLE}.numa_node_count),
+          lane_mapping = COALESCE(EXCLUDED.lane_mapping, {ENVIRONMENTS_TABLE}.lane_mapping),
+          cpu_pinned = COALESCE(EXCLUDED.cpu_pinned, {ENVIRONMENTS_TABLE}.cpu_pinned),
+          numa_local = COALESCE(EXCLUDED.numa_local, {ENVIRONMENTS_TABLE}.numa_local)
         """,
         parameters=[
             {"name": "public_id", "value": {"stringValue": public_id}},
+            {"name": "cloud_provider", "value": {"stringValue": cloud_provider} if cloud_provider else {"isNull": True}},
             {"name": "region", "value": {"stringValue": region} if region else {"isNull": True}},
             {"name": "version", "value": {"stringValue": version} if version else {"isNull": True}},
             {"name": "event_type", "value": {"stringValue": event_type}},
             {"name": "event_increment", "value": {"longValue": event_increment}},
             {"name": "active_volumes", "value": {"longValue": active_volumes} if active_volumes is not None else {"isNull": True}},
             {"name": "recent_iops", "value": {"longValue": recent_iops} if recent_iops is not None else {"isNull": True}},
+            {"name": "io_size_bytes", "value": {"longValue": io_size_bytes} if io_size_bytes is not None else {"isNull": True}},
+            {"name": "kernel_family", "value": {"stringValue": kernel_family} if kernel_family else {"isNull": True}},
+            {"name": "topology_class", "value": {"stringValue": topology_class} if topology_class else {"isNull": True}},
+            {"name": "placement_scope", "value": {"stringValue": placement_scope} if placement_scope else {"isNull": True}},
+            {"name": "transport_paths", "value": {"stringValue": transport_paths_json} if transport_paths_json else {"isNull": True}},
+            {"name": "topology_hops", "value": {"stringValue": topology_hops_json} if topology_hops_json else {"isNull": True}},
+            {"name": "latency_sample_count", "value": {"longValue": latency_sample_count} if latency_sample_count is not None else {"isNull": True}},
+            {"name": "latency_p50_ns", "value": {"longValue": latency_p50_ns} if latency_p50_ns is not None else {"isNull": True}},
+            {"name": "latency_p99_ns", "value": {"longValue": latency_p99_ns} if latency_p99_ns is not None else {"isNull": True}},
+            {"name": "latency_p995_ns", "value": {"longValue": latency_p995_ns} if latency_p995_ns is not None else {"isNull": True}},
+            {"name": "latency_p999_ns", "value": {"longValue": latency_p999_ns} if latency_p999_ns is not None else {"isNull": True}},
+            {"name": "latency_jitter_p995_ns", "value": {"longValue": latency_jitter_p995_ns} if latency_jitter_p995_ns is not None else {"isNull": True}},
+            {"name": "frontend", "value": {"stringValue": frontend} if frontend else {"isNull": True}},
+            {"name": "virtualization_family", "value": {"stringValue": virtualization_family} if virtualization_family else {"isNull": True}},
+            {"name": "lane_count", "value": {"longValue": lane_count} if lane_count is not None else {"isNull": True}},
+            {"name": "worker_count", "value": {"longValue": worker_count} if worker_count is not None else {"isNull": True}},
+            {"name": "nic_count", "value": {"longValue": nic_count} if nic_count is not None else {"isNull": True}},
+            {"name": "numa_node_count", "value": {"longValue": numa_node_count} if numa_node_count is not None else {"isNull": True}},
+            {"name": "lane_mapping", "value": {"stringValue": lane_mapping} if lane_mapping else {"isNull": True}},
+            {"name": "cpu_pinned", "value": {"booleanValue": cpu_pinned} if cpu_pinned is not None else {"isNull": True}},
+            {"name": "numa_local", "value": {"booleanValue": numa_local} if numa_local is not None else {"isNull": True}},
         ],
     )
 
@@ -409,12 +754,35 @@ def _community_environments() -> Dict[str, Any]:
           (EXTRACT(EPOCH FROM first_seen) * 1000)::bigint AS first_seen_ms,
           (EXTRACT(EPOCH FROM last_seen) * 1000)::bigint AS last_seen_ms,
           event_count,
+          cloud_provider,
           region,
           version,
           last_event_type,
           active_volume_count,
           recent_iops,
-          (last_seen >= now() - (:active_hours * interval '1 hour')) AS active
+          io_size_bytes,
+          kernel_family,
+          topology_class,
+          placement_scope,
+          transport_paths,
+          topology_hops,
+          latency_sample_count,
+          latency_p50_ns,
+          latency_p99_ns,
+          latency_p995_ns,
+          latency_p999_ns,
+          latency_jitter_p995_ns,
+          frontend,
+          virtualization_family,
+          lane_count,
+          worker_count,
+          nic_count,
+          numa_node_count,
+          lane_mapping,
+          cpu_pinned,
+          numa_local,
+          (COALESCE(lifecycle_active, TRUE)
+            AND last_seen >= now() - (:active_hours * interval '1 hour')) AS active
         FROM {ENVIRONMENTS_TABLE}
         ORDER BY last_seen DESC
         LIMIT 500
@@ -478,13 +846,11 @@ def handler(event, context):
             invalid_events.append({"index": index, "error": "event_must_be_object"})
         elif len(json.dumps(event_item, separators=(",", ":")).encode("utf-8")) > MAX_EVENT_BYTES:
             invalid_events.append({"index": index, "error": "event_exceeds_4096_bytes"})
+        elif validation_error := _validate_non_identifying_telemetry(event_item):
+            invalid_events.append({"index": index, "error": validation_error})
 
     if invalid_events:
         return _response(400, {"error": "invalid_event_stream", "invalid_events": invalid_events})
-
-    request = event.get("requestContext", {}).get("http", {})
-    source_ip = request.get("sourceIp", "")
-    source_ip_hash = _hash_value(source_ip)[:32] if source_ip else None
 
     request_id = "unknown"
     if context and hasattr(context, "aws_request_id"):
@@ -506,10 +872,10 @@ def handler(event, context):
                 "fields": payload_event,
             }
 
-            parameter_sets.append(_event_parameters(event_id, event_type, region, source_ip_hash, payload))
-            environment_id = payload_event.get("environment_id")
-            if isinstance(environment_id, str) and environment_id.strip():
-                environment_key = environment_id.strip()
+            parameter_sets.append(_event_parameters(event_id, event_type, region, payload))
+            anonymous_installation_id = payload_event.get("anonymous_installation_id")
+            if isinstance(anonymous_installation_id, str) and anonymous_installation_id.strip():
+                environment_key = anonymous_installation_id.strip()
                 previous = environment_updates.get(environment_key)
                 event_increment = (previous[3] if previous else 0) + 1
                 environment_updates[environment_key] = (

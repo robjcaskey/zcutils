@@ -22,10 +22,17 @@ IODEPTH="${IODEPTH:-128}"
 RING_ENTRIES="${RING_ENTRIES:-256}"
 BLOCK_RING_MODE="${BLOCK_RING_MODE:-normal}"
 BLOCK_ENGINE="${BLOCK_ENGINE:-uring-fixed}"
+BLOCK_SIZE="${BLOCK_SIZE:-4096}"
 BLOCK_FUA_WRITES="${URING_PLAY_BLOCKBENCH_FUA_WRITES:-0}"
 SQPOLL_CPU_LIST="${SQPOLL_CPU_LIST:-}"
 SQPOLL_IDLE_MS="${SQPOLL_IDLE_MS:-1000}"
 LATENCY_SAMPLE_RATE="${URING_PLAY_BLOCKBENCH_LATENCY_SAMPLE_RATE:-0}"
+ZCCUSAN_PLACEMENT_SCOPE="${ZCCUSAN_PLACEMENT_SCOPE:-unknown}"
+ZCCUSAN_TOPOLOGY_CLASS="${ZCCUSAN_TOPOLOGY_CLASS:-client-leaf}"
+ZCCUSAN_TOPOLOGY_PATH_COUNT="${ZCCUSAN_TOPOLOGY_PATH_COUNT:-1}"
+ZCCUSAN_TOPOLOGY_TRANSPORT="${ZCCUSAN_TOPOLOGY_TRANSPORT:-unknown}"
+ZCCUSAN_TOPOLOGY_NUMA_NODE_COUNT="${ZCCUSAN_TOPOLOGY_NUMA_NODE_COUNT:-}"
+ZCCUSAN_TOPOLOGY_NUMA_LOCAL="${ZCCUSAN_TOPOLOGY_NUMA_LOCAL:-0}"
 BLOCK_RING_STATS="${URING_PLAY_BLOCKBENCH_RING_STATS:-1}"
 if [ -n "${URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS+x}" ]; then
 	BLOCK_WAIT_MIN_COMPLETIONS="$URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS"
@@ -107,6 +114,11 @@ fi
 BUSY_POLL_US="${BUSY_POLL_US:-1000}"
 BUSY_HYSTERESIS_US="${BUSY_HYSTERESIS_US:-10000}"
 POLL_CLOCK_CHECK_SPINS="${URING_PLAY_ZCNBLK_SHM_POLL_CLOCK_CHECK_SPINS:-64}"
+HTB_SUSTAINED_IOPS="${URING_PLAY_ZCNBLK_SHM_HTB_SUSTAINED_IOPS:-}"
+HTB_PEAK_IOPS="${URING_PLAY_ZCNBLK_SHM_HTB_PEAK_IOPS:-}"
+HTB_QUANTUM_OPS="${URING_PLAY_ZCNBLK_SHM_HTB_QUANTUM_OPS:-}"
+HTB_BURST_SECONDS="${URING_PLAY_ZCNBLK_SHM_HTB_BURST_SECONDS:-}"
+HTB_CONTROL_FILE="${URING_PLAY_ZCNBLK_SHM_HTB_CONTROL_FILE:-}"
 KERNEL_POLL_US="${KERNEL_POLL_US:-$POLL_US}"
 LEASE_RELEASE_BATCH="${LEASE_RELEASE_BATCH:-1}"
 MAX_FRAME_BYTES="${MAX_FRAME_BYTES:-4096}"
@@ -525,6 +537,11 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 [ "$LANES" -gt 0 ] || die "LANES must be positive"
+[ "$BLOCK_SIZE" = 512 ] || [ "$BLOCK_SIZE" = 1024 ] || \
+	[ "$BLOCK_SIZE" = 2048 ] || [ "$BLOCK_SIZE" = 4096 ] || \
+	die "BLOCK_SIZE must be 512, 1024, 2048, or 4096"
+[ "$BLOCK_SIZE" = 4096 ] || [ "$MODE" = read ] || \
+	die "sub-4K block edges are deliberately read-only until sub-page write ordering is implemented"
 [ "$REPEATS" -gt 0 ] || die "REPEATS must be positive"
 [[ "$MIN_IOPS_PER_REP" =~ ^[0-9]+$ ]] || die "MIN_IOPS_PER_REP must be a non-negative integer"
 [[ "$MIN_MEAN_IOPS" =~ ^[0-9]+$ ]] || die "MIN_MEAN_IOPS must be a non-negative integer"
@@ -572,6 +589,9 @@ done
 	die "URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES must be zero or one"
 [[ "$APP_ARENA_BUFFERS" =~ ^[01]$ ]] || \
 	die "URING_PLAY_ZCNBLK_SHM_APP_ARENA_BUFFERS must be zero or one"
+if [ "$BLOCK_SIZE" != 4096 ] && [ "$APP_ARENA_BUFFERS" = 1 ]; then
+	die "sub-page block reads cannot use the 4K application arena: blk-mq may merge distinct application slots; set URING_PLAY_ZCNBLK_SHM_APP_ARENA_BUFFERS=0"
+fi
 if [ "$APP_ARENA_BUFFERS" = 1 ]; then
 	[ "$SHM_ARENA_BACKING" = hugetlb ] || \
 		die "application arena buffers require URING_PLAY_ZCNBLK_SHM_ARENA_BACKING=hugetlb"
@@ -911,6 +931,7 @@ fi
 log "loading placement-free shared-memory client edge"
 sudo -n insmod "$MODULE" transport=shm lanes="$LANES" connections_per_lane=1 \
 	size_mib="$SIZE_MIB" queues="$KERNEL_QUEUES" queue_depth="$KERNEL_QUEUE_DEPTH" \
+	logical_block_size="$BLOCK_SIZE" read_only="$([ "$BLOCK_SIZE" = 4096 ] && printf 0 || printf 1)" \
 	worker_batch_dequeue="$KERNEL_WORKER_BATCH_DEQUEUE" \
 	shm_sequence_telemetry_interval="$KERNEL_SEQUENCE_TELEMETRY_INTERVAL" \
 	shm_completion_batch="$KERNEL_COMPLETION_BATCH" \
@@ -927,6 +948,11 @@ for _ in $(seq 1 100); do
 	sleep 0.05
 done
 [ -e /dev/zcnblk0 ] && [ -e /dev/zcnblk-shmctl ] || die "shared block edge did not appear"
+expected_block_ro="$([ "$BLOCK_SIZE" = 4096 ] && printf 0 || printf 1)"
+actual_block_ro="$(cat /sys/block/zcnblk0/ro)"
+[ "$actual_block_ro" = "$expected_block_ro" ] || \
+	die "zcnblk0 read-only contract mismatch: block_size=$BLOCK_SIZE expected_ro=$expected_block_ro actual_ro=$actual_block_ro"
+log "verified block edge read-only contract: block_size=$BLOCK_SIZE ro=$actual_block_ro"
 
 declare -a client_cpus=() target_cpus=() kernel_cpus=() leaf_cpus=() transport_cpus=() owner_cpus=() all_cpus=()
 declare -A used_cores=()
@@ -1210,7 +1236,12 @@ fi
 	printf 'block_engine=%s fua_writes=%s write_completion=%s\n' \
 		"$BLOCK_ENGINE" "$BLOCK_FUA_WRITES" \
 		"$([ "$BLOCK_FUA_WRITES" = 1 ] && printf remote-fua-drain || printf ordinary-device-ack)"
+	printf 'block_size=%s block_edge_read_only=%s\n' "$BLOCK_SIZE" \
+		"$([ "$BLOCK_SIZE" = 4096 ] && printf false || printf true)"
 	printf 'block_latency_sample_rate=%s\n' "$LATENCY_SAMPLE_RATE"
+	printf 'community_frontend=linux-block topology_class=%s placement_scope=%s transport=%s paths=%s\n' \
+		"$ZCCUSAN_TOPOLOGY_CLASS" "$ZCCUSAN_PLACEMENT_SCOPE" \
+		"$ZCCUSAN_TOPOLOGY_TRANSPORT" "$ZCCUSAN_TOPOLOGY_PATH_COUNT"
 	printf 'block_ring_stats=%s block_wait_min_completions=%s block_fused_submit_wait=%s block_cqe_spin=%s block_cqe_adaptive_spin=%s block_cqe_adaptive_spin_min=%s block_cqe_adaptive_spin_max=%s block_cqe_adaptive_wait_ns=%s block_cqe_hot_poll=%s block_cqe_hot_poll_progress_spins=%s\n' \
 		"$BLOCK_RING_STATS" "$BLOCK_WAIT_MIN_COMPLETIONS" "$BLOCK_FUSED_SUBMIT_WAIT" "$BLOCK_CQE_SPIN" "$BLOCK_CQE_ADAPTIVE_SPIN" \
 		"$BLOCK_CQE_ADAPTIVE_SPIN_MIN" "$BLOCK_CQE_ADAPTIVE_SPIN_MAX" \
@@ -1432,6 +1463,11 @@ fi
 	URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES="$LANE_LOCAL_SEQUENCES" \
 	URING_PLAY_TOPOLOGY_REPRESENTATIVE="$REPRESENTATIVE" \
 	URING_PLAY_ZCNBLK_SHM_POLL_CLOCK_CHECK_SPINS="$POLL_CLOCK_CHECK_SPINS" \
+	URING_PLAY_ZCNBLK_SHM_HTB_SUSTAINED_IOPS="$HTB_SUSTAINED_IOPS" \
+	URING_PLAY_ZCNBLK_SHM_HTB_PEAK_IOPS="$HTB_PEAK_IOPS" \
+	URING_PLAY_ZCNBLK_SHM_HTB_QUANTUM_OPS="$HTB_QUANTUM_OPS" \
+	URING_PLAY_ZCNBLK_SHM_HTB_BURST_SECONDS="$HTB_BURST_SECONDS" \
+	URING_PLAY_ZCNBLK_SHM_HTB_CONTROL_FILE="$HTB_CONTROL_FILE" \
 	URING_PLAY_ZCNBLK_SHM_COORDINATOR_CPU="$coordinator_cpu" \
 	URING_PLAY_ZCNBLK_SHM_LEASE_RELEASE_BATCH="$LEASE_RELEASE_BATCH" \
 	URING_PLAY_ZCNBLK_SHM_WRITEBACK_BATCH="$WRITEBACK_BATCH" \
@@ -1511,6 +1547,7 @@ fi
 	URING_PLAY_ZCNBLK_SHM_WAL_FOREGROUND_READ_IMMEDIATE="$WAL_FOREGROUND_READ_IMMEDIATE" \
 	URING_PLAY_ZCNBLK_SHM_WAL_CQ_DELAY_SPINS="$WAL_CQ_DELAY_SPINS" \
 	URING_PLAY_ZCNBLK_SHM_WAL_COMPACT_WRITES="$WAL_COMPACT_WRITES" \
+	URING_PLAY_ZCNBLK_SHM_SUBPAGE_READS="$([ "$BLOCK_SIZE" = 4096 ] && printf 0 || printf 1)" \
 	URING_PLAY_ZCNBLK_SHM_DIRTY_PRESSURE_RESERVE="$DIRTY_PRESSURE_RESERVE" \
 	URING_PLAY_ZCNBLK_SHM_WAL_DEBUG_STATE="$WAL_DEBUG_STATE" \
 	URING_PLAY_ROUTE_PROBE="${URING_PLAY_ROUTE_PROBE:-0}" \
@@ -1667,6 +1704,14 @@ for ((rep = 1; rep <= REPEATS; rep++)); do
 	snapshot_contexts "$context_before"
 	bench=(env "URING_PLAY_PIN_CPU_LIST=$client_cpu_list"
 		"URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET=$app_arena_socket"
+		"ZCCUSAN_PLACEMENT_SCOPE=$ZCCUSAN_PLACEMENT_SCOPE"
+		"ZCCUSAN_TOPOLOGY_CLASS=$ZCCUSAN_TOPOLOGY_CLASS"
+		"ZCCUSAN_TOPOLOGY_PATH_COUNT=$ZCCUSAN_TOPOLOGY_PATH_COUNT"
+		"ZCCUSAN_TOPOLOGY_TRANSPORT=$ZCCUSAN_TOPOLOGY_TRANSPORT"
+		"ZCCUSAN_TOPOLOGY_LANE_COUNT=$LANES"
+		"ZCCUSAN_TOPOLOGY_WORKER_COUNT=$LANES"
+		"ZCCUSAN_TOPOLOGY_NUMA_NODE_COUNT=$ZCCUSAN_TOPOLOGY_NUMA_NODE_COUNT"
+		"ZCCUSAN_TOPOLOGY_NUMA_LOCAL=$ZCCUSAN_TOPOLOGY_NUMA_LOCAL"
 		"URING_PLAY_TOPOLOGY_STRICT=$REPRESENTATIVE"
 		"URING_PLAY_BLOCKBENCH_RING_STATS=$BLOCK_RING_STATS"
 		"URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS=$BLOCK_WAIT_MIN_COMPLETIONS"
@@ -1680,7 +1725,7 @@ for ((rep = 1; rep <= REPEATS; rep++)); do
 		"URING_PLAY_CQE_HOT_POLL_PROGRESS_SPINS=$BLOCK_CQE_HOT_POLL_PROGRESS_SPINS"
 		"$BENCH_BIN" /dev/zcnblk0
 		--engine "$BLOCK_ENGINE" --mode "$MODE" --workers "$LANES"
-		--ops-per-worker "$OPS_PER_WORKER" --bs 4096 --iodepth "$IODEPTH"
+		--ops-per-worker "$OPS_PER_WORKER" --bs "$BLOCK_SIZE" --iodepth "$IODEPTH"
 		--region-bytes-per-worker "$REGION_BYTES_PER_WORKER"
 		--read-percent "$READ_PERCENT" --ring-entries "$RING_ENTRIES"
 		--ring-mode "$BLOCK_RING_MODE" --sqpoll-idle-ms "$SQPOLL_IDLE_MS"

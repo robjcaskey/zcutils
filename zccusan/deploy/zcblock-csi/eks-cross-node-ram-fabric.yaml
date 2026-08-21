@@ -1,0 +1,180 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: zcnblk-client-loader
+  namespace: zccusan-ram-xnode
+spec:
+  selector:
+    matchLabels:
+      app: zcnblk-client-loader
+  template:
+    metadata:
+      labels:
+        app: zcnblk-client-loader
+    spec:
+      nodeSelector:
+        zccusan.io/role: block-client
+      hostPID: true
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: loader
+          image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command: [/bin/bash, -lc]
+          args:
+            - |
+              set -euo pipefail
+              kernel="$(uname -r)"
+              build_dir="/host/var/lib/zccusan/kmods/${kernel}"
+              mkdir -p "${build_dir}"
+              cp /source/zcnblk_client_mod.c "${build_dir}/"
+              cp /source/zcnblk_shm_abi.h "${build_dir}/"
+              cp /source/zcnblk-client-only.mk "${build_dir}/Makefile"
+              if ! grep -q '^zcnblk_client_mod ' /host/proc/modules; then
+                chroot /host /usr/bin/make -C "/var/lib/zccusan/kmods/${kernel}" \
+                  KDIR="/usr/src/kernels/${kernel}" all
+                chroot /host /usr/sbin/modprobe authenc || true
+                chroot /host /usr/sbin/insmod \
+                  "/var/lib/zccusan/kmods/${kernel}/zcnblk_client_mod.ko" \
+                  transport=shm lanes=1 connections_per_lane=1 shard_count=1 \
+                  size_mib=256 logical_block_size=4096 max_frame_bytes=4096 \
+                  queues=1 queue_depth=128 pipeline_depth=128 \
+                  shm_ring_entries=256 shm_payload_entries=4096 \
+                  shm_poll_us=1000 batch_depth=1 write_acks=1 \
+                  hctx_affinity=0 pin_threads=0
+              fi
+              for attempt in $(seq 1 100); do
+                if test -b /host/dev/zcnblk0 && test -c /host/dev/zcnblk-shmctl; then
+                  echo "ZCNBLK_EKS_MODULE_READY kernel=${kernel} block=/dev/zcnblk0 control=/dev/zcnblk-shmctl"
+                  exec sleep infinity
+                fi
+                sleep 0.1
+              done
+              echo "zcnblk devices did not appear" >&2
+              exit 1
+          volumeMounts:
+            - name: host-root
+              mountPath: /host
+            - name: host-dev
+              mountPath: /host/dev
+            - name: module-source
+              mountPath: /source
+              readOnly: true
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+        - name: host-dev
+          hostPath:
+            path: /dev
+            type: Directory
+        - name: module-source
+          configMap:
+            name: zcnblk-module-source
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zc-ram-leaf
+  namespace: zccusan-ram-xnode
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zc-ram-leaf
+  template:
+    metadata:
+      labels:
+        app: zc-ram-leaf
+        zccusan.io/stage: terminal-ram-leaf
+    spec:
+      nodeSelector:
+        zccusan.io/role: ram-leaf
+      containers:
+        - name: leaf
+          image: docker.io/robjcaskey/zcblock-csi:eks-ram-xnode-20260820-r5
+          imagePullPolicy: Always
+          command: [/usr/local/bin/zcnblk-wal-leaf]
+          args: ["zcmem:256M", "0.0.0.0", "29000", "1", "1", "4096", "1", "true", "blocking"]
+          env:
+            - name: URING_PLAY_ZCNBLK_WAL_RESULT_RANGES
+              value: "1"
+            - name: URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC
+              value: "1"
+            - name: URING_PLAY_TOPOLOGY_STRICT
+              value: "0"
+          ports:
+            - name: wal
+              containerPort: 29000
+              protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zc-ram-leaf
+  namespace: zccusan-ram-xnode
+spec:
+  selector:
+    app: zc-ram-leaf
+  ports:
+    - name: wal
+      port: 29000
+      targetPort: wal
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: zcnblk-userspace-onramp
+  namespace: zccusan-ram-xnode
+spec:
+  selector:
+    matchLabels:
+      app: zcnblk-userspace-onramp
+  template:
+    metadata:
+      labels:
+        app: zcnblk-userspace-onramp
+        zccusan.io/stage: client-userspace-onramp
+    spec:
+      nodeSelector:
+        zccusan.io/role: block-client
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: onramp
+          image: docker.io/robjcaskey/zcblock-csi:eks-ram-xnode-20260820-r5
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+          command: [/usr/local/bin/zcnblk-shm-target]
+          args: ["/dev/zcnblk-shmctl", "wal-tcp", "128", "1", "1000", "1000", "10000"]
+          env:
+            - name: URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT
+              value: tcp
+            - name: URING_PLAY_ZCNBLK_SHM_LEAF_ADDR
+              value: zc-ram-leaf.zccusan-ram-xnode.svc.cluster.local:29000
+            - name: URING_PLAY_ZCNBLK_SHM_WRITEBACK_BATCH
+              value: "64"
+            - name: URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS
+              value: "1"
+            - name: URING_PLAY_ZCNBLK_SHM_REMOTE_SEND_MODE
+              value: blocking
+            - name: URING_PLAY_ZCNBLK_SHM_REMOTE_SEND_ZC_REQUIRED
+              value: "0"
+            - name: URING_PLAY_ZCNBLK_SHM_REMOTE_CONNECT_RETRY_MS
+              value: "60000"
+            - name: URING_PLAY_TOPOLOGY_STRICT
+              value: "0"
+          volumeMounts:
+            - name: dev
+              mountPath: /dev
+      volumes:
+        - name: dev
+          hostPath:
+            path: /dev
+            type: Directory

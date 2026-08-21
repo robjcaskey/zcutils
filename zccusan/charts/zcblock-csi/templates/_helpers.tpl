@@ -56,9 +56,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-telemetry" (include "zcblock-csi.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "zcblock-csi.managementCheckinUrl" -}}
-{{- if .Values.management.checkin.url -}}
-{{- .Values.management.checkin.url -}}
+{{- define "zcblock-csi.telemetryApiEndpoint" -}}
+{{- if .Values.telemetry.apiEndpoint -}}
+{{- .Values.telemetry.apiEndpoint -}}
 {{- else if .Values.telemetryServer.enabled -}}
 {{- printf "http://%s:%v/v1/events" (include "zcblock-csi.telemetryServiceName" .) .Values.telemetryServer.port -}}
 {{- end -}}
@@ -68,23 +68,23 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s:%s" .repository .tag -}}
 {{- end -}}
 
-{{- define "zcblock-csi.environmentSecretName" -}}
-{{- printf "%s-zccu-environment-secret" (include "zcblock-csi.fullname" .) -}}
+{{- define "zcblock-csi.installationSecretName" -}}
+{{- printf "%s-zccusan-installation-secret" (include "zcblock-csi.fullname" .) -}}
 {{- end -}}
 
-{{- define "zcblock-csi.environmentConfigMapName" -}}
-{{- printf "%s-zccu-environment-config" (include "zcblock-csi.fullname" .) -}}
+{{- define "zcblock-csi.installationConfigMapName" -}}
+{{- printf "%s-zccusan-installation-config" (include "zcblock-csi.fullname" .) -}}
 {{- end -}}
 
-{{- define "zcblock-csi.environmentId" -}}
-{{- if .Values.environment.id -}}
-{{- .Values.environment.id -}}
+{{- define "zcblock-csi.installationId" -}}
+{{- if .Values.installation.id -}}
+{{- .Values.installation.id -}}
 {{- else -}}
-{{- $secret_name := include "zcblock-csi.environmentSecretName" . -}}
+{{- $secret_name := include "zcblock-csi.installationSecretName" . -}}
 {{- $namespace := include "zcblock-csi.namespace" . -}}
 {{- $secret := lookup "v1" "Secret" $namespace $secret_name -}}
 {{- if and $secret (hasKey $secret "data") -}}
-{{- $value := get $secret.data "ZCCU_ENVIRONMENT_ID" -}}
+{{- $value := get $secret.data "ZCCUSAN_INSTALLATION_ID" -}}
 {{- if $value -}}
 {{- $value | b64dec -}}
 {{- else -}}

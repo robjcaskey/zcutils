@@ -28,7 +28,9 @@ pub mod cloud_topology;
 pub mod dirty_pool;
 pub mod enterprise_workload;
 pub mod fanout;
+pub mod global_policy;
 pub mod ha_metadata;
+pub mod htb_controller;
 pub mod integrity_contract;
 mod io_slots;
 pub mod iops_policy;
@@ -36,6 +38,9 @@ pub mod ofi_pipe;
 pub mod persistent_wal;
 pub mod racing_mirror;
 pub mod readcache_bench;
+pub mod regional_htb;
+mod survey;
+pub mod telemetry;
 pub mod topology;
 pub mod topology_controller;
 pub mod volume_partition;
@@ -43,8 +48,7 @@ pub(crate) mod wal_contract;
 pub mod window;
 pub mod zcnblk_app_arena;
 pub mod zcnblk_shm_target;
-mod survey;
-pub use survey::{DEFAULT_COMMUNITY_SURVEY_URL, SurveyReporter};
+pub use survey::{DEFAULT_COMMUNITY_SURVEY_API_ENDPOINT, TelemetryReporter};
 
 use crate::block::zcnblk::{
     ZCNBLK_FRAME_HEADER_LEN, ZCNBLK_OP_BATCH, ZCNBLK_OP_BATCH_RESP, ZCNBLK_OP_READ,
@@ -9816,13 +9820,14 @@ fn zcwal_extent_latency_fields(prefix: &str, latency: &LatencyHistogram) -> Stri
     format!(
         "{prefix}_count={} {prefix}_avg_ns={} {prefix}_min_ns={} \
          {prefix}_p50_ns={} {prefix}_p95_ns={} {prefix}_p99_ns={} \
-         {prefix}_p999_ns={} {prefix}_max_ns={}",
+         {prefix}_p995_ns={} {prefix}_p999_ns={} {prefix}_max_ns={}",
         latency.count,
         latency.avg_ns(),
         latency.min_ns(),
         latency.percentile_ns(50, 100),
         latency.percentile_ns(95, 100),
         latency.percentile_ns(99, 100),
+        latency.percentile_ns(995, 1000),
         latency.percentile_ns(999, 1000),
         latency.max_ns(),
     )
@@ -9846,6 +9851,193 @@ fn zcwal_extent_sum(results: &[ZcWalExtentStats]) -> ZcWalExtentStats {
         total.uring_recv.merge(&stats.uring_recv);
     }
     total
+}
+
+/// Publish a completed transport benchmark only after every measured worker
+/// has stopped.  Keeping reporter construction here (rather than in
+/// `main_entry`) guarantees DNS, TLS, and the sender thread cannot perturb the
+/// transport interval.
+fn publish_transport_benchmark_result(
+    component: &str,
+    backend: &str,
+    total: &ZcWalExtentStats,
+    seconds: f64,
+    workers: usize,
+) {
+    let telemetry = survey::TelemetryReporter::new();
+    if !telemetry.is_enabled() {
+        return;
+    }
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "component".to_string(),
+        serde_json::Value::String(component.to_string()),
+    );
+    payload.insert(
+        "backend".to_string(),
+        serde_json::Value::String(backend.to_string()),
+    );
+    payload.insert(
+        "phase".to_string(),
+        serde_json::Value::String("result".to_string()),
+    );
+    payload.insert(
+        "total_iops".to_string(),
+        serde_json::Value::from((total.records as f64 / seconds).round() as u64),
+    );
+    payload.insert(
+        "size_bytes".to_string(),
+        serde_json::Value::from(total.payload_bytes as u64),
+    );
+    let p50_ns = total.ack_latency.percentile_ns(50, 100);
+    let p995_ns = total.ack_latency.percentile_ns(995, 1000);
+    let latency_fields = [
+        ("latency_sample_count", total.ack_latency.count),
+        ("latency_p50_ns", p50_ns),
+        ("latency_p95_ns", total.ack_latency.percentile_ns(95, 100)),
+        ("latency_p99_ns", total.ack_latency.percentile_ns(99, 100)),
+        ("latency_p995_ns", p995_ns),
+        (
+            "latency_p999_ns",
+            total.ack_latency.percentile_ns(999, 1000),
+        ),
+        ("latency_jitter_p995_ns", p995_ns.saturating_sub(p50_ns)),
+    ];
+    for (name, value) in latency_fields {
+        payload.insert(name.to_string(), serde_json::Value::from(value));
+    }
+    payload.insert(
+        "latency_scope".to_string(),
+        serde_json::Value::String("remote-application-ack".to_string()),
+    );
+    payload.insert(
+        "frontend".to_string(),
+        serde_json::Value::String("userspace-client".to_string()),
+    );
+    payload.insert(
+        "virtualization_family".to_string(),
+        serde_json::Value::String(telemetry::detected_virtualization_family().to_string()),
+    );
+
+    // Detailed topology stays local. The community record contains only a
+    // bounded ordinal hop, approved transport literal, coarse placement
+    // relationship, and an approved kernel release (or `linux-custom`).
+    let path_count = env::var("ZCCUSAN_TOPOLOGY_PATH_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1)
+        .clamp(1, 256);
+    let topology_class =
+        env::var("ZCCUSAN_TOPOLOGY_CLASS").unwrap_or_else(|_| "direct".to_string());
+    payload.insert(
+        "topology_class".to_string(),
+        serde_json::Value::String(topology_class),
+    );
+    if let Ok(scope) = env::var("ZCCUSAN_PLACEMENT_SCOPE") {
+        payload.insert(
+            "placement_scope".to_string(),
+            serde_json::Value::String(scope),
+        );
+    }
+    payload.insert("hop_count".to_string(), serde_json::Value::from(1_u64));
+    payload.insert(
+        "path_count".to_string(),
+        serde_json::Value::from(path_count),
+    );
+    let lane_count = env::var("ZCCUSAN_TOPOLOGY_LANE_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(total.streams as u64);
+    let worker_count = env::var("ZCCUSAN_TOPOLOGY_WORKER_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(workers as u64);
+    payload.insert(
+        "lane_count".to_string(),
+        serde_json::Value::from(lane_count),
+    );
+    payload.insert(
+        "worker_count".to_string(),
+        serde_json::Value::from(worker_count),
+    );
+    payload.insert("nic_count".to_string(), serde_json::Value::from(path_count));
+    if let Ok(value) = env::var("ZCCUSAN_TOPOLOGY_NUMA_NODE_COUNT")
+        && let Ok(value) = value.parse::<u64>()
+    {
+        payload.insert(
+            "numa_node_count".to_string(),
+            serde_json::Value::from(value),
+        );
+    }
+    let lane_mapping = if lane_count == worker_count {
+        "one-lane-per-worker"
+    } else if lane_count > worker_count {
+        "shared-workers"
+    } else {
+        "dedicated-with-spares"
+    };
+    payload.insert(
+        "lane_mapping".to_string(),
+        serde_json::Value::String(lane_mapping.to_string()),
+    );
+    payload.insert(
+        "cpu_pinned".to_string(),
+        serde_json::Value::Bool(env_truthy("URING_PLAY_PIN_CPUS")),
+    );
+    payload.insert(
+        "numa_local".to_string(),
+        serde_json::Value::Bool(env_truthy("ZCCUSAN_TOPOLOGY_NUMA_LOCAL")),
+    );
+    let mut transport_paths = serde_json::Map::new();
+    transport_paths.insert(backend.to_string(), serde_json::Value::from(path_count));
+    payload.insert(
+        "transport_paths".to_string(),
+        serde_json::Value::Object(transport_paths),
+    );
+    let kernel_release = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if !kernel_release.is_empty() {
+        payload.insert(
+            "kernel_release".to_string(),
+            serde_json::Value::String(kernel_release.clone()),
+        );
+    }
+    let hop_role =
+        env::var("ZCCUSAN_TOPOLOGY_HOP_ROLE").unwrap_or_else(|_| "storage-service".to_string());
+    let mut hop = serde_json::Map::new();
+    hop.insert("role".to_string(), serde_json::Value::String(hop_role));
+    hop.insert(
+        "transport".to_string(),
+        serde_json::Value::String(backend.to_string()),
+    );
+    hop.insert(
+        "path_count".to_string(),
+        serde_json::Value::from(path_count),
+    );
+    if !kernel_release.is_empty() {
+        hop.insert(
+            "kernel_release".to_string(),
+            serde_json::Value::String(kernel_release),
+        );
+    }
+    for (name, value) in latency_fields {
+        hop.insert(name.to_string(), serde_json::Value::from(value));
+    }
+    payload.insert(
+        "topology_hops".to_string(),
+        serde_json::Value::Array(vec![serde_json::Value::Object(hop)]),
+    );
+    // A transport benchmark is a one-shot session, so its terminal event must
+    // become Historical immediately rather than aging out of Active.
+    payload.insert(
+        "active_volume_count".to_string(),
+        serde_json::Value::from(0_u64),
+    );
+    payload.insert("ok".to_string(), serde_json::Value::Bool(true));
+    telemetry.emit_event("transport_benchmark_result", payload);
+    telemetry.shutdown();
 }
 
 fn zcwal_extent_perf_warnings(
@@ -10187,6 +10379,7 @@ fn zcwal_extent_send(
             zcwal_extent_latency_fields("ack", &total.ack_latency)
         );
     }
+    publish_transport_benchmark_result("zcwal-extent-send", "tcp", &total, secs, workers);
     Ok(())
 }
 
@@ -16538,6 +16731,7 @@ fn zcofi_wal_send(
             zcwal_extent_latency_fields("ack", &total.ack_latency)
         );
     }
+    publish_transport_benchmark_result("zcwal-ofi-send", provider.as_str(), &total, secs, workers);
     Ok(())
 }
 
@@ -72249,6 +72443,193 @@ fn zcblockbench_print_results(
         total_bytes as f64 / (1024.0 * 1024.0) / io_seconds,
         total_ops as f64 / io_seconds
     );
+    // Reporting happens after the measured interval and never touches an I/O
+    // worker. With no telemetry API configured this is anonymously delivered
+    // to Community Pulse; an explicit API endpoint takes precedence, and an
+    // explicit community opt-out disables only the direct fallback.
+    let telemetry = survey::TelemetryReporter::new();
+    if telemetry.is_enabled() {
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "component".to_string(),
+            serde_json::Value::String("zcblockbench".to_string()),
+        );
+        payload.insert(
+            "backend".to_string(),
+            serde_json::Value::String(
+                match &target {
+                    BlockBenchTarget::Block(_) => "block",
+                    BlockBenchTarget::NullChar => "char-null",
+                    BlockBenchTarget::ZeroChar => "char-zero",
+                }
+                .to_string(),
+            ),
+        );
+        payload.insert(
+            "phase".to_string(),
+            serde_json::Value::String("result".to_string()),
+        );
+        payload.insert(
+            "total_iops".to_string(),
+            serde_json::Value::from((total_ops as f64 / io_seconds).round() as u64),
+        );
+        payload.insert(
+            "size_bytes".to_string(),
+            serde_json::Value::from(total_bytes as u64),
+        );
+        payload.insert(
+            "io_size_bytes".to_string(),
+            serde_json::Value::from(cfg.chunk_bytes as u64),
+        );
+        payload.insert(
+            "frontend".to_string(),
+            serde_json::Value::String(
+                match &target {
+                    BlockBenchTarget::Block(_) => "linux-block",
+                    BlockBenchTarget::NullChar | BlockBenchTarget::ZeroChar => "userspace-client",
+                }
+                .to_string(),
+            ),
+        );
+        payload.insert(
+            "virtualization_family".to_string(),
+            serde_json::Value::String(telemetry::detected_virtualization_family().to_string()),
+        );
+        let kernel_release = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !kernel_release.is_empty() {
+            payload.insert(
+                "kernel_release".to_string(),
+                serde_json::Value::String(kernel_release),
+            );
+        }
+        let lane_count = env::var("ZCCUSAN_TOPOLOGY_LANE_COUNT")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(cfg.workers as u64);
+        payload.insert(
+            "lane_count".to_string(),
+            serde_json::Value::from(lane_count),
+        );
+        payload.insert(
+            "worker_count".to_string(),
+            serde_json::Value::from(cfg.workers as u64),
+        );
+        payload.insert(
+            "lane_mapping".to_string(),
+            serde_json::Value::String(
+                if lane_count == cfg.workers as u64 {
+                    "one-lane-per-worker"
+                } else if lane_count > cfg.workers as u64 {
+                    "shared-workers"
+                } else {
+                    "dedicated-with-spares"
+                }
+                .to_string(),
+            ),
+        );
+        payload.insert(
+            "cpu_pinned".to_string(),
+            serde_json::Value::Bool(cfg.pin_workers),
+        );
+        if let Ok(scope) = env::var("ZCCUSAN_PLACEMENT_SCOPE") {
+            payload.insert(
+                "placement_scope".to_string(),
+                serde_json::Value::String(scope),
+            );
+        }
+        payload.insert(
+            "topology_class".to_string(),
+            serde_json::Value::String(
+                env::var("ZCCUSAN_TOPOLOGY_CLASS").unwrap_or_else(|_| "client-leaf".to_string()),
+            ),
+        );
+        let path_count = env::var("ZCCUSAN_TOPOLOGY_PATH_COUNT")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(1)
+            .clamp(1, 256);
+        payload.insert(
+            "path_count".to_string(),
+            serde_json::Value::from(path_count),
+        );
+        payload.insert("nic_count".to_string(), serde_json::Value::from(path_count));
+        let transport =
+            env::var("ZCCUSAN_TOPOLOGY_TRANSPORT").unwrap_or_else(|_| "unknown".to_string());
+        let mut transport_paths = serde_json::Map::new();
+        transport_paths.insert(transport.clone(), serde_json::Value::from(path_count));
+        payload.insert(
+            "transport_paths".to_string(),
+            serde_json::Value::Object(transport_paths),
+        );
+        if let Ok(value) = env::var("ZCCUSAN_TOPOLOGY_NUMA_NODE_COUNT")
+            && let Ok(value) = value.parse::<u64>()
+        {
+            payload.insert(
+                "numa_node_count".to_string(),
+                serde_json::Value::from(value.clamp(1, 256)),
+            );
+        }
+        payload.insert(
+            "numa_local".to_string(),
+            serde_json::Value::Bool(env_truthy("ZCCUSAN_TOPOLOGY_NUMA_LOCAL")),
+        );
+        let topology_hops = vec![
+            serde_json::json!({
+                "ordinal": 0,
+                "role": "client-edge",
+                "transport": "shared-memory",
+                "path_count": lane_count,
+            }),
+            serde_json::json!({
+                "ordinal": 1,
+                "role": "storage-service",
+                "transport": transport,
+                "path_count": path_count,
+            }),
+            serde_json::json!({
+                "ordinal": 2,
+                "role": "terminal-leaf",
+                "transport": "in-process",
+                "path_count": path_count,
+            }),
+        ];
+        payload.insert(
+            "topology_hops".to_string(),
+            serde_json::Value::Array(topology_hops),
+        );
+        if latency.count != 0 {
+            let p50_ns = latency.percentile_ns(50, 100);
+            let p995_ns = latency.percentile_ns(995, 1000);
+            for (name, value) in [
+                ("latency_sample_count", latency.count),
+                ("latency_p50_ns", p50_ns),
+                ("latency_p95_ns", latency.percentile_ns(95, 100)),
+                ("latency_p99_ns", latency.percentile_ns(99, 100)),
+                ("latency_p995_ns", p995_ns),
+                ("latency_p999_ns", latency.percentile_ns(999, 1000)),
+                ("latency_jitter_p995_ns", p995_ns.saturating_sub(p50_ns)),
+            ] {
+                payload.insert(name.to_string(), serde_json::Value::from(value));
+            }
+            payload.insert(
+                "latency_scope".to_string(),
+                serde_json::Value::String("block-submit-to-completion".to_string()),
+            );
+        }
+        // zcblockbench is a one-shot raw-volume session. Publishing zero with
+        // the terminal result makes Community Pulse move it to Historical
+        // immediately instead of waiting for the freshness timeout.
+        payload.insert(
+            "active_volume_count".to_string(),
+            serde_json::Value::from(0_u64),
+        );
+        payload.insert("ok".to_string(), serde_json::Value::Bool(true));
+        telemetry.emit_event("block_benchmark_result", payload);
+        telemetry.shutdown();
+    }
     if results.iter().any(|result| result.ring_stats_enabled) {
         println!(
             "zcblockbench-ring: workers={} submit_syscalls={} wait_cqe_calls={} \
@@ -97998,1906 +98379,1941 @@ pub fn main_entry() -> io::Result<()> {
     let mut args = raw_args;
     let command = argv0_command.or_else(|| args.next());
     let command_name = command.clone().unwrap_or_else(|| "help".to_string());
-    let survey = survey::SurveyReporter::new();
+    // A high-IOPS benchmark reports its measured result after all workers have
+    // stopped. Do not even retain an idle telemetry thread while its timing
+    // interval is active or let that thread compete with a fully pinned host.
+    let result_reports_telemetry = matches!(
+        command_name.as_str(),
+        "zcblockbench"
+            | "block-iops-bench"
+            | "zc-iops-bench"
+            | "zcwal-extent-send"
+            | "zcwal-extent-recv"
+            | "zcwal-ofi-send"
+            | "zcofi-wal-send"
+            | "zcwal-ofi-recv"
+            | "zcofi-wal-recv"
+            | "zcwal-ofi-rma-target"
+            | "zcofi-rma-target"
+            | "zcwal-ofi-rma-write"
+            | "zcofi-rma-write"
+            | "zcwal-ofi-rma-read"
+            | "zcofi-rma-read"
+    );
+    let telemetry = if result_reports_telemetry {
+        survey::TelemetryReporter::disabled()
+    } else {
+        survey::TelemetryReporter::new()
+    };
 
-    if survey.is_enabled() {
+    if telemetry.is_enabled() {
         let mut startup_payload = serde_json::Map::new();
-        startup_payload.insert("command".to_string(), serde_json::Value::String(command_name.clone()));
-        startup_payload.insert("phase".to_string(), serde_json::Value::String("start".to_string()));
-        survey.emit_event("cli_invocation", startup_payload);
+        startup_payload.insert(
+            "command".to_string(),
+            serde_json::Value::String(command_name.clone()),
+        );
+        startup_payload.insert(
+            "phase".to_string(),
+            serde_json::Value::String("start".to_string()),
+        );
+        telemetry.emit_event("cli_invocation", startup_payload);
     }
 
     let command_result = (|| -> io::Result<()> {
         match command.as_deref() {
-        Some("help") | Some("--help") | Some("-h") => {
-            print_zcutils_help();
-            Ok(())
-        }
-        Some("zcprobe") => probe(),
-        Some("zcplan") => zcplan(args),
-        Some("zcnc") => zcnc(args),
-        Some("zc-tcpmux-send") => zc_tcpmux_send(args),
-        Some("zc-tcpmux-receive") => zc_tcpmux_receive(args),
-        Some("zc-tcpmux-xfer") | Some("zcxfer") => zc_tcpmux_xfer(args),
-        Some("zcencrypt") => zcencrypt(args),
-        Some("zcdecrypt") => zcdecrypt(args),
-        Some("zcmux") => zcmux(args),
-        Some("zcdemux") | Some("zdmux") | Some("zdcemux") => zcdemux(args),
-        Some("zcflow") | Some("zcrun") => zcrun(args),
-        Some("zcmap") => zcmap(args),
-        Some("zcforward") | Some("zcfwd") => zcforward(args),
-        Some("zcmaptee") => zcmaptee(args),
-        Some("zctee") => zctee(args),
-        Some("zcfanout-logzip-bench") | Some("zclogzip-bench") => {
-            let mode = args
-                .next()
-                .map(|value| ZcLogZipBenchMode::parse(&value))
-                .transpose()?
-                .unwrap_or(ZcLogZipBenchMode::MirrorWriteAll);
-            let lanes = args
-                .next()
-                .map(|value| parse_usize_value(&value, "lanes"))
-                .transpose()?
-                .unwrap_or(32);
-            let branches = args
-                .next()
-                .map(|value| parse_usize_value(&value, "branches"))
-                .transpose()?
-                .unwrap_or(2);
-            let records_per_lane = args
-                .next()
-                .map(|value| parse_u64_value(&value, "records-per-lane"))
-                .transpose()?
-                .unwrap_or(1_000_000);
-            let payload_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "payload-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let window = args
-                .next()
-                .map(|value| parse_usize_value(&value, "window"))
-                .transpose()?
-                .unwrap_or(4096);
-            let workers = args
-                .next()
-                .map(|value| parse_usize_value(&value, "workers"))
-                .transpose()?
-                .unwrap_or(0);
-            let skew = args
-                .next()
-                .map(|value| parse_u64_value(&value, "skew"))
-                .transpose()?
-                .unwrap_or(64);
-            let pin = args
-                .next()
-                .map(|value| parse_bool_arg(&value, "pin-workers"))
-                .transpose()?
-                .unwrap_or(true);
-            zcfanout_logzip_bench(
-                mode,
-                lanes,
-                branches,
-                records_per_lane,
-                payload_bytes,
-                window,
-                workers,
-                skew,
-                pin,
-            )
-        }
-        Some("zcfanout-logtcp-bench") | Some("zclogtcp-bench") => {
-            let mode = args
-                .next()
-                .map(|value| ZcLogZipBenchMode::parse(&value))
-                .transpose()?
-                .unwrap_or(ZcLogZipBenchMode::MirrorWriteAll);
-            let bind = args.next().unwrap_or_else(|| "127.0.0.1".to_string());
-            let base_port = args
-                .next()
-                .map(|value| parse_u16_value(&value, "base-port"))
-                .transpose()?
-                .unwrap_or(24000);
-            let lanes = args
-                .next()
-                .map(|value| parse_usize_value(&value, "lanes"))
-                .transpose()?
-                .unwrap_or(16);
-            let branches = args
-                .next()
-                .map(|value| parse_usize_value(&value, "branches"))
-                .transpose()?
-                .unwrap_or(2);
-            let records_per_lane = args
-                .next()
-                .map(|value| parse_u64_value(&value, "records-per-lane"))
-                .transpose()?
-                .unwrap_or(250_000);
-            let payload_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "payload-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let batch_records = args
-                .next()
-                .map(|value| parse_usize_value(&value, "batch-records"))
-                .transpose()?
-                .unwrap_or(1024);
-            let workers = args
-                .next()
-                .map(|value| parse_usize_value(&value, "workers"))
-                .transpose()?
-                .unwrap_or(0);
-            let pin = args
-                .next()
-                .map(|value| parse_bool_arg(&value, "pin-workers"))
-                .transpose()?
-                .unwrap_or(true);
-            let window = args
-                .next()
-                .map(|value| parse_usize_value(&value, "window"))
-                .transpose()?
-                .unwrap_or_else(|| batch_records.max(4096));
-            zcfanout_logtcp_bench(
-                mode,
-                bind,
-                base_port,
-                lanes,
-                branches,
-                records_per_lane,
-                payload_bytes,
-                batch_records,
-                workers,
-                pin,
-                window,
-            )
-        }
-        Some("zcfanout-logshm-bench") | Some("zclogshm-bench") => {
-            let records = args
-                .next()
-                .map(|value| parse_u64_value(&value, "records"))
-                .transpose()?
-                .unwrap_or(1_000_000);
-            let payload_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "payload-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let batch_records = args
-                .next()
-                .map(|value| parse_usize_value(&value, "batch-records"))
-                .transpose()?
-                .unwrap_or(2048);
-            let window = args
-                .next()
-                .map(|value| parse_usize_value(&value, "window"))
-                .transpose()?
-                .unwrap_or_else(|| batch_records.max(4096));
-            let wait_mode = args
-                .next()
-                .map(|value| ZcLogShmWaitMode::parse(&value))
-                .transpose()?
-                .unwrap_or(ZcLogShmWaitMode::Spin);
-            let pin = args
-                .next()
-                .map(|value| parse_bool_arg(&value, "pin-workers"))
-                .transpose()?
-                .unwrap_or(true);
-            zcfanout_logshm_bench(
-                records,
-                payload_bytes,
-                batch_records,
-                window,
-                wait_mode,
-                pin,
-            )
-        }
-        Some("zcfanout-shmlease-bench") | Some("zcloglease-bench") => {
-            let records = args
-                .next()
-                .map(|value| parse_u64_value(&value, "records"))
-                .transpose()?
-                .unwrap_or(1_000_000);
-            let payload_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "payload-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let batch_records = args
-                .next()
-                .map(|value| parse_usize_value(&value, "batch-records"))
-                .transpose()?
-                .unwrap_or(2048);
-            let window = args
-                .next()
-                .map(|value| parse_usize_value(&value, "window"))
-                .transpose()?
-                .unwrap_or_else(|| batch_records.max(4096));
-            let touch_mode = args
-                .next()
-                .map(|value| ZcLogLeaseTouchMode::parse(&value))
-                .transpose()?
-                .unwrap_or(ZcLogLeaseTouchMode::Cacheline);
-            let wait_mode = args
-                .next()
-                .map(|value| ZcLogShmWaitMode::parse(&value))
-                .transpose()?
-                .unwrap_or(ZcLogShmWaitMode::Spin);
-            let pin = args
-                .next()
-                .map(|value| parse_bool_arg(&value, "pin-workers"))
-                .transpose()?
-                .unwrap_or(true);
-            let lanes = args
-                .next()
-                .map(|value| parse_usize_value(&value, "lanes"))
-                .transpose()?
-                .unwrap_or(1);
-            let workload = args
-                .next()
-                .map(|value| ZcLogLeaseWorkload::parse(&value))
-                .transpose()?
-                .unwrap_or(ZcLogLeaseWorkload::Write);
-            let sync_records = args
-                .next()
-                .map(|value| parse_u64_value(&value, "sync-records"))
-                .transpose()?
-                .unwrap_or(0);
-            let working_set_records = args
-                .next()
-                .map(|value| parse_usize_value(&value, "working-set-records"))
-                .transpose()?
-                .unwrap_or(0);
-            zcfanout_shmlease_bench(
-                records,
-                payload_bytes,
-                batch_records,
-                window,
-                touch_mode,
-                wait_mode,
-                pin,
-                lanes,
-                workload,
-                sync_records,
-                working_set_records,
-            )
-        }
-        Some("zcfan-readcache-bench") | Some("zcreadcache-bench") => readcache_bench::cli(args),
-        Some("zctier") => zctier(args),
-        Some("zcfanplan") => fanout::cli(args),
-        Some("zcjournal") => zcjournal(args),
-        Some("zcjournal-join") | Some("zcjoin") => zcjournal_join(args),
-        Some("zcsnap") | Some("zcsnapshot") => zcsnap(args),
-        Some("zcraid-split") | Some("zcraid-send") | Some("zcraid-fanoutd") => zcraid_split(args),
-        Some("zcraid-merge") | Some("zcraid-recv") | Some("zcraid-fanind") => zcraid_merge(args),
-        Some("zcraidd") => zcraidd(args),
-        Some("zcsink") => zcsink(args),
-        Some("zccat") => zccat(args),
-        Some("zcout") => zcout(args),
-        Some("zcgrep") => zcgrep(args),
-        Some("zcstat") => zcstat(args),
-        Some("zcmeter") => zcmeter(args),
-        Some("zcwritebench") => zcwritebench(args),
-        Some("zcblockbench") | Some("block-iops-bench") | Some("zc-iops-bench") => {
-            zcblockbench(args)
-        }
-        Some("zcnblk-target") => {
-            let target_spec = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: zcnblk-target <zcwal:ADDR[:WAL_BASE[:EXTENT[:ACK[:BYTES[:ALIGN]]]]]|zcdevnullN|zctier:HOT[:SPILL[:BYTES[:ALIGN[:MEMORY]]]]|zcraid0-userspace:/dev/zcbrdSTART..END[:STRIPE]|/dev/zcbrdN|/dev/nullbN|/dev/ramN|PARTUUID=uuid>[,..|..N] <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
-                )
-            })?;
-            let bind = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: zcnblk-target <zcwal:ADDR[:WAL_BASE[:EXTENT[:ACK[:BYTES[:ALIGN]]]]]|zcdevnullN|zctier:HOT[:SPILL[:BYTES[:ALIGN[:MEMORY]]]]|zcraid0-userspace:/dev/zcbrdSTART..END[:STRIPE]|/dev/zcbrdN|/dev/nullbN|/dev/ramN|PARTUUID=uuid>[,..|..N] <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
-                )
-            })?;
-            let base_port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(19600);
-            let ports = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(8);
-            let connections_per_port = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_connection = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-connection"))
-                .transpose()?
-                .unwrap_or(64 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024);
-            let estimated_workers = if workers == 0 { ports.max(1) } else { workers };
-            let target_spec_is_wal = target_spec.split(',').all(|token| {
-                let token = token.trim();
-                token.starts_with("zcwal:") || token.starts_with("zcwal=")
-            });
-            let buffer_mode = if target_spec_is_wal {
-                args.next()
-                    .map(|value| SlotWalBufferMode::parse(&value))
+            Some("help") | Some("--help") | Some("-h") => {
+                print_zcutils_help();
+                Ok(())
+            }
+            Some("zcprobe") => probe(),
+            Some("zcplan") => zcplan(args),
+            Some("zcnc") => zcnc(args),
+            Some("zc-tcpmux-send") => zc_tcpmux_send(args),
+            Some("zc-tcpmux-receive") => zc_tcpmux_receive(args),
+            Some("zc-tcpmux-xfer") | Some("zcxfer") => zc_tcpmux_xfer(args),
+            Some("zcencrypt") => zcencrypt(args),
+            Some("zcdecrypt") => zcdecrypt(args),
+            Some("zcmux") => zcmux(args),
+            Some("zcdemux") | Some("zdmux") | Some("zdcemux") => zcdemux(args),
+            Some("zcflow") | Some("zcrun") => zcrun(args),
+            Some("zcmap") => zcmap(args),
+            Some("zcforward") | Some("zcfwd") => zcforward(args),
+            Some("zcmaptee") => zcmaptee(args),
+            Some("zctee") => zctee(args),
+            Some("zcfanout-logzip-bench") | Some("zclogzip-bench") => {
+                let mode = args
+                    .next()
+                    .map(|value| ZcLogZipBenchMode::parse(&value))
                     .transpose()?
-                    .unwrap_or(SlotWalBufferMode::SmallPages)
-            } else {
-                parse_slot_wal_buffer_mode_or_standard(
-                    args.next(),
-                    "zcnblk-target",
-                    checked_buffer_count(estimated_workers, pipeline, "zcnblk-target")?,
+                    .unwrap_or(ZcLogZipBenchMode::MirrorWriteAll);
+                let lanes = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "lanes"))
+                    .transpose()?
+                    .unwrap_or(32);
+                let branches = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "branches"))
+                    .transpose()?
+                    .unwrap_or(2);
+                let records_per_lane = args
+                    .next()
+                    .map(|value| parse_u64_value(&value, "records-per-lane"))
+                    .transpose()?
+                    .unwrap_or(1_000_000);
+                let payload_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "payload-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let window = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "window"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let workers = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "workers"))
+                    .transpose()?
+                    .unwrap_or(0);
+                let skew = args
+                    .next()
+                    .map(|value| parse_u64_value(&value, "skew"))
+                    .transpose()?
+                    .unwrap_or(64);
+                let pin = args
+                    .next()
+                    .map(|value| parse_bool_arg(&value, "pin-workers"))
+                    .transpose()?
+                    .unwrap_or(true);
+                zcfanout_logzip_bench(
+                    mode,
+                    lanes,
+                    branches,
+                    records_per_lane,
+                    payload_bytes,
+                    window,
+                    workers,
+                    skew,
+                    pin,
+                )
+            }
+            Some("zcfanout-logtcp-bench") | Some("zclogtcp-bench") => {
+                let mode = args
+                    .next()
+                    .map(|value| ZcLogZipBenchMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(ZcLogZipBenchMode::MirrorWriteAll);
+                let bind = args.next().unwrap_or_else(|| "127.0.0.1".to_string());
+                let base_port = args
+                    .next()
+                    .map(|value| parse_u16_value(&value, "base-port"))
+                    .transpose()?
+                    .unwrap_or(24000);
+                let lanes = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "lanes"))
+                    .transpose()?
+                    .unwrap_or(16);
+                let branches = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "branches"))
+                    .transpose()?
+                    .unwrap_or(2);
+                let records_per_lane = args
+                    .next()
+                    .map(|value| parse_u64_value(&value, "records-per-lane"))
+                    .transpose()?
+                    .unwrap_or(250_000);
+                let payload_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "payload-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let batch_records = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "batch-records"))
+                    .transpose()?
+                    .unwrap_or(1024);
+                let workers = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "workers"))
+                    .transpose()?
+                    .unwrap_or(0);
+                let pin = args
+                    .next()
+                    .map(|value| parse_bool_arg(&value, "pin-workers"))
+                    .transpose()?
+                    .unwrap_or(true);
+                let window = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "window"))
+                    .transpose()?
+                    .unwrap_or_else(|| batch_records.max(4096));
+                zcfanout_logtcp_bench(
+                    mode,
+                    bind,
+                    base_port,
+                    lanes,
+                    branches,
+                    records_per_lane,
+                    payload_bytes,
+                    batch_records,
+                    workers,
+                    pin,
+                    window,
+                )
+            }
+            Some("zcfanout-logshm-bench") | Some("zclogshm-bench") => {
+                let records = args
+                    .next()
+                    .map(|value| parse_u64_value(&value, "records"))
+                    .transpose()?
+                    .unwrap_or(1_000_000);
+                let payload_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "payload-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let batch_records = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "batch-records"))
+                    .transpose()?
+                    .unwrap_or(2048);
+                let window = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "window"))
+                    .transpose()?
+                    .unwrap_or_else(|| batch_records.max(4096));
+                let wait_mode = args
+                    .next()
+                    .map(|value| ZcLogShmWaitMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(ZcLogShmWaitMode::Spin);
+                let pin = args
+                    .next()
+                    .map(|value| parse_bool_arg(&value, "pin-workers"))
+                    .transpose()?
+                    .unwrap_or(true);
+                zcfanout_logshm_bench(
+                    records,
+                    payload_bytes,
+                    batch_records,
+                    window,
+                    wait_mode,
+                    pin,
+                )
+            }
+            Some("zcfanout-shmlease-bench") | Some("zcloglease-bench") => {
+                let records = args
+                    .next()
+                    .map(|value| parse_u64_value(&value, "records"))
+                    .transpose()?
+                    .unwrap_or(1_000_000);
+                let payload_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "payload-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let batch_records = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "batch-records"))
+                    .transpose()?
+                    .unwrap_or(2048);
+                let window = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "window"))
+                    .transpose()?
+                    .unwrap_or_else(|| batch_records.max(4096));
+                let touch_mode = args
+                    .next()
+                    .map(|value| ZcLogLeaseTouchMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(ZcLogLeaseTouchMode::Cacheline);
+                let wait_mode = args
+                    .next()
+                    .map(|value| ZcLogShmWaitMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(ZcLogShmWaitMode::Spin);
+                let pin = args
+                    .next()
+                    .map(|value| parse_bool_arg(&value, "pin-workers"))
+                    .transpose()?
+                    .unwrap_or(true);
+                let lanes = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "lanes"))
+                    .transpose()?
+                    .unwrap_or(1);
+                let workload = args
+                    .next()
+                    .map(|value| ZcLogLeaseWorkload::parse(&value))
+                    .transpose()?
+                    .unwrap_or(ZcLogLeaseWorkload::Write);
+                let sync_records = args
+                    .next()
+                    .map(|value| parse_u64_value(&value, "sync-records"))
+                    .transpose()?
+                    .unwrap_or(0);
+                let working_set_records = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "working-set-records"))
+                    .transpose()?
+                    .unwrap_or(0);
+                zcfanout_shmlease_bench(
+                    records,
+                    payload_bytes,
+                    batch_records,
+                    window,
+                    touch_mode,
+                    wait_mode,
+                    pin,
+                    lanes,
+                    workload,
+                    sync_records,
+                    working_set_records,
+                )
+            }
+            Some("zcfan-readcache-bench") | Some("zcreadcache-bench") => readcache_bench::cli(args),
+            Some("zctier") => zctier(args),
+            Some("zcfanplan") => fanout::cli(args),
+            Some("zcjournal") => zcjournal(args),
+            Some("zcjournal-join") | Some("zcjoin") => zcjournal_join(args),
+            Some("zcsnap") | Some("zcsnapshot") => zcsnap(args),
+            Some("zcraid-split") | Some("zcraid-send") | Some("zcraid-fanoutd") => {
+                zcraid_split(args)
+            }
+            Some("zcraid-merge") | Some("zcraid-recv") | Some("zcraid-fanind") => {
+                zcraid_merge(args)
+            }
+            Some("zcraidd") => zcraidd(args),
+            Some("zcsink") => zcsink(args),
+            Some("zccat") => zccat(args),
+            Some("zcout") => zcout(args),
+            Some("zcgrep") => zcgrep(args),
+            Some("zcstat") => zcstat(args),
+            Some("zcmeter") => zcmeter(args),
+            Some("zcwritebench") => zcwritebench(args),
+            Some("zcblockbench") | Some("block-iops-bench") | Some("zc-iops-bench") => {
+                zcblockbench(args)
+            }
+            Some("zcnblk-target") => {
+                let target_spec = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: zcnblk-target <zcwal:ADDR[:WAL_BASE[:EXTENT[:ACK[:BYTES[:ALIGN]]]]]|zcdevnullN|zctier:HOT[:SPILL[:BYTES[:ALIGN[:MEMORY]]]]|zcraid0-userspace:/dev/zcbrdSTART..END[:STRIPE]|/dev/zcbrdN|/dev/nullbN|/dev/ramN|PARTUUID=uuid>[,..|..N] <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                )
+            })?;
+                let bind = args.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "usage: zcnblk-target <zcwal:ADDR[:WAL_BASE[:EXTENT[:ACK[:BYTES[:ALIGN]]]]]|zcdevnullN|zctier:HOT[:SPILL[:BYTES[:ALIGN[:MEMORY]]]]|zcraid0-userspace:/dev/zcbrdSTART..END[:STRIPE]|/dev/zcbrdN|/dev/nullbN|/dev/ramN|PARTUUID=uuid>[,..|..N] <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
+                )
+            })?;
+                let base_port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(19600);
+                let ports = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(8);
+                let connections_per_port = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_connection = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-connection"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024);
+                let estimated_workers = if workers == 0 { ports.max(1) } else { workers };
+                let target_spec_is_wal = target_spec.split(',').all(|token| {
+                    let token = token.trim();
+                    token.starts_with("zcwal:") || token.starts_with("zcwal=")
+                });
+                let buffer_mode = if target_spec_is_wal {
+                    args.next()
+                        .map(|value| SlotWalBufferMode::parse(&value))
+                        .transpose()?
+                        .unwrap_or(SlotWalBufferMode::SmallPages)
+                } else {
+                    parse_slot_wal_buffer_mode_or_standard(
+                        args.next(),
+                        "zcnblk-target",
+                        checked_buffer_count(estimated_workers, pipeline, "zcnblk-target")?,
+                        chunk_bytes,
+                    )?
+                };
+                let pin_workers = args
+                    .next()
+                    .map(|value| parse_bool_arg(&value, "pin-workers"))
+                    .transpose()?
+                    .unwrap_or(true);
+                zcnblk_target(
+                    &target_spec,
+                    &bind,
+                    base_port,
+                    ports,
+                    connections_per_port,
+                    bytes_per_connection,
                     chunk_bytes,
-                )?
-            };
-            let pin_workers = args
-                .next()
-                .map(|value| parse_bool_arg(&value, "pin-workers"))
-                .transpose()?
-                .unwrap_or(true);
-            zcnblk_target(
-                &target_spec,
-                &bind,
-                base_port,
-                ports,
-                connections_per_port,
-                bytes_per_connection,
-                chunk_bytes,
-                pipeline,
-                workers,
-                ring_entries,
-                buffer_mode,
-                pin_workers,
-            )
-        }
-        Some("zcnblk-fan") | Some("zcnblk-read-fan") => zcnblk_fan_cli(args),
-        Some("zcnblk-wal-leaf") => zcnblk_wal_leaf_cli(args),
-        Some("zcnblk-send") => {
-            let addr = args.next().ok_or_else(|| {
+                    pipeline,
+                    workers,
+                    ring_entries,
+                    buffer_mode,
+                    pin_workers,
+                )
+            }
+            Some("zcnblk-fan") | Some("zcnblk-read-fan") => zcnblk_fan_cli(args),
+            Some("zcnblk-wal-leaf") => zcnblk_wal_leaf_cli(args),
+            Some("zcnblk-send") => {
+                let addr = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: zcnblk-send <addr> [shard-count] [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [workers]",
                 )
             })?;
-            let shard_count = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let base_port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(19600);
-            let ports = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(8);
-            let connections_per_port = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_connection = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-connection"))
-                .transpose()?
-                .unwrap_or(64 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            zcnblk_send(
-                &addr,
-                shard_count,
-                base_port,
-                ports,
-                connections_per_port,
-                bytes_per_connection,
-                chunk_bytes,
-                workers,
-            )
-        }
-        Some("zcwal-extent-send") => {
-            let addr = args.next().ok_or_else(|| {
+                let shard_count = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let base_port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(19600);
+                let ports = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(8);
+                let connections_per_port = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_connection = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-connection"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                zcnblk_send(
+                    &addr,
+                    shard_count,
+                    base_port,
+                    ports,
+                    connections_per_port,
+                    bytes_per_connection,
+                    chunk_bytes,
+                    workers,
+                )
+            }
+            Some("zcwal-extent-send") => {
+                let addr = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: zcwal-extent-send <addr> [base-port] [lanes] [connections-per-lane] [bytes-per-connection] [extent-bytes] [workers] [ack] [framing:stream|extent] [data-path:uring|blocking]",
                 )
             })?;
-            let base_port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(26400);
-            let lanes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let connections_per_lane = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_connection = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-connection"))
-                .transpose()?
-                .unwrap_or(384 * 1024 * 1024);
-            let extent_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "extent-bytes"))
-                .transpose()?
-                .unwrap_or(1024 * 1024);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            let ack_enabled = args
-                .next()
-                .map(|value| parse_bool_arg(&value, "ack"))
-                .transpose()?
-                .unwrap_or(true);
-            let framing_mode = args
-                .next()
-                .map(|value| ZcWalFramingMode::parse(&value))
-                .transpose()?
-                .unwrap_or(ZcWalFramingMode::from_env(ZcWalFramingMode::Stream)?);
-            let data_path = args
-                .next()
-                .map(|value| ZcWalDataPath::parse(&value))
-                .transpose()?
-                .unwrap_or(ZcWalDataPath::from_env(ZcWalDataPath::Uring)?);
-            zcwal_extent_send(
-                &addr,
-                base_port,
-                lanes,
-                connections_per_lane,
-                bytes_per_connection,
-                extent_bytes,
-                workers,
-                framing_mode,
-                data_path,
-                ack_enabled,
-            )
-        }
-        Some("zcwal-extent-recv") => {
-            let bind = args.next().ok_or_else(|| {
+                let base_port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(26400);
+                let lanes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let connections_per_lane = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_connection = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-connection"))
+                    .transpose()?
+                    .unwrap_or(384 * 1024 * 1024);
+                let extent_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "extent-bytes"))
+                    .transpose()?
+                    .unwrap_or(1024 * 1024);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                let ack_enabled = args
+                    .next()
+                    .map(|value| parse_bool_arg(&value, "ack"))
+                    .transpose()?
+                    .unwrap_or(true);
+                let framing_mode = args
+                    .next()
+                    .map(|value| ZcWalFramingMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(ZcWalFramingMode::from_env(ZcWalFramingMode::Stream)?);
+                let data_path = args
+                    .next()
+                    .map(|value| ZcWalDataPath::parse(&value))
+                    .transpose()?
+                    .unwrap_or(ZcWalDataPath::from_env(ZcWalDataPath::Uring)?);
+                zcwal_extent_send(
+                    &addr,
+                    base_port,
+                    lanes,
+                    connections_per_lane,
+                    bytes_per_connection,
+                    extent_bytes,
+                    workers,
+                    framing_mode,
+                    data_path,
+                    ack_enabled,
+                )
+            }
+            Some("zcwal-extent-recv") => {
+                let bind = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: zcwal-extent-recv <bind> [base-port] [lanes] [connections-per-lane] [bytes-per-connection] [extent-bytes] [workers] [ack] [framing:stream|extent] [data-path:uring|blocking]",
                 )
             })?;
-            let base_port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(26400);
-            let lanes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let connections_per_lane = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_connection = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-connection"))
-                .transpose()?
-                .unwrap_or(384 * 1024 * 1024);
-            let extent_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "extent-bytes"))
-                .transpose()?
-                .unwrap_or(1024 * 1024);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            let ack_enabled = args
-                .next()
-                .map(|value| parse_bool_arg(&value, "ack"))
-                .transpose()?
-                .unwrap_or(true);
-            let framing_mode = args
-                .next()
-                .map(|value| ZcWalFramingMode::parse(&value))
-                .transpose()?
-                .unwrap_or(ZcWalFramingMode::from_env(ZcWalFramingMode::Stream)?);
-            let data_path = args
-                .next()
-                .map(|value| ZcWalDataPath::parse(&value))
-                .transpose()?
-                .unwrap_or(ZcWalDataPath::from_env(ZcWalDataPath::Uring)?);
-            zcwal_extent_recv(
-                &bind,
-                base_port,
-                lanes,
-                connections_per_lane,
-                bytes_per_connection,
-                extent_bytes,
-                workers,
-                framing_mode,
-                data_path,
-                ack_enabled,
-            )
-        }
-        Some("zcwal-ofi-send") => {
-            let usage = "usage: zcwal-ofi-send <provider> <endpoint:rdm> <addr> [base-service] [lanes] [bytes-per-lane] [extent-bytes] [workers] [ack]";
-            let provider = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let endpoint = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let addr = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let base_service = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(28600);
-            let lanes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_lane = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-lane"))
-                .transpose()?
-                .unwrap_or(64 * 1024 * 1024);
-            let extent_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "extent-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            let ack_enabled = args
-                .next()
-                .map(|value| parse_bool_arg(&value, "ack"))
-                .transpose()?
-                .unwrap_or(true);
-            zcofi_wal_send(
-                &provider,
-                &endpoint,
-                &addr,
-                base_service,
-                lanes,
-                bytes_per_lane,
-                extent_bytes,
-                workers,
-                ack_enabled,
-            )
-        }
-        Some("zcwal-ofi-recv") => {
-            let usage = "usage: zcwal-ofi-recv <provider> <endpoint:rdm> <bind> [base-service] [lanes] [bytes-per-lane] [extent-bytes] [workers] [ack]";
-            let provider = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let endpoint = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let bind = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let base_service = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(28600);
-            let lanes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_lane = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-lane"))
-                .transpose()?
-                .unwrap_or(64 * 1024 * 1024);
-            let extent_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "extent-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            let ack_enabled = args
-                .next()
-                .map(|value| parse_bool_arg(&value, "ack"))
-                .transpose()?
-                .unwrap_or(true);
-            zcofi_wal_recv(
-                &provider,
-                &endpoint,
-                &bind,
-                base_service,
-                lanes,
-                bytes_per_lane,
-                extent_bytes,
-                workers,
-                ack_enabled,
-            )
-        }
-        Some("zcwal-ofi-relay") => {
-            let usage = "usage: zcwal-ofi-relay <provider> <endpoint:rdm> <bind> <tail-addr-csv> [in-base-service] [out-base-service-csv] [lanes] [bytes-per-lane] [extent-bytes] [workers] [ack]";
-            let provider = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let endpoint = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let bind = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let tail_addr = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let in_base_service = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(29600);
-            let out_base_service = args.next().unwrap_or_else(|| "30600".to_string());
-            let tail_specs = zcofi_relay_tail_specs(&tail_addr, &out_base_service)?;
-            let lanes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_lane = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-lane"))
-                .transpose()?
-                .unwrap_or(64 * 1024 * 1024);
-            let extent_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "extent-bytes"))
-                .transpose()?
-                .unwrap_or(64 * 1024);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            let ack_enabled = args
-                .next()
-                .map(|value| parse_bool_arg(&value, "ack"))
-                .transpose()?
-                .unwrap_or(true);
-            zcofi_wal_relay(
-                &provider,
-                &endpoint,
-                &bind,
-                tail_specs,
-                in_base_service,
-                lanes,
-                bytes_per_lane,
-                extent_bytes,
-                workers,
-                ack_enabled,
-            )
-        }
-        Some("zcwal-ofi-rma-target") => {
-            let usage = "usage: zcwal-ofi-rma-target <provider> <endpoint:rdm> <bind> [base-service] [lanes] [bytes-per-lane] [extent-bytes] [workers]";
-            let provider = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let endpoint = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let bind = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let base_service = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(31600);
-            let lanes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_lane = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-lane"))
-                .transpose()?
-                .unwrap_or(64 * 1024 * 1024);
-            let extent_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "extent-bytes"))
-                .transpose()?
-                .unwrap_or(1024 * 1024);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            zcofi_rma_target(
-                &provider,
-                &endpoint,
-                &bind,
-                base_service,
-                lanes,
-                bytes_per_lane,
-                extent_bytes,
-                workers,
-            )
-        }
-        Some("zcwal-ofi-rma-write") => {
-            let usage = "usage: zcwal-ofi-rma-write <provider> <endpoint:rdm> <addr> [base-service] [lanes] [bytes-per-lane] [extent-bytes] [workers]";
-            let provider = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let endpoint = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let addr = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let base_service = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(31600);
-            let lanes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_lane = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-lane"))
-                .transpose()?
-                .unwrap_or(64 * 1024 * 1024);
-            let extent_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "extent-bytes"))
-                .transpose()?
-                .unwrap_or(1024 * 1024);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            zcofi_rma_write(
-                &provider,
-                &endpoint,
-                &addr,
-                base_service,
-                lanes,
-                bytes_per_lane,
-                extent_bytes,
-                workers,
-            )
-        }
-        Some("zcwal-ofi-rma-read") => {
-            let usage = "usage: zcwal-ofi-rma-read <provider> <endpoint:rdm> <addr> [base-service] [lanes] [bytes-per-lane] [extent-bytes] [workers]";
-            let provider = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let endpoint = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let addr = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let base_service = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(31600);
-            let lanes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_lane = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-lane"))
-                .transpose()?
-                .unwrap_or(64 * 1024 * 1024);
-            let extent_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "extent-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            zcofi_rma_read(
-                &provider,
-                &endpoint,
-                &addr,
-                base_service,
-                lanes,
-                bytes_per_lane,
-                extent_bytes,
-                workers,
-            )
-        }
-        Some("zcraid-mirror-send") => {
-            let usage = "usage: zcraid-mirror-send <tcp|ofi-msg|rdma> <addr> <branch-base-ports-csv> [bytes-per-lane] [extent-bytes] [workers] [plan-json|-] [provider] [endpoint] [ack]";
-            let transport_arg = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            if matches!(transport_arg.as_str(), "--help" | "-h" | "help") {
-                println!("{usage}");
-                return Ok(());
+                let base_port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(26400);
+                let lanes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let connections_per_lane = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_connection = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-connection"))
+                    .transpose()?
+                    .unwrap_or(384 * 1024 * 1024);
+                let extent_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "extent-bytes"))
+                    .transpose()?
+                    .unwrap_or(1024 * 1024);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                let ack_enabled = args
+                    .next()
+                    .map(|value| parse_bool_arg(&value, "ack"))
+                    .transpose()?
+                    .unwrap_or(true);
+                let framing_mode = args
+                    .next()
+                    .map(|value| ZcWalFramingMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(ZcWalFramingMode::from_env(ZcWalFramingMode::Stream)?);
+                let data_path = args
+                    .next()
+                    .map(|value| ZcWalDataPath::parse(&value))
+                    .transpose()?
+                    .unwrap_or(ZcWalDataPath::from_env(ZcWalDataPath::Uring)?);
+                zcwal_extent_recv(
+                    &bind,
+                    base_port,
+                    lanes,
+                    connections_per_lane,
+                    bytes_per_connection,
+                    extent_bytes,
+                    workers,
+                    framing_mode,
+                    data_path,
+                    ack_enabled,
+                )
             }
-            let transport = ZcRaidMirrorTransport::parse(&transport_arg)?;
-            let addr = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let base_ports = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))
-                .and_then(|value| zcraid_mirror_parse_base_ports(&value, 0))?;
-            let bytes_per_lane = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-lane"))
-                .transpose()?
-                .unwrap_or(64 * 1024 * 1024);
-            let record_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "extent-bytes"))
-                .transpose()?
-                .unwrap_or(ZC_WAL_RECORD_SIZE);
-            let workers = args
-                .next()
-                .map(|value| parse_usize_value(&value, "workers"))
-                .transpose()?
-                .unwrap_or(0);
-            let plan_json = args.next();
-            let provider = args.next().unwrap_or_else(|| "efa".to_string());
-            let endpoint = args.next().unwrap_or_else(|| "rdm".to_string());
-            let ack_enabled = args
-                .next()
-                .map(|value| parse_bool_arg(&value, "ack"))
-                .transpose()?
-                .unwrap_or(true);
-            zcraid_mirror_send(
-                transport,
-                &addr,
-                base_ports,
-                bytes_per_lane,
-                record_bytes,
-                workers,
-                plan_json.as_deref(),
-                &provider,
-                &endpoint,
-                ack_enabled,
-            )
-        }
-        Some("zcraid-mirror-recv") => {
-            let usage = "usage: zcraid-mirror-recv <tcp|ofi-msg|rdma> <bind> <base-port> <branch-id> [bytes-per-lane] [extent-bytes] [workers] [plan-json|-] [provider] [endpoint] [ack] [terminal-target|-]";
-            let transport_arg = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            if matches!(transport_arg.as_str(), "--help" | "-h" | "help") {
-                println!("{usage}");
-                return Ok(());
+            Some("zcwal-ofi-send") => {
+                let usage = "usage: zcwal-ofi-send <provider> <endpoint:rdm> <addr> [base-service] [lanes] [bytes-per-lane] [extent-bytes] [workers] [ack]";
+                let provider = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let endpoint = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let addr = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let base_service = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(28600);
+                let lanes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_lane = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-lane"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024 * 1024);
+                let extent_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "extent-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                let ack_enabled = args
+                    .next()
+                    .map(|value| parse_bool_arg(&value, "ack"))
+                    .transpose()?
+                    .unwrap_or(true);
+                zcofi_wal_send(
+                    &provider,
+                    &endpoint,
+                    &addr,
+                    base_service,
+                    lanes,
+                    bytes_per_lane,
+                    extent_bytes,
+                    workers,
+                    ack_enabled,
+                )
             }
-            let transport = ZcRaidMirrorTransport::parse(&transport_arg)?;
-            let bind = args
-                .next()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
-            let base_port = args
-                .next()
-                .map(|value| parse_u16_value(&value, "base-port"))
-                .transpose()?
-                .unwrap_or(28600);
-            let branch_id = args
-                .next()
-                .map(|value| parse_usize_value(&value, "branch-id"))
-                .transpose()?
-                .unwrap_or(0);
-            let bytes_per_lane = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-lane"))
-                .transpose()?
-                .unwrap_or(64 * 1024 * 1024);
-            let record_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "extent-bytes"))
-                .transpose()?
-                .unwrap_or(ZC_WAL_RECORD_SIZE);
-            let workers = args
-                .next()
-                .map(|value| parse_usize_value(&value, "workers"))
-                .transpose()?
-                .unwrap_or(0);
-            let plan_json = args.next();
-            let provider = args.next().unwrap_or_else(|| "efa".to_string());
-            let endpoint = args.next().unwrap_or_else(|| "rdm".to_string());
-            let ack_enabled = args
-                .next()
-                .map(|value| parse_bool_arg(&value, "ack"))
-                .transpose()?
-                .unwrap_or(true);
-            let terminal_target = args.next();
-            zcraid_mirror_recv(
-                transport,
-                &bind,
-                base_port,
-                branch_id,
-                bytes_per_lane,
-                record_bytes,
-                workers,
-                plan_json.as_deref(),
-                &provider,
-                &endpoint,
-                ack_enabled,
-                terminal_target.as_deref(),
-            )
-        }
-        None | Some("probe") => probe(),
-        Some("rdma-probe") => {
-            let netdev = args.next();
-            rdma_probe(netdev.as_deref())
-        }
-        Some("rdma-plan") => {
-            let fabric = args
-                .next()
-                .map(|value| RdmaFabricPlan::parse(&value))
-                .transpose()?
-                .unwrap_or(RdmaFabricPlan::Auto);
-            let peers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(2);
-            let lanes_per_peer = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            rdma_plan(fabric, peers, lanes_per_peer, workers)
-        }
-        Some("rdma-rxe-add") => {
-            let netdev = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: rdma-rxe-add <netdev> [rxe-name]",
+            Some("zcwal-ofi-recv") => {
+                let usage = "usage: zcwal-ofi-recv <provider> <endpoint:rdm> <bind> [base-service] [lanes] [bytes-per-lane] [extent-bytes] [workers] [ack]";
+                let provider = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let endpoint = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let bind = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let base_service = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(28600);
+                let lanes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_lane = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-lane"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024 * 1024);
+                let extent_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "extent-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                let ack_enabled = args
+                    .next()
+                    .map(|value| parse_bool_arg(&value, "ack"))
+                    .transpose()?
+                    .unwrap_or(true);
+                zcofi_wal_recv(
+                    &provider,
+                    &endpoint,
+                    &bind,
+                    base_service,
+                    lanes,
+                    bytes_per_lane,
+                    extent_bytes,
+                    workers,
+                    ack_enabled,
                 )
-            })?;
-            let name = args.next();
-            rdma_rxe_add(&netdev, name.as_deref())
-        }
-        Some("rdma-rxe-del") => {
-            let name = args.next().unwrap_or_else(|| "rxe0".to_string());
-            rdma_rxe_del(&name)
-        }
-        Some("rdma-rxe-smoke") | Some("rdma-smoke") => {
-            let netdev = args.next().unwrap_or_else(|| "lo".to_string());
-            let device = args.next();
-            let gid_idx = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let iters = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1000);
-            let size = args
-                .next()
-                .map(|value| parse_size_arg(&value, "size"))
-                .transpose()?
-                .unwrap_or(4096);
-            let port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(18651);
-            rdma_rxe_smoke(&netdev, device.as_deref(), gid_idx, iters, size, port)
-        }
-        Some("libfabric-plan") | Some("ofi-plan") => {
-            let provider = args.next().unwrap_or_else(|| "tcp".to_string());
-            let endpoint = args.next().unwrap_or_else(|| "rdm".to_string());
-            let peers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(2);
-            let lanes_per_peer = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(32);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            libfabric_plan(&provider, &endpoint, peers, lanes_per_peer, workers)
-        }
-        Some("libfabric-smoke") | Some("ofi-smoke") => {
-            let provider = args.next().unwrap_or_else(|| "tcp".to_string());
-            let endpoint = args.next().unwrap_or_else(|| "rdm".to_string());
-            let addr = args.next().unwrap_or_else(|| "127.0.0.1".to_string());
-            let iters = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1000);
-            let size = args
-                .next()
-                .map(|value| parse_size_arg(&value, "size"))
-                .transpose()?
-                .unwrap_or(4096);
-            let port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(18691);
-            let domain = args.next();
-            libfabric_smoke(
-                &provider,
-                &endpoint,
-                &addr,
-                iters,
-                size,
-                port,
-                domain.as_deref(),
-            )
-        }
-        Some("path-plan") | Some("transport-plan") => {
-            let transport = args
-                .next()
-                .map(|value| TransportPathPlan::parse(&value))
-                .transpose()?
-                .unwrap_or(TransportPathPlan::AwsTcpPublic);
-            let target_peer_gbps = args
-                .next()
-                .map(|value| parse_gbps_arg(&value, "target-peer-gbps"))
-                .transpose()?
-                .unwrap_or(40.0);
-            let peers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(2);
-            let min_lanes_per_peer = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            transport_path_plan(
-                transport,
-                target_peer_gbps,
-                peers,
-                min_lanes_per_peer,
-                workers,
-            )
-        }
-        Some("register-ifq") => {
-            let ifname = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: register-ifq <ifname> [rxq]",
+            }
+            Some("zcwal-ofi-relay") => {
+                let usage = "usage: zcwal-ofi-relay <provider> <endpoint:rdm> <bind> <tail-addr-csv> [in-base-service] [out-base-service-csv] [lanes] [bytes-per-lane] [extent-bytes] [workers] [ack]";
+                let provider = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let endpoint = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let bind = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let tail_addr = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let in_base_service = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(29600);
+                let out_base_service = args.next().unwrap_or_else(|| "30600".to_string());
+                let tail_specs = zcofi_relay_tail_specs(&tail_addr, &out_base_service)?;
+                let lanes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_lane = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-lane"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024 * 1024);
+                let extent_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "extent-bytes"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                let ack_enabled = args
+                    .next()
+                    .map(|value| parse_bool_arg(&value, "ack"))
+                    .transpose()?
+                    .unwrap_or(true);
+                zcofi_wal_relay(
+                    &provider,
+                    &endpoint,
+                    &bind,
+                    tail_specs,
+                    in_base_service,
+                    lanes,
+                    bytes_per_lane,
+                    extent_bytes,
+                    workers,
+                    ack_enabled,
                 )
-            })?;
-            let rxq = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            register_ifq(&ifname, rxq)
-        }
-        Some("stress-register-ifq") => {
-            let ifname = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: stress-register-ifq <ifname> [iterations] [rxq]",
+            }
+            Some("zcwal-ofi-rma-target") => {
+                let usage = "usage: zcwal-ofi-rma-target <provider> <endpoint:rdm> <bind> [base-service] [lanes] [bytes-per-lane] [extent-bytes] [workers]";
+                let provider = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let endpoint = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let bind = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let base_service = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(31600);
+                let lanes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_lane = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-lane"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024 * 1024);
+                let extent_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "extent-bytes"))
+                    .transpose()?
+                    .unwrap_or(1024 * 1024);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                zcofi_rma_target(
+                    &provider,
+                    &endpoint,
+                    &bind,
+                    base_service,
+                    lanes,
+                    bytes_per_lane,
+                    extent_bytes,
+                    workers,
                 )
-            })?;
-            let iterations = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(100);
-            let rxq = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            stress_register_ifq(&ifname, iterations, rxq)
-        }
-        Some("recv-zc-server") => {
-            let ifname = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: recv-zc-server <ifname> [rxq] [port] [expected-bytes] [fixed-byte]",
+            }
+            Some("zcwal-ofi-rma-write") => {
+                let usage = "usage: zcwal-ofi-rma-write <provider> <endpoint:rdm> <addr> [base-service] [lanes] [bytes-per-lane] [extent-bytes] [workers]";
+                let provider = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let endpoint = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let addr = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let base_service = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(31600);
+                let lanes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_lane = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-lane"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024 * 1024);
+                let extent_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "extent-bytes"))
+                    .transpose()?
+                    .unwrap_or(1024 * 1024);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                zcofi_rma_write(
+                    &provider,
+                    &endpoint,
+                    &addr,
+                    base_service,
+                    lanes,
+                    bytes_per_lane,
+                    extent_bytes,
+                    workers,
                 )
-            })?;
-            let rxq = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            let port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(8000);
-            let expected_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64 * 1024);
-            let fixed_byte = args
-                .next()
-                .map(|value| parse_u8_arg(&value))
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-            recv_zc_server(&ifname, rxq, port, expected_bytes, fixed_byte)
-        }
-        Some("tcp-send") => {
-            let addr = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: tcp-send <addr> [port] [bytes] [fixed-byte]",
+            }
+            Some("zcwal-ofi-rma-read") => {
+                let usage = "usage: zcwal-ofi-rma-read <provider> <endpoint:rdm> <addr> [base-service] [lanes] [bytes-per-lane] [extent-bytes] [workers]";
+                let provider = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let endpoint = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let addr = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let base_service = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(31600);
+                let lanes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_lane = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-lane"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024 * 1024);
+                let extent_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "extent-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                zcofi_rma_read(
+                    &provider,
+                    &endpoint,
+                    &addr,
+                    base_service,
+                    lanes,
+                    bytes_per_lane,
+                    extent_bytes,
+                    workers,
                 )
-            })?;
-            let port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(8000);
-            let bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64 * 1024);
-            let fixed_byte = args
-                .next()
-                .map(|value| parse_u8_arg(&value))
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-            tcp_send(&addr, port, bytes, fixed_byte)
-        }
-        Some("tcp-sink-server") => {
-            let bind = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: tcp-sink-server <bind> [port] [connections] [expected-bytes]",
+            }
+            Some("zcraid-mirror-send") => {
+                let usage = "usage: zcraid-mirror-send <tcp|ofi-msg|rdma> <addr> <branch-base-ports-csv> [bytes-per-lane] [extent-bytes] [workers] [plan-json|-] [provider] [endpoint] [ack]";
+                let transport_arg = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                if matches!(transport_arg.as_str(), "--help" | "-h" | "help") {
+                    println!("{usage}");
+                    return Ok(());
+                }
+                let transport = ZcRaidMirrorTransport::parse(&transport_arg)?;
+                let addr = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let base_ports = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))
+                    .and_then(|value| zcraid_mirror_parse_base_ports(&value, 0))?;
+                let bytes_per_lane = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-lane"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024 * 1024);
+                let record_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "extent-bytes"))
+                    .transpose()?
+                    .unwrap_or(ZC_WAL_RECORD_SIZE);
+                let workers = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "workers"))
+                    .transpose()?
+                    .unwrap_or(0);
+                let plan_json = args.next();
+                let provider = args.next().unwrap_or_else(|| "efa".to_string());
+                let endpoint = args.next().unwrap_or_else(|| "rdm".to_string());
+                let ack_enabled = args
+                    .next()
+                    .map(|value| parse_bool_arg(&value, "ack"))
+                    .transpose()?
+                    .unwrap_or(true);
+                zcraid_mirror_send(
+                    transport,
+                    &addr,
+                    base_ports,
+                    bytes_per_lane,
+                    record_bytes,
+                    workers,
+                    plan_json.as_deref(),
+                    &provider,
+                    &endpoint,
+                    ack_enabled,
                 )
-            })?;
-            let port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(8000);
-            let connections = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let expected_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64 * 1024);
-            tcp_sink_server(&bind, port, connections, expected_bytes)
-        }
-        Some("tcp-bench-server") => {
-            let bind = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: tcp-bench-server <bind> [port] [connections] [expected-bytes]",
+            }
+            Some("zcraid-mirror-recv") => {
+                let usage = "usage: zcraid-mirror-recv <tcp|ofi-msg|rdma> <bind> <base-port> <branch-id> [bytes-per-lane] [extent-bytes] [workers] [plan-json|-] [provider] [endpoint] [ack] [terminal-target|-]";
+                let transport_arg = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                if matches!(transport_arg.as_str(), "--help" | "-h" | "help") {
+                    println!("{usage}");
+                    return Ok(());
+                }
+                let transport = ZcRaidMirrorTransport::parse(&transport_arg)?;
+                let bind = args
+                    .next()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage))?;
+                let base_port = args
+                    .next()
+                    .map(|value| parse_u16_value(&value, "base-port"))
+                    .transpose()?
+                    .unwrap_or(28600);
+                let branch_id = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "branch-id"))
+                    .transpose()?
+                    .unwrap_or(0);
+                let bytes_per_lane = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-lane"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024 * 1024);
+                let record_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "extent-bytes"))
+                    .transpose()?
+                    .unwrap_or(ZC_WAL_RECORD_SIZE);
+                let workers = args
+                    .next()
+                    .map(|value| parse_usize_value(&value, "workers"))
+                    .transpose()?
+                    .unwrap_or(0);
+                let plan_json = args.next();
+                let provider = args.next().unwrap_or_else(|| "efa".to_string());
+                let endpoint = args.next().unwrap_or_else(|| "rdm".to_string());
+                let ack_enabled = args
+                    .next()
+                    .map(|value| parse_bool_arg(&value, "ack"))
+                    .transpose()?
+                    .unwrap_or(true);
+                let terminal_target = args.next();
+                zcraid_mirror_recv(
+                    transport,
+                    &bind,
+                    base_port,
+                    branch_id,
+                    bytes_per_lane,
+                    record_bytes,
+                    workers,
+                    plan_json.as_deref(),
+                    &provider,
+                    &endpoint,
+                    ack_enabled,
+                    terminal_target.as_deref(),
                 )
-            })?;
-            let port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(8000);
-            let connections = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let expected_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024 * 1024 * 1024);
-            tcp_bench_server(&bind, port, connections, expected_bytes)
-        }
-        Some("tcp-bench-send") => {
-            let addr = args.next().ok_or_else(|| {
+            }
+            None | Some("probe") => probe(),
+            Some("rdma-probe") => {
+                let netdev = args.next();
+                rdma_probe(netdev.as_deref())
+            }
+            Some("rdma-plan") => {
+                let fabric = args
+                    .next()
+                    .map(|value| RdmaFabricPlan::parse(&value))
+                    .transpose()?
+                    .unwrap_or(RdmaFabricPlan::Auto);
+                let peers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(2);
+                let lanes_per_peer = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                rdma_plan(fabric, peers, lanes_per_peer, workers)
+            }
+            Some("rdma-rxe-add") => {
+                let netdev = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: rdma-rxe-add <netdev> [rxe-name]",
+                    )
+                })?;
+                let name = args.next();
+                rdma_rxe_add(&netdev, name.as_deref())
+            }
+            Some("rdma-rxe-del") => {
+                let name = args.next().unwrap_or_else(|| "rxe0".to_string());
+                rdma_rxe_del(&name)
+            }
+            Some("rdma-rxe-smoke") | Some("rdma-smoke") => {
+                let netdev = args.next().unwrap_or_else(|| "lo".to_string());
+                let device = args.next();
+                let gid_idx = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let iters = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1000);
+                let size = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "size"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(18651);
+                rdma_rxe_smoke(&netdev, device.as_deref(), gid_idx, iters, size, port)
+            }
+            Some("libfabric-plan") | Some("ofi-plan") => {
+                let provider = args.next().unwrap_or_else(|| "tcp".to_string());
+                let endpoint = args.next().unwrap_or_else(|| "rdm".to_string());
+                let peers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(2);
+                let lanes_per_peer = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(32);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                libfabric_plan(&provider, &endpoint, peers, lanes_per_peer, workers)
+            }
+            Some("libfabric-smoke") | Some("ofi-smoke") => {
+                let provider = args.next().unwrap_or_else(|| "tcp".to_string());
+                let endpoint = args.next().unwrap_or_else(|| "rdm".to_string());
+                let addr = args.next().unwrap_or_else(|| "127.0.0.1".to_string());
+                let iters = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1000);
+                let size = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "size"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(18691);
+                let domain = args.next();
+                libfabric_smoke(
+                    &provider,
+                    &endpoint,
+                    &addr,
+                    iters,
+                    size,
+                    port,
+                    domain.as_deref(),
+                )
+            }
+            Some("path-plan") | Some("transport-plan") => {
+                let transport = args
+                    .next()
+                    .map(|value| TransportPathPlan::parse(&value))
+                    .transpose()?
+                    .unwrap_or(TransportPathPlan::AwsTcpPublic);
+                let target_peer_gbps = args
+                    .next()
+                    .map(|value| parse_gbps_arg(&value, "target-peer-gbps"))
+                    .transpose()?
+                    .unwrap_or(40.0);
+                let peers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(2);
+                let min_lanes_per_peer = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                transport_path_plan(
+                    transport,
+                    target_peer_gbps,
+                    peers,
+                    min_lanes_per_peer,
+                    workers,
+                )
+            }
+            Some("register-ifq") => {
+                let ifname = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: register-ifq <ifname> [rxq]",
+                    )
+                })?;
+                let rxq = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                register_ifq(&ifname, rxq)
+            }
+            Some("stress-register-ifq") => {
+                let ifname = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: stress-register-ifq <ifname> [iterations] [rxq]",
+                    )
+                })?;
+                let iterations = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(100);
+                let rxq = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                stress_register_ifq(&ifname, iterations, rxq)
+            }
+            Some("recv-zc-server") => {
+                let ifname = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: recv-zc-server <ifname> [rxq] [port] [expected-bytes] [fixed-byte]",
+                    )
+                })?;
+                let rxq = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                let port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(8000);
+                let expected_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64 * 1024);
+                let fixed_byte = args
+                    .next()
+                    .map(|value| parse_u8_arg(&value))
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+                recv_zc_server(&ifname, rxq, port, expected_bytes, fixed_byte)
+            }
+            Some("tcp-send") => {
+                let addr = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: tcp-send <addr> [port] [bytes] [fixed-byte]",
+                    )
+                })?;
+                let port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(8000);
+                let bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64 * 1024);
+                let fixed_byte = args
+                    .next()
+                    .map(|value| parse_u8_arg(&value))
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+                tcp_send(&addr, port, bytes, fixed_byte)
+            }
+            Some("tcp-sink-server") => {
+                let bind = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: tcp-sink-server <bind> [port] [connections] [expected-bytes]",
+                    )
+                })?;
+                let port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(8000);
+                let connections = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let expected_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64 * 1024);
+                tcp_sink_server(&bind, port, connections, expected_bytes)
+            }
+            Some("tcp-bench-server") => {
+                let bind = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: tcp-bench-server <bind> [port] [connections] [expected-bytes]",
+                    )
+                })?;
+                let port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(8000);
+                let connections = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let expected_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024 * 1024 * 1024);
+                tcp_bench_server(&bind, port, connections, expected_bytes)
+            }
+            Some("tcp-bench-send") => {
+                let addr = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: tcp-bench-send <addr> [port] [connections] [bytes-per-connection] [chunk-bytes]",
                 )
             })?;
-            let port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(8000);
-            let connections = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_connection = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024 * 1024);
-            tcp_bench_send(&addr, port, connections, bytes_per_connection, chunk_bytes)
-        }
-        Some("tcp-bench-mux-server") => {
-            let bind = args.next().ok_or_else(|| {
+                let port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(8000);
+                let connections = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_connection = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024 * 1024);
+                tcp_bench_send(&addr, port, connections, bytes_per_connection, chunk_bytes)
+            }
+            Some("tcp-bench-mux-server") => {
+                let bind = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: tcp-bench-mux-server <bind> [base-port] [ports] [connections-per-port] [expected-bytes]",
                 )
             })?;
-            let base_port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(8000);
-            let ports = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(16);
-            let connections_per_port = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let expected_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024 * 1024 * 1024);
-            tcp_bench_mux_server(
-                &bind,
-                base_port,
-                ports,
-                connections_per_port,
-                expected_bytes,
-            )
-        }
-        Some("tcp-bench-mux-send") => {
-            let addr = args.next().ok_or_else(|| {
+                let base_port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(8000);
+                let ports = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(16);
+                let connections_per_port = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let expected_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024 * 1024 * 1024);
+                tcp_bench_mux_server(
+                    &bind,
+                    base_port,
+                    ports,
+                    connections_per_port,
+                    expected_bytes,
+                )
+            }
+            Some("tcp-bench-mux-send") => {
+                let addr = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: tcp-bench-mux-send <addr> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes]",
                 )
             })?;
-            let base_port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(8000);
-            let ports = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(16);
-            let connections_per_port = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_connection = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024 * 1024);
-            tcp_bench_mux_send(
-                &addr,
-                base_port,
-                ports,
-                connections_per_port,
-                bytes_per_connection,
-                chunk_bytes,
-            )
-        }
-        Some("tcp-bench-uring-mux-server") => {
-            let bind = args.next().ok_or_else(|| {
+                let base_port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(8000);
+                let ports = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(16);
+                let connections_per_port = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_connection = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024 * 1024);
+                tcp_bench_mux_send(
+                    &addr,
+                    base_port,
+                    ports,
+                    connections_per_port,
+                    bytes_per_connection,
+                    chunk_bytes,
+                )
+            }
+            Some("tcp-bench-uring-mux-server") => {
+                let bind = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: tcp-bench-uring-mux-server <bind> [base-port] [ports] [connections-per-port] [expected-bytes] [workers] [recv-bytes] [ring-entries] [recv-mode] [ifname] [rxq] [rxq-count]",
                 )
             })?;
-            let base_port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(8000);
-            let ports = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(16);
-            let connections_per_port = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let expected_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024 * 1024 * 1024);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            let recv_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024 * 1024);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4096);
-            let recv_options = parse_legacy_recv_tail(args.collect(), ZcRecvMode::Auto)?;
-            tcp_bench_uring_mux_server_auto_zcrx(
-                &bind,
-                base_port,
-                ports,
-                connections_per_port,
-                expected_bytes,
-                workers,
-                recv_bytes,
-                ring_entries,
-                recv_options,
-            )
-        }
-        Some("tcp-wal-mux-server") => {
-            let target = args.next().ok_or_else(|| {
+                let base_port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(8000);
+                let ports = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(16);
+                let connections_per_port = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let expected_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024 * 1024 * 1024);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                let recv_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024 * 1024);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4096);
+                let recv_options = parse_legacy_recv_tail(args.collect(), ZcRecvMode::Auto)?;
+                tcp_bench_uring_mux_server_auto_zcrx(
+                    &bind,
+                    base_port,
+                    ports,
+                    connections_per_port,
+                    expected_bytes,
+                    workers,
+                    recv_bytes,
+                    ring_entries,
+                    recv_options,
+                )
+            }
+            Some("tcp-wal-mux-server") => {
+                let target = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: tcp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
-            let bind = args.next().ok_or_else(|| {
+                let bind = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: tcp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> <bind> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
-            let base_port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(9200);
-            let ports = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4);
-            let connections_per_port = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_connection = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-connection"))
-                .transpose()?
-                .unwrap_or(64 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(32);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024);
-            let estimated_workers = if workers == 0 { ports.max(1) } else { workers };
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "tcp-wal-mux-server",
-                checked_buffer_count(estimated_workers, pipeline, "tcp-wal-mux-server")?,
-                chunk_bytes,
-            )?;
-            let pin_workers = args
-                .next()
-                .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
-                .unwrap_or(true);
-            tcp_wal_mux_server(
-                &target,
-                &bind,
-                base_port,
-                ports,
-                connections_per_port,
-                bytes_per_connection,
-                chunk_bytes,
-                pipeline,
-                workers,
-                ring_entries,
-                buffer_mode,
-                pin_workers,
-            )
-        }
-        Some("udp-wal-mux-server") => {
-            let target = args.next().ok_or_else(|| {
+                let base_port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(9200);
+                let ports = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4);
+                let connections_per_port = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_connection = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-connection"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(32);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024);
+                let estimated_workers = if workers == 0 { ports.max(1) } else { workers };
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "tcp-wal-mux-server",
+                    checked_buffer_count(estimated_workers, pipeline, "tcp-wal-mux-server")?,
+                    chunk_bytes,
+                )?;
+                let pin_workers = args
+                    .next()
+                    .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
+                    .unwrap_or(true);
+                tcp_wal_mux_server(
+                    &target,
+                    &bind,
+                    base_port,
+                    ports,
+                    connections_per_port,
+                    bytes_per_connection,
+                    chunk_bytes,
+                    pipeline,
+                    workers,
+                    ring_entries,
+                    buffer_mode,
+                    pin_workers,
+                )
+            }
+            Some("udp-wal-mux-server") => {
+                let target = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: udp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> <bind> [base-port] [ports] [flows-per-port] [bytes-per-flow] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
-            let bind = args.next().ok_or_else(|| {
+                let bind = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: udp-wal-mux-server <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> <bind> [base-port] [ports] [flows-per-port] [bytes-per-flow] [chunk-bytes] [pipeline] [workers] [ring-entries] [buffer-mode] [pin-workers]",
                 )
             })?;
-            let base_port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(9400);
-            let ports = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4);
-            let flows_per_port = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_flow = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-flow"))
-                .transpose()?
-                .unwrap_or(64 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(256 * 1024);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(32);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024);
-            let estimated_workers = if workers == 0 { ports.max(1) } else { workers };
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "udp-wal-mux-server",
-                checked_buffer_count(estimated_workers, pipeline, "udp-wal-mux-server")?,
-                chunk_bytes,
-            )?;
-            let pin_workers = args
-                .next()
-                .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
-                .unwrap_or(true);
-            udp_wal_mux_server(
-                &target,
-                &bind,
-                base_port,
-                ports,
-                flows_per_port,
-                bytes_per_flow,
-                chunk_bytes,
-                pipeline,
-                workers,
-                ring_entries,
-                buffer_mode,
-                pin_workers,
-            )
-        }
-        Some("tcp-bench-uring-mux-send") => {
-            let addr = args.next().ok_or_else(|| {
+                let base_port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(9400);
+                let ports = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4);
+                let flows_per_port = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_flow = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-flow"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(256 * 1024);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(32);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024);
+                let estimated_workers = if workers == 0 { ports.max(1) } else { workers };
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "udp-wal-mux-server",
+                    checked_buffer_count(estimated_workers, pipeline, "udp-wal-mux-server")?,
+                    chunk_bytes,
+                )?;
+                let pin_workers = args
+                    .next()
+                    .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
+                    .unwrap_or(true);
+                udp_wal_mux_server(
+                    &target,
+                    &bind,
+                    base_port,
+                    ports,
+                    flows_per_port,
+                    bytes_per_flow,
+                    chunk_bytes,
+                    pipeline,
+                    workers,
+                    ring_entries,
+                    buffer_mode,
+                    pin_workers,
+                )
+            }
+            Some("tcp-bench-uring-mux-send") => {
+                let addr = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: tcp-bench-uring-mux-send <addr> [base-port] [ports] [connections-per-port] [bytes-per-connection] [chunk-bytes] [pipeline] [workers] [ring-entries] [send-mode:send|send-zc|send-zc-fixed|send-zc-vectorized]",
                 )
             })?;
-            let base_port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(8000);
-            let ports = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(16);
-            let connections_per_port = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_connection = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024 * 1024);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4096);
-            let send_mode = args
-                .next()
-                .map(|value| UringSendMode::parse(&value))
-                .transpose()?
-                .unwrap_or(UringSendMode::Send);
-            tcp_bench_uring_mux_send(
-                &addr,
-                base_port,
-                ports,
-                connections_per_port,
-                bytes_per_connection,
-                chunk_bytes,
-                pipeline,
-                workers,
-                ring_entries,
-                send_mode,
-                false,
-            )
-        }
-        Some("udp-bench-mux-send") => {
-            let addr = args.next().ok_or_else(|| {
+                let base_port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(8000);
+                let ports = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(16);
+                let connections_per_port = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_connection = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024 * 1024);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4096);
+                let send_mode = args
+                    .next()
+                    .map(|value| UringSendMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(UringSendMode::Send);
+                tcp_bench_uring_mux_send(
+                    &addr,
+                    base_port,
+                    ports,
+                    connections_per_port,
+                    bytes_per_connection,
+                    chunk_bytes,
+                    pipeline,
+                    workers,
+                    ring_entries,
+                    send_mode,
+                    false,
+                )
+            }
+            Some("udp-bench-mux-send") => {
+                let addr = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: udp-bench-mux-send <addr> [base-port] [ports] [flows-per-port] [bytes-per-flow] [datagram-bytes] [workers]",
                 )
             })?;
-            let base_port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(9400);
-            let ports = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4);
-            let flows_per_port = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let bytes_per_flow = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-flow"))
-                .transpose()?
-                .unwrap_or(64 * 1024 * 1024);
-            let datagram_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "datagram-bytes"))
-                .transpose()?
-                .unwrap_or(32 * 1024);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(0);
-            udp_bench_mux_send(
-                &addr,
-                base_port,
-                ports,
-                flows_per_port,
-                bytes_per_flow,
-                datagram_bytes,
-                workers,
-            )
-        }
-        Some("cache-copy-microbench") => {
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4);
-            let bytes_per_worker = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-worker"))
-                .transpose()?
-                .unwrap_or(256 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(8192);
-            let iterations = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let mode = args
-                .next()
-                .map(|value| CacheCopyMicroMode::parse(&value))
-                .transpose()?
-                .unwrap_or(CacheCopyMicroMode::Copy);
-            let chunks_per_worker = if chunk_bytes == 0 {
-                1
-            } else {
-                bytes_per_worker.div_ceil(chunk_bytes).max(1)
-            };
-            let buffers_per_worker =
-                checked_buffer_count(chunks_per_worker, 2, "cache-copy-microbench")?;
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "cache-copy-microbench",
-                checked_buffer_count(workers, buffers_per_worker, "cache-copy-microbench")?,
-                chunk_bytes,
-            )?;
-            let pin = args
-                .next()
-                .map(|value| parse_bool_arg(&value, "pin"))
-                .transpose()?
-                .unwrap_or(true);
-            cache_copy_microbench(
-                workers,
-                bytes_per_worker,
-                chunk_bytes,
-                iterations,
-                mode,
-                buffer_mode,
-                pin,
-            )
-        }
-        Some("cache-smt-microbench") => {
-            let bytes_per_worker = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-worker"))
-                .transpose()?
-                .unwrap_or(256 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(8192);
-            let iterations = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1);
-            let mode = args
-                .next()
-                .map(|value| CacheCopyMicroMode::parse(&value))
-                .transpose()?
-                .unwrap_or(CacheCopyMicroMode::Copy);
-            let chunks_per_worker = if chunk_bytes == 0 {
-                1
-            } else {
-                bytes_per_worker.div_ceil(chunk_bytes).max(1)
-            };
-            let buffers_per_worker =
-                checked_buffer_count(chunks_per_worker, 2, "cache-smt-microbench")?;
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "cache-smt-microbench",
-                checked_buffer_count(2, buffers_per_worker, "cache-smt-microbench")?,
-                chunk_bytes,
-            )?;
-            cache_smt_microbench(bytes_per_worker, chunk_bytes, iterations, mode, buffer_mode)
-        }
-        Some("uring-baton-bench") => {
-            let target = args.next().ok_or_else(|| {
+                let base_port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(9400);
+                let ports = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4);
+                let flows_per_port = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let bytes_per_flow = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-flow"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024 * 1024);
+                let datagram_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "datagram-bytes"))
+                    .transpose()?
+                    .unwrap_or(32 * 1024);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(0);
+                udp_bench_mux_send(
+                    &addr,
+                    base_port,
+                    ports,
+                    flows_per_port,
+                    bytes_per_flow,
+                    datagram_bytes,
+                    workers,
+                )
+            }
+            Some("cache-copy-microbench") => {
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4);
+                let bytes_per_worker = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-worker"))
+                    .transpose()?
+                    .unwrap_or(256 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(8192);
+                let iterations = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let mode = args
+                    .next()
+                    .map(|value| CacheCopyMicroMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(CacheCopyMicroMode::Copy);
+                let chunks_per_worker = if chunk_bytes == 0 {
+                    1
+                } else {
+                    bytes_per_worker.div_ceil(chunk_bytes).max(1)
+                };
+                let buffers_per_worker =
+                    checked_buffer_count(chunks_per_worker, 2, "cache-copy-microbench")?;
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "cache-copy-microbench",
+                    checked_buffer_count(workers, buffers_per_worker, "cache-copy-microbench")?,
+                    chunk_bytes,
+                )?;
+                let pin = args
+                    .next()
+                    .map(|value| parse_bool_arg(&value, "pin"))
+                    .transpose()?
+                    .unwrap_or(true);
+                cache_copy_microbench(
+                    workers,
+                    bytes_per_worker,
+                    chunk_bytes,
+                    iterations,
+                    mode,
+                    buffer_mode,
+                    pin,
+                )
+            }
+            Some("cache-smt-microbench") => {
+                let bytes_per_worker = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-worker"))
+                    .transpose()?
+                    .unwrap_or(256 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(8192);
+                let iterations = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1);
+                let mode = args
+                    .next()
+                    .map(|value| CacheCopyMicroMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(CacheCopyMicroMode::Copy);
+                let chunks_per_worker = if chunk_bytes == 0 {
+                    1
+                } else {
+                    bytes_per_worker.div_ceil(chunk_bytes).max(1)
+                };
+                let buffers_per_worker =
+                    checked_buffer_count(chunks_per_worker, 2, "cache-smt-microbench")?;
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "cache-smt-microbench",
+                    checked_buffer_count(2, buffers_per_worker, "cache-smt-microbench")?,
+                    chunk_bytes,
+                )?;
+                cache_smt_microbench(bytes_per_worker, chunk_bytes, iterations, mode, buffer_mode)
+            }
+            Some("uring-baton-bench") => {
+                let target = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: uring-baton-bench <null|PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [workers] \
@@ -99905,64 +100321,64 @@ pub fn main_entry() -> io::Result<()> {
                      [buffer-mode] [pin-mode:true|false|hctx] [baton-mode:roundtrip|credit:N]",
                 )
             })?;
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4);
-            let bytes_per_worker = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-worker"))
-                .transpose()?
-                .unwrap_or(1024 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(256);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024);
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "uring-baton-bench",
-                checked_buffer_count(workers, pipeline, "uring-baton-bench")?,
-                chunk_bytes,
-            )?;
-            let pin_mode = args
-                .next()
-                .map(|value| BatonPinMode::parse(&value))
-                .transpose()?
-                .unwrap_or(BatonPinMode::Pair);
-            let baton_mode = args
-                .next()
-                .map(|value| BatonMode::parse(&value))
-                .transpose()?
-                .unwrap_or(BatonMode::RoundTrip);
-            uring_baton_bench(
-                &target,
-                workers,
-                bytes_per_worker,
-                chunk_bytes,
-                pipeline,
-                ring_entries,
-                buffer_mode,
-                pin_mode,
-                baton_mode,
-            )
-        }
-        Some("uring-write-bench") => {
-            let target = args.next().ok_or_else(|| {
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4);
+                let bytes_per_worker = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-worker"))
+                    .transpose()?
+                    .unwrap_or(1024 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(256);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024);
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "uring-baton-bench",
+                    checked_buffer_count(workers, pipeline, "uring-baton-bench")?,
+                    chunk_bytes,
+                )?;
+                let pin_mode = args
+                    .next()
+                    .map(|value| BatonPinMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(BatonPinMode::Pair);
+                let baton_mode = args
+                    .next()
+                    .map(|value| BatonMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(BatonMode::RoundTrip);
+                uring_baton_bench(
+                    &target,
+                    workers,
+                    bytes_per_worker,
+                    chunk_bytes,
+                    pipeline,
+                    ring_entries,
+                    buffer_mode,
+                    pin_mode,
+                    baton_mode,
+                )
+            }
+            Some("uring-write-bench") => {
+                let target = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: uring-write-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [workers] \
@@ -99970,114 +100386,114 @@ pub fn main_entry() -> io::Result<()> {
                      [buffer-mode] [write-mode:write|fixed|fixed-file] [pin-workers]",
                 )
             })?;
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(16);
-            let bytes_per_worker = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-worker"))
-                .transpose()?
-                .unwrap_or(512 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(256);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(512);
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "uring-write-bench",
-                checked_buffer_count(workers, pipeline, "uring-write-bench")?,
-                chunk_bytes,
-            )?;
-            let write_mode = args
-                .next()
-                .map(|value| UringWriteMode::parse(&value))
-                .transpose()?
-                .unwrap_or(UringWriteMode::WriteFixedFile);
-            let pin_workers = args
-                .next()
-                .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
-                .unwrap_or(true);
-            uring_write_bench(
-                &target,
-                workers,
-                bytes_per_worker,
-                chunk_bytes,
-                pipeline,
-                ring_entries,
-                buffer_mode,
-                write_mode,
-                pin_workers,
-            )
-        }
-        Some("slot-wal-bench") => {
-            let path = args.next().ok_or_else(|| {
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(16);
+                let bytes_per_worker = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-worker"))
+                    .transpose()?
+                    .unwrap_or(512 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(256);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(512);
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "uring-write-bench",
+                    checked_buffer_count(workers, pipeline, "uring-write-bench")?,
+                    chunk_bytes,
+                )?;
+                let write_mode = args
+                    .next()
+                    .map(|value| UringWriteMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(UringWriteMode::WriteFixedFile);
+                let pin_workers = args
+                    .next()
+                    .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
+                    .unwrap_or(true);
+                uring_write_bench(
+                    &target,
+                    workers,
+                    bytes_per_worker,
+                    chunk_bytes,
+                    pipeline,
+                    ring_entries,
+                    buffer_mode,
+                    write_mode,
+                    pin_workers,
+                )
+            }
+            Some("slot-wal-bench") => {
+                let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: slot-wal-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [total-bytes] \
                      [chunk-bytes] [pipeline] [ring-entries] [mode] [buffer-mode]",
                 )
             })?;
-            let total_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "total-bytes"))
-                .transpose()?
-                .unwrap_or(1024 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(1024 * 1024);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024);
-            let mode = args
-                .next()
-                .map(|value| SlotWalMode::parse(&value))
-                .transpose()?
-                .unwrap_or(SlotWalMode::Write);
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "slot-wal-bench",
-                pipeline,
-                chunk_bytes,
-            )?;
-            slot_wal_bench(
-                &path,
-                total_bytes,
-                chunk_bytes,
-                pipeline,
-                ring_entries,
-                mode,
-                buffer_mode,
-            )
-        }
-        Some("slot-rand-bench") => {
-            let path = args.next().ok_or_else(|| {
+                let total_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "total-bytes"))
+                    .transpose()?
+                    .unwrap_or(1024 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(1024 * 1024);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024);
+                let mode = args
+                    .next()
+                    .map(|value| SlotWalMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(SlotWalMode::Write);
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "slot-wal-bench",
+                    pipeline,
+                    chunk_bytes,
+                )?;
+                slot_wal_bench(
+                    &path,
+                    total_bytes,
+                    chunk_bytes,
+                    pipeline,
+                    ring_entries,
+                    mode,
+                    buffer_mode,
+                )
+            }
+            Some("slot-rand-bench") => {
+                let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: slot-rand-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [ops] \
@@ -100085,70 +100501,70 @@ pub fn main_entry() -> io::Result<()> {
                      [read-percent] [region-bytes] [buffer-mode] [pin]",
                 )
             })?;
-            let ops = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1_000_000);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(256);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(512);
-            let mode = args
-                .next()
-                .map(|value| SlotRandMode::parse(&value))
-                .transpose()?
-                .unwrap_or(SlotRandMode::Read);
-            let read_percent = args
-                .next()
-                .map(|value| value.parse::<u8>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(80);
-            let region_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "region-bytes"))
-                .transpose()?
-                .unwrap_or(4 * 1024 * 1024 * 1024usize);
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "slot-rand-bench",
-                pipeline,
-                chunk_bytes,
-            )?;
-            let pin = args
-                .next()
-                .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
-                .unwrap_or(true);
-            slot_rand_bench(
-                &path,
-                ops,
-                chunk_bytes,
-                pipeline,
-                ring_entries,
-                mode,
-                read_percent,
-                region_bytes,
-                buffer_mode,
-                pin,
-            )
-        }
-        Some("slot-rand-sharded-bench") => {
-            let path = args.next().ok_or_else(|| {
+                let ops = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1_000_000);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(256);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(512);
+                let mode = args
+                    .next()
+                    .map(|value| SlotRandMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(SlotRandMode::Read);
+                let read_percent = args
+                    .next()
+                    .map(|value| value.parse::<u8>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(80);
+                let region_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "region-bytes"))
+                    .transpose()?
+                    .unwrap_or(4 * 1024 * 1024 * 1024usize);
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "slot-rand-bench",
+                    pipeline,
+                    chunk_bytes,
+                )?;
+                let pin = args
+                    .next()
+                    .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
+                    .unwrap_or(true);
+                slot_rand_bench(
+                    &path,
+                    ops,
+                    chunk_bytes,
+                    pipeline,
+                    ring_entries,
+                    mode,
+                    read_percent,
+                    region_bytes,
+                    buffer_mode,
+                    pin,
+                )
+            }
+            Some("slot-rand-sharded-bench") => {
+                let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: slot-rand-sharded-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [workers] \
@@ -100157,77 +100573,77 @@ pub fn main_entry() -> io::Result<()> {
                      [buffer-mode] [pin-workers]",
                 )
             })?;
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4);
-            let ops_per_worker = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1_000_000);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(256);
-            let mode = args
-                .next()
-                .map(|value| SlotRandMode::parse(&value))
-                .transpose()?
-                .unwrap_or(SlotRandMode::Mixed);
-            let read_percent = args
-                .next()
-                .map(|value| value.parse::<u8>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(80);
-            let region_bytes_per_worker = args
-                .next()
-                .map(|value| parse_size_arg(&value, "region-bytes-per-worker"))
-                .transpose()?
-                .unwrap_or(4 * 1024 * 1024 * 1024usize);
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "slot-rand-sharded-bench",
-                checked_buffer_count(workers, pipeline, "slot-rand-sharded-bench")?,
-                chunk_bytes,
-            )?;
-            let pin_workers = args
-                .next()
-                .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
-                .unwrap_or(true);
-            slot_rand_sharded_bench(
-                &path,
-                workers,
-                ops_per_worker,
-                chunk_bytes,
-                pipeline,
-                ring_entries,
-                mode,
-                read_percent,
-                region_bytes_per_worker,
-                buffer_mode,
-                pin_workers,
-            )
-        }
-        Some("zckv-page-bench") => {
-            let path = args.next().ok_or_else(|| {
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4);
+                let ops_per_worker = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1_000_000);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(256);
+                let mode = args
+                    .next()
+                    .map(|value| SlotRandMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(SlotRandMode::Mixed);
+                let read_percent = args
+                    .next()
+                    .map(|value| value.parse::<u8>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(80);
+                let region_bytes_per_worker = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "region-bytes-per-worker"))
+                    .transpose()?
+                    .unwrap_or(4 * 1024 * 1024 * 1024usize);
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "slot-rand-sharded-bench",
+                    checked_buffer_count(workers, pipeline, "slot-rand-sharded-bench")?,
+                    chunk_bytes,
+                )?;
+                let pin_workers = args
+                    .next()
+                    .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
+                    .unwrap_or(true);
+                slot_rand_sharded_bench(
+                    &path,
+                    workers,
+                    ops_per_worker,
+                    chunk_bytes,
+                    pipeline,
+                    ring_entries,
+                    mode,
+                    read_percent,
+                    region_bytes_per_worker,
+                    buffer_mode,
+                    pin_workers,
+                )
+            }
+            Some("zckv-page-bench") => {
+                let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: zckv-page-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [backend:fixed-file|slot] \
@@ -100236,77 +100652,77 @@ pub fn main_entry() -> io::Result<()> {
                      [pin-workers]",
                 )
             })?;
-            let backend = args
-                .next()
-                .map(|value| ZckvPageBackend::parse(&value))
-                .transpose()?
-                .unwrap_or(ZckvPageBackend::FixedFile);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4);
-            let ops_per_worker = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1_000_000);
-            let page_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "page-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(256);
-            let read_percent = args
-                .next()
-                .map(|value| value.parse::<u8>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(80);
-            let region_bytes_per_worker = args
-                .next()
-                .map(|value| parse_size_arg(&value, "region-bytes-per-worker"))
-                .transpose()?
-                .unwrap_or(4 * 1024 * 1024 * 1024usize);
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "zckv-page-bench",
-                checked_buffer_count(workers, pipeline, "zckv-page-bench")?,
-                page_bytes,
-            )?;
-            let pin_workers = args
-                .next()
-                .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
-                .unwrap_or(true);
-            zckv_page_bench(
-                &path,
-                backend,
-                workers,
-                ops_per_worker,
-                page_bytes,
-                pipeline,
-                ring_entries,
-                read_percent,
-                region_bytes_per_worker,
-                buffer_mode,
-                pin_workers,
-            )
-        }
-        Some("zckv-compact-bench") => {
-            let path = args.next().ok_or_else(|| {
+                let backend = args
+                    .next()
+                    .map(|value| ZckvPageBackend::parse(&value))
+                    .transpose()?
+                    .unwrap_or(ZckvPageBackend::FixedFile);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4);
+                let ops_per_worker = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1_000_000);
+                let page_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "page-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(256);
+                let read_percent = args
+                    .next()
+                    .map(|value| value.parse::<u8>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(80);
+                let region_bytes_per_worker = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "region-bytes-per-worker"))
+                    .transpose()?
+                    .unwrap_or(4 * 1024 * 1024 * 1024usize);
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "zckv-page-bench",
+                    checked_buffer_count(workers, pipeline, "zckv-page-bench")?,
+                    page_bytes,
+                )?;
+                let pin_workers = args
+                    .next()
+                    .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
+                    .unwrap_or(true);
+                zckv_page_bench(
+                    &path,
+                    backend,
+                    workers,
+                    ops_per_worker,
+                    page_bytes,
+                    pipeline,
+                    ring_entries,
+                    read_percent,
+                    region_bytes_per_worker,
+                    buffer_mode,
+                    pin_workers,
+                )
+            }
+            Some("zckv-compact-bench") => {
+                let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: zckv-compact-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> \
@@ -100315,110 +100731,110 @@ pub fn main_entry() -> io::Result<()> {
                      [buffer-mode] [pin-workers]",
                 )
             })?;
-            let backend = args
-                .next()
-                .map(|value| ZckvPageBackend::parse(&value))
-                .transpose()?
-                .unwrap_or(ZckvPageBackend::FixedFile);
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4);
-            let ops_per_worker = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(65_536);
-            let page_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "page-bytes"))
-                .transpose()?
-                .unwrap_or(64 * 1024);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(32);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(256);
-            let region_bytes_per_worker = args
-                .next()
-                .map(|value| parse_size_arg(&value, "region-bytes-per-worker"))
-                .transpose()?
-                .unwrap_or(12 * 1024 * 1024 * 1024usize);
-            let buffers_per_worker = checked_buffer_count(pipeline, 3, "zckv-compact-bench")?;
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "zckv-compact-bench",
-                checked_buffer_count(workers, buffers_per_worker, "zckv-compact-bench")?,
-                page_bytes,
-            )?;
-            let pin_workers = args
-                .next()
-                .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
-                .unwrap_or(true);
-            zckv_compaction_bench(
-                &path,
-                backend,
-                workers,
-                ops_per_worker,
-                page_bytes,
-                pipeline,
-                ring_entries,
-                region_bytes_per_worker,
-                buffer_mode,
-                pin_workers,
-            )
-        }
-        Some("slot-rw-same-slot-test") => {
-            let path = args.next().ok_or_else(|| {
+                let backend = args
+                    .next()
+                    .map(|value| ZckvPageBackend::parse(&value))
+                    .transpose()?
+                    .unwrap_or(ZckvPageBackend::FixedFile);
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4);
+                let ops_per_worker = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(65_536);
+                let page_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "page-bytes"))
+                    .transpose()?
+                    .unwrap_or(64 * 1024);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(32);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(256);
+                let region_bytes_per_worker = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "region-bytes-per-worker"))
+                    .transpose()?
+                    .unwrap_or(12 * 1024 * 1024 * 1024usize);
+                let buffers_per_worker = checked_buffer_count(pipeline, 3, "zckv-compact-bench")?;
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "zckv-compact-bench",
+                    checked_buffer_count(workers, buffers_per_worker, "zckv-compact-bench")?,
+                    page_bytes,
+                )?;
+                let pin_workers = args
+                    .next()
+                    .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
+                    .unwrap_or(true);
+                zckv_compaction_bench(
+                    &path,
+                    backend,
+                    workers,
+                    ops_per_worker,
+                    page_bytes,
+                    pipeline,
+                    ring_entries,
+                    region_bytes_per_worker,
+                    buffer_mode,
+                    pin_workers,
+                )
+            }
+            Some("slot-rw-same-slot-test") => {
+                let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: slot-rw-same-slot-test <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [ops] \
                      [chunk-bytes] [inflight] [ring-entries] [buffer-mode]",
                 )
             })?;
-            let ops = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4096);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let inflight = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(256);
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "slot-rw-same-slot-test",
-                1,
-                chunk_bytes,
-            )?;
-            slot_rw_same_slot_test(&path, ops, chunk_bytes, inflight, ring_entries, buffer_mode)
-        }
-        Some("slot-wal-sharded-bench") => {
-            let path = args.next().ok_or_else(|| {
+                let ops = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4096);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let inflight = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(256);
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "slot-rw-same-slot-test",
+                    1,
+                    chunk_bytes,
+                )?;
+                slot_rw_same_slot_test(&path, ops, chunk_bytes, inflight, ring_entries, buffer_mode)
+            }
+            Some("slot-wal-sharded-bench") => {
+                let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: slot-wal-sharded-bench <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [workers] \
@@ -100426,108 +100842,108 @@ pub fn main_entry() -> io::Result<()> {
                      [mode] [buffer-mode] [pin-workers]",
                 )
             })?;
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4);
-            let bytes_per_worker = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-worker"))
-                .transpose()?
-                .unwrap_or(1024 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(16);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1024);
-            let mode = args
-                .next()
-                .map(|value| SlotWalMode::parse(&value))
-                .transpose()?
-                .unwrap_or(SlotWalMode::Write);
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "slot-wal-sharded-bench",
-                checked_buffer_count(workers, pipeline, "slot-wal-sharded-bench")?,
-                chunk_bytes,
-            )?;
-            let pin_workers = args
-                .next()
-                .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
-                .unwrap_or(true);
-            slot_wal_sharded_bench(
-                &path,
-                workers,
-                bytes_per_worker,
-                chunk_bytes,
-                pipeline,
-                ring_entries,
-                mode,
-                buffer_mode,
-                pin_workers,
-            )
-        }
-        Some("slot-topology-plan") => {
-            let path = args.next().ok_or_else(|| {
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4);
+                let bytes_per_worker = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-worker"))
+                    .transpose()?
+                    .unwrap_or(1024 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(16);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1024);
+                let mode = args
+                    .next()
+                    .map(|value| SlotWalMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(SlotWalMode::Write);
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "slot-wal-sharded-bench",
+                    checked_buffer_count(workers, pipeline, "slot-wal-sharded-bench")?,
+                    chunk_bytes,
+                )?;
+                let pin_workers = args
+                    .next()
+                    .map(|value| matches!(value.as_str(), "1" | "yes" | "true" | "pin"))
+                    .unwrap_or(true);
+                slot_wal_sharded_bench(
+                    &path,
+                    workers,
+                    bytes_per_worker,
+                    chunk_bytes,
+                    pipeline,
+                    ring_entries,
+                    mode,
+                    buffer_mode,
+                    pin_workers,
+                )
+            }
+            Some("slot-topology-plan") => {
+                let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: slot-topology-plan <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> [workers] \
                      [bytes-per-worker] [chunk-bytes] [pipeline-per-worker] [buffer-mode]",
                 )
             })?;
-            let workers = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4);
-            let bytes_per_worker = args
-                .next()
-                .map(|value| parse_size_arg(&value, "bytes-per-worker"))
-                .transpose()?
-                .unwrap_or(1024 * 1024 * 1024);
-            let chunk_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "chunk-bytes"))
-                .transpose()?
-                .unwrap_or(4096);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(16);
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "slot-topology-plan",
-                checked_buffer_count(workers, pipeline, "slot-topology-plan")?,
-                chunk_bytes,
-            )?;
-            slot_topology_plan(
-                &path,
-                workers,
-                bytes_per_worker,
-                chunk_bytes,
-                pipeline,
-                buffer_mode,
-            )
-        }
-        Some("raft-wal-follower") => {
-            let path = args.next().ok_or_else(|| {
+                let workers = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4);
+                let bytes_per_worker = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "bytes-per-worker"))
+                    .transpose()?
+                    .unwrap_or(1024 * 1024 * 1024);
+                let chunk_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "chunk-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(16);
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "slot-topology-plan",
+                    checked_buffer_count(workers, pipeline, "slot-topology-plan")?,
+                    chunk_bytes,
+                )?;
+                slot_topology_plan(
+                    &path,
+                    workers,
+                    bytes_per_worker,
+                    chunk_bytes,
+                    pipeline,
+                    buffer_mode,
+                )
+            }
+            Some("raft-wal-follower") => {
+                let path = args.next().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "usage: raft-wal-follower <PARTUUID=uuid|/dev/nullbN|/dev/ramN|/dev/zcbrdN> <bind> [port] \
@@ -100536,307 +100952,309 @@ pub fn main_entry() -> io::Result<()> {
                      [path:direct-tcp|tcp-mux|ebpf-cilium|local|rdma]",
                 )
             })?;
-            let bind = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "raft-wal-follower requires a bind address after the WAL target",
+                let bind = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "raft-wal-follower requires a bind address after the WAL target",
+                    )
+                })?;
+                let port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(19401);
+                let entries = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1_000_000);
+                let payload_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "payload-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096 - RAFT_APPEND_HEADER_LEN);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(128);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(512);
+                let backend = match args.next() {
+                    Some(value)
+                        if matches!(value.as_str(), "" | "auto" | "autodetect" | "sniff") =>
+                    {
+                        raft_wal_auto_backend()
+                    }
+                    Some(value) => ZckvPageBackend::parse(&value)?,
+                    None => raft_wal_auto_backend(),
+                };
+                let frame_bytes = raft_wal_frame_bytes(payload_bytes)?;
+                let wal_entry_bytes = raft_wal_entry_bytes(frame_bytes)?;
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "raft-wal-follower",
+                    pipeline,
+                    wal_entry_bytes,
+                )?;
+                let path_kind = args
+                    .next()
+                    .map(|value| RaftWalPath::parse(&value))
+                    .transpose()?
+                    .unwrap_or(RaftWalPath::DirectTcp);
+                raft_wal_follower(
+                    &path,
+                    &bind,
+                    port,
+                    entries,
+                    payload_bytes,
+                    pipeline,
+                    ring_entries,
+                    backend,
+                    buffer_mode,
+                    path_kind,
                 )
-            })?;
-            let port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(19401);
-            let entries = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1_000_000);
-            let payload_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "payload-bytes"))
-                .transpose()?
-                .unwrap_or(4096 - RAFT_APPEND_HEADER_LEN);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(128);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(512);
-            let backend = match args.next() {
-                Some(value) if matches!(value.as_str(), "" | "auto" | "autodetect" | "sniff") => {
-                    raft_wal_auto_backend()
-                }
-                Some(value) => ZckvPageBackend::parse(&value)?,
-                None => raft_wal_auto_backend(),
-            };
-            let frame_bytes = raft_wal_frame_bytes(payload_bytes)?;
-            let wal_entry_bytes = raft_wal_entry_bytes(frame_bytes)?;
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "raft-wal-follower",
-                pipeline,
-                wal_entry_bytes,
-            )?;
-            let path_kind = args
-                .next()
-                .map(|value| RaftWalPath::parse(&value))
-                .transpose()?
-                .unwrap_or(RaftWalPath::DirectTcp);
-            raft_wal_follower(
-                &path,
-                &bind,
-                port,
-                entries,
-                payload_bytes,
-                pipeline,
-                ring_entries,
-                backend,
-                buffer_mode,
-                path_kind,
-            )
-        }
-        Some("raft-wal-leader") => {
-            let peers = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: raft-wal-leader <peer1:port,peer2:port,...> [entries] \
+            }
+            Some("raft-wal-leader") => {
+                let peers = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: raft-wal-leader <peer1:port,peer2:port,...> [entries] \
                      [payload-bytes] [pipeline-per-peer] [ring-entries] \
                      [send-mode:send|send-zc|send-zc-fixed] [buffer-mode] \
                      [path:direct-tcp|tcp-mux|ebpf-cilium|local|rdma]",
+                    )
+                })?;
+                let peer_count = peers
+                    .split(',')
+                    .filter(|peer| !peer.trim().is_empty())
+                    .count()
+                    .max(1);
+                let entries = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(1_000_000);
+                let payload_bytes = args
+                    .next()
+                    .map(|value| parse_size_arg(&value, "payload-bytes"))
+                    .transpose()?
+                    .unwrap_or(4096 - RAFT_APPEND_HEADER_LEN);
+                let pipeline = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(128);
+                let ring_entries = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(512);
+                let send_mode = args
+                    .next()
+                    .map(|value| RaftWalSendMode::parse(&value))
+                    .transpose()?
+                    .unwrap_or(RaftWalSendMode::Send);
+                let frame_bytes = raft_wal_frame_bytes(payload_bytes)?;
+                let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
+                    args.next(),
+                    "raft-wal-leader",
+                    checked_buffer_count(peer_count, pipeline, "raft-wal-leader")?,
+                    frame_bytes,
+                )?;
+                let path_kind = args
+                    .next()
+                    .map(|value| RaftWalPath::parse(&value))
+                    .transpose()?
+                    .unwrap_or(RaftWalPath::DirectTcp);
+                raft_wal_leader(
+                    &peers,
+                    entries,
+                    payload_bytes,
+                    pipeline,
+                    ring_entries,
+                    send_mode,
+                    buffer_mode,
+                    path_kind,
                 )
-            })?;
-            let peer_count = peers
-                .split(',')
-                .filter(|peer| !peer.trim().is_empty())
-                .count()
-                .max(1);
-            let entries = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(1_000_000);
-            let payload_bytes = args
-                .next()
-                .map(|value| parse_size_arg(&value, "payload-bytes"))
-                .transpose()?
-                .unwrap_or(4096 - RAFT_APPEND_HEADER_LEN);
-            let pipeline = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(128);
-            let ring_entries = args
-                .next()
-                .map(|value| value.parse::<u32>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(512);
-            let send_mode = args
-                .next()
-                .map(|value| RaftWalSendMode::parse(&value))
-                .transpose()?
-                .unwrap_or(RaftWalSendMode::Send);
-            let frame_bytes = raft_wal_frame_bytes(payload_bytes)?;
-            let buffer_mode = parse_slot_wal_buffer_mode_or_standard(
-                args.next(),
-                "raft-wal-leader",
-                checked_buffer_count(peer_count, pipeline, "raft-wal-leader")?,
-                frame_bytes,
-            )?;
-            let path_kind = args
-                .next()
-                .map(|value| RaftWalPath::parse(&value))
-                .transpose()?
-                .unwrap_or(RaftWalPath::DirectTcp);
-            raft_wal_leader(
-                &peers,
-                entries,
-                payload_bytes,
-                pipeline,
-                ring_entries,
-                send_mode,
-                buffer_mode,
-                path_kind,
-            )
-        }
-        Some("raft-durable-follower") => {
-            let wal_path = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: raft-durable-follower <new-wal-file> <bind> [port] \
+            }
+            Some("raft-durable-follower") => {
+                let wal_path = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: raft-durable-follower <new-wal-file> <bind> [port] \
                      [entries] [payload-bytes] [sync-stride]",
+                    )
+                })?;
+                let bind = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "raft-durable-follower requires a bind address",
+                    )
+                })?;
+                let port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(9100);
+                let entries = args
+                    .next()
+                    .map(|value| value.parse::<u64>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4096);
+                let payload_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64);
+                let sync_stride = args
+                    .next()
+                    .map(|value| value.parse::<u64>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64);
+                raft_durable_follower(
+                    Path::new(&wal_path),
+                    &bind,
+                    port,
+                    entries,
+                    payload_bytes,
+                    sync_stride,
                 )
-            })?;
-            let bind = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "raft-durable-follower requires a bind address",
-                )
-            })?;
-            let port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(9100);
-            let entries = args
-                .next()
-                .map(|value| value.parse::<u64>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4096);
-            let payload_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64);
-            let sync_stride = args
-                .next()
-                .map(|value| value.parse::<u64>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64);
-            raft_durable_follower(
-                Path::new(&wal_path),
-                &bind,
-                port,
-                entries,
-                payload_bytes,
-                sync_stride,
-            )
-        }
-        Some("raft-follower") => {
-            let bind = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: raft-follower <bind> [port] [entries] [payload-bytes] [ack-stride]",
-                )
-            })?;
-            let port = args
-                .next()
-                .map(|value| value.parse::<u16>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(9100);
-            let entries = args
-                .next()
-                .map(|value| value.parse::<u64>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4096);
-            let payload_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4096);
-            let ack_stride = args
-                .next()
-                .map(|value| value.parse::<u64>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64);
-            raft_follower(&bind, port, entries, payload_bytes, ack_stride)
-        }
-        Some("raft-durable-inspect") => {
-            let wal_path = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: raft-durable-inspect <wal-file> [payload-bytes]",
-                )
-            })?;
-            let payload_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64);
-            raft_inspect_durable_wal(Path::new(&wal_path), payload_bytes)
-        }
-        Some("raft-durable-leader") => {
-            let wal_path = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: raft-durable-leader <new-local-wal-file> \
+            }
+            Some("raft-follower") => {
+                let bind = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: raft-follower <bind> [port] [entries] [payload-bytes] [ack-stride]",
+                    )
+                })?;
+                let port = args
+                    .next()
+                    .map(|value| value.parse::<u16>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(9100);
+                let entries = args
+                    .next()
+                    .map(|value| value.parse::<u64>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4096);
+                let payload_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4096);
+                let ack_stride = args
+                    .next()
+                    .map(|value| value.parse::<u64>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64);
+                raft_follower(&bind, port, entries, payload_bytes, ack_stride)
+            }
+            Some("raft-durable-inspect") => {
+                let wal_path = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: raft-durable-inspect <wal-file> [payload-bytes]",
+                    )
+                })?;
+                let payload_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64);
+                raft_inspect_durable_wal(Path::new(&wal_path), payload_bytes)
+            }
+            Some("raft-durable-leader") => {
+                let wal_path = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: raft-durable-leader <new-local-wal-file> \
                      <peer1:port,peer2:port,...> [entries] [payload-bytes] [sync-stride]",
+                    )
+                })?;
+                let peers = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "raft-durable-leader requires at least one peer",
+                    )
+                })?;
+                let entries = args
+                    .next()
+                    .map(|value| value.parse::<u64>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4096);
+                let payload_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64);
+                let sync_stride = args
+                    .next()
+                    .map(|value| value.parse::<u64>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64);
+                raft_leader(
+                    &peers,
+                    entries,
+                    payload_bytes,
+                    sync_stride,
+                    Some(Path::new(&wal_path)),
                 )
-            })?;
-            let peers = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "raft-durable-leader requires at least one peer",
-                )
-            })?;
-            let entries = args
-                .next()
-                .map(|value| value.parse::<u64>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4096);
-            let payload_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64);
-            let sync_stride = args
-                .next()
-                .map(|value| value.parse::<u64>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64);
-            raft_leader(
-                &peers,
-                entries,
-                payload_bytes,
-                sync_stride,
-                Some(Path::new(&wal_path)),
-            )
-        }
-        Some("raft-leader") => {
-            let peers = args.next().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "usage: raft-leader <peer1:port,peer2:port,...> [entries] \
+            }
+            Some("raft-leader") => {
+                let peers = args.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "usage: raft-leader <peer1:port,peer2:port,...> [entries] \
                      [payload-bytes] [ack-stride]",
-                )
-            })?;
-            let entries = args
-                .next()
-                .map(|value| value.parse::<u64>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4096);
-            let payload_bytes = args
-                .next()
-                .map(|value| value.parse::<usize>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(4096);
-            let ack_stride = args
-                .next()
-                .map(|value| value.parse::<u64>())
-                .transpose()
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
-                .unwrap_or(64);
-            raft_leader(&peers, entries, payload_bytes, ack_stride, None)
-        }
-        Some(other) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "unknown command {other:?}; use probe, rdma-probe, rdma-plan, path-plan, \
+                    )
+                })?;
+                let entries = args
+                    .next()
+                    .map(|value| value.parse::<u64>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4096);
+                let payload_bytes = args
+                    .next()
+                    .map(|value| value.parse::<usize>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(4096);
+                let ack_stride = args
+                    .next()
+                    .map(|value| value.parse::<u64>())
+                    .transpose()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?
+                    .unwrap_or(64);
+                raft_leader(&peers, entries, payload_bytes, ack_stride, None)
+            }
+            Some(other) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown command {other:?}; use probe, rdma-probe, rdma-plan, path-plan, \
                  libfabric-plan, libfabric-smoke, rdma-rxe-add, rdma-rxe-del, \
                  rdma-rxe-smoke, register-ifq, stress-register-ifq, \
                  recv-zc-server, tcp-send, tcp-sink-server, tcp-bench-send, \
@@ -100852,22 +101270,28 @@ pub fn main_entry() -> io::Result<()> {
                  slot-wal-sharded-bench, slot-topology-plan, \
                  raft-wal-follower, raft-wal-leader, raft-durable-follower, \
                  raft-durable-leader, raft-durable-inspect, raft-follower, or raft-leader"
-            ),
-        )),
+                ),
+            )),
         }
     })();
 
-    if survey.is_enabled() {
+    if telemetry.is_enabled() {
         let mut completion_payload = serde_json::Map::new();
-        completion_payload.insert("command".to_string(), serde_json::Value::String(command_name));
+        completion_payload.insert(
+            "command".to_string(),
+            serde_json::Value::String(command_name),
+        );
         completion_payload.insert(
             "phase".to_string(),
             serde_json::Value::String("finish".to_string()),
         );
-        completion_payload.insert("ok".to_string(), serde_json::Value::Bool(command_result.is_ok()));
-        survey.emit_event("cli_completion", completion_payload);
+        completion_payload.insert(
+            "ok".to_string(),
+            serde_json::Value::Bool(command_result.is_ok()),
+        );
+        telemetry.emit_event("cli_completion", completion_payload);
     }
-    survey.shutdown();
+    telemetry.shutdown();
 
     command_result
 }

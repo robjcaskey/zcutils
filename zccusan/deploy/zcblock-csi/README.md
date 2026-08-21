@@ -168,8 +168,16 @@ host. The driver does not load kernel modules.
 
 StorageClass parameters:
 
-- `backend`: `zcbrd`, `file-loop`, or `raw-block`. `mux` is reserved for a
-  later gateway/control plane.
+- `backend`: `zcbrd`, `file-loop`, `fabric`, `userspace-mount`, or `raw-block`. `fabric` stages
+  `/dev/zcnblk0` without node affinity; every eligible node must have its own
+  client edge connected through the separate userspace stage to the requested
+  logical volume. CSI and the kernel edge do not own placement. `mux` remains
+  reserved for a later gateway/control plane.
+- `userspace-mount` skips the client block device for filesystem-mode PVCs.
+  A separate userspace filesystem service must expose a FUSE mount at
+  `<userspaceMountRoot>/<volume-id>` on each eligible node. CSI verifies the
+  filesystem type and stages that mount; it rejects `volumeMode: Block` and
+  does not own remote placement.
 - `blocksize`: block size written to configfs. Default: `4096`.
 - `queues`: blk-mq queue count. Default: `8`.
 - `queueDepth`: queue depth. Default: `512`.

@@ -1,0 +1,78 @@
+Linux ip-10-83-1-201.eu-west-1.compute.internal 6.18.41-94.142.amzn2023.x86_64 #2 SMP PREEMPT_DYNAMIC Mon Aug 10 19:23:35 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+2
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens5             UP             10.83.1.201/24 metric 512 fe80::82a:6dff:fe4b:1915/64 
+eni3fd2cfc8771@if3 UP             fe80::7826:a2ff:fe27:81d9/64 
+enic23affd090d@if3 UP             fe80::f8ff:6bff:fe52:7f54/64 
+ens6             UP             10.83.1.178/24 fe80::86a:5dff:fe9a:f1e1/64 
+enic2ead2ae1e9@if3 UP             fe80::2cd7:e0ff:fe44:7ab0/64 
+eni67942af197e@if3 UP             fe80::7cae:16ff:fe91:9ba1/64 
+enie1ebc535c38@if3 UP             fe80::7842:dfff:fe28:e970/64 
+ens7             UP             10.83.1.161/24 fe80::80f:c7ff:fead:4541/64 
+eni24667376302@if3 UP             fe80::a8b5:93ff:fefc:df10/64 
+0:	from all lookup local
+512:	from all to 10.83.1.195 lookup main
+512:	from all to 10.83.1.189 lookup main
+512:	from all to 10.83.1.47 lookup main
+512:	from all to 10.83.1.155 lookup main
+512:	from all to 10.83.1.110 lookup main
+512:	from all to 10.83.1.231 lookup main
+1024:	from all fwmark 0x80/0x80 lookup main
+1536:	from 10.83.1.155 lookup 2
+1536:	from 10.83.1.231 lookup 2
+32765:	from 10.83.1.178 lookup 2
+32765:	from 10.83.1.161 lookup 3
+32766:	from all lookup main
+32767:	from all lookup default
+default via 10.83.1.1 dev ens6 table 2 
+10.83.1.1 dev ens6 table 2 scope link 
+default via 10.83.1.1 dev ens7 table 3 
+10.83.1.1 dev ens7 table 3 scope link 
+default via 10.83.1.1 dev ens5 proto dhcp src 10.83.1.201 metric 512 
+10.83.0.2 via 10.83.1.1 dev ens5 proto dhcp src 10.83.1.201 metric 512 
+10.83.1.0/24 dev ens5 proto kernel scope link src 10.83.1.201 metric 512 
+10.83.1.1 dev ens5 proto dhcp scope link src 10.83.1.201 metric 512 
+10.83.1.47 dev enic2ead2ae1e9 scope link 
+10.83.1.110 dev enie1ebc535c38 scope link 
+10.83.1.130 dev ens6 scope link src 10.83.1.178 
+10.83.1.155 dev eni67942af197e scope link 
+10.83.1.189 dev enic23affd090d scope link 
+10.83.1.195 dev eni3fd2cfc8771 scope link 
+10.83.1.231 dev eni24667376302 scope link 
+local 10.83.1.161 dev ens7 table local proto kernel scope host src 10.83.1.161 
+local 10.83.1.178 dev ens6 table local proto kernel scope host src 10.83.1.178 
+local 10.83.1.201 dev ens5 table local proto kernel scope host src 10.83.1.201 
+broadcast 10.83.1.255 dev ens5 table local proto kernel scope link src 10.83.1.201 
+broadcast 10.83.1.255 dev ens6 table local proto kernel scope link src 10.83.1.178 
+broadcast 10.83.1.255 dev ens7 table local proto kernel scope link src 10.83.1.161 
+local 127.0.0.0/8 dev lo table local proto kernel scope host src 127.0.0.1 
+local 127.0.0.1 dev lo table local proto kernel scope host src 127.0.0.1 
+broadcast 127.255.255.255 dev lo table local proto kernel scope link src 127.0.0.1 
+fe80::/64 dev ens5 proto kernel metric 256 pref medium
+fe80::/64 dev eni3fd2cfc8771 proto kernel metric 256 pref medium
+fe80::/64 dev enic23affd090d proto kernel metric 256 pref medium
+fe80::/64 dev ens6 proto kernel metric 256 pref medium
+fe80::/64 dev enic2ead2ae1e9 proto kernel metric 256 pref medium
+fe80::/64 dev eni67942af197e proto kernel metric 256 pref medium
+fe80::/64 dev enie1ebc535c38 proto kernel metric 256 pref medium
+fe80::/64 dev ens7 proto kernel metric 256 pref medium
+fe80::/64 dev eni24667376302 proto kernel metric 256 pref medium
+local ::1 dev lo table local proto kernel metric 0 pref medium
+local fe80::80f:c7ff:fead:4541 dev ens7 table local proto kernel metric 0 pref medium
+local fe80::82a:6dff:fe4b:1915 dev ens5 table local proto kernel metric 0 pref medium
+local fe80::86a:5dff:fe9a:f1e1 dev ens6 table local proto kernel metric 0 pref medium
+local fe80::2cd7:e0ff:fe44:7ab0 dev enic2ead2ae1e9 table local proto kernel metric 0 pref medium
+local fe80::7826:a2ff:fe27:81d9 dev eni3fd2cfc8771 table local proto kernel metric 0 pref medium
+local fe80::7842:dfff:fe28:e970 dev enie1ebc535c38 table local proto kernel metric 0 pref medium
+local fe80::7cae:16ff:fe91:9ba1 dev eni67942af197e table local proto kernel metric 0 pref medium
+local fe80::a8b5:93ff:fefc:df10 dev eni24667376302 table local proto kernel metric 0 pref medium
+local fe80::f8ff:6bff:fe52:7f54 dev enic23affd090d table local proto kernel metric 0 pref medium
+multicast ff00::/8 dev ens5 table local proto kernel metric 256 pref medium
+multicast ff00::/8 dev eni3fd2cfc8771 table local proto kernel metric 256 pref medium
+multicast ff00::/8 dev enic23affd090d table local proto kernel metric 256 pref medium
+multicast ff00::/8 dev ens6 table local proto kernel metric 256 pref medium
+multicast ff00::/8 dev enic2ead2ae1e9 table local proto kernel metric 256 pref medium
+multicast ff00::/8 dev eni67942af197e table local proto kernel metric 256 pref medium
+multicast ff00::/8 dev enie1ebc535c38 table local proto kernel metric 256 pref medium
+multicast ff00::/8 dev ens7 table local proto kernel metric 256 pref medium
+multicast ff00::/8 dev eni24667376302 table local proto kernel metric 256 pref medium

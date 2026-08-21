@@ -1,0 +1,32 @@
+FROM ubuntu:24.04
+
+ARG EFA_INSTALLER_VERSION=1.48.0
+
+RUN export DEBIAN_FRONTEND=noninteractive \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        iproute2 \
+        numactl \
+        procps \
+        rdma-core \
+        tar \
+    && workdir="$(mktemp -d)" \
+    && cd "$workdir" \
+    && curl -fsSLO "https://efa-installer.amazonaws.com/aws-efa-installer-${EFA_INSTALLER_VERSION}.tar.gz" \
+    && tar -xf "aws-efa-installer-${EFA_INSTALLER_VERSION}.tar.gz" \
+    && cd aws-efa-installer \
+    && ./efa_installer.sh -y --skip-kmod --skip-mpi --skip-plugin --no-verify \
+    && rm -rf "$workdir" /var/lib/apt/lists/*
+
+COPY --chmod=0755 zcutils /usr/local/bin/zcutils
+
+ENV LD_LIBRARY_PATH=/opt/amazon/efa/lib
+ENV PATH=/opt/amazon/efa/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+LABEL org.opencontainers.image.title="zcutils EFA benchmark runtime"
+LABEL org.opencontainers.image.description="Arm64 EKS EFA-direct transport benchmark runtime"
+LABEL org.opencontainers.image.version="0.1.2"
+
+ENTRYPOINT ["/usr/local/bin/zcutils"]

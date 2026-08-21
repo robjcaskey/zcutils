@@ -58,6 +58,7 @@ daemonset:
   affinity: {}
 
 stateDir: /var/lib/zcblock-csi
+userspaceMountRoot: /var/lib/zcutils/userspace-volumes
 pluginDir: ""
 kubeletDir: /var/lib/kubelet
 registrationDir: /var/lib/kubelet/plugins_registry
@@ -69,19 +70,16 @@ control:
   listen: 127.0.0.1:9788
   url: http://127.0.0.1:9788
 
-management:
-  checkin:
-    enabled: true
-    url: ""
+telemetry:
+  apiEndpoint: ""
 
 communitySurvey:
   enabled: true
-  backendUrl: "https://vdq4ma9dl2.execute-api.us-east-1.amazonaws.com/survey"
+  apiEndpoint: "https://vdq4ma9dl2.execute-api.us-east-1.amazonaws.com/survey"
 
 telemetryServer:
   enabled: true
   port: 9899
-  upstreamUrl: ""
   flushIntervalMs: 750
   requestTimeoutMs: 500
   replicas: 1
@@ -99,7 +97,7 @@ metrics:
 freezeMaxTtlMs: 5000
 snapshotMode: auto
 
-environment:
+installation:
   enabled: true
   id: ""
 
@@ -124,6 +122,27 @@ storageClasses:
     allowVolumeExpansion: false
     parameters:
       backend: file-loop
+  zcfabric:
+    enabled: false
+    name: zcfabric
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: false
+    annotations:
+      zcutils.io/fabric-prerequisite: "Every eligible client node must expose /dev/zcnblk0 connected to the selected userspace volume stage."
+    parameters:
+      backend: fabric
+      rawDevice: /dev/zcnblk0
+  zcuserspace:
+    enabled: false
+    name: zcuserspace
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: false
+    annotations:
+      zcutils.io/userspace-mount-prerequisite: "A node-local userspace filesystem service must mount each logical volume beneath userspaceMountRoot before NodeStageVolume."
+    parameters:
+      backend: userspace-mount
   zcraw:
     enabled: false
     name: zcraw
