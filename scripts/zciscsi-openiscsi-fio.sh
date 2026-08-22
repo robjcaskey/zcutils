@@ -3,12 +3,18 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${TARGET:-$ROOT/target/release/zciscsi-target}"
-ARENA_SOCKET="${ARENA_SOCKET:?set ARENA_SOCKET to the established userspace-stage arena}"
+ARENA_SOCKET="${ARENA_SOCKET:-}"
 ZCNBLK_DEVICE="${ZCNBLK_DEVICE:-/dev/zcnblk0}"
+FAN_ADDRS="${FAN_ADDRS:-}"
+CAPACITY_BYTES="${CAPACITY_BYTES:-}"
+FAN_WINDOW="${FAN_WINDOW:-64}"
 LISTEN="${LISTEN:-127.0.0.1:3260}"
+HOST="${LISTEN%:*}"
 PORT="${LISTEN##*:}"
 IQN="${IQN:-iqn.2026-08.local.zcutils:fio-volume}"
 LANE_CPUS="${LANE_CPUS:?set the complete arena lane-to-CPU list}"
+RX_CPUS="${RX_CPUS:?set the complete iSCSI RX-to-CPU list}"
+TX_CPUS="${TX_CPUS:?set the complete iSCSI TX-to-CPU list}"
 FIO_CPUS="${FIO_CPUS:-99,111,123,135,147,159,171,183,3,15,27,39,51,63,75,87}"
 WORK_DIR="${WORK_DIR:-/tmp/zciscsi-openiscsi-fio}"
 RUNTIME="${RUNTIME:-10}"
@@ -20,17 +26,32 @@ TEST_SIZE="${TEST_SIZE:-1G}"
 ISCSI_CMDS_MAX="${ISCSI_CMDS_MAX:-2048}"
 ISCSI_QUEUE_DEPTH="${ISCSI_QUEUE_DEPTH:-1024}"
 ISCSI_NR_SESSIONS="${ISCSI_NR_SESSIONS:-16}"
+SESSIONS_PER_LANE="${SESSIONS_PER_LANE:-1}"
 LOG="$WORK_DIR/target.log"
 
-for command in fio iscsiadm jq lsblk sg_sync ss; do
+for command in fio iscsiadm jq lsblk sg_sync ss timeout; do
     command -v "$command" >/dev/null || {
         printf 'missing required command: %s\n' "$command" >&2
         exit 1
     }
 done
 [[ -x "$TARGET" ]]
-[[ -S "$ARENA_SOCKET" ]]
-[[ -b "$ZCNBLK_DEVICE" ]]
+if [[ -n "$FAN_ADDRS" ]]; then
+    [[ -z "$ARENA_SOCKET" ]]
+    [[ "$CAPACITY_BYTES" =~ ^[0-9]+$ ]]
+    (( CAPACITY_BYTES > 0 && CAPACITY_BYTES % 4096 == 0 ))
+    [[ "$FAN_WINDOW" =~ ^[0-9]+$ ]]
+    (( FAN_WINDOW > 0 && FAN_WINDOW <= 4096 ))
+    backend_args=(--fan-addrs "$FAN_ADDRS" --capacity-bytes "$CAPACITY_BYTES" --fan-window "$FAN_WINDOW")
+    backend_label="direct-userspace-raid-stage"
+    endpoint="$FAN_ADDRS"
+else
+    [[ -n "$ARENA_SOCKET" && -S "$ARENA_SOCKET" ]]
+    [[ -b "$ZCNBLK_DEVICE" ]]
+    backend_args=(--arena-socket "$ARENA_SOCKET" --zcnblk-device "$ZCNBLK_DEVICE")
+    backend_label="shared-arena-block-edge"
+    endpoint="$ARENA_SOCKET"
+fi
 mkdir -p "$WORK_DIR"
 rm -f -- "$LOG" "$WORK_DIR/fio.json" "$WORK_DIR/discovery.log" \
     "$WORK_DIR/login.log" "$WORK_DIR/logout.log" "$WORK_DIR/lsblk.log"
@@ -40,7 +61,7 @@ logged_in=0
 cleanup() {
     local status=$?
     if [[ "$logged_in" == 1 ]]; then
-        sudo -n iscsiadm -m node -T "$IQN" -p "$LISTEN" --logout >/dev/null 2>&1 || true
+        sudo -n timeout -k 1 5 iscsiadm -m node -T "$IQN" -p "$LISTEN" --logout >/dev/null 2>&1 || true
     fi
     sudo -n iscsiadm -m node -o delete -T "$IQN" -p "$LISTEN" >/dev/null 2>&1 || true
     if [[ -n "$target_pid" ]] && sudo -n test -d "/proc/$target_pid"; then
@@ -59,10 +80,12 @@ trap cleanup EXIT INT TERM
 sudo -n "$TARGET" \
     --listen "$LISTEN" \
     --target "$IQN" \
-    --arena-socket "$ARENA_SOCKET" \
-    --zcnblk-device "$ZCNBLK_DEVICE" \
+    "${backend_args[@]}" \
     --block-size 4096 \
-    --lane-cpus "$LANE_CPUS" >"$LOG" 2>&1 &
+    --lane-cpus "$LANE_CPUS" \
+    --rx-cpus "$RX_CPUS" \
+    --tx-cpus "$TX_CPUS" \
+    --sessions-per-lane "$SESSIONS_PER_LANE" >"$LOG" 2>&1 &
 target_pid=$!
 
 for _ in $(seq 1 100); do
@@ -89,14 +112,38 @@ logged_in=1
 devices=()
 for _ in $(seq 1 200); do
     devices=()
-    for block_path in /sys/class/iscsi_session/session*/device/target*/*/block/*; do
-        [[ -e "$block_path" ]] || continue
-        devices+=("/dev/${block_path##*/}")
+    for session_path in /sys/class/iscsi_session/session*; do
+        [[ -r "$session_path/targetname" ]] || continue
+        IFS= read -r session_target < "$session_path/targetname"
+        [[ "$session_target" == "$IQN" ]] || continue
+        session_id="${session_path##*session}"
+        portal_match=0
+        for connection_path in /sys/class/iscsi_connection/connection"$session_id":*; do
+            [[ -r "$connection_path/persistent_address" && -r "$connection_path/persistent_port" ]] || continue
+            IFS= read -r session_address < "$connection_path/persistent_address"
+            IFS= read -r session_port < "$connection_path/persistent_port"
+            if [[ "$session_address" == "$HOST" && "$session_port" == "$PORT" ]]; then
+                portal_match=1
+                break
+            fi
+        done
+        (( portal_match == 1 )) || continue
+        for block_path in "$session_path"/device/target*/*/block/*; do
+            [[ -e "$block_path" ]] || continue
+            devices+=("/dev/${block_path##*/}")
+        done
     done
     if (( ${#devices[@]} != 0 )); then
         mapfile -t devices < <(printf '%s\n' "${devices[@]}" | sort -u)
     fi
-    (( ${#devices[@]} >= ISCSI_NR_SESSIONS )) && break
+    devices_ready=1
+    for device in "${devices[@]}"; do
+        if [[ ! -b "$device" ]] || ! sudo -n blockdev --getsize64 "$device" >/dev/null 2>&1; then
+            devices_ready=0
+            break
+        fi
+    done
+    (( ${#devices[@]} >= ISCSI_NR_SESSIONS && devices_ready == 1 )) && break
     sleep 0.05
 done
 (( ${#devices[@]} == ISCSI_NR_SESSIONS ))
@@ -157,5 +204,5 @@ jq -r --arg rw "$RW" --argjson jobs "$NUMJOBS" --argjson qd "$IODEPTH" '
     | ($j[$rw] // (if ($rw | contains("read")) then $j.read else $j.write end)) as $io
     | "ZCISCSI_FIO_RESULT rw=\($rw) block_size=4096 numjobs=\($jobs) per_job_qd=\($qd) aggregate_outstanding=\($jobs * $qd) iops=\($io.iops) bandwidth_KiBps=\($io.bw) mean_clat_ns=\($io.clat_ns.mean) p99_ns=\($io.clat_ns.percentile["99.000000"]) p99_5_ns=\($io.clat_ns.percentile["99.500000"]) p99_9_ns=\($io.clat_ns.percentile["99.900000"])"' \
     "$WORK_DIR/fio.json"
-printf 'ZCISCSI_FIO_TOPOLOGY devices=%s sessions=%s capacity_bytes_each=%s logical_block=%s physical_block=%s lane_to_cpu=%s fio_cpus=%s iscsi_cmds_max=%s iscsi_queue_depth=%s transport=iscsi-tcp-loopback backend=userspace-stage frontend_placement=no\n' \
-    "$filename" "$ISCSI_NR_SESSIONS" "$size_bytes" "$logical_block" "$physical_block" "$LANE_CPUS" "$FIO_CPUS" "$ISCSI_CMDS_MAX" "$ISCSI_QUEUE_DEPTH"
+printf 'ZCISCSI_FIO_TOPOLOGY devices=%s sessions=%s sessions_per_lane=%s capacity_bytes_each=%s logical_block=%s physical_block=%s lane_to_cpu=%s rx_to_cpu=%s tx_to_cpu=%s fio_cpus=%s role_cpu_sharing=within-role-session-shards-only iscsi_cmds_max=%s iscsi_queue_depth=%s transport=iscsi-tcp-loopback backend=%s endpoint=%s frontend_placement=no\n' \
+    "$filename" "$ISCSI_NR_SESSIONS" "$SESSIONS_PER_LANE" "$size_bytes" "$logical_block" "$physical_block" "$LANE_CPUS" "$RX_CPUS" "$TX_CPUS" "$FIO_CPUS" "$ISCSI_CMDS_MAX" "$ISCSI_QUEUE_DEPTH" "$backend_label" "$endpoint"

@@ -19,8 +19,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use zcutils::block::zcnblk::{
+    ZCNBLK_FRAME_HEADER_LEN, ZCNBLK_OP_BATCH, ZCNBLK_OP_BATCH_RESP, ZCNBLK_OP_READ,
+    ZCNBLK_OP_READ_RANGE_RESP, ZCNBLK_OP_READ_RESP, ZCNBLK_OP_SYNC, ZCNBLK_OP_SYNC_ACK,
+    ZCNBLK_OP_WRITE, ZCNBLK_OP_WRITE_ACK, ZCNBLK_TOPOLOGY_PORT_LANE, ZCNBLK_TOPOLOGY_VALID,
+    ZcnblkFrameHeader, ZcnblkFrameTopology,
+};
 use zcutils::zcnblk_app_arena::{
     ZcnblkAppArena, ZcnblkAppArenaBuffer, ZcnblkAppArenaIoCompletion, ZcnblkAppArenaIoRing,
     open_block_direct, pin_current_thread,
@@ -33,6 +39,7 @@ const COMMAND_WINDOW: u32 = 4096;
 const MAX_CONTROL_DATA: usize = 1024 * 1024;
 const MAX_SEGMENT: u32 = 262_144;
 const LANE_PIPELINE: usize = 64;
+const DATA_IN_BATCH: usize = 64;
 
 const OP_NOP_OUT: u8 = 0x00;
 const OP_SCSI_COMMAND: u8 = 0x01;
@@ -170,13 +177,23 @@ struct ArenaBackend {
     lane_cpus: Vec<usize>,
 }
 
+struct FanBackend {
+    addrs: Vec<String>,
+    capacity_bytes: u64,
+    lane_cpus: Vec<usize>,
+    window: usize,
+    batch_spin: Duration,
+}
+
 enum Backend {
     File(FileBackend),
     Arena(ArenaBackend),
+    Fan(FanBackend),
 }
 
 enum Blocks {
     Bytes(Vec<u8>),
+    ArenaOne(ZcnblkAppArenaBuffer),
     Arena(Vec<ZcnblkAppArenaBuffer>),
 }
 
@@ -184,6 +201,7 @@ impl Blocks {
     fn len(&self) -> usize {
         match self {
             Self::Bytes(bytes) => bytes.len(),
+            Self::ArenaOne(_) => BLOCK_SIZE as usize,
             Self::Arena(buffers) => buffers.len() * BLOCK_SIZE as usize,
         }
     }
@@ -205,6 +223,10 @@ impl Blocks {
         }
         match self {
             Self::Bytes(bytes) => stream.read_exact(&mut bytes[offset..end]),
+            Self::ArenaOne(buffer) => {
+                let slice = buffer.as_mut_slice()?;
+                stream.read_exact(&mut slice[offset..end])
+            }
             Self::Arena(buffers) => {
                 let mut left = len;
                 while left != 0 {
@@ -218,6 +240,16 @@ impl Blocks {
                 }
                 Ok(())
             }
+        }
+    }
+
+    fn bytes(&self) -> io::Result<&[u8]> {
+        match self {
+            Self::Bytes(bytes) => Ok(bytes),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "direct fan transport received a non-userspace payload",
+            )),
         }
     }
 }
@@ -274,10 +306,67 @@ impl Backend {
         }))
     }
 
+    fn open_fan(
+        addrs: Vec<String>,
+        capacity_bytes: u64,
+        lane_cpus: Vec<usize>,
+        window: usize,
+    ) -> io::Result<Self> {
+        validate_capacity(capacity_bytes)?;
+        if addrs.is_empty() || addrs.iter().any(|addr| addr.trim().is_empty()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--fan-addrs must contain one non-empty TCP address per lane",
+            ));
+        }
+        if addrs.len() != lane_cpus.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "direct fan topology has {} addresses but {} lane CPUs",
+                    addrs.len(),
+                    lane_cpus.len()
+                ),
+            ));
+        }
+        if window == 0 || window > COMMAND_WINDOW as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("--fan-window must be in 1..={COMMAND_WINDOW}"),
+            ));
+        }
+        let batch_spin_us = env::var("ZCISCSI_FAN_BATCH_SPIN_US")
+            .ok()
+            .map(|value| {
+                value.parse::<u64>().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "ZCISCSI_FAN_BATCH_SPIN_US must be an integer",
+                    )
+                })
+            })
+            .transpose()?
+            .unwrap_or(2);
+        if batch_spin_us > 1_000 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ZCISCSI_FAN_BATCH_SPIN_US must be in 0..=1000",
+            ));
+        }
+        Ok(Self::Fan(FanBackend {
+            addrs,
+            capacity_bytes,
+            lane_cpus,
+            window,
+            batch_spin: Duration::from_micros(batch_spin_us),
+        }))
+    }
+
     fn capacity_bytes(&self) -> u64 {
         match self {
             Self::File(backend) => backend.capacity_bytes,
             Self::Arena(backend) => backend.capacity_bytes,
+            Self::Fan(backend) => backend.capacity_bytes,
         }
     }
 
@@ -285,6 +374,7 @@ impl Backend {
         match self {
             Self::File(_) => 1,
             Self::Arena(backend) => backend.arena.channels() as usize,
+            Self::Fan(backend) => backend.addrs.len(),
         }
     }
 
@@ -292,6 +382,7 @@ impl Backend {
         match self {
             Self::File(_) => &[],
             Self::Arena(backend) => &backend.lane_cpus,
+            Self::Fan(backend) => &backend.lane_cpus,
         }
     }
 
@@ -304,7 +395,12 @@ impl Backend {
         }
         match self {
             Self::File(_) => Ok(Blocks::Bytes(vec![0; len])),
+            Self::Fan(_) => Ok(Blocks::Bytes(vec![0; len])),
             Self::Arena(backend) => {
+                if len == BLOCK_SIZE as usize {
+                    return allocate_arena(&backend.arena, &backend.device, lane as u32)
+                        .map(Blocks::ArenaOne);
+                }
                 let mut buffers = Vec::with_capacity(len / BLOCK_SIZE as usize);
                 for _ in 0..len / BLOCK_SIZE as usize {
                     buffers.push(allocate_arena(
@@ -328,7 +424,15 @@ impl Backend {
                     .read_exact_at(&mut bytes, lba * u64::from(BLOCK_SIZE))?;
                 Ok(Blocks::Bytes(bytes))
             }
+            Self::Fan(_) => Err(io::Error::other(
+                "direct fan reads are owned by the lane-local fan transport",
+            )),
             Self::Arena(backend) => {
+                if blocks == 1 {
+                    let mut buffer = allocate_arena(&backend.arena, &backend.device, lane as u32)?;
+                    buffer.read_at(&backend.device, lba * u64::from(BLOCK_SIZE))?;
+                    return Ok(Blocks::ArenaOne(buffer));
+                }
                 let mut buffers = Vec::with_capacity(blocks as usize);
                 for index in 0..blocks {
                     let mut buffer = allocate_arena(&backend.arena, &backend.device, lane as u32)?;
@@ -351,6 +455,9 @@ impl Backend {
             (Self::File(backend), Blocks::Bytes(bytes)) => backend
                 .file
                 .write_all_at(bytes, lba * u64::from(BLOCK_SIZE)),
+            (Self::Arena(backend), Blocks::ArenaOne(buffer)) => {
+                buffer.write_at(&backend.device, lba * u64::from(BLOCK_SIZE))
+            }
             (Self::Arena(backend), Blocks::Arena(buffers)) => {
                 for (index, buffer) in buffers.iter_mut().enumerate() {
                     buffer.write_at(
@@ -360,6 +467,9 @@ impl Backend {
                 }
                 Ok(())
             }
+            (Self::Fan(_), _) => Err(io::Error::other(
+                "direct fan writes are owned by the lane-local fan transport",
+            )),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "backend payload type mismatch",
@@ -371,6 +481,9 @@ impl Backend {
         match self {
             Self::File(backend) => backend.file.sync_all(),
             Self::Arena(backend) => backend.device.sync_all(),
+            // Every live direct-fan lane has already processed its explicit
+            // SYNC before TargetSessions::barrier_all returns.
+            Self::Fan(_) => Ok(()),
         }
     }
 
@@ -481,72 +594,74 @@ struct Session {
 }
 
 struct TargetSessions {
-    lane_mask: AtomicU32,
-    valid_lane_mask: u32,
-    lane_senders: Mutex<Vec<Option<SyncSender<LaneTask>>>>,
+    occupancy: Mutex<Vec<u32>>,
+    senders: Mutex<Vec<Vec<(u32, SyncSender<LaneTask>)>>>,
+    next_id: AtomicU32,
+    sessions_per_lane: u32,
 }
 
 impl TargetSessions {
-    fn new(lanes: usize) -> io::Result<Arc<Self>> {
+    fn new(lanes: usize, sessions_per_lane: u32) -> io::Result<Arc<Self>> {
         if lanes == 0 || lanes > u32::BITS as usize {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "iSCSI session sharding supports 1..=32 edge lanes",
             ));
         }
+        if sessions_per_lane == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--sessions-per-lane must be positive",
+            ));
+        }
         Ok(Arc::new(Self {
-            lane_mask: AtomicU32::new(0),
-            valid_lane_mask: if lanes == u32::BITS as usize {
-                u32::MAX
-            } else {
-                (1u32 << lanes) - 1
-            },
-            lane_senders: Mutex::new(vec![None; lanes]),
+            occupancy: Mutex::new(vec![0; lanes]),
+            senders: Mutex::new(vec![Vec::new(); lanes]),
+            next_id: AtomicU32::new(1),
+            sessions_per_lane,
         }))
     }
 
     fn acquire(self: &Arc<Self>) -> io::Result<SessionLane> {
-        loop {
-            let current = self.lane_mask.load(Ordering::Acquire);
-            let available = self.valid_lane_mask & !current;
-            if available == 0 {
-                return Err(io::Error::new(
+        let mut occupancy = self
+            .occupancy
+            .lock()
+            .map_err(|_| io::Error::other("iSCSI session occupancy poisoned"))?;
+        let lane = occupancy
+            .iter()
+            .enumerate()
+            .filter(|(_, count)| **count < self.sessions_per_lane)
+            .min_by_key(|(_, count)| **count)
+            .map(|(lane, _)| lane)
+            .ok_or_else(|| {
+                io::Error::new(
                     io::ErrorKind::WouldBlock,
                     "all iSCSI edge-lane session shards are occupied",
-                ));
-            }
-            let lane = available.trailing_zeros() as usize;
-            let bit = 1u32 << lane;
-            if self
-                .lane_mask
-                .compare_exchange_weak(current, current | bit, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return Ok(SessionLane {
-                    sessions: Arc::clone(self),
-                    lane,
-                });
-            }
-        }
+                )
+            })?;
+        occupancy[lane] += 1;
+        Ok(SessionLane {
+            sessions: Arc::clone(self),
+            lane,
+            id: self.next_id.fetch_add(1, Ordering::Relaxed),
+        })
     }
 
-    fn register(&self, lane: usize, sender: SyncSender<LaneTask>) -> io::Result<()> {
-        let mut senders = self
-            .lane_senders
+    fn register(&self, lease: &SessionLane, sender: SyncSender<LaneTask>) -> io::Result<()> {
+        self.senders
             .lock()
-            .map_err(|_| io::Error::other("iSCSI session registry poisoned"))?;
-        senders[lane] = Some(sender);
+            .map_err(|_| io::Error::other("iSCSI session registry poisoned"))?[lease.lane]
+            .push((lease.id, sender));
         Ok(())
     }
 
     fn barrier_all(&self) -> io::Result<()> {
         let senders = self
-            .lane_senders
+            .senders
             .lock()
             .map_err(|_| io::Error::other("iSCSI session registry poisoned"))?
             .iter()
-            .flatten()
-            .cloned()
+            .flat_map(|lane| lane.iter().map(|(_, sender)| sender.clone()))
             .collect::<Vec<_>>();
         let (ack_tx, ack_rx) = mpsc::channel();
         for sender in &senders {
@@ -565,16 +680,17 @@ impl TargetSessions {
 struct SessionLane {
     sessions: Arc<TargetSessions>,
     lane: usize,
+    id: u32,
 }
 
 impl Drop for SessionLane {
     fn drop(&mut self) {
-        if let Ok(mut senders) = self.sessions.lane_senders.lock() {
-            senders[self.lane] = None;
+        if let Ok(mut senders) = self.sessions.senders.lock() {
+            senders[self.lane].retain(|(id, _)| *id != self.id);
         }
-        self.sessions
-            .lane_mask
-            .fetch_and(!(1u32 << self.lane), Ordering::Release);
+        if let Ok(mut occupancy) = self.sessions.occupancy.lock() {
+            occupancy[self.lane] = occupancy[self.lane].saturating_sub(1);
+        }
     }
 }
 
@@ -687,12 +803,21 @@ fn login(stream: &mut TcpStream, target: &str) -> io::Result<Session> {
 fn write_bytes_pdu(stream: &mut TcpStream, header: &Header, data: &[u8]) -> io::Result<()> {
     let padding = [0u8; 3];
     let pad_len = (4 - data.len() % 4) % 4;
-    write_all_vectored(stream, &[&header.0, data, &padding[..pad_len]])
+    write_all_vectored_fixed(stream, [&header.0, data, &padding[..pad_len]])
 }
 
 fn write_blocks_pdu(stream: &mut TcpStream, header: &Header, blocks: &Blocks) -> io::Result<()> {
     match blocks {
         Blocks::Bytes(bytes) => write_bytes_pdu(stream, header, bytes),
+        Blocks::ArenaOne(buffer) => {
+            write_all_vectored_fixed(stream, [&header.0, buffer.as_slice()?])
+        }
+        // A 4 KiB SCSI command is the performance-critical case. Keep its
+        // header and arena payload in a fixed stack iovec so transmitting an
+        // already-selected userspace buffer does not allocate or copy it.
+        Blocks::Arena(buffers) if buffers.len() == 1 => {
+            write_all_vectored_fixed(stream, [&header.0, buffers[0].as_slice()?])
+        }
         Blocks::Arena(buffers) => {
             let mut slices = Vec::with_capacity(buffers.len() + 1);
             slices.push(&header.0[..]);
@@ -700,6 +825,58 @@ fn write_blocks_pdu(stream: &mut TcpStream, header: &Header, blocks: &Blocks) ->
                 slices.push(buffer.as_slice()?);
             }
             write_all_vectored(stream, &slices)
+        }
+    }
+}
+
+fn write_all_vectored_fixed<const N: usize>(
+    stream: &mut TcpStream,
+    slices: [&[u8]; N],
+) -> io::Result<()> {
+    let mut index = 0;
+    let mut offset = 0;
+    while index < N {
+        while index < N && slices[index].is_empty() {
+            index += 1;
+            offset = 0;
+        }
+        if index == N {
+            break;
+        }
+        let iov: [IoSlice<'_>; N] = std::array::from_fn(|relative| {
+            let absolute = index + relative;
+            if absolute >= N {
+                IoSlice::new(&[])
+            } else {
+                let start = if relative == 0 { offset } else { 0 };
+                IoSlice::new(&slices[absolute][start..])
+            }
+        });
+        let written = stream.write_vectored(&iov)?;
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "iSCSI socket closed",
+            ));
+        }
+        advance_vectored(&slices, &mut index, &mut offset, written);
+    }
+    Ok(())
+}
+
+fn advance_vectored(slices: &[&[u8]], index: &mut usize, offset: &mut usize, written: usize) {
+    let mut remaining = written;
+    while *index < slices.len() {
+        let available = slices[*index].len() - *offset;
+        if remaining < available {
+            *offset += remaining;
+            break;
+        }
+        remaining -= available;
+        *index += 1;
+        *offset = 0;
+        if remaining == 0 {
+            break;
         }
     }
 }
@@ -728,22 +905,68 @@ fn write_all_vectored(stream: &mut TcpStream, slices: &[&[u8]]) -> io::Result<()
                 "iSCSI socket closed",
             ));
         }
-        let mut remaining = written;
-        while index < slices.len() {
-            let available = slices[index].len() - offset;
-            if remaining < available {
-                offset += remaining;
-                break;
-            }
-            remaining -= available;
-            index += 1;
-            offset = 0;
-            if remaining == 0 {
-                break;
-            }
-        }
+        advance_vectored(&slices, &mut index, &mut offset, written);
     }
     Ok(())
+}
+
+fn write_data_batch(
+    stream: &mut TcpStream,
+    batch: &[(Command, Blocks)],
+    exp_cmd_sn: u32,
+    first_stat_sn: u32,
+) -> io::Result<usize> {
+    let mut headers = Vec::with_capacity(batch.len());
+    for (index, (command, payload)) in batch.iter().enumerate() {
+        debug_assert_eq!(payload.len(), BLOCK_SIZE as usize);
+        let mut header = Header::zeroed(OP_DATA_IN);
+        header.0[1] = 0x81;
+        header.0[3] = 0;
+        header.put_u64(8, command.lun);
+        header.put_u32(16, command.itt);
+        header.put_u32(20, u32::MAX);
+        serial_fields(
+            &mut header,
+            first_stat_sn.wrapping_add(index as u32),
+            exp_cmd_sn,
+        );
+        header.put_u32(36, 0);
+        header.put_u32(40, 0);
+        header.set_data_len(payload.len())?;
+        if payload.len() < command.expected as usize {
+            header.0[1] |= 0x02;
+            header.put_u32(44, command.expected - payload.len() as u32);
+        }
+        headers.push(header);
+    }
+
+    // The hot 4 KiB path contributes exactly two iovecs per response. Linux's
+    // IOV_MAX is at least 1024, so the bounded 64-response batch stays well
+    // below the ABI limit. Arena buffers remain owned by `batch` until every
+    // byte has been accepted by the socket; no payload is materialized.
+    let mut iovecs = Vec::with_capacity(batch.len() * 2);
+    for (index, (_, payload)) in batch.iter().enumerate() {
+        iovecs.push(IoSlice::new(&headers[index].0));
+        match payload {
+            Blocks::ArenaOne(buffer) => iovecs.push(IoSlice::new(buffer.as_slice()?)),
+            Blocks::Bytes(bytes) => iovecs.push(IoSlice::new(bytes)),
+            Blocks::Arena(_) => unreachable!("4 KiB batch contains a multi-block payload"),
+        }
+    }
+    let mut remaining = iovecs.as_mut_slice();
+    let mut write_calls = 0usize;
+    while !remaining.is_empty() {
+        let written = stream.write_vectored(remaining)?;
+        write_calls += 1;
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "iSCSI socket closed",
+            ));
+        }
+        IoSlice::advance_slices(&mut remaining, written);
+    }
+    Ok(write_calls)
 }
 
 fn writer_loop(
@@ -752,9 +975,47 @@ fn writer_loop(
     exp_cmd_sn: Arc<AtomicU32>,
     mut stat_sn: u32,
 ) -> io::Result<()> {
-    while let Ok(completion) = receiver.recv() {
+    let mut pending = None::<Completion>;
+    let mut data_batch = Vec::<(Command, Blocks)>::with_capacity(DATA_IN_BATCH);
+    let mut data_pdus = 0u64;
+    let mut data_batches = 0u64;
+    let mut data_write_calls = 0u64;
+    let mut max_data_batch = 0usize;
+    loop {
+        let completion = match pending.take() {
+            Some(completion) => completion,
+            None => match receiver.recv() {
+                Ok(completion) => completion,
+                Err(_) => break,
+            },
+        };
         let exp = exp_cmd_sn.load(Ordering::Acquire);
         match completion {
+            Completion::Data { command, payload } if payload.len() == BLOCK_SIZE as usize => {
+                data_batch.clear();
+                data_batch.push((command, payload));
+                while data_batch.len() < DATA_IN_BATCH {
+                    match receiver.try_recv() {
+                        Ok(Completion::Data { command, payload })
+                            if payload.len() == BLOCK_SIZE as usize =>
+                        {
+                            data_batch.push((command, payload));
+                        }
+                        Ok(completion) => {
+                            pending = Some(completion);
+                            break;
+                        }
+                        Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                    }
+                }
+                let write_calls = write_data_batch(&mut stream, &data_batch, exp, stat_sn)?;
+                data_pdus += data_batch.len() as u64;
+                data_batches += 1;
+                data_write_calls += write_calls as u64;
+                max_data_batch = max_data_batch.max(data_batch.len());
+                stat_sn = stat_sn.wrapping_add(data_batch.len() as u32);
+                continue;
+            }
             Completion::Data { command, payload } => {
                 let mut header = Header::zeroed(OP_DATA_IN);
                 header.0[1] = 0x81;
@@ -836,6 +1097,11 @@ fn writer_loop(
         }
         stat_sn = stat_sn.wrapping_add(1);
     }
+    eprintln!(
+        "zciscsi-target-writer: data_pdus={data_pdus} data_batches={data_batches} data_write_calls={data_write_calls} max_data_batch={max_data_batch} avg_pdus_per_batch={:.2} avg_pdus_per_write_call={:.2}",
+        data_pdus as f64 / data_batches.max(1) as f64,
+        data_pdus as f64 / data_write_calls.max(1) as f64,
+    );
     let _ = stream.shutdown(Shutdown::Write);
     Ok(())
 }
@@ -866,6 +1132,9 @@ fn spawn_lane_workers(
                     receiver,
                     &lane_completions,
                 ),
+                Backend::Fan(fan) => {
+                    run_fan_lane(lane, fan, receiver, &lane_completions)
+                }
                 Backend::File(_) => {
                     Ok(run_sync_lane(lane, &lane_backend, receiver, &lane_completions))
                 }
@@ -875,11 +1144,16 @@ fn spawn_lane_workers(
                 LaneCounts::default()
             });
             eprintln!(
-                "zciscsi-target-lane: lane={lane} cpu={} read_blocks={reads} write_blocks={writes} barriers_or_fua={flushes}",
+                "zciscsi-target-lane: lane={lane} cpu={} read_blocks={reads} write_blocks={writes} barriers_or_fua={flushes} fan_batches={fan_batches} fan_tasks={fan_tasks} avg_fan_tasks_per_batch={avg_fan_tasks_per_batch:.2} max_fan_batch={max_fan_batch}",
                 cpu.map_or_else(|| "unpinned-test-only".to_string(), |value| value.to_string()),
                 reads = counts.reads,
                 writes = counts.writes,
                 flushes = counts.flushes,
+                fan_batches = counts.fan_batches,
+                fan_tasks = counts.fan_tasks,
+                avg_fan_tasks_per_batch = counts.fan_tasks as f64
+                    / counts.fan_batches.max(1) as f64,
+                max_fan_batch = counts.max_fan_batch,
             );
         }));
         senders.push(sender);
@@ -892,6 +1166,9 @@ struct LaneCounts {
     reads: u64,
     writes: u64,
     flushes: u64,
+    fan_batches: u64,
+    fan_tasks: u64,
+    max_fan_batch: usize,
 }
 
 fn run_sync_lane(
@@ -905,6 +1182,531 @@ fn run_sync_lane(
         complete_sync_task(lane, backend, completions, task, &mut counts);
     }
     counts
+}
+
+fn fan_request_id(command: Command) -> u64 {
+    (u64::from(command.cmd_sn) << 32) | u64::from(command.itt)
+}
+
+fn fan_topology(
+    lane: usize,
+    lane_count: usize,
+    request_id: u64,
+) -> io::Result<ZcnblkFrameTopology> {
+    let lane_id = u32::try_from(lane)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "fan lane exceeds u32"))?;
+    Ok(ZcnblkFrameTopology {
+        lane_id,
+        lane_count: u32::try_from(lane_count).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "fan lane count exceeds u32")
+        })?,
+        preferred_worker: lane_id,
+        queue_id: lane_id,
+        request_id,
+        tier_id: 0,
+        topology_flags: ZCNBLK_TOPOLOGY_VALID | ZCNBLK_TOPOLOGY_PORT_LANE,
+    })
+}
+
+fn fan_read_header(stream: &mut TcpStream) -> io::Result<ZcnblkFrameHeader> {
+    let mut bytes = [0u8; ZCNBLK_FRAME_HEADER_LEN];
+    stream.read_exact(&mut bytes)?;
+    ZcnblkFrameHeader::decode(&bytes)
+}
+
+fn fan_sync(stream: &mut TcpStream, lane: usize, lane_count: usize) -> io::Result<()> {
+    let request = ZcnblkFrameHeader::with_topology(
+        ZCNBLK_OP_SYNC,
+        0,
+        0,
+        0,
+        0,
+        fan_topology(lane, lane_count, 0)?,
+    )?
+    .encode();
+    stream.write_all(&request)?;
+    let response = fan_read_header(stream)?;
+    if response.op != ZCNBLK_OP_SYNC_ACK
+        || response.shard != 0
+        || response.len != 0
+        || response.offset != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "direct fan SYNC response mismatch op={} shard={} len={} offset={}",
+                response.op, response.shard, response.len, response.offset
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn fan_task_command(task: &LaneTask) -> Option<Command> {
+    match task {
+        LaneTask::Read { command, .. } | LaneTask::Write { command, .. } => Some(*command),
+        LaneTask::Barrier(_) => None,
+    }
+}
+
+fn fan_task_geometry(task: &LaneTask) -> io::Result<(u16, u64, usize)> {
+    match task {
+        LaneTask::Read { lba, blocks, .. } => Ok((
+            ZCNBLK_OP_READ,
+            lba.checked_mul(u64::from(BLOCK_SIZE))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "fan LBA overflow"))?,
+            *blocks as usize * BLOCK_SIZE as usize,
+        )),
+        LaneTask::Write { lba, blocks, .. } => Ok((
+            ZCNBLK_OP_WRITE,
+            lba.checked_mul(u64::from(BLOCK_SIZE))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "fan LBA overflow"))?,
+            blocks.len(),
+        )),
+        LaneTask::Barrier(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "barrier cannot be encoded as fan data I/O",
+        )),
+    }
+}
+
+fn fan_response_task_index(
+    tasks: &[LaneTask],
+    seen: &[bool],
+    response: ZcnblkFrameHeader,
+) -> io::Result<usize> {
+    let index = tasks
+        .iter()
+        .position(|task| {
+            fan_task_command(task)
+                .is_some_and(|command| fan_request_id(command) == response.topology.request_id)
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "direct fan response has an unknown request id",
+            )
+        })?;
+    if seen[index] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "direct fan response repeated a request id",
+        ));
+    }
+    let (request_op, request_offset, request_len) = fan_task_geometry(&tasks[index])?;
+    let expected_op = if request_op == ZCNBLK_OP_READ {
+        ZCNBLK_OP_READ_RESP
+    } else {
+        ZCNBLK_OP_WRITE_ACK
+    };
+    if response.op != expected_op
+        || response.shard != 0
+        || response.len as usize != request_len
+        || response.offset != request_offset
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "direct fan response member mismatch op={} shard={} len={} offset={}",
+                response.op, response.shard, response.len, response.offset
+            ),
+        ));
+    }
+    Ok(index)
+}
+
+fn fan_read_response_headers(
+    stream: &mut TcpStream,
+    count: usize,
+) -> io::Result<Vec<ZcnblkFrameHeader>> {
+    if count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "direct fan response envelope is empty",
+        ));
+    }
+    let byte_len = count
+        .checked_mul(ZCNBLK_FRAME_HEADER_LEN)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fan header overflow"))?;
+    let mut encoded = vec![0u8; byte_len];
+    stream.read_exact(&mut encoded)?;
+    encoded
+        .chunks_exact(ZCNBLK_FRAME_HEADER_LEN)
+        .map(|bytes| ZcnblkFrameHeader::decode(bytes.try_into().expect("64-byte response header")))
+        .collect()
+}
+
+fn fan_receive_task_responses(
+    stream: &mut TcpStream,
+    tasks: &[LaneTask],
+) -> io::Result<Vec<Option<Blocks>>> {
+    let mut payloads = (0..tasks.len())
+        .map(|_| None)
+        .collect::<Vec<Option<Blocks>>>();
+    let mut seen = vec![false; tasks.len()];
+    let mut remaining = tasks.len();
+    while remaining != 0 {
+        let outer = fan_read_header(stream)?;
+        if matches!(outer.op, ZCNBLK_OP_READ_RESP | ZCNBLK_OP_WRITE_ACK) {
+            let index = fan_response_task_index(tasks, &seen, outer)?;
+            if outer.op == ZCNBLK_OP_READ_RESP {
+                let mut bytes = vec![0; outer.len as usize];
+                stream.read_exact(&mut bytes)?;
+                payloads[index] = Some(Blocks::Bytes(bytes));
+            }
+            seen[index] = true;
+            remaining -= 1;
+            continue;
+        }
+
+        if outer.op == ZCNBLK_OP_BATCH_RESP {
+            if outer.shard != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "direct fan batch response has a non-zero shard",
+                ));
+            }
+            let members = fan_read_response_headers(stream, outer.len as usize)?;
+            let mut payload_bytes = 0usize;
+            for member in members {
+                let index = fan_response_task_index(tasks, &seen, member)?;
+                if member.op == ZCNBLK_OP_READ_RESP {
+                    let len = member.len as usize;
+                    let mut bytes = vec![0; len];
+                    stream.read_exact(&mut bytes)?;
+                    payload_bytes = payload_bytes.checked_add(len).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "fan payload overflow")
+                    })?;
+                    payloads[index] = Some(Blocks::Bytes(bytes));
+                }
+                seen[index] = true;
+                remaining = remaining.checked_sub(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "too many fan responses")
+                })?;
+            }
+            if outer.offset != payload_bytes as u64 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "direct fan batch response misstated read payload bytes",
+                ));
+            }
+            continue;
+        }
+
+        if outer.op == ZCNBLK_OP_READ_RANGE_RESP {
+            if outer.shard != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "direct fan range response has a non-zero shard",
+                ));
+            }
+            let ranges = fan_read_response_headers(stream, outer.len as usize)?;
+            let mut payload_bytes = 0usize;
+            for range in ranges {
+                let range_len = range.len as usize;
+                let range_end = range
+                    .offset
+                    .checked_add(range_len as u64)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "range overflow"))?;
+                if range.op != ZCNBLK_OP_READ_RESP
+                    || range.shard != 0
+                    || range_len == 0
+                    || range_len % BLOCK_SIZE as usize != 0
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "direct fan range response member is invalid",
+                    ));
+                }
+                let start_index = tasks
+                    .iter()
+                    .position(|task| {
+                        fan_task_command(task).is_some_and(|command| {
+                            fan_request_id(command) == range.topology.request_id
+                        })
+                    })
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "direct fan range response has an unknown first request id",
+                        )
+                    })?;
+                let mut indices = Vec::new();
+                let mut cursor = range.offset;
+                for (index, task) in tasks.iter().enumerate().skip(start_index) {
+                    if seen[index] {
+                        break;
+                    }
+                    let (op, offset, len) = fan_task_geometry(task)?;
+                    if op != ZCNBLK_OP_READ || offset != cursor {
+                        break;
+                    }
+                    let end = cursor.checked_add(len as u64).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "range cursor overflow")
+                    })?;
+                    if end > range_end {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "direct fan range response split a pending read",
+                        ));
+                    }
+                    indices.push((offset, index, len));
+                    cursor = end;
+                    if cursor == range_end {
+                        break;
+                    }
+                }
+                if indices.is_empty() || cursor != range_end {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "direct fan range response omitted or added read bytes",
+                    ));
+                }
+                let mut range_payload = vec![0; range_len];
+                stream.read_exact(&mut range_payload)?;
+                let mut payload_offset = 0usize;
+                for (_, index, len) in indices {
+                    payloads[index] = Some(Blocks::Bytes(
+                        range_payload[payload_offset..payload_offset + len].to_vec(),
+                    ));
+                    payload_offset += len;
+                    seen[index] = true;
+                    remaining = remaining.checked_sub(1).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "too many range responses")
+                    })?;
+                }
+                payload_bytes = payload_bytes.checked_add(range_len).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "range payload overflow")
+                })?;
+            }
+            if outer.offset != payload_bytes as u64 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "direct fan range response misstated read payload bytes",
+                ));
+            }
+            continue;
+        }
+
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unexpected direct fan response op={}", outer.op),
+        ));
+    }
+    Ok(payloads)
+}
+
+fn fan_send_tasks(
+    stream: &mut TcpStream,
+    lane: usize,
+    lane_count: usize,
+    tasks: &[LaneTask],
+) -> io::Result<()> {
+    if tasks.is_empty() || tasks.len() > LANE_PIPELINE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "direct fan wire batch must contain 1..=64 tasks",
+        ));
+    }
+    if tasks.len() == 1 {
+        let task = &tasks[0];
+        let command = fan_task_command(task).expect("single fan task is data I/O");
+        let (op, offset, len) = fan_task_geometry(task)?;
+        let header = ZcnblkFrameHeader::with_topology(
+            op,
+            0,
+            0,
+            len,
+            offset,
+            fan_topology(lane, lane_count, fan_request_id(command))?,
+        )?
+        .encode();
+        match task {
+            LaneTask::Write { blocks, .. } => {
+                write_all_vectored_fixed(stream, [&header, blocks.bytes()?])?;
+            }
+            LaneTask::Read { .. } => stream.write_all(&header)?,
+            LaneTask::Barrier(_) => unreachable!(),
+        }
+        return Ok(());
+    }
+    let mut headers = Vec::with_capacity(tasks.len() * ZCNBLK_FRAME_HEADER_LEN);
+    let mut write_payload_bytes = 0usize;
+    for task in tasks {
+        let command = fan_task_command(task).expect("fan batch contains only data I/O");
+        let (op, offset, len) = fan_task_geometry(task)?;
+        headers.extend_from_slice(
+            &ZcnblkFrameHeader::with_topology(
+                op,
+                0,
+                0,
+                len,
+                offset,
+                fan_topology(lane, lane_count, fan_request_id(command))?,
+            )?
+            .encode(),
+        );
+        if op == ZCNBLK_OP_WRITE {
+            write_payload_bytes = write_payload_bytes.checked_add(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "fan batch payload overflow")
+            })?;
+        }
+    }
+    let outer = ZcnblkFrameHeader::with_topology(
+        ZCNBLK_OP_BATCH,
+        0,
+        0,
+        tasks.len(),
+        write_payload_bytes as u64,
+        fan_topology(lane, lane_count, 0)?,
+    )?
+    .encode();
+    let mut slices = Vec::with_capacity(tasks.len() + 2);
+    slices.push(&outer[..]);
+    slices.push(&headers[..]);
+    for task in tasks {
+        if let LaneTask::Write { blocks, .. } = task {
+            slices.push(blocks.bytes()?);
+        }
+    }
+    write_all_vectored(stream, &slices)
+}
+
+fn fan_complete_window(
+    stream: &mut TcpStream,
+    lane: usize,
+    lane_count: usize,
+    tasks: Vec<LaneTask>,
+    completions: &Sender<Completion>,
+    counts: &mut LaneCounts,
+) -> io::Result<()> {
+    for batch in tasks.chunks(LANE_PIPELINE) {
+        fan_send_tasks(stream, lane, lane_count, batch)?;
+    }
+    let mut payloads = fan_receive_task_responses(stream, &tasks)?;
+    let fua = tasks
+        .iter()
+        .any(|task| matches!(task, LaneTask::Write { fua: true, .. }));
+    if fua {
+        fan_sync(stream, lane, lane_count)?;
+        counts.flushes += 1;
+    }
+    for (index, task) in tasks.into_iter().enumerate() {
+        let command = fan_task_command(&task).expect("fan completion is data I/O");
+        match task {
+            LaneTask::Read { blocks, .. } => {
+                counts.reads += u64::from(blocks);
+                completions
+                    .send(Completion::Data {
+                        command,
+                        payload: payloads[index].take().ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "direct fan read response missing payload",
+                            )
+                        })?,
+                    })
+                    .map_err(channel_closed)?;
+            }
+            LaneTask::Write { blocks, .. } => {
+                counts.writes += (blocks.len() / BLOCK_SIZE as usize) as u64;
+                completions
+                    .send(Completion::Good(command))
+                    .map_err(channel_closed)?;
+            }
+            LaneTask::Barrier(_) => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+fn run_fan_lane(
+    lane: usize,
+    backend: &FanBackend,
+    receiver: Receiver<LaneTask>,
+    completions: &Sender<Completion>,
+) -> io::Result<LaneCounts> {
+    let addr = backend.addrs.get(lane).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "direct fan lane has no TCP address",
+        )
+    })?;
+    let mut stream = TcpStream::connect(addr)?;
+    stream.set_nodelay(true)?;
+    let lane_count = backend.addrs.len();
+    let mut counts = LaneCounts::default();
+    let mut deferred = None::<LaneTask>;
+    loop {
+        // Queue readiness is the batching signal.  If work survived the prior
+        // fan round trip, preserve deep-QD pipelining with a tiny gather.  If
+        // this lane had to block for the first request, it is latency-sensitive
+        // and a lone task must leave immediately.  This is lane-local channel
+        // state: no shared counter, atomic, timer heuristic, or placement logic.
+        let (task, spin_single) = if let Some(task) = deferred.take() {
+            (task, false)
+        } else {
+            match receiver.try_recv() {
+                Ok(task) => (task, true),
+                Err(TryRecvError::Empty) => match receiver.recv() {
+                    Ok(task) => (task, false),
+                    Err(_) => break,
+                },
+                Err(TryRecvError::Disconnected) => break,
+            }
+        };
+        if let LaneTask::Barrier(ack) = task {
+            counts.flushes += 1;
+            let result = fan_sync(&mut stream, lane, lane_count);
+            let failed = result.is_err();
+            let _ = ack.send(result);
+            if failed {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "direct fan SYNC failed",
+                ));
+            }
+            continue;
+        }
+        let mut tasks = Vec::with_capacity(backend.window);
+        tasks.push(task);
+        let mut stop_at_fua = matches!(tasks[0], LaneTask::Write { fua: true, .. });
+        let gather_started = Instant::now();
+        while tasks.len() < backend.window && !stop_at_fua {
+            match receiver.try_recv() {
+                Ok(task @ LaneTask::Barrier(_)) => {
+                    deferred = Some(task);
+                    break;
+                }
+                Ok(task) => {
+                    stop_at_fua = matches!(task, LaneTask::Write { fua: true, .. });
+                    tasks.push(task);
+                }
+                Err(TryRecvError::Empty)
+                    if (tasks.len() > 1 || spin_single)
+                        && !backend.batch_spin.is_zero()
+                        && gather_started.elapsed() < backend.batch_spin =>
+                {
+                    std::hint::spin_loop();
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+        counts.fan_batches += 1;
+        counts.fan_tasks += tasks.len() as u64;
+        counts.max_fan_batch = counts.max_fan_batch.max(tasks.len());
+        fan_complete_window(
+            &mut stream,
+            lane,
+            lane_count,
+            tasks,
+            completions,
+            &mut counts,
+        )?;
+    }
+    let _ = stream.shutdown(Shutdown::Both);
+    Ok(counts)
 }
 
 fn complete_sync_task(
@@ -979,7 +1781,7 @@ fn run_arena_lane(
 ) -> io::Result<LaneCounts> {
     let arena = match backend.as_ref() {
         Backend::Arena(arena) => arena,
-        Backend::File(_) => unreachable!(),
+        Backend::File(_) | Backend::Fan(_) => unreachable!(),
     };
     let mut ring = ZcnblkAppArenaIoRing::new((LANE_PIPELINE * 2) as u32)?;
     let mut inflight = (0..LANE_PIPELINE)
@@ -1103,11 +1905,16 @@ fn queue_arena_task(
                 let _ = completions.send(Completion::Check(command, sense_invalid_field()));
                 return Ok(None);
             }
-            let mut payload = Vec::with_capacity(blocks as usize);
-            for _ in 0..blocks {
-                payload.push(allocate_arena(&arena.arena, &arena.device, lane as u32)?);
-            }
-            (command, lba, Blocks::Arena(payload), ArenaIoKind::Read)
+            let payload = if blocks == 1 {
+                Blocks::ArenaOne(allocate_arena(&arena.arena, &arena.device, lane as u32)?)
+            } else {
+                let mut payload = Vec::with_capacity(blocks as usize);
+                for _ in 0..blocks {
+                    payload.push(allocate_arena(&arena.arena, &arena.device, lane as u32)?);
+                }
+                Blocks::Arena(payload)
+            };
+            (command, lba, payload, ArenaIoKind::Read)
         }
         LaneTask::Write {
             command,
@@ -1126,13 +1933,9 @@ fn queue_arena_task(
         LaneTask::Barrier(_) => unreachable!(),
     };
     let block_count = blocks.len() / BLOCK_SIZE as usize;
-    let buffers = match &mut blocks {
-        Blocks::Arena(buffers) => buffers,
-        Blocks::Bytes(_) => unreachable!(),
-    };
     let mut remaining = 0usize;
     let mut failed = false;
-    for (index, buffer) in buffers.iter_mut().enumerate() {
+    let mut queue_buffer = |index: usize, buffer: &mut ZcnblkAppArenaBuffer| {
         let offset = (lba + index as u64) * u64::from(BLOCK_SIZE);
         let result = match kind {
             ArenaIoKind::Read => ring.queue_read(&arena.device, buffer, offset, slot as u64),
@@ -1142,9 +1945,23 @@ fn queue_arena_task(
         };
         if result.is_err() {
             failed = true;
-            break;
+            return false;
         }
         remaining += 1;
+        true
+    };
+    match &mut blocks {
+        Blocks::ArenaOne(buffer) => {
+            let _ = queue_buffer(0, buffer);
+        }
+        Blocks::Arena(buffers) => {
+            for (index, buffer) in buffers.iter_mut().enumerate() {
+                if !queue_buffer(index, buffer) {
+                    break;
+                }
+            }
+        }
+        Blocks::Bytes(_) => unreachable!(),
     }
     if remaining == 0 {
         let _ = completions.send(Completion::Check(command, sense_medium_error()));
@@ -1180,12 +1997,20 @@ fn finish_arena_io(
     }
     let mut request = inflight[slot].take().unwrap();
     if matches!(request.kind, ArenaIoKind::Read) {
-        if let Blocks::Arena(buffers) = &mut request.blocks {
-            for buffer in buffers {
+        match &mut request.blocks {
+            Blocks::ArenaOne(buffer) => {
                 if buffer.wait_reacquire(Duration::from_secs(5)).is_err() {
                     request.failed = true;
                 }
             }
+            Blocks::Arena(buffers) => {
+                for buffer in buffers {
+                    if buffer.wait_reacquire(Duration::from_secs(5)).is_err() {
+                        request.failed = true;
+                    }
+                }
+            }
+            Blocks::Bytes(_) => unreachable!(),
         }
     }
     if let ArenaIoKind::Write { fua: true } = request.kind {
@@ -1219,6 +2044,8 @@ fn handle_connection(
     target: Arc<str>,
     advertised: Arc<str>,
     sessions: Arc<TargetSessions>,
+    rx_cpus: Arc<[usize]>,
+    tx_cpus: Arc<[usize]>,
 ) -> io::Result<()> {
     stream.set_nodelay(true)?;
     let session = login(&mut stream, &target)?;
@@ -1227,6 +2054,11 @@ fn handle_connection(
     } else {
         Some(sessions.acquire()?)
     };
+    if let Some(lease) = &session_lane {
+        if let Some(cpu) = rx_cpus.get(lease.lane) {
+            pin_current_thread(*cpu)?;
+        }
+    }
     let lane_ids = session_lane
         .as_ref()
         .map_or_else(Vec::new, |lease| vec![lease.lane]);
@@ -1234,7 +2066,16 @@ fn handle_connection(
     let (completion_tx, completion_rx) = mpsc::channel();
     let writer_stream = stream.try_clone()?;
     let writer_exp = Arc::clone(&exp_cmd_sn);
+    let writer_cpu = session_lane
+        .as_ref()
+        .and_then(|lease| tx_cpus.get(lease.lane).copied());
     let writer = thread::spawn(move || {
+        if let Some(cpu) = writer_cpu
+            && let Err(error) = pin_current_thread(cpu)
+        {
+            eprintln!("zciscsi-target: tx_cpu={cpu} pin_error={error}");
+            return;
+        }
         if let Err(error) = writer_loop(writer_stream, completion_rx, writer_exp, session.stat_sn) {
             eprintln!("zciscsi-target: writer_error={error}");
         }
@@ -1242,7 +2083,7 @@ fn handle_connection(
     let (lane_senders, lane_handles) =
         spawn_lane_workers(Arc::clone(&backend), completion_tx.clone(), &lane_ids);
     if let Some(lease) = &session_lane {
-        sessions.register(lease.lane, lane_senders[0].clone())?;
+        sessions.register(lease, lane_senders[0].clone())?;
     }
     let mut pending = HashMap::<u32, PendingWrite>::new();
 
@@ -1337,6 +2178,10 @@ fn handle_connection(
         }
     }
 
+    // Unregister first so the control-plane registry releases its sender
+    // clone. Otherwise a clean logout can leave the lane worker waiting for
+    // channel disconnect while this thread waits to join that same worker.
+    drop(session_lane);
     drop(lane_senders);
     for handle in lane_handles {
         let _ = handle.join();
@@ -1662,13 +2507,33 @@ struct Options {
     target: String,
     leaf: Option<PathBuf>,
     arena_socket: Option<PathBuf>,
+    fan_addrs: Option<Vec<String>>,
+    capacity_bytes: Option<u64>,
+    fan_window: usize,
     zcnblk_device: PathBuf,
     lane_cpus: Vec<usize>,
+    rx_cpus: Vec<usize>,
+    tx_cpus: Vec<usize>,
+    sessions_per_lane: u32,
 }
 
 fn usage() -> &'static str {
     "usage: zciscsi-target --listen HOST:PORT [--advertise HOST:PORT] --target IQN \
-     (--leaf-file PATH | --arena-socket PATH --zcnblk-device PATH --lane-cpus CPU,CPU,...)"
+     (--leaf-file PATH | --arena-socket PATH --zcnblk-device PATH --lane-cpus CPU,... \
+     --rx-cpus CPU,... --tx-cpus CPU,... | --fan-addrs HOST:PORT,... --capacity-bytes N \
+     [--fan-window N] --lane-cpus CPU,... --rx-cpus CPU,... --tx-cpus CPU,...)"
+}
+
+fn parse_cpu_list(value: Option<String>, option: &str) -> io::Result<Vec<usize>> {
+    value
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("missing {option}")))?
+        .split(',')
+        .map(|cpu| {
+            cpu.parse::<usize>().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, format!("invalid {option}"))
+            })
+        })
+        .collect()
 }
 
 fn parse_options() -> io::Result<Options> {
@@ -1678,8 +2543,14 @@ fn parse_options() -> io::Result<Options> {
     let mut target = None;
     let mut leaf = None;
     let mut arena_socket = None;
+    let mut fan_addrs = None;
+    let mut capacity_bytes = None;
+    let mut fan_window = LANE_PIPELINE;
     let mut zcnblk_device = PathBuf::from("/dev/zcnblk0");
     let mut lane_cpus = Vec::new();
+    let mut rx_cpus = Vec::new();
+    let mut tx_cpus = Vec::new();
+    let mut sessions_per_lane = 1u32;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--listen" => listen = args.next(),
@@ -1687,24 +2558,60 @@ fn parse_options() -> io::Result<Options> {
             "--target" => target = args.next(),
             "--leaf-file" => leaf = args.next().map(PathBuf::from),
             "--arena-socket" => arena_socket = args.next().map(PathBuf::from),
+            "--fan-addrs" => {
+                fan_addrs = Some(
+                    args.next()
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidInput, "missing --fan-addrs")
+                        })?
+                        .split(',')
+                        .map(str::to_string)
+                        .collect(),
+                )
+            }
+            "--capacity-bytes" => {
+                capacity_bytes = Some(
+                    args.next()
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidInput, "missing --capacity-bytes")
+                        })?
+                        .parse::<u64>()
+                        .map_err(|_| {
+                            io::Error::new(io::ErrorKind::InvalidInput, "invalid --capacity-bytes")
+                        })?,
+                )
+            }
+            "--fan-window" => {
+                fan_window = args
+                    .next()
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "missing --fan-window")
+                    })?
+                    .parse::<usize>()
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "invalid --fan-window")
+                    })?;
+            }
             "--zcnblk-device" => {
                 zcnblk_device = args.next().map(PathBuf::from).ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "missing --zcnblk-device")
                 })?;
             }
             "--lane-cpus" => {
-                lane_cpus = args
+                lane_cpus = parse_cpu_list(args.next(), "--lane-cpus")?;
+            }
+            "--rx-cpus" => rx_cpus = parse_cpu_list(args.next(), "--rx-cpus")?,
+            "--tx-cpus" => tx_cpus = parse_cpu_list(args.next(), "--tx-cpus")?,
+            "--sessions-per-lane" => {
+                sessions_per_lane = args
                     .next()
                     .ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::InvalidInput, "missing --lane-cpus")
+                        io::Error::new(io::ErrorKind::InvalidInput, "missing --sessions-per-lane")
                     })?
-                    .split(',')
-                    .map(|cpu| {
-                        cpu.parse::<usize>().map_err(|_| {
-                            io::Error::new(io::ErrorKind::InvalidInput, "invalid --lane-cpus")
-                        })
-                    })
-                    .collect::<io::Result<Vec<_>>>()?;
+                    .parse()
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "invalid --sessions-per-lane")
+                    })?;
             }
             "--block-size" => {
                 let value = args.next().ok_or_else(|| {
@@ -1730,19 +2637,46 @@ fn parse_options() -> io::Result<Options> {
         }
     }
     let listen = listen.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage()))?;
-    if leaf.is_some() == arena_socket.is_some() {
+    if usize::from(leaf.is_some())
+        + usize::from(arena_socket.is_some())
+        + usize::from(fan_addrs.is_some())
+        != 1
+    {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, usage()));
     }
-    if arena_socket.is_some() && lane_cpus.is_empty() {
+    if (arena_socket.is_some() || fan_addrs.is_some())
+        && (lane_cpus.is_empty()
+            || rx_cpus.len() != lane_cpus.len()
+            || tx_cpus.len() != lane_cpus.len())
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "arena mode always requires an explicit complete --lane-cpus mapping",
+            "userspace-stage mode requires equally sized, complete --lane-cpus, --rx-cpus, and --tx-cpus mappings",
         ));
     }
-    if leaf.is_some() && !lane_cpus.is_empty() {
+    if arena_socket.is_some() || fan_addrs.is_some() {
+        let mut all = lane_cpus.clone();
+        all.extend_from_slice(&rx_cpus);
+        all.extend_from_slice(&tx_cpus);
+        all.sort_unstable();
+        all.dedup();
+        if all.len() != lane_cpus.len() * 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "iSCSI lane, RX, and TX CPU roles must not overlap",
+            ));
+        }
+    }
+    if leaf.is_some() && (!lane_cpus.is_empty() || !rx_cpus.is_empty() || !tx_cpus.is_empty()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "terminal file test mode has no userspace placement lanes",
+        ));
+    }
+    if fan_addrs.is_some() != capacity_bytes.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--fan-addrs and --capacity-bytes must be supplied together",
         ));
     }
     Ok(Options {
@@ -1751,21 +2685,27 @@ fn parse_options() -> io::Result<Options> {
         target: target.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, usage()))?,
         leaf,
         arena_socket,
+        fan_addrs,
+        capacity_bytes,
+        fan_window,
         zcnblk_device,
         lane_cpus,
+        rx_cpus,
+        tx_cpus,
+        sessions_per_lane,
     })
 }
 
 fn run() -> io::Result<()> {
     let options = parse_options()?;
-    let (backend, backing, copies) = if let Some(path) = &options.leaf {
+    let (backend, backing, copies, lane_io) = if let Some(path) = &options.leaf {
         (
             Backend::open_file(path)?,
             format!("terminal-file-test-only:{}", path.display()),
             "protocol-buffered-test-only",
+            "blocking-terminal-file-test",
         )
-    } else {
-        let socket = options.arena_socket.as_ref().unwrap();
+    } else if let Some(socket) = options.arena_socket.as_ref() {
         (
             Backend::open_arena(socket, &options.zcnblk_device, options.lane_cpus.clone())?,
             format!(
@@ -1774,23 +2714,53 @@ fn run() -> io::Result<()> {
                 options.zcnblk_device.display()
             ),
             "socket-to-arena=0 arena-to-block-edge=0",
+            "io_uring-shared-arena",
+        )
+    } else {
+        let addrs = options.fan_addrs.clone().expect("fan mode selected");
+        (
+            Backend::open_fan(
+                addrs.clone(),
+                options.capacity_bytes.expect("fan capacity selected"),
+                options.lane_cpus.clone(),
+                options.fan_window,
+            )?,
+            format!("direct-userspace-raid-stage:{}", addrs.join(",")),
+            "iscsi-socket-to-userspace=direct fan-tcp-send=kernel-copy fan-tcp-read-to-userspace=direct",
+            "lane-batched-zcnblk-tcp",
         )
     };
     let backend = Arc::new(backend);
+    let (lane_qd, lane_batch) = match backend.as_ref() {
+        Backend::Fan(fan) => (fan.window, LANE_PIPELINE),
+        _ => (LANE_PIPELINE, LANE_PIPELINE),
+    };
+    let fan_batch_spin_us = match backend.as_ref() {
+        Backend::Fan(fan) => fan.batch_spin.as_micros(),
+        Backend::File(_) | Backend::Arena(_) => 0,
+    };
     eprintln!(
-        "zciscsi-target: implementation=zcutils-rfc7143-from-scratch external_iscsi_library=no listen={} advertise={} target={} capacity_bytes={} logical_block=4096 physical_block=4096 lanes={} lane_to_cpu={:?} lane_io=io_uring lane_qd={} backing={} payload_copies={} placement_owner=downstream-userspace-raid frontend_placement=no mirror_primitive=no",
+        "zciscsi-target: implementation=zcutils-rfc7143-from-scratch external_iscsi_library=no listen={} advertise={} target={} capacity_bytes={} logical_block=4096 physical_block=4096 lanes={} sessions_per_lane={} lane_to_cpu={:?} rx_to_cpu={:?} tx_to_cpu={:?} role_cpu_sharing=within-role-session-shards-only lane_io={} lane_qd={} lane_batch={} fan_batch_spin_us={} backing={} payload_copies={} placement_owner=downstream-userspace-raid frontend_placement=no mirror_primitive=no",
         options.listen,
         options.advertise,
         options.target,
         backend.capacity_bytes(),
         backend.channels(),
+        options.sessions_per_lane,
         options.lane_cpus,
-        LANE_PIPELINE,
+        options.rx_cpus,
+        options.tx_cpus,
+        lane_io,
+        lane_qd,
+        lane_batch,
+        fan_batch_spin_us,
         backing,
         copies,
     );
     let listener = TcpListener::bind(&options.listen)?;
-    let sessions = TargetSessions::new(backend.channels())?;
+    let sessions = TargetSessions::new(backend.channels(), options.sessions_per_lane)?;
+    let rx_cpus: Arc<[usize]> = Arc::from(options.rx_cpus);
+    let tx_cpus: Arc<[usize]> = Arc::from(options.tx_cpus);
     let target: Arc<str> = Arc::from(options.target);
     let advertised: Arc<str> = Arc::from(options.advertise);
     for incoming in listener.incoming() {
@@ -1799,6 +2769,8 @@ fn run() -> io::Result<()> {
         let connection_target = Arc::clone(&target);
         let connection_advertised = Arc::clone(&advertised);
         let connection_sessions = Arc::clone(&sessions);
+        let connection_rx_cpus = Arc::clone(&rx_cpus);
+        let connection_tx_cpus = Arc::clone(&tx_cpus);
         thread::spawn(move || {
             if let Err(error) = handle_connection(
                 stream,
@@ -1806,6 +2778,8 @@ fn run() -> io::Result<()> {
                 connection_target,
                 connection_advertised,
                 connection_sessions,
+                connection_rx_cpus,
+                connection_tx_cpus,
             ) {
                 eprintln!("zciscsi-target: connection_error={error}");
             }
@@ -1869,5 +2843,51 @@ mod tests {
     fn arena_mode_rejects_non_4k_capacity() {
         assert!(validate_capacity(4095).is_err());
         assert!(validate_capacity(4096).is_ok());
+    }
+
+    #[test]
+    fn data_in_batch_preserves_pdu_boundaries_and_serials() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut reader = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut writer, _) = listener.accept().unwrap();
+        let batch = vec![
+            (
+                Command {
+                    itt: 11,
+                    lun: 0,
+                    expected: BLOCK_SIZE,
+                    cmd_sn: 7,
+                },
+                Blocks::Bytes(vec![0xa5; BLOCK_SIZE as usize]),
+            ),
+            (
+                Command {
+                    itt: 12,
+                    lun: 0,
+                    expected: BLOCK_SIZE,
+                    cmd_sn: 8,
+                },
+                Blocks::Bytes(vec![0x5a; BLOCK_SIZE as usize]),
+            ),
+        ];
+        assert_eq!(write_data_batch(&mut writer, &batch, 9, 23).unwrap(), 1);
+
+        let pdu_bytes = BHS_BYTES + BLOCK_SIZE as usize;
+        let mut wire = vec![0u8; pdu_bytes * batch.len()];
+        reader.read_exact(&mut wire).unwrap();
+        for (index, expected_byte) in [0xa5, 0x5a].into_iter().enumerate() {
+            let offset = index * pdu_bytes;
+            let header = Header(wire[offset..offset + BHS_BYTES].try_into().unwrap());
+            assert_eq!(header.opcode(), OP_DATA_IN);
+            assert_eq!(header.data_len(), BLOCK_SIZE as usize);
+            assert_eq!(header.u32(16), 11 + index as u32);
+            assert_eq!(header.u32(24), 23 + index as u32);
+            assert_eq!(header.u32(28), 9);
+            assert!(
+                wire[offset + BHS_BYTES..offset + pdu_bytes]
+                    .iter()
+                    .all(|byte| *byte == expected_byte)
+            );
+        }
     }
 }

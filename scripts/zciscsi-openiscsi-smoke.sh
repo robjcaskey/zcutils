@@ -3,16 +3,22 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${TARGET:-$ROOT/target/release/zciscsi-target}"
-ARENA_SOCKET="${ARENA_SOCKET:?set ARENA_SOCKET to the established userspace-stage arena}"
+ARENA_SOCKET="${ARENA_SOCKET:-}"
 ZCNBLK_DEVICE="${ZCNBLK_DEVICE:-/dev/zcnblk0}"
+FAN_ADDRS="${FAN_ADDRS:-}"
+CAPACITY_BYTES="${CAPACITY_BYTES:-}"
+FAN_WINDOW="${FAN_WINDOW:-64}"
 LISTEN="${LISTEN:-127.0.0.1:3260}"
 PORT="${LISTEN##*:}"
 IQN="${IQN:-iqn.2026-08.local.zcutils:arena-volume}"
-LANE_CPUS="${LANE_CPUS:-}"
+LANE_CPUS="${LANE_CPUS:?set the complete arena lane-to-CPU list}"
+RX_CPUS="${RX_CPUS:?set the complete iSCSI RX-to-CPU list}"
+TX_CPUS="${TX_CPUS:?set the complete iSCSI TX-to-CPU list}"
 WORK_DIR="${WORK_DIR:-/tmp/zciscsi-openiscsi-smoke}"
 LOG="$WORK_DIR/target.log"
 ISCSI_CMDS_MAX="${ISCSI_CMDS_MAX:-2048}"
 ISCSI_QUEUE_DEPTH="${ISCSI_QUEUE_DEPTH:-1024}"
+SESSIONS_PER_LANE="${SESSIONS_PER_LANE:-1}"
 
 for command in iscsiadm lsblk cmp dd sg_sync ss; do
     command -v "$command" >/dev/null || {
@@ -21,8 +27,20 @@ for command in iscsiadm lsblk cmp dd sg_sync ss; do
     }
 done
 [[ -x "$TARGET" ]]
-[[ -S "$ARENA_SOCKET" ]]
-[[ -b "$ZCNBLK_DEVICE" ]]
+if [[ -n "$FAN_ADDRS" ]]; then
+    [[ -z "$ARENA_SOCKET" ]]
+    [[ "$CAPACITY_BYTES" =~ ^[0-9]+$ ]]
+    (( CAPACITY_BYTES > 0 && CAPACITY_BYTES % 4096 == 0 ))
+    [[ "$FAN_WINDOW" =~ ^[0-9]+$ ]]
+    (( FAN_WINDOW > 0 && FAN_WINDOW <= 4096 ))
+    backend_args=(--fan-addrs "$FAN_ADDRS" --capacity-bytes "$CAPACITY_BYTES" --fan-window "$FAN_WINDOW")
+    backend_label="direct-userspace-raid-stage"
+else
+    [[ -n "$ARENA_SOCKET" && -S "$ARENA_SOCKET" ]]
+    [[ -b "$ZCNBLK_DEVICE" ]]
+    backend_args=(--arena-socket "$ARENA_SOCKET" --zcnblk-device "$ZCNBLK_DEVICE")
+    backend_label="shared-arena-block-edge"
+fi
 mkdir -p "$WORK_DIR"
 rm -f -- "$LOG" "$WORK_DIR/expected" "$WORK_DIR/actual"
 
@@ -50,10 +68,12 @@ trap cleanup EXIT INT TERM
 sudo -n "$TARGET" \
     --listen "$LISTEN" \
     --target "$IQN" \
-    --arena-socket "$ARENA_SOCKET" \
-    --zcnblk-device "$ZCNBLK_DEVICE" \
+    "${backend_args[@]}" \
     --block-size 4096 \
-    ${LANE_CPUS:+--lane-cpus "$LANE_CPUS"} >"$LOG" 2>&1 &
+    --lane-cpus "$LANE_CPUS" \
+    --rx-cpus "$RX_CPUS" \
+    --tx-cpus "$TX_CPUS" \
+    --sessions-per-lane "$SESSIONS_PER_LANE" >"$LOG" 2>&1 &
 target_pid=$!
 
 for _ in $(seq 1 100); do
@@ -107,7 +127,7 @@ cmp "$WORK_DIR/expected" "$WORK_DIR/actual"
 sudo -n iscsiadm -m node -T "$IQN" -p "$LISTEN" --logout >"$WORK_DIR/logout.log"
 logged_in=0
 grep -q 'implementation=zcutils-rfc7143-from-scratch external_iscsi_library=no' "$LOG"
-grep -q 'payload_copies=socket-to-arena=0 arena-to-block-edge=0 placement_owner=downstream-userspace-raid frontend_placement=no mirror_primitive=no' "$LOG"
+grep -q 'placement_owner=downstream-userspace-raid frontend_placement=no mirror_primitive=no' "$LOG"
 
-printf 'ZCISCSI_OPENISCSI_PASS target=%s device=%s capacity_bytes=%s logical_block=4096 physical_block=4096 io_offset=131072 io_bytes=4096 flush=sync-cache readback=match arena=%s lane_to_cpu=%s frontend_placement=no\n' \
-    "$IQN" "$device" "$size_bytes" "$ARENA_SOCKET" "${LANE_CPUS:-unmapped-nonstrict}"
+printf 'ZCISCSI_OPENISCSI_PASS target=%s device=%s capacity_bytes=%s logical_block=4096 physical_block=4096 io_offset=131072 io_bytes=4096 flush=sync-cache readback=match backend=%s endpoint=%s lane_to_cpu=%s frontend_placement=no\n' \
+    "$IQN" "$device" "$size_bytes" "$backend_label" "${FAN_ADDRS:-$ARENA_SOCKET}" "${LANE_CPUS:-unmapped-nonstrict}"

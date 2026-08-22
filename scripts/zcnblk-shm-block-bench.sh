@@ -1682,7 +1682,9 @@ if [ -n "${EXTERNAL_FRONTEND_COMMAND:-}" ]; then
 	wait "$target_job_pid" || true
 	target_job_pid=""
 	grep 'zcnblk-shm-target-summary:' "$OUTDIR/target.log" | tee "$OUTDIR/summary.log"
-	trap - EXIT INT TERM
+	# Keep the ordinary EXIT cleanup armed: it unloads the client module,
+	# restores governors, releases coordination leases, and stops a local leaf
+	# when the external frontend used one.
 	exit 0
 fi
 

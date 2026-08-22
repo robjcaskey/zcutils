@@ -3,42 +3,42 @@ use std::io;
 const ZCNBLK_FRAME_MAGIC: &[u8; 8] = b"ZCNBLK01";
 const ZCNBLK_FRAME_VERSION: u16 = 2;
 
-pub(crate) const ZCNBLK_FRAME_HEADER_LEN: usize = 64;
-pub(crate) const ZCNBLK_TOPOLOGY_VALID: u32 = 1 << 0;
-pub(crate) const ZCNBLK_TOPOLOGY_PORT_LANE: u32 = 1 << 1;
-pub(crate) const ZCNBLK_OP_WRITE: u16 = 1;
-pub(crate) const ZCNBLK_OP_READ: u16 = 2;
-pub(crate) const ZCNBLK_OP_READ_RESP: u16 = 3;
-pub(crate) const ZCNBLK_OP_WRITE_ACK: u16 = 4;
-pub(crate) const ZCNBLK_OP_BATCH: u16 = 5;
-pub(crate) const ZCNBLK_OP_BATCH_RESP: u16 = 6;
-pub(crate) const ZCNBLK_OP_SYNC: u16 = 7;
-pub(crate) const ZCNBLK_OP_SYNC_ACK: u16 = 8;
-pub(crate) const ZCNBLK_OP_READ_RANGE_RESP: u16 = 9;
+pub const ZCNBLK_FRAME_HEADER_LEN: usize = 64;
+pub const ZCNBLK_TOPOLOGY_VALID: u32 = 1 << 0;
+pub const ZCNBLK_TOPOLOGY_PORT_LANE: u32 = 1 << 1;
+pub const ZCNBLK_OP_WRITE: u16 = 1;
+pub const ZCNBLK_OP_READ: u16 = 2;
+pub const ZCNBLK_OP_READ_RESP: u16 = 3;
+pub const ZCNBLK_OP_WRITE_ACK: u16 = 4;
+pub const ZCNBLK_OP_BATCH: u16 = 5;
+pub const ZCNBLK_OP_BATCH_RESP: u16 = 6;
+pub const ZCNBLK_OP_SYNC: u16 = 7;
+pub const ZCNBLK_OP_SYNC_ACK: u16 = 8;
+pub const ZCNBLK_OP_READ_RANGE_RESP: u16 = 9;
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct ZcnblkFrameTopology {
-    pub(crate) lane_id: u32,
-    pub(crate) lane_count: u32,
-    pub(crate) preferred_worker: u32,
-    pub(crate) queue_id: u32,
-    pub(crate) request_id: u64,
-    pub(crate) tier_id: u32,
-    pub(crate) topology_flags: u32,
+pub struct ZcnblkFrameTopology {
+    pub lane_id: u32,
+    pub lane_count: u32,
+    pub preferred_worker: u32,
+    pub queue_id: u32,
+    pub request_id: u64,
+    pub tier_id: u32,
+    pub topology_flags: u32,
 }
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct ZcnblkFrameHeader {
-    pub(crate) op: u16,
-    pub(crate) flags: u16,
-    pub(crate) shard: u32,
-    pub(crate) len: u32,
-    pub(crate) offset: u64,
-    pub(crate) topology: ZcnblkFrameTopology,
+pub struct ZcnblkFrameHeader {
+    pub op: u16,
+    pub flags: u16,
+    pub shard: u32,
+    pub len: u32,
+    pub offset: u64,
+    pub topology: ZcnblkFrameTopology,
 }
 
 impl ZcnblkFrameHeader {
-    pub(crate) fn with_flags(
+    pub fn with_flags(
         op: u16,
         flags: u16,
         shard: usize,
@@ -55,7 +55,7 @@ impl ZcnblkFrameHeader {
         )
     }
 
-    pub(crate) fn with_topology(
+    pub fn with_topology(
         op: u16,
         flags: u16,
         shard: usize,
@@ -100,11 +100,11 @@ impl ZcnblkFrameHeader {
         })
     }
 
-    pub(crate) fn topology_valid(self) -> bool {
+    pub fn topology_valid(self) -> bool {
         self.topology.topology_flags & ZCNBLK_TOPOLOGY_VALID != 0
     }
 
-    pub(crate) fn encode(self) -> [u8; ZCNBLK_FRAME_HEADER_LEN] {
+    pub fn encode(self) -> [u8; ZCNBLK_FRAME_HEADER_LEN] {
         let mut buf = [0u8; ZCNBLK_FRAME_HEADER_LEN];
         buf[0..8].copy_from_slice(ZCNBLK_FRAME_MAGIC);
         buf[8..10].copy_from_slice(&ZCNBLK_FRAME_VERSION.to_le_bytes());
@@ -124,7 +124,7 @@ impl ZcnblkFrameHeader {
         buf
     }
 
-    pub(crate) fn decode(buf: &[u8; ZCNBLK_FRAME_HEADER_LEN]) -> io::Result<Self> {
+    pub fn decode(buf: &[u8; ZCNBLK_FRAME_HEADER_LEN]) -> io::Result<Self> {
         if &buf[0..8] != ZCNBLK_FRAME_MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

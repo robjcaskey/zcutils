@@ -13,13 +13,12 @@ use std::ops::Deref;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
 use vhost::vhost_user::message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures};
-use vhost_user_backend::bitmap::BitmapMmapRegion;
-use vhost_user_backend::{VhostUserBackendMut, VhostUserDaemon, VringRwLock, VringState, VringT};
+use vhost_user_backend::{VhostUserBackend, VhostUserDaemon, VringRwLock, VringState, VringT};
 use virtio_bindings::bindings::virtio_blk::{
     VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_CONFIG_WCE, VIRTIO_BLK_F_FLUSH, VIRTIO_BLK_F_MQ,
     VIRTIO_BLK_F_RO, VIRTIO_BLK_F_SEG_MAX, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK,
@@ -29,13 +28,21 @@ use virtio_bindings::bindings::virtio_blk::{
 use virtio_bindings::bindings::virtio_config::VIRTIO_F_VERSION_1;
 use virtio_bindings::bindings::virtio_ring::VIRTIO_RING_F_EVENT_IDX;
 use virtio_queue::{DescriptorChain, QueueT};
-use vm_memory::{Bytes, GuestAddress, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard};
+use vm_memory::{
+    Bytes, GuestAddress, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryBackend,
+    GuestMemoryLoadGuard, ReadVolatile, VolatileSlice, WriteVolatile,
+};
 use vmm_sys_util::epoll::EventSet;
 use vmm_sys_util::event::{EventConsumer, EventNotifier};
 use vmm_sys_util::eventfd::EventFd;
 use zcutils::zcnblk_app_arena::{ZcnblkAppArena, pin_current_thread};
 
-type GuestMemoryMmap = vm_memory::GuestMemoryMmap<BitmapMmapRegion>;
+// This backend does not advertise VHOST_USER_PROTOCOL_F_LOG_SHMFD, so using
+// BitmapMmapRegion would only take its shared dirty-bitmap lock for every
+// guest-memory write without providing migration logging.  The unit bitmap is
+// the protocol-correct no-logging fast path.  If live-migration logging is
+// added later it must be negotiated explicitly and kept out of normal I/O.
+type GuestMemoryMmap = vm_memory::GuestMemoryMmap<()>;
 type AtomicGuestMemory = GuestMemoryAtomic<GuestMemoryMmap>;
 type LoadedDescriptorChain = DescriptorChain<GuestMemoryLoadGuard<GuestMemoryMmap>>;
 
@@ -58,6 +65,30 @@ trait BlockStage: Send + Sync {
     fn capacity_bytes(&self) -> u64;
     fn read_at(&self, queue: usize, offset: u64, destination: &mut [u8]) -> io::Result<()>;
     fn write_at(&self, queue: usize, offset: u64, source: &[u8]) -> io::Result<()>;
+    fn read_at_guest(
+        &self,
+        queue: usize,
+        offset: u64,
+        destination: &mut VolatileSlice<'_, ()>,
+    ) -> io::Result<()> {
+        let mut scratch = vec![0u8; destination.len()];
+        self.read_at(queue, offset, &mut scratch)?;
+        (&scratch[..])
+            .read_exact_volatile(destination)
+            .map_err(io::Error::other)
+    }
+    fn write_at_guest(
+        &self,
+        queue: usize,
+        offset: u64,
+        source: &VolatileSlice<'_, ()>,
+    ) -> io::Result<()> {
+        let mut scratch = vec![0u8; source.len()];
+        (&mut scratch[..])
+            .write_all_volatile(source)
+            .map_err(io::Error::other)?;
+        self.write_at(queue, offset, &scratch)
+    }
     fn flush(&self) -> io::Result<()>;
 }
 
@@ -123,6 +154,74 @@ impl BlockStage for FileLeaf {
         }
         self.checked_end(offset, source.len())?;
         self.file.write_all_at(source, offset)
+    }
+
+    fn read_at_guest(
+        &self,
+        _queue: usize,
+        offset: u64,
+        destination: &mut VolatileSlice<'_, ()>,
+    ) -> io::Result<()> {
+        self.checked_end(offset, destination.len())?;
+        let guard = destination.ptr_guard_mut();
+        let mut completed = 0usize;
+        while completed < destination.len() {
+            // SAFETY: the volatile pointer guard covers destination.len()
+            // writable bytes, and checked_end bounded the file offset.
+            let result = unsafe {
+                libc::pread(
+                    self.file.as_raw_fd(),
+                    guard.as_ptr().add(completed).cast(),
+                    destination.len() - completed,
+                    (offset + completed as u64) as libc::off_t,
+                )
+            };
+            if result < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if result == 0 {
+                return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+            }
+            completed += result as usize;
+        }
+        Ok(())
+    }
+
+    fn write_at_guest(
+        &self,
+        _queue: usize,
+        offset: u64,
+        source: &VolatileSlice<'_, ()>,
+    ) -> io::Result<()> {
+        if self.read_only {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "terminal leaf is read-only",
+            ));
+        }
+        self.checked_end(offset, source.len())?;
+        let guard = source.ptr_guard();
+        let mut completed = 0usize;
+        while completed < source.len() {
+            // SAFETY: the volatile pointer guard covers source.len() readable
+            // bytes, and checked_end bounded the file offset.
+            let result = unsafe {
+                libc::pwrite(
+                    self.file.as_raw_fd(),
+                    guard.as_ptr().add(completed).cast(),
+                    source.len() - completed,
+                    (offset + completed as u64) as libc::off_t,
+                )
+            };
+            if result < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if result == 0 {
+                return Err(io::Error::from(io::ErrorKind::WriteZero));
+            }
+            completed += result as usize;
+        }
+        Ok(())
     }
 
     fn flush(&self) -> io::Result<()> {
@@ -243,6 +342,69 @@ impl BlockStage for ArenaStage {
         Ok(())
     }
 
+    fn read_at_guest(
+        &self,
+        queue: usize,
+        mut offset: u64,
+        destination: &mut VolatileSlice<'_, ()>,
+    ) -> io::Result<()> {
+        self.checked_end(offset, destination.len())?;
+        let slot_bytes = self.arena.slot_bytes();
+        let mut completed = 0usize;
+        while completed < destination.len() {
+            let slot_offset = offset % slot_bytes as u64;
+            let block_offset = offset - slot_offset;
+            let count = (destination.len() - completed).min(slot_bytes - slot_offset as usize);
+            let mut buffer = self.arena.allocate(self.lane(queue))?;
+            buffer.read_at(&self.device, block_offset)?;
+            let mut target = destination
+                .subslice(completed, count)
+                .map_err(io::Error::other)?;
+            (&buffer.as_slice()?[slot_offset as usize..slot_offset as usize + count])
+                .read_exact_volatile(&mut target)
+                .map_err(io::Error::other)?;
+            completed += count;
+            offset += count as u64;
+        }
+        Ok(())
+    }
+
+    fn write_at_guest(
+        &self,
+        queue: usize,
+        mut offset: u64,
+        source: &VolatileSlice<'_, ()>,
+    ) -> io::Result<()> {
+        if self.read_only {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "zcnblk userspace stage is read-only",
+            ));
+        }
+        self.checked_end(offset, source.len())?;
+        let slot_bytes = self.arena.slot_bytes();
+        let mut completed = 0usize;
+        while completed < source.len() {
+            let slot_offset = offset % slot_bytes as u64;
+            let block_offset = offset - slot_offset;
+            let count = (source.len() - completed).min(slot_bytes - slot_offset as usize);
+            let mut buffer = self.arena.allocate(self.lane(queue))?;
+            if slot_offset != 0 || count != slot_bytes {
+                buffer.read_at(&self.device, block_offset)?;
+            }
+            let source_part = source
+                .subslice(completed, count)
+                .map_err(io::Error::other)?;
+            (&mut buffer.as_mut_slice()?[slot_offset as usize..slot_offset as usize + count])
+                .write_all_volatile(&source_part)
+                .map_err(io::Error::other)?;
+            buffer.write_at(&self.device, block_offset)?;
+            completed += count;
+            offset += count as u64;
+        }
+        Ok(())
+    }
+
     fn flush(&self) -> io::Result<()> {
         self.device.sync_all()
     }
@@ -305,7 +467,6 @@ struct QueueWorker {
     memory: AtomicGuestMemory,
     serial: [u8; SERIAL_LEN],
     descriptors: Vec<DescriptorMeta>,
-    scratch: Vec<u8>,
     event_idx: bool,
     writeback: Arc<AtomicBool>,
     exit_event: EventFd,
@@ -329,7 +490,6 @@ impl QueueWorker {
             memory,
             serial,
             descriptors: Vec::with_capacity(32),
-            scratch: Vec::with_capacity(128 * 1024),
             event_idx: false,
             writeback,
             exit_event: EventFd::new(libc::EFD_NONBLOCK)?,
@@ -394,14 +554,14 @@ impl QueueWorker {
         match header.kind {
             RequestKind::Read => {
                 for descriptor in &self.descriptors[1..self.descriptors.len() - 1] {
-                    let length = descriptor.length as usize;
-                    self.scratch.resize(length, 0);
-                    self.stage
-                        .read_at(self.queue, offset, &mut self.scratch[..length])?;
-                    memory
-                        .write_slice(&self.scratch[..length], descriptor.address)
-                        .map_err(io::Error::other)?;
-                    offset += descriptor.length as u64;
+                    for destination in
+                        memory.get_slices(descriptor.address, descriptor.length as usize)
+                    {
+                        let mut destination = destination.map_err(io::Error::other)?;
+                        self.stage
+                            .read_at_guest(self.queue, offset, &mut destination)?;
+                        offset += destination.len() as u64;
+                    }
                 }
                 self.stats.reads += 1;
                 self.stats.read_bytes += data_len;
@@ -409,14 +569,12 @@ impl QueueWorker {
             }
             RequestKind::Write => {
                 for descriptor in &self.descriptors[1..self.descriptors.len() - 1] {
-                    let length = descriptor.length as usize;
-                    self.scratch.resize(length, 0);
-                    memory
-                        .read_slice(&mut self.scratch[..length], descriptor.address)
-                        .map_err(io::Error::other)?;
-                    self.stage
-                        .write_at(self.queue, offset, &self.scratch[..length])?;
-                    offset += descriptor.length as u64;
+                    for source in memory.get_slices(descriptor.address, descriptor.length as usize)
+                    {
+                        let source = source.map_err(io::Error::other)?;
+                        self.stage.write_at_guest(self.queue, offset, &source)?;
+                        offset += source.len() as u64;
+                    }
                 }
                 if !self.writeback.load(Ordering::Acquire) {
                     self.stage.flush()?;
@@ -563,14 +721,15 @@ impl QueueWorker {
 
 struct Backend {
     workers: Vec<Mutex<QueueWorker>>,
-    config: Vec<u8>,
+    config: RwLock<Vec<u8>>,
     read_only: bool,
     queue_size: usize,
     queue_masks: Vec<u64>,
     memory: AtomicGuestMemory,
-    acknowledged_features: u64,
+    acknowledged_features: AtomicU64,
     writeback: Arc<AtomicBool>,
     poll_for: Duration,
+    offer_event_idx: bool,
 }
 
 impl Backend {
@@ -582,6 +741,7 @@ impl Backend {
         queue_cpus: &[usize],
         read_only: bool,
         poll_for: Duration,
+        offer_event_idx: bool,
         serial: [u8; SERIAL_LEN],
     ) -> io::Result<Self> {
         let writeback = Arc::new(AtomicBool::new(true));
@@ -609,14 +769,15 @@ impl Backend {
 
         Ok(Self {
             workers,
-            config,
+            config: RwLock::new(config),
             read_only,
             queue_size,
             queue_masks,
             memory,
-            acknowledged_features: 0,
+            acknowledged_features: AtomicU64::new(0),
             writeback,
             poll_for,
+            offer_event_idx,
         })
     }
 
@@ -638,20 +799,31 @@ impl Backend {
             })
     }
 
+    fn queue_stats(&self) -> Vec<Stats> {
+        self.workers
+            .iter()
+            .map(|worker| worker.lock().map(|worker| worker.stats).unwrap_or_default())
+            .collect()
+    }
+
     fn update_writeback(&self) {
         let config_wce = 1u64 << VIRTIO_BLK_F_CONFIG_WCE;
         let flush = 1u64 << VIRTIO_BLK_F_FLUSH;
-        let enabled = if self.acknowledged_features & config_wce != 0 {
-            self.config[CONFIG_WCE_OFFSET] != 0
+        let acknowledged_features = self.acknowledged_features.load(Ordering::Acquire);
+        let enabled = if acknowledged_features & config_wce != 0 {
+            self.config
+                .read()
+                .map(|config| config[CONFIG_WCE_OFFSET] != 0)
+                .unwrap_or(true)
         } else {
-            self.acknowledged_features & flush != 0
+            acknowledged_features & flush != 0
         };
         self.writeback.store(enabled, Ordering::Release);
     }
 }
 
-impl VhostUserBackendMut for Backend {
-    type Bitmap = BitmapMmapRegion;
+impl VhostUserBackend for Backend {
+    type Bitmap = ();
     type Vring = VringRwLock<AtomicGuestMemory>;
 
     fn num_queues(&self) -> usize {
@@ -668,17 +840,20 @@ impl VhostUserBackendMut for Backend {
             | (1u64 << VIRTIO_BLK_F_FLUSH)
             | (1u64 << VIRTIO_BLK_F_MQ)
             | (1u64 << VIRTIO_BLK_F_CONFIG_WCE)
-            | (1u64 << VIRTIO_RING_F_EVENT_IDX)
             | (1u64 << VIRTIO_F_VERSION_1)
             | VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits();
+        if self.offer_event_idx {
+            features |= 1u64 << VIRTIO_RING_F_EVENT_IDX;
+        }
         if self.read_only {
             features |= 1u64 << VIRTIO_BLK_F_RO;
         }
         features
     }
 
-    fn acked_features(&mut self, features: u64) {
-        self.acknowledged_features = features;
+    fn acked_features(&self, features: u64) {
+        self.acknowledged_features
+            .store(features, Ordering::Release);
         self.update_writeback();
     }
 
@@ -688,9 +863,9 @@ impl VhostUserBackendMut for Backend {
             | VhostUserProtocolFeatures::CONFIGURE_MEM_SLOTS
     }
 
-    fn set_event_idx(&mut self, enabled: bool) {
-        for worker in &mut self.workers {
-            worker.get_mut().unwrap().event_idx = enabled;
+    fn set_event_idx(&self, enabled: bool) {
+        for worker in &self.workers {
+            worker.lock().unwrap().event_idx = enabled;
         }
     }
 
@@ -699,19 +874,28 @@ impl VhostUserBackendMut for Backend {
         let Some(end) = start.checked_add(size as usize) else {
             return Vec::new();
         };
-        self.config.get(start..end).unwrap_or_default().to_vec()
+        self.config
+            .read()
+            .ok()
+            .and_then(|config| config.get(start..end).map(<[_]>::to_vec))
+            .unwrap_or_default()
     }
 
-    fn set_config(&mut self, offset: u32, data: &[u8]) -> io::Result<()> {
+    fn set_config(&self, offset: u32, data: &[u8]) -> io::Result<()> {
         let start = offset as usize;
         let end = start
             .checked_add(data.len())
             .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
-        let destination = self
-            .config
-            .get_mut(start..end)
-            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
-        destination.copy_from_slice(data);
+        {
+            let mut config = self
+                .config
+                .write()
+                .map_err(|_| io::Error::other("config lock poisoned"))?;
+            let destination = config
+                .get_mut(start..end)
+                .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+            destination.copy_from_slice(data);
+        }
         self.update_writeback();
         Ok(())
     }
@@ -734,14 +918,14 @@ impl VhostUserBackendMut for Backend {
         }
     }
 
-    fn update_memory(&mut self, _memory: AtomicGuestMemory) -> io::Result<()> {
+    fn update_memory(&self, _memory: AtomicGuestMemory) -> io::Result<()> {
         // Every worker owns a clone of this GuestMemoryAtomic; memory table
         // replacement updates the common ArcSwap observed by all clones.
         Ok(())
     }
 
     fn handle_event(
-        &mut self,
+        &self,
         device_event: u16,
         event_set: EventSet,
         vrings: &[VringRwLock<AtomicGuestMemory>],
@@ -753,11 +937,11 @@ impl VhostUserBackendMut for Backend {
                 "unexpected vhost event",
             ));
         }
-        let worker = self
+        let mut worker = self
             .workers
-            .get_mut(thread_id)
+            .get(thread_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid queue worker"))?
-            .get_mut()
+            .lock()
             .map_err(|_| io::Error::other("queue worker lock poisoned"))?;
         if !worker.pinned {
             if let Some(cpu) = worker.cpu {
@@ -767,30 +951,49 @@ impl VhostUserBackendMut for Backend {
         }
         let mut vring = vrings[0].get_mut();
 
-        if !self.poll_for.is_zero() {
-            let mut idle_since = Instant::now();
-            loop {
-                if worker.process_queue(&mut vring) {
-                    idle_since = Instant::now();
-                } else if idle_since.elapsed() >= self.poll_for {
-                    break;
-                }
-                std::hint::spin_loop();
-            }
-        }
-
         if worker.event_idx {
             loop {
+                // EVENT_IDX rearming must bracket queue draining.  Enabling
+                // notifications without first disabling them can leave the
+                // driver's avail_event unchanged after the initial depth is
+                // consumed, permanently suppressing the next kick.
                 vring
                     .get_queue_mut()
-                    .enable_notification(self.memory.memory().deref())
+                    .disable_notification(self.memory.memory().deref())
                     .map_err(io::Error::other)?;
-                if !worker.process_queue(&mut vring) {
+                worker.process_queue(&mut vring);
+                if !self.poll_for.is_zero() {
+                    let mut idle_since = Instant::now();
+                    loop {
+                        if worker.process_queue(&mut vring) {
+                            idle_since = Instant::now();
+                        } else if idle_since.elapsed() >= self.poll_for {
+                            break;
+                        }
+                        std::hint::spin_loop();
+                    }
+                }
+                if !vring
+                    .get_queue_mut()
+                    .enable_notification(self.memory.memory().deref())
+                    .map_err(io::Error::other)?
+                {
                     break;
                 }
             }
         } else {
             worker.process_queue(&mut vring);
+            if !self.poll_for.is_zero() {
+                let mut idle_since = Instant::now();
+                loop {
+                    if worker.process_queue(&mut vring) {
+                        idle_since = Instant::now();
+                    } else if idle_since.elapsed() >= self.poll_for {
+                        break;
+                    }
+                    std::hint::spin_loop();
+                }
+            }
         }
         Ok(())
     }
@@ -806,13 +1009,14 @@ struct Options {
     queue_cpus: Vec<usize>,
     read_only: bool,
     poll_us: u64,
+    offer_event_idx: bool,
     serial: [u8; SERIAL_LEN],
 }
 
 fn usage() -> &'static str {
     "usage: zcvhost-user-blk --socket PATH (--leaf-file PATH | --arena-socket PATH) \
      [--zcnblk-device PATH] [--queues N] \
-     [--queue-size N] [--queue-cpus CSV] [--poll-us N] [--read-only] [--serial TEXT]\n\
+     [--queue-size N] [--queue-cpus CSV] [--poll-us N] [--no-event-idx] [--read-only] [--serial TEXT]\n\
      A leaf file is terminal test media. An arena socket connects to an existing\n\
      userspace stage through /dev/zcnblk0 without a block-edge payload copy.\n\
      This adapter never performs placement."
@@ -836,6 +1040,7 @@ fn parse_options() -> io::Result<Options> {
     let mut queue_cpus = Vec::new();
     let mut read_only = false;
     let mut poll_us = 0u64;
+    let mut offer_event_idx = true;
     let mut serial = [b' '; SERIAL_LEN];
     serial[..14].copy_from_slice(b"zcutils-vhost0");
 
@@ -867,6 +1072,7 @@ fn parse_options() -> io::Result<Options> {
             "--poll-us" => {
                 poll_us = parse_usize("--poll-us", arguments.next())? as u64;
             }
+            "--no-event-idx" => offer_event_idx = false,
             "--read-only" => read_only = true,
             "--serial" => {
                 let value = arguments.next().ok_or_else(|| {
@@ -937,6 +1143,7 @@ fn parse_options() -> io::Result<Options> {
         queue_cpus,
         read_only,
         poll_us,
+        offer_event_idx,
         serial,
     })
 }
@@ -981,7 +1188,7 @@ fn run() -> io::Result<()> {
     };
     let capacity = stage.capacity_bytes();
     let memory = GuestMemoryAtomic::new(GuestMemoryMmap::new());
-    let backend = Arc::new(RwLock::new(Backend::new(
+    let backend = Arc::new(Backend::new(
         stage,
         memory.clone(),
         options.queues,
@@ -989,14 +1196,15 @@ fn run() -> io::Result<()> {
         &options.queue_cpus,
         options.read_only,
         Duration::from_micros(options.poll_us),
+        options.offer_event_idx,
         options.serial,
-    )?));
+    )?);
     let mut daemon =
         VhostUserDaemon::new("zcvhost-user-blk".to_owned(), backend.clone(), memory)
             .map_err(|error| io::Error::other(format!("create vhost daemon: {error:?}")))?;
 
     eprintln!(
-        "zcvhost-user-blk: ready socket={} {} capacity_bytes={} queues={} queue_size={} queue_cpus={} poll_us={} placement_owner=downstream-userspace-stage frontend_placement=no",
+        "zcvhost-user-blk: ready socket={} {} capacity_bytes={} queues={} queue_size={} queue_cpus={} poll_us={} event_idx={} placement_owner=downstream-userspace-stage frontend_placement=no",
         options.socket.display(),
         backing,
         capacity,
@@ -1013,14 +1221,12 @@ fn run() -> io::Result<()> {
                 .join(",")
         },
         options.poll_us,
+        options.offer_event_idx,
     );
     daemon
         .serve(&options.socket)
         .map_err(|error| io::Error::other(format!("serve vhost socket: {error:?}")))?;
-    let stats = backend
-        .read()
-        .map_err(|_| io::Error::other("vhost backend lock poisoned"))?
-        .stats();
+    let stats = backend.stats();
     eprintln!(
         "zcvhost-user-blk-summary: reads={} writes={} flushes={} get_ids={} unsupported={} io_errors={} read_bytes={} write_bytes={}",
         stats.reads,
@@ -1032,6 +1238,20 @@ fn run() -> io::Result<()> {
         stats.read_bytes,
         stats.write_bytes,
     );
+    if env::var("ZCVHOST_REPORT_QUEUE_STATS").as_deref() == Ok("1") {
+        for (queue, stats) in backend.queue_stats().into_iter().enumerate() {
+            eprintln!(
+                "zcvhost-user-blk-queue-summary: queue={} reads={} writes={} flushes={} io_errors={} read_bytes={} write_bytes={}",
+                queue,
+                stats.reads,
+                stats.writes,
+                stats.flushes,
+                stats.io_errors,
+                stats.read_bytes,
+                stats.write_bytes,
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1106,22 +1326,15 @@ mod tests {
             &[],
             false,
             Duration::ZERO,
+            true,
             [b'x'; SERIAL_LEN],
         )
         .unwrap();
-        assert_eq!(
-            u64::from_le_bytes(backend.config[0..8].try_into().unwrap()),
-            2048
-        );
-        assert_eq!(
-            u32::from_le_bytes(backend.config[20..24].try_into().unwrap()),
-            512
-        );
-        assert_eq!(
-            u16::from_le_bytes(backend.config[34..36].try_into().unwrap()),
-            4
-        );
-        assert_eq!(backend.config[CONFIG_WCE_OFFSET], 1);
+        let config = backend.config.read().unwrap();
+        assert_eq!(u64::from_le_bytes(config[0..8].try_into().unwrap()), 2048);
+        assert_eq!(u32::from_le_bytes(config[20..24].try_into().unwrap()), 512);
+        assert_eq!(u16::from_le_bytes(config[34..36].try_into().unwrap()), 4);
+        assert_eq!(config[CONFIG_WCE_OFFSET], 1);
         std::fs::remove_file(path).unwrap();
     }
 }
