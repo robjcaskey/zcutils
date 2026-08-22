@@ -1,0 +1,35 @@
+# Replace the two node names and paths. The source file must already exist on
+# the source node; the target parent directory is created on the target node.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: checkpoint-replication-key
+  namespace: default
+type: Opaque
+stringData:
+  token: REPLACE_WITH_A_FRESH_ZCT1_TOKEN
+---
+apiVersion: storage.zcutils.io/v1alpha1
+kind: CrossRegionReplication
+metadata:
+  name: example-us-to-uk-checkpoint
+  namespace: default
+spec:
+  mode: AsynchronousCheckpoint
+  source:
+    region: us-test-1
+    nodeName: REPLACE_SOURCE_NODE
+    path: /var/lib/zcutils/checkpoints/example.bin
+  target:
+    region: uk-test-1
+    nodeName: REPLACE_TARGET_NODE
+    path: /var/lib/zcutils/checkpoints/example.bin
+  bytes: 67108864
+  credentialSecretRef:
+    name: checkpoint-replication-key
+    key: token
+  transport:
+    kind: Aes256AuthenticatedTcp
+    nodeAddressAnnotation: storage.zcutils.io/backplane-address
+  allowTargetOverwrite: true
+  automaticFailover: false

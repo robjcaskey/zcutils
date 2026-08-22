@@ -1,0 +1,41 @@
+apiVersion: storage.zcutils.io/v1alpha1
+kind: MediaGrant
+metadata:
+  name: getting-started-ram
+spec:
+  nodeSelector:
+    matchLabels:
+      storage.zcutils.io/getting-started-leaf: "true"
+  mediaSets:
+    - name: userspace-memory
+      dynamicSources:
+        - kind: MemoryArena
+          maximumVolumeSize: 1Gi
+      publishAs:
+        mediaClass: getting-started-ram
+        durability: Volatile
+        mayContributeToDurableAcknowledgement: false
+---
+apiVersion: storage.zcutils.io/v1alpha1
+kind: StorageProfile
+metadata:
+  name: getting-started-mirror-ram
+spec:
+  storageClass:
+    name: zc-mirror-ram
+  frontend: LinuxBlock
+  placement:
+    primitive: Mirror
+    execution: Userspace
+    copies: 2
+    mediaClass: getting-started-ram
+    excludeClientNode: true
+    distinctTopologyKeys:
+      - kubernetes.io/hostname
+  transport:
+    kind: TcpMux
+    addressSource: NodeAnnotationThenInternalIP
+    nodeAddressAnnotation: storage.zcutils.io/backplane-address
+    lanes: 1
+    connectionsPerLane: 1
+    chunkBytes: 4096

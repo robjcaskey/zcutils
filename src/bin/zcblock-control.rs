@@ -739,7 +739,23 @@ impl ControlApp {
                 .as_ref()
                 .map(|route| route.spillover_tier.clone()),
         };
-        self.append_state_log("stream.receive.started", &repl_id, &response)?;
+        self.append_state_log(
+            "stream.receive.started",
+            &repl_id,
+            &serde_json::json!({
+                "repl_id": &response.repl_id,
+                "role": &response.role,
+                "volume_id": &response.volume_id,
+                "target": &response.target,
+                "listen": &response.listen,
+                "port": response.port,
+                "credential": "redacted",
+                "replication_mode": &response.replication_mode,
+                "target_cluster": &response.target_cluster,
+                "gateway_endpoint": &response.gateway_endpoint,
+                "spillover_tier": &response.spillover_tier,
+            }),
+        )?;
 
         let jobs = self.repl.clone();
         let thread_repl_id = repl_id.clone();

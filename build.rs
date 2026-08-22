@@ -4,6 +4,12 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=src/ofi_shim.c");
+    // Installing or upgrading the EFA userspace stack changes the provider
+    // extension ABI without changing this repository.  Track those headers
+    // so a long-lived checkout cannot silently retain a shim compiled against
+    // the distro libfabric headers after /opt/amazon/efa appears.
+    println!("cargo:rerun-if-changed=/opt/amazon/efa/include/rdma/fabric.h");
+    println!("cargo:rerun-if-changed=/opt/amazon/efa/include/rdma/fi_ext_efa.h");
     println!("cargo:rustc-check-cfg=cfg(zc_has_libfabric)");
 
     // Prefer the provider's matching headers and library when the AWS EFA

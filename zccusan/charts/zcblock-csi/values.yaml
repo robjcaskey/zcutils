@@ -70,6 +70,11 @@ control:
   listen: 127.0.0.1:9788
   url: http://127.0.0.1:9788
 
+operator:
+  enabled: true
+  waitTimeoutMs: 50000
+  resources: {}
+
 telemetry:
   apiEndpoint: ""
 
@@ -154,8 +159,3 @@ storageClasses:
     parameters:
       backend: raw-block
       rawPartUUID: ""
-
-snapshotClass:
-  enabled: true
-  name: zcblock
-  deletionPolicy: Delete

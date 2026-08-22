@@ -1,0 +1,23 @@
+apiVersion: storage.zcutils.io/v1alpha1
+kind: CrossRegionReplication
+metadata:
+  name: qemu-auto-failover-rejected
+spec:
+  mode: AsynchronousCheckpoint
+  source:
+    region: region-us
+    nodeName: region-us
+    path: /var/lib/zcutils/checkpoints/source.bin
+    address: 10.46.0.2
+  target:
+    region: region-uk
+    nodeName: region-uk
+    path: /var/lib/zcutils/checkpoints/rejected.bin
+    address: 10.46.0.3
+  bytes: 4096
+  credentialSecretRef:
+    name: qemu-cross-region-key
+  transport:
+    kind: Aes256AuthenticatedTcp
+  allowTargetOverwrite: true
+  automaticFailover: true

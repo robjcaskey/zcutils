@@ -2,7 +2,9 @@
 
 This chart installs `zccsi`, the zccusan CSI adapter: the `zcblock-csi`
 DaemonSet, the `zcblock-control` local zccusan agent sidecar, minimum RBAC, the
-CSIDriver object, optional StorageClasses, and an optional VolumeSnapshotClass.
+CSIDriver object, and optional StorageClasses. A `VolumeSnapshotClass` is an
+application/cluster policy choice and is deliberately not created by this
+chart.
 
 `zccusan` means Zero Copy Cinematic Universe Storage Area Network. CSI is only a
 Kubernetes-facing client of that storage network. The durable control idiom is
@@ -15,9 +17,13 @@ layering is descriptor primitives -> zero-copy streams -> zero-copy WALs ->
 - No Helm hooks. Do not add `helm.sh/hook` annotations or hook-only Jobs.
 - All install, upgrade, and uninstall behavior must be represented as normal
   Kubernetes resources reconciled by the API server.
-- CRD installation stays outside this chart. Use
-  `zccusan/deploy/zcblock-csi/install-snapshot-api.sh` for the snapshot CRDs and
-  snapshot controller stair-step flow.
+- The chart includes the zccusan `StorageProfile`, `MediaGrant`,
+  `TieringPolicy`, `CrossRegionReplication`, and `ZcVolume` CRDs and runs one
+  reconciler instance. Snapshot API CRDs remain outside this
+  chart: use `zccusan/deploy/zcblock-csi/install-snapshot-api.sh` for the
+  snapshot controller stair-step flow. If snapshots are wanted, create a
+  `VolumeSnapshotClass` separately after that API is available; the repository
+  example is `zccusan/deploy/zcblock-csi/snapshot-class.yaml`.
 
 ## Container Filesystems
 
@@ -107,8 +113,9 @@ helm template zcblock-csi zccusan/charts/zcblock-csi --namespace zcblock-csi \
   | kubectl apply -f -
 ```
 
-The chart renders the Namespace by default so the same values work with
-`helm template ... | kubectl apply -f -`.
+`namespace.create` defaults to `false`; `helm install --create-namespace`
+creates it in the normal Helm path. For `helm template ... | kubectl apply`,
+create the namespace first or set `namespace.create=true`.
 
 ## Template/Apply Upgrade
 
@@ -135,16 +142,14 @@ helm template zcblock-csi-a zccusan/charts/zcblock-csi \
   --set stateDir=/var/lib/zcblock-csi-a \
   --set storageClasses.zcbrd.name=zcbrd-a \
   --set storageClasses.zcfile.name=zcfile-a \
-  --set snapshotClass.name=zcblock-a \
   | kubectl apply -f -
 
 kubectl -n zcblock-csi-a rollout status daemonset/zcblock-csi-a-node
 ```
 
 Repeat for `b` and `c`, changing the release name, namespace, driver name,
-state directory, StorageClass names, and snapshot class name. Snapshot CRDs and
-the external snapshot controller are still upgraded separately before the chart
-step.
+state directory, and StorageClass names. Snapshot CRDs, the external snapshot
+controller, and any `VolumeSnapshotClass` are still managed separately.
 
 Enable the raw block StorageClass only with a real allowlisted PARTUUID:
 
@@ -168,9 +173,12 @@ helm upgrade --install zcblock-csi zccusan/charts/zcblock-csi \
 
 `backend=fabric` does not make placement, mirror, stripe, spill, or tier
 decisions. It only stages the node's `/dev/zcnblk0` client edge. The downstream
-userspace stage owns those decisions. Unlike `zcfile`, the resulting CSI volume
-does not advertise node-local accessible topology, so a workload can move to a
-different prepared client node without moving the remote leaf.
+userspace stage owns those decisions. A manually managed fabric can be
+topology-free only when the administrator has connected every eligible node
+edge to the same logical volume. A fabric StorageClass generated from a
+`StorageProfile` advertises the operator-reconciled client node until fenced
+client handoff is implemented; its terminal leaves are still remote and may be
+placed on other nodes.
 
 ### Direct userspace filesystem volumes (no local block edge)
 

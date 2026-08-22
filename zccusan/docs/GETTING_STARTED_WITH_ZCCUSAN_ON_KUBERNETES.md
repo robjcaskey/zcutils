@@ -1,185 +1,225 @@
 # Getting started with zccusan on Kubernetes
 
-This repo now publishes images and Helm charts on independent pipelines.
+This walkthrough creates one PVC backed by a two-copy userspace mirror, runs
+4 KiB random I/O through it, and proves that the workload is not running on
+either storage-leaf node. You declare storage intent; the operator creates the
+runtime. You do not create leaf, mirror, onramp, or data-path Services.
 
-## Add the Helm repo
+## What you need
+
+- `kubectl` and Helm 3
+- three distinct Ready Linux worker nodes
+- an encrypted pod/backplane network between those nodes
+- `/dev/zcnblk0` and `/dev/zcnblk-shmctl` prepared on every node that may host
+  the client workload
+
+`/dev/zcnblk0` is only the client block edge. The operator places a separate
+userspace mirror after that edge and connects it directly to terminal leaves.
+The kernel client never chooses mirror placement.
+
+This first reconciler pins the PV to its selected client-edge node. The two
+terminal leaves are remote from that node. It does not yet advertise
+topology-free client failover: doing that safely requires fencing and draining
+the old onramp before moving the attachment.
+
+The current `TcpMux` mirror runtime is a preview and does not yet provide
+native payload encryption. Use it only over a CNI or physical backplane that
+provides encryption. It is not a production security benchmark configuration.
+
+The client-edge module setup is host/kernel specific. Complete
+[the zcnblk client setup](../../docs/zcnblk-single-target-howto.md) on eligible
+client nodes before continuing.
+
+## 1. Reserve two nodes for leaves
+
+Choose two distinct worker nodes. Leave at least one other worker unlabeled so
+Kubernetes can schedule the fio client there.
 
 ```bash
-helm repo add zccusan https://robjcaskey.github.io/zcutils
-helm repo update
+export LEAF_A=worker-a
+export LEAF_B=worker-b
+
+test -n "$LEAF_A"
+test -n "$LEAF_B"
+test "$LEAF_A" != "$LEAF_B"
+
+kubectl label node "$LEAF_A" \
+  storage.zcutils.io/getting-started-leaf=true --overwrite
+kubectl label node "$LEAF_B" \
+  storage.zcutils.io/getting-started-leaf=true --overwrite
+
+kubectl get nodes \
+  -L storage.zcutils.io/getting-started-leaf
+kubectl get nodes \
+  -l '!storage.zcutils.io/getting-started-leaf'
 ```
 
-## Install / upgrade with an image tag
+The last command must show at least one Ready worker. The fio Pod uses required
+node affinity that excludes the two labeled leaf nodes.
+
+If your storage backplane has dedicated node addresses, annotate all three
+nodes. Otherwise the operator uses each node's `InternalIP`:
 
 ```bash
-helm upgrade --install zccusan zccusan/zcblock-csi \
+kubectl annotate node "$LEAF_A" \
+  storage.zcutils.io/backplane-address=10.20.0.11 --overwrite
+kubectl annotate node "$LEAF_B" \
+  storage.zcutils.io/backplane-address=10.20.0.12 --overwrite
+```
+
+Annotate the eventual client node as well when `InternalIP` is not its storage
+backplane address.
+
+## 2. Install the chart
+
+From a source checkout containing the v1alpha1 operator:
+
+```bash
+helm upgrade --install zccusan \
+  ./zccusan/charts/zcblock-csi \
   --namespace zccusan \
   --create-namespace \
-  --version "0.1.2" \
-  --set-string image.tag="0.1.2"
+  --wait \
+  --timeout 10m
+
+kubectl -n zccusan rollout status \
+  daemonset/zccusan-zcblock-csi-node --timeout=10m
+kubectl -n zccusan rollout status \
+  deployment/zccusan-zcblock-csi-operator --timeout=10m
 ```
 
-For first install, replace `upgrade --install` with `install`.
-
-## Select telemetry and community-survey API endpoints
-
-Helm does not expand shell environment variables inside a values YAML file.
-The repository includes reviewed community-survey values files. Pass one as a
-normal Helm values file; there is no telemetry environment or stage setting:
+Verify the declarative API:
 
 ```bash
-export ZCCUSAN_HELM_VALUES_FILE="$PWD/zccusan/charts/zcblock-csi/values-community-survey-dev.yaml"
-./zccusan/deploy/zcblock-csi/install-zccusan-kubernetes.sh
+kubectl get crd \
+  storageprofiles.storage.zcutils.io \
+  mediagrants.storage.zcutils.io \
+  zcvolumes.storage.zcutils.io
 ```
 
-The wrapper defaults to the matching immutable `0.1.2` chart and container
-image. Set `ZCCUSAN_CHART_VERSION` and `ZCCUSAN_IMAGE_TAG` together when
-testing another release.
+The chart does not create a `VolumeSnapshotClass`. Snapshot policy remains a
+separate cluster-administrator decision.
 
-The two profiles are:
+## 3. Choose the terminal media
 
-- `zccusan/charts/zcblock-csi/values-community-survey-dev.yaml`
-- `zccusan/charts/zcblock-csi/values-community-survey-prod.yaml`
-
-Both send node-local events to the in-cluster telemetry API. Only that collector
-can send a community HTTPS request. It first transforms every mixed-version raw
-record into `NonIdentifyingTelemetry`: installation identity is hashed, safe
-cloud/region and aggregate signals are retained, and identifying or unknown
-fields are omitted before bytes leave the cluster.
-
-For a one-off independently deployed endpoint, keep the selected profile and
-override its URL for both direct and collector delivery:
+Start with volatile userspace RAM for a non-destructive functional test:
 
 ```bash
-ZCCUSAN_COMMUNITY_SURVEY_API_ENDPOINT=https://example.execute-api.us-east-1.amazonaws.com/survey \
-./zccusan/deploy/zcblock-csi/install-zccusan-kubernetes.sh
+kubectl apply -f \
+  zccusan/deploy/zcblock-csi/getting-started/mirror-ram.yaml
+
+kubectl get storageprofile getting-started-mirror-ram
+kubectl get storageclass zc-mirror-ram
 ```
 
-## Image release workflow (decoupled)
+The RAM leaves are explicitly volatile and do not make a durable-acknowledgment
+claim.
 
-The image workflow publishes Docker tags without publishing charts.
-
-### Image tags published
-
-- **Per-branch / push builds**
-  - `main` branch push: `main`, `latest`, `sha-<7>`
-  - non-main branch push: `<branch>`, `<branch>-sha-<7>`, `sha-<7>`
-- **Semantic image tags**
-  - pushing `v1.2.3` or `release-1.2.3` publishes:
-    - `1.2.3`, `1.2`, `1`, `sha-<7>`
-  - pushing `v1.2` publishes:
-    - `1.2`, `1`, `sha-<7>`
-  - pushing `v1` publishes:
-    - `1`, `sha-<7>`
-- **Scheduled builds**
-  - `nightly`, `nightly-YYYYMMDD`, `sha-<7>`
-- **Manual run**
-  - use `workflow_dispatch`; it publishes `sha-<7>` plus branch/tag derived tags.
-
-## Helm chart release workflow (decoupled)
-
-Charts are only published by the chart workflow.
-
-### Triggering a chart release
-
-- Tag and push `chart-v0.1.2`:
+To use two real partitions instead, obtain the stable PARTUUID on each leaf
+node. Both partitions must be dedicated and empty: the leaf writer will
+overwrite them. Render and inspect the template before applying it:
 
 ```bash
-git tag chart-v0.1.2
-git push origin chart-v0.1.2
+export LEAF_A_PARTUUID=11111111-2222-3333-4444-555555555555
+export LEAF_B_PARTUUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+
+sed \
+  -e "s/LEAF_A_NODE/$LEAF_A/g" \
+  -e "s/LEAF_A_PARTUUID/$LEAF_A_PARTUUID/g" \
+  -e "s/LEAF_B_NODE/$LEAF_B/g" \
+  -e "s/LEAF_B_PARTUUID/$LEAF_B_PARTUUID/g" \
+  zccusan/deploy/zcblock-csi/getting-started/mirror-block.template.yaml \
+  > /tmp/zc-mirror-block.yaml
+
+less /tmp/zc-mirror-block.yaml
+kubectl apply -f /tmp/zc-mirror-block.yaml
+kubectl get storageclass zc-mirror-block
 ```
 
-- Or run chart workflow manually with:
+Selection alone never authorizes raw writes. The block template therefore
+contains a conspicuous, per-source `destructivePreparation.allowRawWrites`
+approval; its default is `false`.
+
+## 4. Create the PVC and run fio
+
+The checked-in workload uses the RAM-backed StorageClass:
 
 ```bash
-gh workflow run "Promote zcblock-csi RC chart" \
-  -f source_chart_tag="chart-v0.1.2-rc.1" \
-  -f dry_run=false
+kubectl -n zccusan apply -f \
+  zccusan/deploy/zcblock-csi/getting-started/mirror-fio.yaml
+
+kubectl -n zccusan get pvc zc-mirror -w
 ```
 
-The workflow packages `zccusan/charts/zcblock-csi` and publishes it to the repo's GitHub Pages index.
+For the real-partition profile, change only the PVC's `storageClassName` from
+`zc-mirror-ram` to `zc-mirror-block` before applying it.
 
-### Chart versioning
-
-- Chart versions are independent and typically patch-level semver (`0.1.2`).
-- For deterministic deployments, pin both chart `--version` and `--set image.tag`.
-- For mutable tracks in non-prod:
-  - pin only chart `--version`
-  - set image by mutable tag (`main`, `nightly`, branch name)
-
-## Floating semver vs immutable tags
-
-- **Immutable:** `sha-<7>`, full patch tags (`0.1.2`) in both image and chart
-- **Mutable by design:** `main`, `latest`, `nightly`, branch names, `1`, `1.2`
-- For strict reproducibility, use immutable patch tags for both image and chart.
-
-## Verify artifact signatures
-
-Signatures are produced in GitHub Actions for release workflow outputs.
-
-### Verify container image signatures
-
-Install cosign:
+Wait for fio to finish and print its JSON result:
 
 ```bash
-curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /tmp/cosign
-chmod +x /tmp/cosign
-sudo mv /tmp/cosign /usr/local/bin/cosign
+kubectl -n zccusan wait pod/zc-mirror-fio \
+  --for=jsonpath='{.status.phase}'=Succeeded \
+  --timeout=15m
+
+kubectl -n zccusan logs zc-mirror-fio
 ```
 
-Verify a pushed image signature:
+This is a functional 4 KiB `randrw` run. It is not a representative high-IOPS
+result: the example does not declare huge pages, memlock headroom, worker and
+kthread CPU pinning, hctx affinity, lane-to-CPU maps, or strict fast-path
+settings.
+
+## 5. Verify placement and the backplane path
+
+CSI creates the `ZcVolume`; the operator fills in its selected runtime:
 
 ```bash
-COSIGN_EXPERIMENTAL=1 cosign verify \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  --certificate-identity-regexp ".*github.com/robjcaskey/zcutils/.github/workflows/zcblock-csi-images.yml.*" \
-  robjcaskey/zcblock-csi:1.2.3
+export ZCV="$(kubectl -n zccusan get zcvolumes \
+  -o jsonpath='{.items[0].metadata.name}')"
+
+kubectl -n zccusan get zcvolume "$ZCV" -o yaml
+kubectl -n zccusan get pods \
+  -l "storage.zcutils.io/volume=$ZCV" \
+  -o wide
 ```
 
-If you need a no-network workflow check, you can also verify digest first:
+Prove that fio is not on either selected leaf:
 
 ```bash
-cosign triangulate robjcaskey/zcblock-csi:1.2.3
+export FIO_NODE="$(kubectl -n zccusan get pod zc-mirror-fio \
+  -o jsonpath='{.spec.nodeName}')"
+export LEAF_NODES="$(kubectl -n zccusan get zcvolume "$ZCV" \
+  -o jsonpath='{.status.runtime.leaves[*].nodeName}')"
+
+for node in $LEAF_NODES; do
+  test "$FIO_NODE" != "$node"
+done
+
+printf 'fio_node=%s leaf_nodes=%s\n' "$FIO_NODE" "$LEAF_NODES"
 ```
 
-### Verify Helm chart signatures
-
-The chart promotion workflow publishes `*.sig` and optional `*.sig.release` files next to the `.tgz` on GitHub Pages for chart artifacts.
+The runtime status also shows each direct backplane address, transport, fan
+node, and terminal-media kind. No ClusterIP sits in the data path:
 
 ```bash
-export VERSION="0.1.0-nightly.20260819.1"
-export BASE="https://robjcaskey.github.io/zcutils"
-export CHART="zcblock-csi-${VERSION}.tgz"
-
-curl -fL -o /tmp/${CHART} "${BASE}/${CHART}"
-curl -fL -o /tmp/${CHART}.sig "${BASE}/${CHART}.sig"
-
-COSIGN_EXPERIMENTAL=1 cosign verify-blob \
-  --signature "/tmp/${CHART}.sig" \
-  --certificate-identity-regexp ".*github.com/robjcaskey/zcutils/.github/workflows/zcblock-csi-promote-chart-rc.yml.*" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  "/tmp/${CHART}"
+kubectl -n zccusan get service \
+  -l "storage.zcutils.io/volume=$ZCV"
 ```
 
-For stronger release-only checks, verify the `.sig.release` artifact after it is published by the same workflow:
+The expected result is `No resources found`.
+
+## 6. Clean up
 
 ```bash
-curl -fL -o /tmp/${CHART}.sig.release "${BASE}/${CHART}.sig.release"
-COSIGN_EXPERIMENTAL=1 cosign verify-blob \
-  --signature "/tmp/${CHART}.sig.release" \
-  "/tmp/${CHART}"
+kubectl -n zccusan delete pod zc-mirror-fio
+kubectl -n zccusan delete pvc zc-mirror
 ```
 
-## Upgrade and rollback
+PVC deletion causes CSI to delete the `ZcVolume`. Its finalizer keeps the CR
+until the operator has removed the fan, onramp, terminal leaves, and raw-media
+allowlist ConfigMaps.
 
-```bash
-helm upgrade --install zccusan zccusan/zcblock-csi \
-  --version "0.1.2" \
-  --namespace zccusan \
-  --create-namespace \
-  --set image.tag="0.1.2"
-```
+## Next
 
-```bash
-helm rollback zccusan 0
-```
+Continue with [tiering on Kubernetes](GETTING_STARTED_WITH_TIERING_ON_KUBERNETES.md),
+then [cross-region replication](GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md).

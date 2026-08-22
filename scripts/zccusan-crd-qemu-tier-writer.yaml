@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tier-writer
+spec:
+  nodeName: region-us
+  hostNetwork: true
+  restartPolicy: Never
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: writer
+      image: localhost/zccusan-crd-qemu:latest
+      imagePullPolicy: Never
+      command: [/bin/sh, -c]
+      args:
+        - printf 'tier-qemu-pass' | dd of=/host-dev/zcnblk0 bs=4096 count=1 conv=sync,fsync && echo ZCCUSAN_TIER_WRITE_PASS
+      securityContext:
+        privileged: true
+      volumeMounts:
+        - name: dev
+          mountPath: /host-dev
+  volumes:
+    - name: dev
+      hostPath:
+        path: /dev
+        type: Directory

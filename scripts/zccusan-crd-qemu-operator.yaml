@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zccusan-crd-operator
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: zccusan-crd-operator
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection", "patch", "update"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection", "patch", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+  - apiGroups: ["storage.zcutils.io"]
+    resources: ["storageprofiles", "mediagrants", "tieringpolicies", "crossregionreplications", "zcvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+  - apiGroups: ["storage.zcutils.io"]
+    resources: ["storageprofiles/status", "mediagrants/status", "tieringpolicies/status", "crossregionreplications/status", "zcvolumes/status"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: zccusan-crd-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: zccusan-crd-operator
+subjects:
+  - kind: ServiceAccount
+    name: zccusan-crd-operator
+    namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zccusan-crd-operator
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zccusan-crd-operator
+  template:
+    metadata:
+      labels:
+        app: zccusan-crd-operator
+    spec:
+      serviceAccountName: zccusan-crd-operator
+      nodeName: region-us
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: operator
+          image: localhost/zccusan-crd-qemu:latest
+          imagePullPolicy: Never
+          command: [/usr/local/bin/zccusan-operator]
+          env:
+            - name: ZCCUSAN_RUNTIME_IMAGE
+              value: localhost/zccusan-crd-qemu:latest
+            - name: ZCCUSAN_RUNTIME_IMAGE_PULL_POLICY
+              value: Never
+            - name: KUBERNETES_SERVICE_HOST
+              value: 10.46.0.1
+            - name: KUBERNETES_SERVICE_PORT
+              value: "6443"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

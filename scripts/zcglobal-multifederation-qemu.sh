@@ -132,10 +132,9 @@ for module in failover net_failover virtio_net; do copy_module "$module"; done
 cp "$ROOT/scripts/zcglobal-multifederation-qemu-init.sh" "$BASE_ROOTFS/init"
 chmod 0755 "$BASE_ROOTFS/init" "$BASE_ROOTFS/zcglobal-policy-node"
 
-printf '%s\n' 'atlas-qemu-only-management-token-0001' > "$(token_file atlas)"
-printf '%s\n' 'borealis-qemu-only-management-token-0001' > "$(token_file borealis)"
-printf '%s\n' 'concord-qemu-only-management-token-0001' > "$(token_file concord)"
-chmod 0600 "$(token_file atlas)" "$(token_file borealis)" "$(token_file concord)"
+"$ROOT/target/release/zcglobal-policy-node" credential-init "$(token_file atlas)" 1h
+"$ROOT/target/release/zcglobal-policy-node" credential-init "$(token_file borealis)" 1h
+"$ROOT/target/release/zcglobal-policy-node" credential-init "$(token_file concord)" 1h
 
 for role in "${roles[@]}"; do
 	rootfs="$OUTDIR/rootfs-$role"

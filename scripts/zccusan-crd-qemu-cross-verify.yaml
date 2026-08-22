@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cross-verify-uk
+spec:
+  nodeName: region-uk
+  hostNetwork: true
+  restartPolicy: Never
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: verify
+      image: localhost/zccusan-crd-qemu:latest
+      imagePullPolicy: Never
+      command: [/bin/sh, -c]
+      args:
+        - test "$(wc -c < /checkpoint/target.bin)" = 4096 && grep -a -q cross-region-qemu-pass /checkpoint/target.bin && echo ZCCUSAN_CROSS_REGION_CONTENT_PASS
+      volumeMounts:
+        - name: checkpoint
+          mountPath: /checkpoint
+  volumes:
+    - name: checkpoint
+      hostPath:
+        path: /var/lib/zcutils/checkpoints
+        type: Directory

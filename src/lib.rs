@@ -28,23 +28,31 @@ pub mod cloud_topology;
 pub mod dirty_pool;
 pub mod enterprise_workload;
 pub mod fanout;
+pub mod global_failover;
 pub mod global_policy;
+pub mod global_secure_rpc;
 pub mod ha_metadata;
 pub mod htb_controller;
 pub mod integrity_contract;
 mod io_slots;
 pub mod iops_policy;
+pub mod kubernetes_storage;
 pub mod ofi_pipe;
 pub mod persistent_wal;
 pub mod racing_mirror;
 pub mod readcache_bench;
 pub mod regional_htb;
+pub mod secret_lifecycle;
 mod survey;
 pub mod telemetry;
 pub mod topology;
 pub mod topology_controller;
+pub mod transport_security;
 pub mod volume_partition;
 pub(crate) mod wal_contract;
+pub mod wal_failover;
+pub mod wal_ha_route;
+pub mod wal_quorum;
 pub mod window;
 pub mod zcnblk_app_arena;
 pub mod zcnblk_shm_target;
@@ -27028,6 +27036,14 @@ impl ZcnblkTierRuntime {
         zcnblk_tier_read_at_zero_fill(&self.hot, out, offset)
     }
 
+    fn sync_hot(&mut self) -> io::Result<()> {
+        self.flush_pending_write()?;
+        // Spill is deliberately asynchronous and is not included in this
+        // acknowledgement. The hot tier is the only completion authority;
+        // callers must not report this as a cold-tier durable HWM.
+        self.hot.sync_data()
+    }
+
     fn finish(mut self) -> io::Result<Option<(String, ZcTierSpillStats, usize, usize)>> {
         self.flush_pending_write()?;
         let Some(spill) = self.spill else {
@@ -51577,6 +51593,12 @@ enum ZcnblkWalLeafBackend {
         store: persistent_wal::PersistentWalRuntime,
         device_bytes: u64,
     },
+    Tier {
+        label: String,
+        runtime: Mutex<ZcnblkTierRuntime>,
+        device_bytes: u64,
+        required_alignment: usize,
+    },
     Block {
         label: String,
         file: fs::File,
@@ -51914,13 +51936,16 @@ impl ZcnblkWalLeafBackend {
             Self::Memory { label, .. } => label,
             Self::LeaseMemory { store } => &store.label,
             Self::PersistentJournal { label, .. } => label,
+            Self::Tier { label, .. } => label,
             Self::Block { label, .. } => label,
         }
     }
 
     fn device_bytes(&self) -> u64 {
         match self {
-            Self::DevNull { device_bytes, .. } | Self::Block { device_bytes, .. } => *device_bytes,
+            Self::DevNull { device_bytes, .. }
+            | Self::Tier { device_bytes, .. }
+            | Self::Block { device_bytes, .. } => *device_bytes,
             Self::Memory { arena, .. } => arena.device_bytes as u64,
             Self::LeaseMemory { store } => store.device_bytes,
             Self::PersistentJournal { device_bytes, .. } => *device_bytes,
@@ -51934,6 +51959,9 @@ impl ZcnblkWalLeafBackend {
             }
             | Self::Block {
                 required_alignment, ..
+            }
+            | Self::Tier {
+                required_alignment, ..
             } => *required_alignment,
             Self::Memory { arena, .. } => arena.required_alignment,
             Self::LeaseMemory { store } => store.required_alignment,
@@ -51945,6 +51973,7 @@ impl ZcnblkWalLeafBackend {
         match self {
             Self::Memory { arena, .. } => arena.memory_policy,
             Self::LeaseMemory { store } => store.memory_policy(),
+            Self::Tier { .. } => "userspace-hot-spill",
             _ => "not-memory",
         }
     }
@@ -51960,9 +51989,10 @@ impl ZcnblkWalLeafBackend {
         match self {
             Self::Block { durability, .. } => *durability,
             Self::PersistentJournal { .. } => ZcnblkWalLeafDurability::Persistent,
-            Self::DevNull { .. } | Self::Memory { .. } | Self::LeaseMemory { .. } => {
-                ZcnblkWalLeafDurability::Volatile
-            }
+            Self::DevNull { .. }
+            | Self::Memory { .. }
+            | Self::LeaseMemory { .. }
+            | Self::Tier { .. } => ZcnblkWalLeafDurability::Volatile,
         }
     }
 
@@ -51973,6 +52003,7 @@ impl ZcnblkWalLeafBackend {
                 ..
             } => "remote-persistent-sync-data",
             Self::PersistentJournal { .. } => "remote-persistent-journal-hwm",
+            Self::Tier { .. } if allow_volatile_sync => "remote-volatile-tier-hot-hwm",
             Self::Memory { .. } | Self::LeaseMemory { .. } if allow_volatile_sync => {
                 "remote-volatile-retained-hwm"
             }
@@ -52022,6 +52053,10 @@ impl ZcnblkWalLeafBackend {
             Self::PersistentJournal { store, .. } => {
                 store.append_contiguous(offset, payload).map(|_| ())
             }
+            Self::Tier { runtime, .. } => runtime
+                .lock()
+                .map_err(|_| io::Error::other("zcnblk WAL tier lock poisoned"))?
+                .write_hot_and_spill(offset, payload, true),
             Self::Block { file, .. } => zc_write_all_at(file, payload, offset),
         }
     }
@@ -52037,6 +52072,14 @@ impl ZcnblkWalLeafBackend {
                 store.read_at(offset, &mut payload)?;
                 Ok(payload)
             }
+            Self::Tier { runtime, .. } => {
+                let mut payload = vec![0u8; len];
+                runtime
+                    .lock()
+                    .map_err(|_| io::Error::other("zcnblk WAL tier lock poisoned"))?
+                    .read_hot(offset, &mut payload)?;
+                Ok(payload)
+            }
             Self::Block { file, .. } => {
                 let mut payload = vec![0u8; len];
                 zc_read_exact_at(file, &mut payload, offset)?;
@@ -52048,6 +52091,10 @@ impl ZcnblkWalLeafBackend {
     fn sync(&self, allow_volatile_sync: bool) -> io::Result<()> {
         match self {
             Self::PersistentJournal { store, .. } => store.sync().map(|_| ()),
+            Self::Tier { runtime, .. } if allow_volatile_sync => runtime
+                .lock()
+                .map_err(|_| io::Error::other("zcnblk WAL tier lock poisoned"))?
+                .sync_hot(),
             Self::Block {
                 file,
                 durability: ZcnblkWalLeafDurability::Persistent,
@@ -52067,7 +52114,8 @@ impl ZcnblkWalLeafBackend {
                 ..
             }
             | Self::Memory { .. }
-            | Self::LeaseMemory { .. } => Err(io::Error::new(
+            | Self::LeaseMemory { .. }
+            | Self::Tier { .. } => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!(
                     "refusing to acknowledge block SYNC on volatile WAL leaf {}; use an allowlisted persistent PARTUUID leaf for durability or set URING_PLAY_ZCNBLK_WAL_LEAF_ALLOW_VOLATILE_SYNC=1 for an explicitly remote volatile-commit benchmark",
@@ -52286,6 +52334,10 @@ impl ZcnblkWalLeafBackend {
             Self::PersistentJournal { store, .. } => {
                 store.append_contiguous(offset, payload).map(|_| ())
             }
+            Self::Tier { runtime, .. } => runtime
+                .lock()
+                .map_err(|_| io::Error::other("zcnblk WAL tier lock poisoned"))?
+                .write_hot_and_spill(offset, payload, true),
             Self::Block { file, .. } => zc_write_all_at(file, payload, offset),
         }
     }
@@ -52398,6 +52450,25 @@ fn zcnblk_wal_leaf_open_backend(
     chunk_bytes: usize,
     preferred_numa_node: Option<i32>,
 ) -> io::Result<ZcnblkWalLeafBackend> {
+    if let Some(plan) = zcnblk_parse_tier_target(target_spec)? {
+        let ZcnblkTargetBackend::Tier(target) = plan.backend else {
+            unreachable!("zcnblk tier parser returned a non-tier backend");
+        };
+        let queue_depth = env_usize_or("URING_PLAY_ZCNBLK_WAL_LEAF_TIER_QUEUE_DEPTH", 64).max(1);
+        let hot = target.hot_path.display().to_string();
+        let spill = target
+            .spill_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let runtime = ZcnblkTierRuntime::open(&target, queue_depth)?;
+        return Ok(ZcnblkWalLeafBackend::Tier {
+            label: format!("zctier:hot={hot}:spill={spill}"),
+            runtime: Mutex::new(runtime),
+            device_bytes: plan.device_bytes,
+            required_alignment: plan.required_alignment,
+        });
+    }
     if let Some(spec) = target_spec.strip_prefix("zcpwal:") {
         let fields = spec.split(',').collect::<Vec<_>>();
         if fields.len() != 4 || fields[0].is_empty() || fields[1].is_empty() {
@@ -52521,7 +52592,7 @@ fn zcnblk_wal_leaf_open_backend(
     if !metadata.file_type().is_block_device() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "zcnblk-wal-leaf target must be zcdevnullN, zcmem:SIZE, /dev/zcbrdN, /dev/nullbN, /dev/ramN, or allowlisted PARTUUID",
+            "zcnblk-wal-leaf target must be zcdevnullN, zcmem:SIZE, zctier:HOT:SPILL:BYTES:ALIGN:MEMORY, /dev/zcbrdN, /dev/nullbN, /dev/ramN, or allowlisted PARTUUID",
         ));
     }
     validate_slot_wal_write_target_safety(&target, &metadata)?;
@@ -55619,6 +55690,10 @@ fn zcnblk_wal_leaf_process_stream(
             ZcnblkWalLeafBackend::Memory { .. } => None,
             ZcnblkWalLeafBackend::LeaseMemory { .. } => None,
             ZcnblkWalLeafBackend::PersistentJournal { .. } => None,
+            // The userspace tier owns its hot/spill file queues.  It is not a
+            // raw block leaf and must not be submitted through this stream's
+            // block io_uring ring.
+            ZcnblkWalLeafBackend::Tier { .. } => None,
             ZcnblkWalLeafBackend::Block { .. } => {
                 let options = zcnblk_wal_leaf_ring_options(ring_affinity_index)?;
                 println!(
@@ -66782,6 +66857,37 @@ EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_grou
             }
             _ => panic!("expected tier target"),
         }
+    }
+
+    #[test]
+    fn zcnblk_wal_leaf_tier_writes_hot_and_drains_spill() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let hot = env::temp_dir().join(format!("zc-wal-tier-hot-{}-{nonce}", std::process::id()));
+        let spill =
+            env::temp_dir().join(format!("zc-wal-tier-spill-{}-{nonce}", std::process::id()));
+        let target = format!("zctier:{}:{}:64k:4k:16k", hot.display(), spill.display());
+        let backend = zcnblk_wal_leaf_open_backend(&target, 4096, None).unwrap();
+        let payload = vec![0x5au8; 4096];
+        backend.write_at(8192, &payload).unwrap();
+        assert_eq!(backend.read_at(8192, payload.len()).unwrap(), payload);
+        assert!(backend.sync(false).is_err());
+        backend.sync(true).unwrap();
+        match backend {
+            ZcnblkWalLeafBackend::Tier { runtime, .. } => {
+                let drained = runtime.into_inner().unwrap().finish().unwrap().unwrap();
+                assert_eq!(drained.1.bytes, payload.len() as u64);
+            }
+            _ => panic!("expected WAL tier backend"),
+        }
+        let mut spilled = vec![0u8; payload.len()];
+        let file = fs::File::open(&spill).unwrap();
+        zc_read_exact_at(&file, &mut spilled, 8192).unwrap();
+        assert_eq!(spilled, payload);
+        fs::remove_file(hot).unwrap();
+        fs::remove_file(spill).unwrap();
     }
 
     #[test]
@@ -87804,7 +87910,7 @@ fn zcraid_spawn_tcpmux_branch(
         )?;
         stream.set_nodelay(true)?;
         if let Some(token) = target.token.as_deref() {
-            zc_tcpmux_validate_token(token)?;
+            zc_tcpmux_validate_auth_token(token)?;
             stream.write_all(zc_tcpmux_token_auth_line(token).as_bytes())?;
         }
         zcraid_tcpmux_writer_loop(stream, rx, &label, zero_copy_policy, ring_entries)
@@ -92324,6 +92430,23 @@ fn zc_tcpmux_parse_ready_ports(line: &str) -> io::Result<Vec<u16>> {
 }
 
 fn zc_tcpmux_generate_token() -> io::Result<String> {
+    let ttl_secs = zc_transfer_token_duration_env("ZC_TRANSFER_TOKEN_TTL_SECS", 900)?;
+    let maximum_ttl_secs = zc_transfer_token_duration_env("ZC_TRANSFER_TOKEN_MAX_TTL_SECS", 3600)?;
+    if ttl_secs == 0 || ttl_secs > maximum_ttl_secs {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "ZC_TRANSFER_TOKEN_TTL_SECS must be between 1 and ZC_TRANSFER_TOKEN_MAX_TTL_SECS ({maximum_ttl_secs})"
+            ),
+        ));
+    }
+    let issued_at = zc_transfer_token_now_secs()?;
+    let expires_at = issued_at.checked_add(ttl_secs).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "transfer token expiry overflow",
+        )
+    })?;
     let mut bytes = [0u8; 32];
     fs::File::open("/dev/urandom")
         .and_then(|mut file| file.read_exact(&mut bytes))
@@ -92333,13 +92456,13 @@ fn zc_tcpmux_generate_token() -> io::Result<String> {
                 format!("generate token from /dev/urandom: {err}"),
             )
         })?;
-    let mut token = String::with_capacity(bytes.len() * 2);
+    let mut random = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         use std::fmt::Write as _;
-        write!(&mut token, "{byte:02x}")
+        write!(&mut random, "{byte:02x}")
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "format generated token"))?;
     }
-    Ok(token)
+    Ok(format!("zct1.{issued_at}.{expires_at}.{random}"))
 }
 
 fn zc_tcpmux_validate_token(token: &str) -> io::Result<()> {
@@ -92350,6 +92473,121 @@ fn zc_tcpmux_validate_token(token: &str) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+fn zc_tcpmux_validate_auth_token(token: &str) -> io::Result<()> {
+    zc_tcpmux_validate_token(token)?;
+    zc_tcpmux_validate_auth_token_at(
+        token,
+        zc_transfer_token_now_secs()?,
+        zc_transfer_token_duration_env("ZC_TRANSFER_TOKEN_MAX_TTL_SECS", 3600)?,
+        zc_transfer_token_duration_env("ZC_TRANSFER_TOKEN_ACTIVATION_CLOCK_SKEW_SECS", 2)?,
+        env::var("ZC_ALLOW_LEGACY_NONEXPIRING_TOKENS").as_deref() == Ok("1"),
+    )
+}
+
+fn zc_tcpmux_validate_auth_token_at(
+    token: &str,
+    now: u64,
+    maximum_ttl_secs: u64,
+    activation_skew: u64,
+    allow_legacy: bool,
+) -> io::Result<()> {
+    let fields = token.split('.').collect::<Vec<_>>();
+    if fields.len() != 4 || fields[0] != "zct1" {
+        if allow_legacy {
+            return Ok(());
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "non-expiring transport authentication token rejected; generate a zct1 token or explicitly set ZC_ALLOW_LEGACY_NONEXPIRING_TOKENS=1 during migration",
+        ));
+    }
+    let issued_at = fields[1].parse::<u64>().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid transfer token issue time",
+        )
+    })?;
+    let expires_at = fields[2].parse::<u64>().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid transfer token expiry time",
+        )
+    })?;
+    let random = fields[3];
+    if random.len() != 64 || !random.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "transfer token entropy must be exactly 32 hexadecimal bytes",
+        ));
+    }
+    if issued_at >= expires_at || expires_at.saturating_sub(issued_at) > maximum_ttl_secs {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "transfer token validity interval is invalid or exceeds the configured maximum TTL",
+        ));
+    }
+    if now < issued_at.saturating_sub(activation_skew) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "transfer token is not valid yet",
+        ));
+    }
+    if now >= expires_at {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "transfer token has expired",
+        ));
+    }
+    Ok(())
+}
+
+fn zc_transfer_token_duration_env(name: &str, default: u64) -> io::Result<u64> {
+    match env::var(name) {
+        Ok(value) => value.parse::<u64>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{name} must be an integer number of seconds"),
+            )
+        }),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(error) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid {name}: {error}"),
+        )),
+    }
+}
+
+fn zc_transfer_token_now_secs() -> io::Result<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| io::Error::other("system clock is before the Unix epoch"))
+}
+
+#[cfg(test)]
+mod zc_transfer_token_tests {
+    use super::zc_tcpmux_validate_auth_token_at;
+
+    fn token(issued: u64, expires: u64) -> String {
+        format!("zct1.{issued}.{expires}.{}", "ab".repeat(32))
+    }
+
+    #[test]
+    fn expiring_transfer_token_is_checked_only_for_new_authentication() {
+        let credential = token(100, 130);
+        assert!(zc_tcpmux_validate_auth_token_at(&credential, 100, 30, 0, false).is_ok());
+        assert!(zc_tcpmux_validate_auth_token_at(&credential, 129, 30, 0, false).is_ok());
+        assert!(zc_tcpmux_validate_auth_token_at(&credential, 130, 30, 0, false).is_err());
+    }
+
+    #[test]
+    fn non_expiring_transfer_tokens_require_an_explicit_migration_override() {
+        let legacy = "legacy-high-entropy-token-that-does-not-expire";
+        assert!(zc_tcpmux_validate_auth_token_at(legacy, 100, 30, 0, false).is_err());
+        assert!(zc_tcpmux_validate_auth_token_at(legacy, 100, 30, 0, true).is_ok());
+    }
 }
 
 fn zc_tcpmux_token_auth_line(token: &str) -> String {
@@ -92590,7 +92828,7 @@ fn zc_tcpmux_copy_reader_to_tcp<R: Read>(
         "connect zc-tcpmux data plane",
     )?;
     if let Some(token) = token {
-        zc_tcpmux_validate_token(token)?;
+        zc_tcpmux_validate_auth_token(token)?;
         stream.write_all(zc_tcpmux_token_auth_line(token).as_bytes())?;
     }
     let total = match (encryption, already_encrypted) {
@@ -92697,7 +92935,7 @@ fn zc_tcpmux_copy_tcp_to_writer<W: Write>(
 ) -> io::Result<u64> {
     let mut reader = BufReader::new(stream);
     if let Some(expected) = token {
-        zc_tcpmux_validate_token(expected)?;
+        zc_tcpmux_validate_auth_token(expected)?;
         let mut auth_line = String::new();
         reader.read_line(&mut auth_line)?;
         let expected_line = zc_tcpmux_token_auth_line(expected);
@@ -93382,7 +93620,7 @@ fn zc_tcpmux_connect_parallel_sender(
     )?;
     stream.set_nodelay(true)?;
     if let Some(token) = token {
-        zc_tcpmux_validate_token(token)?;
+        zc_tcpmux_validate_auth_token(token)?;
         stream.write_all(zc_tcpmux_token_auth_line(token).as_bytes())?;
     }
 
@@ -93880,7 +94118,7 @@ fn zc_tcpmux_parallel_receive_worker(
     let (stream, peer) = listener.accept()?;
     let mut reader = BufReader::new(stream);
     if let Some(expected) = token.as_deref() {
-        zc_tcpmux_validate_token(expected)?;
+        zc_tcpmux_validate_auth_token(expected)?;
         let mut auth_line = String::new();
         reader.read_line(&mut auth_line)?;
         let expected_line = zc_tcpmux_token_auth_line(expected);

@@ -4,9 +4,11 @@
 //! cross-region cluster-link changes, then regional controllers translate the
 //! resulting grants into their existing short local-monotonic lane leases.
 
+use crate::global_failover::{FailoverState, GlobalFailoverCommand};
 use crate::htb_controller::{
     HtbBorrowingController, HtbClassSpec, HtbDemandSnapshot, HtbGrantPlan, HtbPolicy,
 };
+use crate::transport_security::{LinkTransportSecurity, NetworkTrustPolicy};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -86,6 +88,10 @@ pub struct ClusterLink {
     /// Exact directional trust grant authorizing ciphertext placement.
     pub trust_grant_id: String,
     pub trust_grant_generation: u64,
+    /// User data is always protected. TLS is an optional outer compliance
+    /// layer and is deliberately distinct from native framing encryption.
+    #[serde(default)]
+    pub transport_security: LinkTransportSecurity,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +228,12 @@ pub enum GlobalPolicyCommand {
         region_id: String,
         generation: u64,
     },
+    SetNetworkTrustPolicy {
+        policy: NetworkTrustPolicy,
+    },
+    ApplyFailover {
+        command: GlobalFailoverCommand,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +253,10 @@ pub struct GlobalPolicyState {
     pub regional_inbound_policies: BTreeMap<String, RegionalInboundPolicy>,
     #[serde(default)]
     pub revoked_inbound_policy_generations: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub network_trust_policy: NetworkTrustPolicy,
+    #[serde(default)]
+    pub failover: FailoverState,
 }
 
 impl GlobalPolicyState {
@@ -497,6 +513,20 @@ impl GlobalPolicyState {
                     .insert(region_id.clone(), *generation);
                 Ok(())
             }
+            GlobalPolicyCommand::SetNetworkTrustPolicy { policy } => {
+                if policy.generation == 0 {
+                    return Err(invalid("network trust-policy generation must be non-zero"));
+                }
+                if policy.generation <= self.network_trust_policy.generation {
+                    if policy == &self.network_trust_policy {
+                        return Ok(());
+                    }
+                    return Err(invalid("network trust-policy generation did not advance"));
+                }
+                self.network_trust_policy = policy.clone();
+                Ok(())
+            }
+            GlobalPolicyCommand::ApplyFailover { command } => self.failover.apply(command),
         }
     }
 
@@ -829,7 +859,7 @@ fn validate_link(link: &ClusterLink) -> io::Result<()> {
     {
         return Err(invalid("invalid cross-region cluster link"));
     }
-    Ok(())
+    link.transport_security.validate()
 }
 
 fn validate_trust_grant(grant: &RegionalTrustGrant) -> io::Result<()> {
@@ -924,6 +954,10 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::global_failover::{
+        AdapterKind, GlobalFailoverCommand, VolumeSpec, WorkloadBinding, WorkloadFailoverPolicy,
+    };
+    use crate::transport_security::{NetworkSegmentScope, SegmentTrust};
 
     fn policy(revision: u64) -> GlobalRatePolicy {
         GlobalRatePolicy {
@@ -1009,6 +1043,57 @@ mod tests {
     }
 
     #[test]
+    fn network_trust_is_default_deny_monotonic_and_cross_region_invariant() {
+        let mut state = GlobalPolicyState::default();
+        assert_eq!(
+            state
+                .network_trust_policy
+                .segment_trust(NetworkSegmentScope::SameAz),
+            SegmentTrust::Untrusted
+        );
+        state
+            .apply(
+                1,
+                1,
+                &GlobalPolicyCommand::SetNetworkTrustPolicy {
+                    policy: NetworkTrustPolicy {
+                        generation: 1,
+                        same_az: SegmentTrust::Trusted,
+                        same_region: SegmentTrust::Untrusted,
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            state
+                .network_trust_policy
+                .segment_trust(NetworkSegmentScope::SameAz),
+            SegmentTrust::Trusted
+        );
+        assert_eq!(
+            state
+                .network_trust_policy
+                .segment_trust(NetworkSegmentScope::CrossRegion),
+            SegmentTrust::Untrusted
+        );
+        assert!(
+            state
+                .apply(
+                    2,
+                    1,
+                    &GlobalPolicyCommand::SetNetworkTrustPolicy {
+                        policy: NetworkTrustPolicy {
+                            generation: 1,
+                            same_az: SegmentTrust::Untrusted,
+                            same_region: SegmentTrust::Untrusted,
+                        },
+                    },
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
     fn link_and_unlink_are_monotonic_replayable_commands() {
         let mut state = GlobalPolicyState::default();
         state
@@ -1047,6 +1132,7 @@ mod tests {
             ceiling_iops: 1_000_000,
             trust_grant_id: "trust-a-b".into(),
             trust_grant_generation: 1,
+            transport_security: LinkTransportSecurity::default(),
         };
         let link_command = GlobalPolicyCommand::LinkClusters { link };
         state.apply(3, 1, &link_command).unwrap();
@@ -1154,6 +1240,7 @@ mod tests {
                         ceiling_iops: 1_000_000,
                         trust_grant_id: "us-cn".into(),
                         trust_grant_generation: 1,
+                        transport_security: LinkTransportSecurity::default(),
                     },
                 },
             )
@@ -1252,5 +1339,45 @@ mod tests {
         let expired = state.capacity_envelope("region-a", false);
         assert_eq!(expired.authorized_iops, 6_000_000);
         assert_eq!(expired.protected_iops, 6_000_000);
+    }
+
+    #[test]
+    fn failover_commands_are_transactional_raft_state() {
+        let mut state = GlobalPolicyState::default();
+        let put = GlobalPolicyCommand::ApplyFailover {
+            command: GlobalFailoverCommand::PutVolume {
+                expected_revision: 0,
+                spec: VolumeSpec {
+                    volume_id: "postgres".into(),
+                    authority_region: "region-a".into(),
+                    placement_epoch: 7,
+                    consistency_set_id: None,
+                    workload_bindings: vec![WorkloadBinding {
+                        binding_id: "postgres-kube".into(),
+                        adapter_id: "kube-a-b".into(),
+                        adapter_kind: AdapterKind::Kubernetes,
+                        policy: WorkloadFailoverPolicy::FollowVolume,
+                        source_replicas: 1,
+                        target_replicas: 0,
+                    }],
+                },
+            },
+        };
+        state.apply(1, 4, &put).unwrap();
+        assert_eq!(state.failover.revision, 1);
+        assert_eq!(
+            state.failover.volumes["postgres"].authority_region,
+            "region-a"
+        );
+
+        let before = state.clone();
+        let conflict = GlobalPolicyCommand::ApplyFailover {
+            command: GlobalFailoverCommand::PutVolume {
+                expected_revision: 0,
+                spec: state.failover.volumes["postgres"].clone(),
+            },
+        };
+        assert!(state.apply(2, 4, &conflict).is_err());
+        assert_eq!(state, before);
     }
 }

@@ -1,0 +1,54 @@
+apiVersion: storage.zcutils.io/v1alpha1
+kind: TieringPolicy
+metadata:
+  name: ram-hot-host-spill
+spec:
+  hot:
+    kind: MemoryEmptyDir
+    maximumVolumeSize: 1Gi
+  spill:
+    kind: HostPathFile
+    rootPath: /var/lib/zcutils/tier-spill
+  backpressureBytes: 64Mi
+  rehydrateOnColdStart: true
+  reclaimPolicy: Retain
+---
+apiVersion: storage.zcutils.io/v1alpha1
+kind: MediaGrant
+metadata:
+  name: tiered-memory-leaves
+spec:
+  nodeSelector: {}
+  mediaSets:
+    - name: memory
+      publishAs:
+        mediaClass: tiered-memory
+        durability: Volatile
+        mayContributeToDurableAcknowledgement: false
+      dynamicSources:
+        - kind: MemoryArena
+          maximumVolumeSize: 1Gi
+---
+apiVersion: storage.zcutils.io/v1alpha1
+kind: StorageProfile
+metadata:
+  name: tiered-two-copy
+spec:
+  storageClass:
+    name: zc-tiered-two-copy
+  frontend: LinuxBlock
+  placement:
+    primitive: Mirror
+    execution: Userspace
+    copies: 2
+    mediaClass: tiered-memory
+    excludeClientNode: true
+    distinctTopologyKeys:
+      - kubernetes.io/hostname
+  tieringPolicyRef: ram-hot-host-spill
+  transport:
+    kind: TcpMux
+    addressSource: NodeAnnotationThenInternalIP
+    lanes: 1
+    connectionsPerLane: 1
+    chunkBytes: 4096

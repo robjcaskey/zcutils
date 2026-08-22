@@ -1,0 +1,53 @@
+# Replace LEAF_A_NODE, LEAF_A_PARTUUID, LEAF_B_NODE, and LEAF_B_PARTUUID
+# before applying this file. Each PARTUUID must identify a dedicated, empty
+# partition on its named node. allowRawWrites is intentionally never defaulted
+# to true.
+apiVersion: storage.zcutils.io/v1alpha1
+kind: MediaGrant
+metadata:
+  name: getting-started-block
+spec:
+  nodeSelector:
+    matchLabels:
+      storage.zcutils.io/getting-started-leaf: "true"
+  mediaSets:
+    - name: explicit-partitions
+      staticSources:
+        - kind: BlockDevice
+          nodeName: LEAF_A_NODE
+          partUuid: LEAF_A_PARTUUID
+          destructivePreparation:
+            allowRawWrites: true
+        - kind: BlockDevice
+          nodeName: LEAF_B_NODE
+          partUuid: LEAF_B_PARTUUID
+          destructivePreparation:
+            allowRawWrites: true
+      publishAs:
+        mediaClass: getting-started-block
+        durability: Persistent
+        mayContributeToDurableAcknowledgement: true
+---
+apiVersion: storage.zcutils.io/v1alpha1
+kind: StorageProfile
+metadata:
+  name: getting-started-mirror-block
+spec:
+  storageClass:
+    name: zc-mirror-block
+  frontend: LinuxBlock
+  placement:
+    primitive: Mirror
+    execution: Userspace
+    copies: 2
+    mediaClass: getting-started-block
+    excludeClientNode: true
+    distinctTopologyKeys:
+      - kubernetes.io/hostname
+  transport:
+    kind: TcpMux
+    addressSource: NodeAnnotationThenInternalIP
+    nodeAddressAnnotation: storage.zcutils.io/backplane-address
+    lanes: 1
+    connectionsPerLane: 1
+    chunkBytes: 4096

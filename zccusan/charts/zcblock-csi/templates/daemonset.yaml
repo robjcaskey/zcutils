@@ -58,6 +58,8 @@ spec:
             {{- end }}
             - --freeze-max-ttl-ms={{ .Values.freezeMaxTtlMs }}
             - --snapshot-mode={{ .Values.snapshotMode }}
+            - --operator-namespace={{ include "zcblock-csi.namespace" . }}
+            - --operator-wait-timeout-ms={{ .Values.operator.waitTimeoutMs }}
           env:
             - name: NODE_NAME
               valueFrom:
@@ -159,6 +161,7 @@ spec:
             - --node-deployment-immediate-binding=false
             - --strict-topology
             - --leader-election-namespace=$(POD_NAMESPACE)
+            - --extra-create-metadata
             - --timeout={{ .Values.sidecars.provisioner.timeout }}
             - --v={{ .Values.sidecars.provisioner.logLevel }}
           env:

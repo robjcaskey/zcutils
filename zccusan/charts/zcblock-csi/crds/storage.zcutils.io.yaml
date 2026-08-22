@@ -1,0 +1,665 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: storageprofiles.storage.zcutils.io
+spec:
+  group: storage.zcutils.io
+  names:
+    categories: []
+    kind: StorageProfile
+    plural: storageprofiles
+    shortNames:
+    - zcsp
+    singular: storageprofile
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for StorageProfileSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              enabled:
+                default: true
+                type: boolean
+              frontend:
+                default: LinuxBlock
+                type: string
+              placement:
+                properties:
+                  copies:
+                    default: 2
+                    format: uint16
+                    minimum: 0.0
+                    type: integer
+                  distinctTopologyKeys:
+                    default: []
+                    items:
+                      type: string
+                    type: array
+                  excludeClientNode:
+                    default: true
+                    type: boolean
+                  execution:
+                    default: Userspace
+                    type: string
+                  mediaClass:
+                    type: string
+                  primitive:
+                    default: Mirror
+                    type: string
+                required:
+                - mediaClass
+                type: object
+              storageClass:
+                nullable: true
+                properties:
+                  isDefault:
+                    default: false
+                    type: boolean
+                  name:
+                    type: string
+                required:
+                - name
+                type: object
+              tieringPolicyRef:
+                nullable: true
+                type: string
+              transport:
+                default:
+                  addressSource: NodeAnnotationThenInternalIP
+                  chunkBytes: 4096
+                  connectionsPerLane: 1
+                  kind: TcpMux
+                  lanes: 1
+                  nodeAddressAnnotation: storage.zcutils.io/backplane-address
+                properties:
+                  addressSource:
+                    default: NodeAnnotationThenInternalIP
+                    type: string
+                  chunkBytes:
+                    default: 4096
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  connectionsPerLane:
+                    default: 1
+                    format: uint16
+                    minimum: 0.0
+                    type: integer
+                  kind:
+                    default: TcpMux
+                    type: string
+                  lanes:
+                    default: 1
+                    format: uint16
+                    minimum: 0.0
+                    type: integer
+                  nodeAddressAnnotation:
+                    default: storage.zcutils.io/backplane-address
+                    type: string
+                type: object
+            required:
+            - placement
+            type: object
+          status:
+            nullable: true
+            properties:
+              message:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                default: ''
+                type: string
+              storageClassName:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: StorageProfile
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: mediagrants.storage.zcutils.io
+spec:
+  group: storage.zcutils.io
+  names:
+    categories: []
+    kind: MediaGrant
+    plural: mediagrants
+    shortNames:
+    - zcmg
+    singular: mediagrant
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for MediaGrantSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              enabled:
+                default: true
+                type: boolean
+              mediaSets:
+                items:
+                  properties:
+                    dynamicSources:
+                      default: []
+                      items:
+                        properties:
+                          hugePageSize:
+                            nullable: true
+                            type: string
+                          kind:
+                            type: string
+                          maximumVolumeSize:
+                            type: string
+                          pinned:
+                            default: false
+                            type: boolean
+                        required:
+                        - kind
+                        - maximumVolumeSize
+                        type: object
+                      type: array
+                    name:
+                      type: string
+                    publishAs:
+                      properties:
+                        durability:
+                          type: string
+                        mayContributeToDurableAcknowledgement:
+                          default: false
+                          type: boolean
+                        mediaClass:
+                          type: string
+                      required:
+                      - durability
+                      - mediaClass
+                      type: object
+                    staticSources:
+                      default: []
+                      items:
+                        properties:
+                          destructivePreparation:
+                            default:
+                              allowRawWrites: false
+                            properties:
+                              allowRawWrites:
+                                default: false
+                                type: boolean
+                            type: object
+                          kind:
+                            type: string
+                          nodeName:
+                            type: string
+                          partUuid:
+                            type: string
+                        required:
+                        - kind
+                        - nodeName
+                        - partUuid
+                        type: object
+                      type: array
+                  required:
+                  - name
+                  - publishAs
+                  type: object
+                type: array
+              nodeSelector:
+                default:
+                  matchLabels: {}
+                properties:
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    type: object
+                type: object
+            required:
+            - mediaSets
+            type: object
+          status:
+            nullable: true
+            properties:
+              eligibleNodes:
+                default: []
+                items:
+                  type: string
+                type: array
+              message:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                default: ''
+                type: string
+            type: object
+        required:
+        - spec
+        title: MediaGrant
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: tieringpolicies.storage.zcutils.io
+spec:
+  group: storage.zcutils.io
+  names:
+    categories: []
+    kind: TieringPolicy
+    plural: tieringpolicies
+    shortNames:
+    - zctp
+    singular: tieringpolicy
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for TieringPolicySpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              backpressureBytes:
+                type: string
+              enabled:
+                default: true
+                type: boolean
+              hot:
+                properties:
+                  kind:
+                    default: MemoryEmptyDir
+                    type: string
+                  maximumVolumeSize:
+                    type: string
+                required:
+                - maximumVolumeSize
+                type: object
+              reclaimPolicy:
+                default: Retain
+                type: string
+              rehydrateOnColdStart:
+                default: true
+                type: boolean
+              spill:
+                properties:
+                  kind:
+                    default: HostPathFile
+                    type: string
+                  rootPath:
+                    type: string
+                required:
+                - rootPath
+                type: object
+            required:
+            - backpressureBytes
+            - hot
+            - spill
+            type: object
+          status:
+            nullable: true
+            properties:
+              message:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                default: ''
+                type: string
+            type: object
+        required:
+        - spec
+        title: TieringPolicy
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: crossregionreplications.storage.zcutils.io
+spec:
+  group: storage.zcutils.io
+  names:
+    categories: []
+    kind: CrossRegionReplication
+    plural: crossregionreplications
+    shortNames:
+    - zcxr
+    singular: crossregionreplication
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for CrossRegionReplicationSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              allowTargetOverwrite:
+                default: false
+                type: boolean
+              automaticFailover:
+                default: false
+                type: boolean
+              bytes:
+                format: uint64
+                minimum: 0.0
+                type: integer
+              credentialSecretRef:
+                properties:
+                  key:
+                    default: token
+                    type: string
+                  name:
+                    type: string
+                required:
+                - name
+                type: object
+              enabled:
+                default: true
+                type: boolean
+              mode:
+                default: AsynchronousCheckpoint
+                type: string
+              source:
+                properties:
+                  address:
+                    nullable: true
+                    type: string
+                  nodeName:
+                    type: string
+                  path:
+                    type: string
+                  region:
+                    type: string
+                required:
+                - nodeName
+                - path
+                - region
+                type: object
+              target:
+                properties:
+                  address:
+                    nullable: true
+                    type: string
+                  nodeName:
+                    type: string
+                  path:
+                    type: string
+                  region:
+                    type: string
+                required:
+                - nodeName
+                - path
+                - region
+                type: object
+              transport:
+                default:
+                  kind: Aes256AuthenticatedTcp
+                  nodeAddressAnnotation: storage.zcutils.io/backplane-address
+                properties:
+                  kind:
+                    default: Aes256AuthenticatedTcp
+                    type: string
+                  nodeAddressAnnotation:
+                    default: storage.zcutils.io/backplane-address
+                    type: string
+                type: object
+            required:
+            - bytes
+            - credentialSecretRef
+            - source
+            - target
+            type: object
+          status:
+            nullable: true
+            properties:
+              acceptedHwm:
+                default: 0
+                format: uint64
+                minimum: 0.0
+                type: integer
+              message:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                default: ''
+                type: string
+              receiverPod:
+                nullable: true
+                type: string
+              remoteAppliedHwm:
+                default: 0
+                format: uint64
+                minimum: 0.0
+                type: integer
+              remoteDurableHwm:
+                default: 0
+                format: uint64
+                minimum: 0.0
+                type: integer
+              senderPod:
+                nullable: true
+                type: string
+              transport:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: CrossRegionReplication
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: zcvolumes.storage.zcutils.io
+spec:
+  group: storage.zcutils.io
+  names:
+    categories: []
+    kind: ZcVolume
+    plural: zcvolumes
+    shortNames:
+    - zcv
+    singular: zcvolume
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ZcVolumeSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              capacityBytes:
+                format: uint64
+                minimum: 0.0
+                type: integer
+              claimRef:
+                nullable: true
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                  uid:
+                    nullable: true
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              clientNode:
+                type: string
+              frontend:
+                default: LinuxBlock
+                type: string
+              profileRef:
+                type: string
+            required:
+            - capacityBytes
+            - clientNode
+            - profileRef
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                default: []
+                items:
+                  properties:
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - message
+                  - observedGeneration
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              message:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                default: ''
+                type: string
+              runtime:
+                nullable: true
+                properties:
+                  fanAddress:
+                    type: string
+                  fanNode:
+                    type: string
+                  fanPort:
+                    format: uint16
+                    minimum: 0.0
+                    type: integer
+                  leaves:
+                    items:
+                      properties:
+                        address:
+                          type: string
+                        mediaClass:
+                          type: string
+                        nodeName:
+                          type: string
+                        partUuid:
+                          nullable: true
+                          type: string
+                        port:
+                          format: uint16
+                          minimum: 0.0
+                          type: integer
+                        sourceKind:
+                          type: string
+                        tier:
+                          nullable: true
+                          properties:
+                            acknowledgement:
+                              type: string
+                            backpressureBytes:
+                              format: uint64
+                              minimum: 0.0
+                              type: integer
+                            hotKind:
+                              type: string
+                            policyName:
+                              type: string
+                            spillKind:
+                              type: string
+                            spillPath:
+                              type: string
+                          required:
+                          - acknowledgement
+                          - backpressureBytes
+                          - hotKind
+                          - policyName
+                          - spillKind
+                          - spillPath
+                          type: object
+                      required:
+                      - address
+                      - mediaClass
+                      - nodeName
+                      - port
+                      - sourceKind
+                      type: object
+                    type: array
+                  placement:
+                    type: string
+                  transport:
+                    type: string
+                required:
+                - fanAddress
+                - fanNode
+                - fanPort
+                - leaves
+                - placement
+                - transport
+                type: object
+            type: object
+        required:
+        - spec
+        title: ZcVolume
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

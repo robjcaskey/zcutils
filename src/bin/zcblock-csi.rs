@@ -23,6 +23,8 @@ use k8s_csi::v1_3_0::{
     list_snapshots_response, list_volumes_response, node_service_capability, plugin_capability,
     validate_volume_capabilities_response, volume_capability, volume_content_source, volume_usage,
 };
+use kube::api::{DeleteParams as KubeDeleteParams, PostParams};
+use kube::{Api, Client as KubeClient, ResourceExt};
 use serde_json::{Map, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -49,6 +51,7 @@ use tonic::transport::server::Connected;
 use tonic::{Request, Response, Status};
 use zcutils::TelemetryReporter;
 use zcutils::block::control as control_api;
+use zcutils::kubernetes_storage::{ObjectReference, ZcVolume, ZcVolumeSpec};
 use zcutils::{
     ZcStreamEncryption, zc_pit_is_reflink_unsupported, zc_pit_reflink_file,
     zc_stream_bind_listener, zc_stream_generate_token, zc_stream_receive_listener_to_writer,
@@ -74,6 +77,8 @@ const DEFAULT_QUEUE_DEPTH: u64 = 512;
 const DEFAULT_DESCRIPTOR_MODE: &str = "advertise";
 const DEFAULT_REPLICATION_BUFFER_BYTES: usize = 1024 * 1024;
 const DEFAULT_SNAPSHOT_MODE: &str = "auto";
+const DEFAULT_OPERATOR_NAMESPACE: &str = "zccusan";
+const DEFAULT_OPERATOR_WAIT_TIMEOUT_MS: u64 = 50_000;
 const TELEMETRY_HOURLY_STATS_INTERVAL_SECS: u64 = 60 * 60;
 const IO_DISTRIBUTION_LABELS: [&str; 6] = ["0", "1-9", "10-99", "100-499", "500-1999", "2000+"];
 const MIB: u64 = 1024 * 1024;
@@ -93,6 +98,8 @@ struct Config {
     raw_allowlist: PathBuf,
     userspace_mount_root: PathBuf,
     snapshot_mode: String,
+    operator_namespace: String,
+    operator_wait_timeout_ms: u64,
 }
 
 impl Config {
@@ -144,6 +151,17 @@ impl Config {
         let mut snapshot_mode = env::var("ZCBLOCK_CSI_SNAPSHOT_MODE")
             .unwrap_or_else(|_| DEFAULT_SNAPSHOT_MODE.to_string());
         snapshot_mode = normalize_snapshot_mode(&snapshot_mode)?;
+        let mut operator_namespace = env::var("ZCCUSAN_OPERATOR_NAMESPACE")
+            .unwrap_or_else(|_| DEFAULT_OPERATOR_NAMESPACE.to_string());
+        let mut operator_wait_timeout_ms = env::var("ZCCUSAN_OPERATOR_WAIT_TIMEOUT_MS")
+            .ok()
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .map_err(|_| "ZCCUSAN_OPERATOR_WAIT_TIMEOUT_MS must be an integer".to_string())
+            })
+            .transpose()?
+            .unwrap_or(DEFAULT_OPERATOR_WAIT_TIMEOUT_MS);
 
         let args: Vec<String> = env::args().skip(1).collect();
         let mut i = 0;
@@ -175,6 +193,12 @@ impl Config {
                 userspace_mount_root = PathBuf::from(value);
             } else if let Some(value) = arg.strip_prefix("--snapshot-mode=") {
                 snapshot_mode = normalize_snapshot_mode(value)?;
+            } else if let Some(value) = arg.strip_prefix("--operator-namespace=") {
+                operator_namespace = value.to_string();
+            } else if let Some(value) = arg.strip_prefix("--operator-wait-timeout-ms=") {
+                operator_wait_timeout_ms = value
+                    .parse::<u64>()
+                    .map_err(|_| "--operator-wait-timeout-ms must be an integer".to_string())?;
             } else if arg == "--driver-name" {
                 i += 1;
                 driver_name = args
@@ -234,6 +258,19 @@ impl Config {
                 snapshot_mode = normalize_snapshot_mode(
                     args.get(i).ok_or("--snapshot-mode requires a value")?,
                 )?;
+            } else if arg == "--operator-namespace" {
+                i += 1;
+                operator_namespace = args
+                    .get(i)
+                    .ok_or("--operator-namespace requires a value")?
+                    .to_string();
+            } else if arg == "--operator-wait-timeout-ms" {
+                i += 1;
+                operator_wait_timeout_ms = args
+                    .get(i)
+                    .ok_or("--operator-wait-timeout-ms requires a value")?
+                    .parse::<u64>()
+                    .map_err(|_| "--operator-wait-timeout-ms must be an integer".to_string())?;
             } else {
                 return Err(format!("unknown argument: {arg}"));
             }
@@ -248,6 +285,12 @@ impl Config {
         }
         if freeze_max_ttl_ms == 0 {
             return Err("freeze max ttl must be greater than zero".to_string());
+        }
+        if operator_namespace.is_empty() {
+            return Err("operator namespace must not be empty".to_string());
+        }
+        if operator_wait_timeout_ms == 0 {
+            return Err("operator wait timeout must be greater than zero".to_string());
         }
         if !userspace_mount_root.is_absolute() {
             return Err(format!(
@@ -285,6 +328,8 @@ impl Config {
             raw_allowlist,
             userspace_mount_root,
             snapshot_mode,
+            operator_namespace,
+            operator_wait_timeout_ms,
         })
     }
 
@@ -354,6 +399,7 @@ struct VolumeSpec {
     descriptor_mode: String,
     file_path: Option<String>,
     raw_device: Option<String>,
+    storage_profile: Option<String>,
     staging_path: Option<String>,
     restore_path: Option<String>,
     restore_snapshot_id: Option<String>,
@@ -1440,6 +1486,20 @@ impl Controller for ZcblockCsi {
                     return Err(status);
                 }
             }
+            if let Err(status) = self.ensure_operator_volume(&req, &spec).await {
+                self.emit_csi_volume_event(
+                    "volume_create",
+                    "failed",
+                    &spec.volume_id,
+                    Some(&spec.backend),
+                    Some(spec.capacity_bytes),
+                    "operator",
+                    None,
+                    Some(status.message()),
+                    Some("operator-managed volume is not ready"),
+                );
+                return Err(status);
+            }
             self.emit_csi_volume_event(
                 "volume_create",
                 "success",
@@ -1471,6 +1531,20 @@ impl Controller for ZcblockCsi {
                 );
                 return Err(status);
             }
+        }
+        if let Err(status) = self.ensure_operator_volume(&req, &spec).await {
+            self.emit_csi_volume_event(
+                "volume_create",
+                "failed",
+                &spec.volume_id,
+                Some(&spec.backend),
+                Some(spec.capacity_bytes),
+                "operator",
+                None,
+                Some(status.message()),
+                Some("operator-managed volume is not ready"),
+            );
+            return Err(status);
         }
         if let Err(status) = self.create_backend_storage(&spec).await {
             self.emit_csi_volume_event(
@@ -1565,7 +1639,40 @@ impl Controller for ZcblockCsi {
                 return Err(status);
             }
         };
+        if existing.is_none()
+            && env::var_os("KUBERNETES_SERVICE_HOST").is_some()
+            && let Err(status) = self.delete_operator_volume(&req.volume_id).await
+        {
+            self.emit_csi_volume_event(
+                "volume_delete",
+                "failed",
+                &req.volume_id,
+                Some("fabric"),
+                None,
+                "operator",
+                None,
+                Some(status.message()),
+                Some("cleanup of an operator volume without local CSI state failed"),
+            );
+            return Err(status);
+        }
         if let Some(spec) = existing {
+            if spec.storage_profile.is_some()
+                && let Err(status) = self.delete_operator_volume(&req.volume_id).await
+            {
+                self.emit_csi_volume_event(
+                    "volume_delete",
+                    "failed",
+                    &req.volume_id,
+                    Some(&spec.backend),
+                    Some(spec.capacity_bytes),
+                    "operator",
+                    None,
+                    Some(status.message()),
+                    Some("operator runtime cleanup failed"),
+                );
+                return Err(status);
+            }
             if let Err(status) = self.delete_backend_storage(&spec).await {
                 self.emit_csi_volume_event(
                     "volume_delete",
@@ -2386,6 +2493,136 @@ impl ZcblockCsi {
         }
     }
 
+    fn storage_profile<'a>(&self, request: &'a CreateVolumeRequest) -> Option<&'a str> {
+        request
+            .parameters
+            .get("storageProfile")
+            .or_else(|| request.parameters.get("storageprofile"))
+            .map(String::as_str)
+            .filter(|value| !value.trim().is_empty())
+    }
+
+    fn claim_ref(&self, request: &CreateVolumeRequest) -> Option<ObjectReference> {
+        let namespace = request.parameters.get("csi.storage.k8s.io/pvc/namespace")?;
+        let name = request.parameters.get("csi.storage.k8s.io/pvc/name")?;
+        Some(ObjectReference {
+            namespace: namespace.clone(),
+            name: name.clone(),
+            uid: None,
+        })
+    }
+
+    async fn kube_client(&self) -> Result<KubeClient, Status> {
+        KubeClient::try_default()
+            .await
+            .map_err(|error| Status::unavailable(format!("connect to Kubernetes API: {error}")))
+    }
+
+    async fn ensure_operator_volume(
+        &self,
+        request: &CreateVolumeRequest,
+        spec: &VolumeSpec,
+    ) -> Result<(), Status> {
+        let Some(profile_ref) = self.storage_profile(request) else {
+            return Ok(());
+        };
+        if spec.backend != "fabric" {
+            return Err(Status::invalid_argument(
+                "storageProfile is supported only with backend=fabric",
+            ));
+        }
+        let capacity_bytes = u64::try_from(spec.capacity_bytes)
+            .map_err(|_| Status::out_of_range("fabric volume capacity must be non-negative"))?;
+        let desired = ZcVolume::new(
+            &spec.volume_id,
+            ZcVolumeSpec {
+                profile_ref: profile_ref.to_string(),
+                capacity_bytes,
+                client_node: self.cfg.node_id.clone(),
+                frontend: "LinuxBlock".to_string(),
+                claim_ref: self.claim_ref(request),
+            },
+        );
+        let client = self.kube_client().await?;
+        let volumes: Api<ZcVolume> = Api::namespaced(client, &self.cfg.operator_namespace);
+        match volumes
+            .get_opt(&spec.volume_id)
+            .await
+            .map_err(kube_status)?
+        {
+            Some(existing) => validate_operator_volume(&existing, &desired)?,
+            None => match volumes.create(&PostParams::default(), &desired).await {
+                Ok(_) => {}
+                Err(kube::Error::Api(response)) if response.code == 409 => {
+                    let existing = volumes.get(&spec.volume_id).await.map_err(kube_status)?;
+                    validate_operator_volume(&existing, &desired)?;
+                }
+                Err(error) => return Err(kube_status(error)),
+            },
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(self.cfg.operator_wait_timeout_ms);
+        let mut last_message = "operator has not reported status".to_string();
+        loop {
+            let volume = volumes.get(&spec.volume_id).await.map_err(kube_status)?;
+            if let Some(status) = volume.status {
+                if status.phase == "Ready"
+                    && status
+                        .runtime
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.placement == "UserspaceMirror")
+                {
+                    return Ok(());
+                }
+                last_message = status.message.unwrap_or_else(|| status.phase.clone());
+            }
+            if Instant::now() >= deadline {
+                return Err(Status::deadline_exceeded(format!(
+                    "timed out waiting for ZcVolume {}/{}: {last_message}",
+                    self.cfg.operator_namespace, spec.volume_id
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    async fn delete_operator_volume(&self, volume_id: &str) -> Result<(), Status> {
+        let client = self.kube_client().await?;
+        let volumes: Api<ZcVolume> = Api::namespaced(client, &self.cfg.operator_namespace);
+        match volumes.get_opt(volume_id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return Ok(()),
+            Err(kube::Error::Api(response)) if response.code == 404 => return Ok(()),
+            Err(error) => return Err(kube_status(error)),
+        }
+        match volumes
+            .delete(volume_id, &KubeDeleteParams::default())
+            .await
+        {
+            Ok(_) => {}
+            Err(kube::Error::Api(response)) if response.code == 404 => return Ok(()),
+            Err(error) => return Err(kube_status(error)),
+        }
+        let deadline = Instant::now() + Duration::from_millis(self.cfg.operator_wait_timeout_ms);
+        loop {
+            if volumes
+                .get_opt(volume_id)
+                .await
+                .map_err(kube_status)?
+                .is_none()
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(Status::deadline_exceeded(format!(
+                    "timed out waiting for operator cleanup of ZcVolume {}/{}",
+                    self.cfg.operator_namespace, volume_id
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
     fn list_volume_specs(&self) -> Result<Vec<VolumeSpec>, Status> {
         let mut specs = Vec::new();
         match fs::read_dir(self.cfg.volumes_dir()) {
@@ -2634,6 +2871,7 @@ impl ZcblockCsi {
             descriptor_mode: "disabled".to_string(),
             file_path: Some(file_path.display().to_string()),
             raw_device: None,
+            storage_profile: None,
             staging_path: None,
             restore_path: None,
             restore_snapshot_id: None,
@@ -2686,6 +2924,7 @@ impl ZcblockCsi {
             descriptor_mode: "disabled".to_string(),
             file_path: None,
             raw_device: Some(raw_device.display().to_string()),
+            storage_profile: None,
             staging_path: None,
             restore_path: None,
             restore_snapshot_id: None,
@@ -2738,6 +2977,7 @@ impl ZcblockCsi {
             descriptor_mode: "disabled".to_string(),
             file_path: None,
             raw_device: Some(raw_device.display().to_string()),
+            storage_profile: self.storage_profile(req).map(str::to_string),
             staging_path: None,
             restore_path: None,
             restore_snapshot_id: None,
@@ -2779,6 +3019,7 @@ impl ZcblockCsi {
             descriptor_mode: "disabled".to_string(),
             file_path: None,
             raw_device: None,
+            storage_profile: None,
             staging_path: None,
             restore_path: None,
             restore_snapshot_id: None,
@@ -3395,7 +3636,13 @@ impl ZcblockCsi {
 impl VolumeSpec {
     fn is_node_local(&self) -> bool {
         match self.backend.as_str() {
-            "fabric" | "userspace-mount" => false,
+            // A manually managed fabric may arrange the same logical volume
+            // behind every node edge. An operator-managed fabric currently
+            // reconciles one explicitly fenced client onramp, so advertising
+            // it as topology-free would let Kubernetes attach an unrelated
+            // /dev/zcnblk0 after rescheduling.
+            "fabric" => self.storage_profile.is_some(),
+            "userspace-mount" => false,
             "raw-block" => self.raw_device.as_deref() != Some(ZCNBLK_CLIENT_EDGE),
             _ => true,
         }
@@ -3423,6 +3670,9 @@ impl VolumeSpec {
                 if let Some(path) = self.raw_device.as_ref() {
                     context.insert("rawDevice".to_string(), path.clone());
                 }
+                if let Some(profile) = self.storage_profile.as_ref() {
+                    context.insert("storageProfile".to_string(), profile.clone());
+                }
             }
             "userspace-mount" => {
                 context.insert("capacityBytes".to_string(), self.capacity_bytes.to_string());
@@ -3440,7 +3690,7 @@ impl VolumeSpec {
 
     fn to_state(&self) -> String {
         format!(
-            "backend={}\nvolume_id={}\nname_hex={}\ndevice_name={}\ncapacity_bytes={}\nsize_mib={}\nblocksize={}\nqueues={}\nqueue_depth={}\ndescriptor_mode={}\nfile_path={}\nraw_device={}\nstaging_path={}\nrestore_path={}\nrestore_snapshot_id={}\n",
+            "backend={}\nvolume_id={}\nname_hex={}\ndevice_name={}\ncapacity_bytes={}\nsize_mib={}\nblocksize={}\nqueues={}\nqueue_depth={}\ndescriptor_mode={}\nfile_path={}\nraw_device={}\nstorage_profile={}\nstaging_path={}\nrestore_path={}\nrestore_snapshot_id={}\n",
             self.backend,
             self.volume_id,
             self.name_hex,
@@ -3453,6 +3703,7 @@ impl VolumeSpec {
             self.descriptor_mode,
             self.file_path.clone().unwrap_or_default(),
             self.raw_device.clone().unwrap_or_default(),
+            self.storage_profile.clone().unwrap_or_default(),
             self.staging_path.clone().unwrap_or_default(),
             self.restore_path.clone().unwrap_or_default(),
             self.restore_snapshot_id.clone().unwrap_or_default()
@@ -3478,6 +3729,7 @@ impl VolumeSpec {
             descriptor_mode: required(&map, "descriptor_mode")?.to_string(),
             file_path: nonempty_value(&map, "file_path"),
             raw_device: nonempty_value(&map, "raw_device"),
+            storage_profile: nonempty_value(&map, "storage_profile"),
             staging_path: nonempty_value(&map, "staging_path"),
             restore_path: nonempty_value(&map, "restore_path"),
             restore_snapshot_id: nonempty_value(&map, "restore_snapshot_id"),
@@ -3538,6 +3790,7 @@ impl VolumeSpec {
                     descriptor_mode,
                     file_path: None,
                     raw_device: None,
+                    storage_profile: None,
                     staging_path: nonempty_value(context, "stagingPath")
                         .or_else(|| nonempty_value(context, "staging_path")),
                     restore_path: nonempty_value(context, "restorePath")
@@ -3570,6 +3823,7 @@ impl VolumeSpec {
                     descriptor_mode: "disabled".to_string(),
                     file_path: Some(file_path),
                     raw_device: None,
+                    storage_profile: None,
                     staging_path: nonempty_value(context, "stagingPath")
                         .or_else(|| nonempty_value(context, "staging_path")),
                     restore_path: nonempty_value(context, "restorePath")
@@ -3602,6 +3856,8 @@ impl VolumeSpec {
                     descriptor_mode: "disabled".to_string(),
                     file_path: None,
                     raw_device: Some(raw_device),
+                    storage_profile: nonempty_value(context, "storageProfile")
+                        .or_else(|| nonempty_value(context, "storage_profile")),
                     staging_path: None,
                     restore_path: nonempty_value(context, "restorePath")
                         .or_else(|| nonempty_value(context, "restore_path")),
@@ -3629,6 +3885,7 @@ impl VolumeSpec {
                     descriptor_mode: "disabled".to_string(),
                     file_path: None,
                     raw_device: None,
+                    storage_profile: None,
                     staging_path: nonempty_value(context, "stagingPath")
                         .or_else(|| nonempty_value(context, "staging_path")),
                     restore_path: None,
@@ -3754,6 +4011,7 @@ fn spec_from_zcbrd_create_request(
         descriptor_mode,
         file_path: None,
         raw_device: None,
+        storage_profile: None,
         staging_path: None,
         restore_path: None,
         restore_snapshot_id: None,
@@ -4379,6 +4637,34 @@ fn validate_device_options(
     Ok(())
 }
 
+fn kube_status(error: kube::Error) -> Status {
+    match error {
+        kube::Error::Api(response) if response.code == 403 => Status::permission_denied(format!(
+            "Kubernetes API denied storage operation: {}",
+            response.message
+        )),
+        kube::Error::Api(response) if response.code == 404 => Status::failed_precondition(format!(
+            "required Kubernetes storage resource is unavailable: {}",
+            response.message
+        )),
+        error => Status::unavailable(format!("Kubernetes storage API operation failed: {error}")),
+    }
+}
+
+fn validate_operator_volume(existing: &ZcVolume, desired: &ZcVolume) -> Result<(), Status> {
+    if existing.spec.profile_ref != desired.spec.profile_ref
+        || existing.spec.capacity_bytes != desired.spec.capacity_bytes
+        || existing.spec.client_node != desired.spec.client_node
+        || existing.spec.frontend != desired.spec.frontend
+    {
+        return Err(Status::already_exists(format!(
+            "ZcVolume {} already exists with different profile, capacity, client node, or frontend",
+            existing.name_any()
+        )));
+    }
+    Ok(())
+}
+
 fn normalize_backend(value: &str) -> Result<String, Status> {
     match value.trim().to_ascii_lowercase().as_str() {
         "zcbrd" | "brd" => Ok("zcbrd".to_string()),
@@ -4851,6 +5137,7 @@ mod topology_tests {
             descriptor_mode: "disabled".to_string(),
             file_path: None,
             raw_device: raw_device.map(str::to_string),
+            storage_profile: None,
             staging_path: None,
             restore_path: None,
             restore_snapshot_id: None,
@@ -4869,6 +5156,13 @@ mod topology_tests {
         assert!(!volume_spec("fabric", Some(ZCNBLK_CLIENT_EDGE)).is_node_local());
         assert!(!volume_spec("raw-block", Some(ZCNBLK_CLIENT_EDGE)).is_node_local());
         assert!(!volume_spec("userspace-mount", None).is_node_local());
+    }
+
+    #[test]
+    fn operator_managed_fabric_is_pinned_to_its_reconciled_client_edge() {
+        let mut spec = volume_spec("fabric", Some(ZCNBLK_CLIENT_EDGE));
+        spec.storage_profile = Some("mirrored".to_string());
+        assert!(spec.is_node_local());
     }
 
     #[test]

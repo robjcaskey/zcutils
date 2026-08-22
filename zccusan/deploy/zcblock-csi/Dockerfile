@@ -14,13 +14,18 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
 RUN RUST_MIN_STACK=33554432 cargo build --release --jobs 16 \
+    --bin zcutils \
     --bin zcblock-csi \
     --bin zcblock-control \
     --bin zcblock-freeze \
     --bin zccusan-telemetry-server \
+    --bin zccusan-operator \
     --bin zcrepl \
     --bin zcpit \
+    --bin zctier \
+    --bin zcnblk-fan \
     --bin zcnblk-shm-target \
+    --bin zcnblk-wal-failover \
     --bin zcnblk-wal-leaf \
     --bin zcnblk-order-smoke
 
@@ -34,18 +39,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /work/target/release/zcblock-csi /runtime-root/usr/local/bin/zcblock-csi
+COPY --from=builder /work/target/release/zcutils /runtime-root/usr/local/bin/zcutils
 COPY --from=builder /work/target/release/zcblock-control /runtime-root/usr/local/bin/zcblock-control
 COPY --from=builder /work/target/release/zcblock-freeze /runtime-root/usr/local/bin/zcblock-freeze
 COPY --from=builder /work/target/release/zccusan-telemetry-server /runtime-root/usr/local/bin/zccusan-telemetry-server
+COPY --from=builder /work/target/release/zccusan-operator /runtime-root/usr/local/bin/zccusan-operator
 COPY --from=builder /work/target/release/zcrepl /runtime-root/usr/local/bin/zcrepl
 COPY --from=builder /work/target/release/zcpit /runtime-root/usr/local/bin/zcpit
+COPY --from=builder /work/target/release/zctier /runtime-root/usr/local/bin/zctier
+COPY --from=builder /work/target/release/zcnblk-fan /runtime-root/usr/local/bin/zcnblk-fan
 COPY --from=builder /work/target/release/zcnblk-shm-target /runtime-root/usr/local/bin/zcnblk-shm-target
+COPY --from=builder /work/target/release/zcnblk-wal-failover /runtime-root/usr/local/bin/zcnblk-wal-failover
 COPY --from=builder /work/target/release/zcnblk-wal-leaf /runtime-root/usr/local/bin/zcnblk-wal-leaf
 COPY --from=builder /work/target/release/zcnblk-order-smoke /runtime-root/usr/local/bin/zcnblk-order-smoke
 COPY zccusan/deploy/zcblock-csi/allowed-raw-partitions.empty.txt /runtime-root/etc/zcblock-csi/allowed-raw-partitions.txt
 
 RUN set -eux; \
-    bins="/runtime-root/usr/local/bin/zcblock-csi /runtime-root/usr/local/bin/zcblock-control /runtime-root/usr/local/bin/zcblock-freeze /runtime-root/usr/local/bin/zccusan-telemetry-server /runtime-root/usr/local/bin/zcrepl /runtime-root/usr/local/bin/zcpit /runtime-root/usr/local/bin/zcnblk-shm-target /runtime-root/usr/local/bin/zcnblk-wal-leaf /runtime-root/usr/local/bin/zcnblk-order-smoke /usr/bin/mount /usr/bin/umount /usr/bin/findmnt /usr/sbin/blkid /usr/sbin/losetup /usr/sbin/mkfs.ext4 /usr/sbin/mkfs.xfs /usr/sbin/fsfreeze"; \
+    bins="/runtime-root/usr/local/bin/zcutils /runtime-root/usr/local/bin/zcblock-csi /runtime-root/usr/local/bin/zcblock-control /runtime-root/usr/local/bin/zcblock-freeze /runtime-root/usr/local/bin/zccusan-telemetry-server /runtime-root/usr/local/bin/zccusan-operator /runtime-root/usr/local/bin/zcrepl /runtime-root/usr/local/bin/zcpit /runtime-root/usr/local/bin/zctier /runtime-root/usr/local/bin/zcnblk-fan /runtime-root/usr/local/bin/zcnblk-shm-target /runtime-root/usr/local/bin/zcnblk-wal-failover /runtime-root/usr/local/bin/zcnblk-wal-leaf /runtime-root/usr/local/bin/zcnblk-order-smoke /usr/bin/mount /usr/bin/umount /usr/bin/findmnt /usr/sbin/blkid /usr/sbin/losetup /usr/sbin/mkfs.ext4 /usr/sbin/mkfs.xfs /usr/sbin/fsfreeze"; \
     for bin in /usr/bin/mount /usr/bin/umount /usr/bin/findmnt /usr/sbin/blkid /usr/sbin/losetup /usr/sbin/mkfs.ext4 /usr/sbin/mkfs.xfs /usr/sbin/fsfreeze; do \
       mkdir -p "/runtime-root$(dirname "$bin")"; \
       cp "$bin" "/runtime-root$bin"; \

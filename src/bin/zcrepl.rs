@@ -99,7 +99,12 @@ fn recv(opts: Opts) -> Result<(), String> {
     let listen = opts.listen.as_deref().unwrap_or("0.0.0.0");
     let port = opts.port.unwrap_or(0);
     let output = opts.output.ok_or("recv requires --output PATH")?;
-    let token = match (opts.token, opts.generate_token) {
+    let configured_token = opts.token.or_else(|| {
+        env::var("ZCREPL_TOKEN")
+            .ok()
+            .filter(|value| !value.is_empty())
+    });
+    let token = match (configured_token, opts.generate_token) {
         (Some(token), _) => token,
         (None, true) => zc_stream_generate_token().map_err(|e| e.to_string())?,
         (None, false) => return Err("recv requires --token TOKEN or --generate-token".to_string()),
@@ -112,7 +117,7 @@ fn recv(opts: Opts) -> Result<(), String> {
         .local_addr()
         .map_err(|e| format!("read listener address: {e}"))?
         .port();
-    eprintln!("zcrepl-ready listen={listen} port={bound_port} token={token}");
+    eprintln!("zcrepl-ready listen={listen} port={bound_port} credential=redacted");
 
     let file = OpenOptions::new()
         .create(true)
@@ -120,6 +125,12 @@ fn recv(opts: Opts) -> Result<(), String> {
         .write(true)
         .open(&output)
         .map_err(|e| format!("open output {}: {e}", output.display()))?;
+    let durable_file = file.try_clone().map_err(|e| {
+        format!(
+            "clone output {} for durability barrier: {e}",
+            output.display()
+        )
+    })?;
     let limit = opts.bytes.unwrap_or(u64::MAX);
     let writer = BoundedWriter::new(file, limit);
     let (peer, bytes) = zc_stream_receive_listener_to_writer(
@@ -131,6 +142,9 @@ fn recv(opts: Opts) -> Result<(), String> {
         DEFAULT_BUFFER_BYTES,
     )
     .map_err(|e| format!("receive stream: {e}"))?;
+    durable_file
+        .sync_data()
+        .map_err(|e| format!("sync replicated output {}: {e}", output.display()))?;
     println!(
         "zcrepl-recv-result peer={} bytes={} output={}",
         peer,
@@ -147,7 +161,14 @@ fn send(opts: Opts) -> Result<(), String> {
     if port == 0 {
         return Err("send --port must be greater than zero".to_string());
     }
-    let token = opts.token.ok_or("send requires --token TOKEN")?;
+    let token = opts
+        .token
+        .or_else(|| {
+            env::var("ZCREPL_TOKEN")
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
+        .ok_or("send requires --token TOKEN or ZCREPL_TOKEN")?;
     validate_token(&token, "token")?;
     let file = OpenOptions::new()
         .read(true)
@@ -718,8 +739,8 @@ fn control_field(value: &str) -> String {
 fn usage() -> &'static str {
     "usage:
   zcrepl token
-  zcrepl recv --output PATH [--listen ADDR] [--port PORT] (--token TOKEN | --generate-token) [--bytes N]
-  zcrepl send --input PATH --peer HOST --port PORT --token TOKEN [--bytes N]
+  zcrepl recv --output PATH [--listen ADDR] [--port PORT] (--token TOKEN | ZCREPL_TOKEN | --generate-token) [--bytes N]
+  zcrepl send --input PATH --peer HOST --port PORT (--token TOKEN | ZCREPL_TOKEN) [--bytes N]
   zcrepl csi-recv (--socket PATH | --control-url URL) --volume ID [--listen ADDR] [--port PORT] [--token TOKEN|auto] [--bytes N]
   zcrepl csi-send (--socket PATH | --control-url URL) (--volume ID | --snapshot ID) --peer HOST --port PORT --token TOKEN [--bytes N]
   zcrepl csi-status (--socket PATH | --control-url URL) [--repl-id ID]

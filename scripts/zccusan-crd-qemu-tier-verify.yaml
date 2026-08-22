@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tier-verify-us
+spec:
+  nodeName: region-us
+  hostNetwork: true
+  restartPolicy: Never
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: verify
+      image: localhost/zccusan-crd-qemu:latest
+      imagePullPolicy: Never
+      command: [/bin/sh, -c]
+      args:
+        - i=0; while ! grep -a -q tier-qemu-pass /spill/qemu-tiered-volume.spill && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; grep -a -q tier-qemu-pass /spill/qemu-tiered-volume.spill && echo ZCCUSAN_TIER_SPILL_PASS node=region-us
+      volumeMounts:
+        - name: spill
+          mountPath: /spill
+  volumes:
+    - name: spill
+      hostPath:
+        path: /var/lib/zcutils/tier-spill
+        type: Directory
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tier-verify-uk
+spec:
+  nodeName: region-uk
+  hostNetwork: true
+  restartPolicy: Never
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: verify
+      image: localhost/zccusan-crd-qemu:latest
+      imagePullPolicy: Never
+      command: [/bin/sh, -c]
+      args:
+        - i=0; while ! grep -a -q tier-qemu-pass /spill/qemu-tiered-volume.spill && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; grep -a -q tier-qemu-pass /spill/qemu-tiered-volume.spill && echo ZCCUSAN_TIER_SPILL_PASS node=region-uk
+      volumeMounts:
+        - name: spill
+          mountPath: /spill
+  volumes:
+    - name: spill
+      hostPath:
+        path: /var/lib/zcutils/tier-spill
+        type: Directory

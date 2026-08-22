@@ -49,15 +49,21 @@ rejects a mismatched federation before dispatch and rejects a missing or wrong
 credential before exposing status or proposing a log entry. Persisted state is
 bound to its federation identifier and cannot be opened as another federation.
 
-The management credential is an interim control-plane boundary, not the final
-network security protocol. The current TCP transport is plaintext and a bearer
-credential can be replayed by an observer. Production federation and employee
-isolation therefore still requires separate management and consensus
-listeners, mutually authenticated encrypted transport, principal-scoped
-authorization, credential rotation, and audit records. Host root remains able
-to inspect every federation process and credential co-located on that host;
-federations that do not trust the same host administrator must not be
+The global RPC transport encrypts and authenticates the entire management and
+consensus document with the federation's rotating credential; there is no
+plaintext compatibility fallback. The optional `native-aead+tls` mode adds
+mutually authenticated TLS 1.3 without replacing native encryption. The shared
+management credential is still an interim federation-wide authorization
+boundary rather than a principal identity. Production employee isolation also
+requires separate management and consensus listeners, certificate identities
+bound to node/principal authorization, and audit records. Host root remains
+able to inspect every federation process and credential co-located on that
+host; federations that do not trust the same host administrator must not be
 co-located.
+
+The credential is stored as an expiring, overlapping version bundle rather
+than an indefinite token. Rotation, native encrypted framing, TLS, and test
+controls are documented in `GLOBAL_TRANSPORT_SECURITY.md`.
 
 The five-VM overlapping-membership simulation is run with:
 

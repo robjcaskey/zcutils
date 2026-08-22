@@ -3,17 +3,29 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use zcutils::global_failover::{FailoverState, GlobalFailoverCommand};
 use zcutils::global_policy::{
     ClusterLink, GlobalDemandSnapshot, GlobalPolicyCommand, GlobalPolicyState, GlobalRatePolicy,
     GlobalRegionSpec, KeyEscrowMode, RegionalInboundPolicy, RegionalTrustGrant,
     RegionalTrustPermissions,
+};
+use zcutils::global_secure_rpc::{
+    FrameDirection, GlobalRpcIo, GlobalRpcTransport, TlsIdentityFiles, read_encrypted_frame,
+    write_encrypted_frame,
+};
+use zcutils::secret_lifecycle::{
+    SecretBundle, SecretPolicy, SecretStatus, read_bundle, unix_now_ms, write_bundle_atomic,
+};
+use zcutils::transport_security::{
+    FramingProfile, LinkTransportMode, LinkTransportSecurity, NetworkTrustPolicy, SegmentTrust,
+    TransportAdapterCapabilities,
 };
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(80);
@@ -92,7 +104,99 @@ struct Node {
     active_connections: AtomicUsize,
     rpc_rates: Mutex<BTreeMap<IpAddr, RpcRateState>>,
     source_connections: Mutex<BTreeMap<IpAddr, usize>>,
-    admin_token: Vec<u8>,
+    admin_credentials: Mutex<AdminCredentialCache>,
+    rpc_transport: GlobalRpcTransport,
+    tls_identity: Option<TlsIdentityFiles>,
+}
+
+struct AdminCredentialCache {
+    path: PathBuf,
+    policy: SecretPolicy,
+    bundle: SecretBundle,
+    last_reload_check: Instant,
+    reload_interval: Duration,
+}
+
+impl AdminCredentialCache {
+    fn open(path: PathBuf, policy: SecretPolicy, reload_interval: Duration) -> io::Result<Self> {
+        if reload_interval.is_zero() {
+            return Err(invalid("admin credential reload interval must be non-zero"));
+        }
+        let bundle = read_bundle(&path, unix_now_ms()?, &policy)?;
+        Ok(Self {
+            path,
+            policy,
+            bundle,
+            last_reload_check: Instant::now(),
+            reload_interval,
+        })
+    }
+
+    fn reload_if_due(&mut self, now_ms: u64) {
+        if self.last_reload_check.elapsed() < self.reload_interval {
+            return;
+        }
+        self.last_reload_check = Instant::now();
+        match read_bundle(&self.path, now_ms, &self.policy) {
+            Ok(candidate) if candidate.generation > self.bundle.generation => {
+                self.bundle = candidate;
+            }
+            Ok(candidate) if candidate == self.bundle => {}
+            Ok(candidate) if candidate.generation < self.bundle.generation => eprintln!(
+                "GLOBAL_RAFT_SECRET_RELOAD_REJECT path={} reason=generation_rollback current={} candidate={}",
+                self.path.display(),
+                self.bundle.generation,
+                candidate.generation
+            ),
+            Ok(_) => eprintln!(
+                "GLOBAL_RAFT_SECRET_RELOAD_REJECT path={} reason=generation_reuse_with_different_contents generation={}",
+                self.path.display(),
+                self.bundle.generation
+            ),
+            Err(error) => eprintln!(
+                "GLOBAL_RAFT_SECRET_RELOAD_RETAIN path={} generation={} error={error}",
+                self.path.display(),
+                self.bundle.generation
+            ),
+        }
+    }
+
+    fn accepts(&mut self, provided: &[u8]) -> bool {
+        let Ok(now_ms) = unix_now_ms() else {
+            return false;
+        };
+        self.reload_if_due(now_ms);
+        self.bundle.accepts(provided, now_ms, &self.policy)
+    }
+
+    fn status(&mut self) -> io::Result<SecretStatus> {
+        let now_ms = unix_now_ms()?;
+        self.reload_if_due(now_ms);
+        self.bundle.status(now_ms, &self.policy)
+    }
+
+    fn accepted_secrets(&mut self) -> io::Result<Vec<String>> {
+        let now_ms = unix_now_ms()?;
+        self.reload_if_due(now_ms);
+        self.bundle.validate_at(now_ms, &self.policy)?;
+        let active = self.bundle.active_secret(now_ms, &self.policy)?;
+        let mut secrets = vec![active.to_owned()];
+        secrets.extend(
+            self.bundle
+                .credentials
+                .iter()
+                .filter(|credential| {
+                    credential.secret != active
+                        && credential
+                            .not_before_unix_ms
+                            .saturating_sub(self.policy.activation_clock_skew_ms)
+                            <= now_ms
+                        && now_ms < credential.expires_at_unix_ms
+                })
+                .map(|credential| credential.secret.clone()),
+        );
+        Ok(secrets)
+    }
 }
 
 #[derive(Debug)]
@@ -183,6 +287,13 @@ struct NodeStatus {
     cluster_links: Vec<ClusterLink>,
     region_trust_grants: Vec<RegionalTrustGrant>,
     regional_inbound_policies: Vec<RegionalInboundPolicy>,
+    network_trust_policy: NetworkTrustPolicy,
+    management_credential: SecretStatus,
+    rpc_transport: String,
+    headline_performance_eligible: bool,
+    /// Blind voting witnesses intentionally never receive this plaintext.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failover: Option<FailoverState>,
 }
 
 impl Node {
@@ -192,7 +303,7 @@ impl Node {
         region_id: String,
         peers: Vec<Peer>,
         state_path: PathBuf,
-        admin_token: Vec<u8>,
+        admin_credential_path: PathBuf,
     ) -> io::Result<Arc<Self>> {
         if !valid_federation_id(&federation_id)
             || id.is_empty()
@@ -203,11 +314,22 @@ impl Node {
                 "global Raft requires a federation id, node id, region, and at least three voters",
             ));
         }
-        if admin_token.len() < 32 {
-            return Err(invalid(
-                "global Raft management token must be at least 32 bytes",
-            ));
+        let admin_credentials = AdminCredentialCache::open(
+            admin_credential_path,
+            admin_secret_policy_from_env()?,
+            duration_env("ZCGLOBAL_ADMIN_RELOAD_INTERVAL", "250ms")?,
+        )?;
+        let rpc_transport = GlobalRpcTransport::from_env()?;
+        let tls_identity = TlsIdentityFiles::from_env(rpc_transport)?;
+        LinkTransportSecurity {
+            mode: if rpc_transport.uses_tls() {
+                LinkTransportMode::NativeAeadWithTls
+            } else {
+                LinkTransportMode::NativeAead
+            },
+            framing_profile: FramingProfile::PublicEnvelopeV1,
         }
+        .validate_realization(TransportAdapterCapabilities::GLOBAL_RPC)?;
         if peers.iter().filter(|peer| peer.leader_eligible).count() < 2 {
             return Err(invalid(
                 "global Raft requires at least two leader-eligible full replicas",
@@ -252,7 +374,9 @@ impl Node {
             active_connections: AtomicUsize::new(0),
             rpc_rates: Mutex::new(BTreeMap::new()),
             source_connections: Mutex::new(BTreeMap::new()),
-            admin_token,
+            admin_credentials: Mutex::new(admin_credentials),
+            rpc_transport,
+            tls_identity,
         }))
     }
 
@@ -260,10 +384,13 @@ impl Node {
         if !matches!(envelope.request, Request::Propose { .. } | Request::Status) {
             return true;
         }
-        envelope
-            .admin_token
-            .as_deref()
-            .is_some_and(|provided| constant_time_eq(provided.as_bytes(), &self.admin_token))
+        let Some(provided) = envelope.admin_token.as_deref() else {
+            return false;
+        };
+        self.admin_credentials
+            .lock()
+            .expect("global Raft admin credential lock")
+            .accepts(provided.as_bytes())
     }
 
     fn majority(&self) -> usize {
@@ -381,13 +508,31 @@ impl Node {
     }
 
     fn election_timeout(&self) -> Duration {
-        let hash = self.id.bytes().fold(0u64, |value, byte| {
-            value.wrapping_mul(131).wrapping_add(u64::from(byte))
-        });
+        // Mix both stable identity and the current term. A simple polynomial
+        // hash made short adjacent ids such as a/b/c differ by only 1 ms,
+        // which can lock a cluster into repeated split votes once RPC latency
+        // is non-trivial (for example during a TLS handshake). Changing the
+        // jitter each term also guarantees a different ordering after a split.
+        let term = self
+            .state
+            .lock()
+            .expect("global Raft state lock")
+            .persisted
+            .current_term;
+        let mut hash = 1_469_598_103_934_665_603u64;
+        for byte in self.id.bytes().chain(term.to_le_bytes()) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(1_099_511_628_211);
+        }
+        hash ^= hash >> 33;
+        hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        hash ^= hash >> 33;
+        hash = hash.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        hash ^= hash >> 33;
         // A follower cannot campaign until every previously renewed leader
         // authority lease is necessarily dead. Keep randomized election
         // timeout strictly beyond AUTHORITY_LEASE.
-        Duration::from_millis(560 + hash % 170)
+        Duration::from_millis(560 + hash % 1_200)
     }
 
     fn run_election_loop(self: Arc<Self>) {
@@ -1014,6 +1159,25 @@ impl Node {
                 .values()
                 .cloned()
                 .collect(),
+            network_trust_policy: state.persisted.committed.network_trust_policy.clone(),
+            management_credential: self
+                .admin_credentials
+                .lock()
+                .expect("global Raft admin credential lock")
+                .status()
+                .unwrap_or_else(|_| SecretStatus {
+                    generation: 0,
+                    active_id: "unavailable".into(),
+                    active_expires_at_unix_ms: 0,
+                    active_expires_in_ms: 0,
+                    rotation_due: true,
+                    accepted_versions: 0,
+                }),
+            rpc_transport: self.rpc_transport.label().into(),
+            headline_performance_eligible: self.rpc_transport.headline_performance_eligible(),
+            failover: self
+                .leader_eligible(&self.id)
+                .then(|| state.persisted.committed.failover.clone()),
         });
         response
     }
@@ -1028,6 +1192,8 @@ fn command_name(command: &GlobalPolicyCommand) -> &'static str {
         GlobalPolicyCommand::RevokeRegionTrust { .. } => "revoke_region_trust",
         GlobalPolicyCommand::SetRegionalInboundPolicy { .. } => "set_regional_inbound_policy",
         GlobalPolicyCommand::RevokeRegionalInboundPolicy { .. } => "revoke_regional_inbound_policy",
+        GlobalPolicyCommand::SetNetworkTrustPolicy { .. } => "set_network_trust_policy",
+        GlobalPolicyCommand::ApplyFailover { .. } => "apply_failover",
     }
 }
 
@@ -1089,19 +1255,31 @@ fn persist_state(path: &Path, state: &PersistedNodeState) -> io::Result<()> {
 fn serve(node: Arc<Node>, bind: SocketAddr) -> io::Result<()> {
     let listener = TcpListener::bind(bind)?;
     println!(
-        "GLOBAL_RAFT_READY federation={} node={} region={} bind={} voters={} majority={}",
+        "GLOBAL_RAFT_READY federation={} node={} region={} bind={} voters={} majority={} rpc_transport={} framing=public_envelope_v1 headline_performance_eligible={}",
         node.federation_id,
         node.id,
         node.region_id,
         bind,
         node.peers.len(),
-        node.majority()
+        node.majority(),
+        node.rpc_transport.label(),
+        node.rpc_transport.headline_performance_eligible(),
     );
     let election_node = node.clone();
     thread::spawn(move || election_node.run_election_loop());
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
+                if let Err(error) = stream
+                    .set_read_timeout(Some(RPC_TIMEOUT))
+                    .and_then(|_| stream.set_write_timeout(Some(RPC_TIMEOUT)))
+                {
+                    eprintln!(
+                        "GLOBAL_RAFT_RPC_REJECT node={} reason=timeout_setup error={error}",
+                        node.id
+                    );
+                    continue;
+                }
                 let Ok(source) = stream.peer_addr().map(|address| address.ip()) else {
                     continue;
                 };
@@ -1128,7 +1306,17 @@ fn serve(node: Arc<Node>, bind: SocketAddr) -> io::Result<()> {
                         node: node.clone(),
                         source,
                     };
-                    if let Err(error) = handle_connection(&node, stream) {
+                    let stream = match node.rpc_transport {
+                        GlobalRpcTransport::NativeAead => Ok(GlobalRpcIo::Native(stream)),
+                        GlobalRpcTransport::NativeAeadWithTls => node
+                            .tls_identity
+                            .as_ref()
+                            .ok_or_else(|| invalid("TLS identity is not configured"))
+                            .and_then(|identity| identity.server_stream(stream)),
+                    };
+                    if let Err(error) =
+                        stream.and_then(|stream| handle_connection(&node, source, stream))
+                    {
                         eprintln!("GLOBAL_RAFT_RPC_ERROR node={} error={error}", node.id);
                     }
                 });
@@ -1151,27 +1339,31 @@ impl Drop for ActiveConnectionGuard {
     }
 }
 
-fn handle_connection(node: &Node, mut stream: TcpStream) -> io::Result<()> {
-    stream.set_read_timeout(Some(RPC_TIMEOUT))?;
-    stream.set_write_timeout(Some(RPC_TIMEOUT))?;
-    let source = stream.peer_addr()?.ip();
-    let reader = BufReader::new(stream.try_clone()?);
-    let mut limited = reader.take((MAX_RPC_FRAME_BYTES + 1) as u64);
-    let mut line = Vec::new();
-    limited.read_until(b'\n', &mut line)?;
-    if line.is_empty() || line.len() > MAX_RPC_FRAME_BYTES || line.last() != Some(&b'\n') {
-        return Err(invalid(
-            "global Raft RPC frame missing, oversized, or unterminated",
-        ));
-    }
-    let envelope: RequestEnvelope = serde_json::from_slice(&line)
+fn handle_connection(node: &Node, source: IpAddr, mut stream: GlobalRpcIo) -> io::Result<()> {
+    let secrets = node
+        .admin_credentials
+        .lock()
+        .expect("global Raft admin credential lock")
+        .accepted_secrets()?;
+    let (encoded, response_secret) = read_encrypted_frame(
+        &mut stream,
+        &secrets,
+        FrameDirection::Request,
+        MAX_RPC_FRAME_BYTES,
+    )?;
+    let envelope: RequestEnvelope = serde_json::from_slice(&encoded)
         .map_err(|error| invalid(format!("invalid global Raft RPC: {error}")))?;
     if envelope.federation_id != node.federation_id {
-        return write_response(&mut stream, &node.error_response("federation_mismatch"));
+        return write_response(
+            &mut stream,
+            &response_secret,
+            &node.error_response("federation_mismatch"),
+        );
     }
     if !node.management_authorized(&envelope) {
         return write_response(
             &mut stream,
+            &response_secret,
             &node.error_response("management_authentication_failed"),
         );
     }
@@ -1182,17 +1374,15 @@ fn handle_connection(node: &Node, mut stream: TcpStream) -> io::Result<()> {
         ));
     }
     let response = node.handle(envelope.request);
-    write_response(&mut stream, &response)
+    write_response(&mut stream, &response_secret, &response)
 }
 
-fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result<()> {
+fn write_response(stream: &mut impl Write, secret: &str, response: &Response) -> io::Result<()> {
     let encoded = serde_json::to_vec(&response).map_err(io::Error::other)?;
-    if encoded.len() + 1 > MAX_RPC_FRAME_BYTES {
+    if encoded.len() > MAX_RPC_FRAME_BYTES {
         return Err(invalid("global Raft RPC response exceeds frame limit"));
     }
-    stream.write_all(&encoded)?;
-    stream.write_all(b"\n")?;
-    stream.flush()
+    write_encrypted_frame(stream, secret, FrameDirection::Response, &encoded)
 }
 
 fn rpc(address: SocketAddr, federation_id: &str, request: &Request) -> io::Result<Response> {
@@ -1206,31 +1396,79 @@ fn rpc_with_timeout(
     request: &Request,
     timeout: Duration,
 ) -> io::Result<Response> {
-    let mut stream = TcpStream::connect_timeout(&address, timeout)?;
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
+    let candidates = match admin_token.as_ref() {
+        Some(token) => vec![token.clone()],
+        None => client_credential_candidates()?,
+    };
     let encoded = serde_json::to_vec(&RequestEnvelope {
         federation_id: federation_id.to_owned(),
         admin_token,
         request: request.clone(),
     })
     .map_err(io::Error::other)?;
-    if encoded.len() + 1 > MAX_RPC_FRAME_BYTES {
+    if encoded.len() > MAX_RPC_FRAME_BYTES {
         return Err(invalid("global Raft RPC request exceeds frame limit"));
     }
-    stream.write_all(&encoded)?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
-    let reader = BufReader::new(stream);
-    let mut limited = reader.take((MAX_RPC_FRAME_BYTES + 1) as u64);
-    let mut line = Vec::new();
-    limited.read_until(b'\n', &mut line)?;
-    if line.is_empty() || line.len() > MAX_RPC_FRAME_BYTES || line.last() != Some(&b'\n') {
-        return Err(invalid(
-            "global Raft RPC response missing, oversized, or unterminated",
-        ));
+    let transport = GlobalRpcTransport::from_env()?;
+    let tls_identity = TlsIdentityFiles::from_env(transport)?;
+    let mut last_error = None;
+    for secret in candidates {
+        let attempt = (|| {
+            let socket = TcpStream::connect_timeout(&address, timeout)?;
+            socket.set_read_timeout(Some(timeout))?;
+            socket.set_write_timeout(Some(timeout))?;
+            let mut stream = match transport {
+                GlobalRpcTransport::NativeAead => GlobalRpcIo::Native(socket),
+                GlobalRpcTransport::NativeAeadWithTls => tls_identity
+                    .as_ref()
+                    .ok_or_else(|| invalid("TLS identity is not configured"))?
+                    .client_stream(socket)?,
+            };
+            write_encrypted_frame(&mut stream, &secret, FrameDirection::Request, &encoded)?;
+            let (line, _) = read_encrypted_frame(
+                &mut stream,
+                std::slice::from_ref(&secret),
+                FrameDirection::Response,
+                MAX_RPC_FRAME_BYTES,
+            )?;
+            serde_json::from_slice(&line).map_err(io::Error::other)
+        })();
+        match attempt {
+            Ok(response) => return Ok(response),
+            Err(error) => last_error = Some(error),
+        }
     }
-    serde_json::from_slice(&line).map_err(io::Error::other)
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "no valid global RPC credential candidate",
+        )
+    }))
+}
+
+fn client_credential_candidates() -> io::Result<Vec<String>> {
+    let token_path = env::var("ZCGLOBAL_ADMIN_TOKEN_FILE")
+        .map_err(|_| invalid("ZCGLOBAL_ADMIN_TOKEN_FILE must name the management token file"))?;
+    let policy = admin_secret_policy_from_env()?;
+    let now_ms = unix_now_ms()?;
+    let bundle = read_bundle(Path::new(&token_path), now_ms, &policy)?;
+    let active = bundle.active_secret(now_ms, &policy)?;
+    let mut secrets = vec![active.to_owned()];
+    secrets.extend(
+        bundle
+            .credentials
+            .iter()
+            .filter(|credential| {
+                credential.secret != active
+                    && credential
+                        .not_before_unix_ms
+                        .saturating_sub(policy.activation_clock_skew_ms)
+                        <= now_ms
+                    && now_ms < credential.expires_at_unix_ms
+            })
+            .map(|credential| credential.secret.clone()),
+    );
+    Ok(secrets)
 }
 
 fn parse_peers(value: &str) -> io::Result<Vec<Peer>> {
@@ -1317,6 +1555,32 @@ fn parse_escrow_mode(value: &str) -> io::Result<KeyEscrowMode> {
     }
 }
 
+fn parse_segment_trust(value: &str, name: &str) -> io::Result<SegmentTrust> {
+    match value {
+        "trusted" => Ok(SegmentTrust::Trusted),
+        "untrusted" => Ok(SegmentTrust::Untrusted),
+        _ => Err(invalid(format!(
+            "invalid {name}; expected trusted or untrusted"
+        ))),
+    }
+}
+
+fn parse_transport_security(value: &str) -> io::Result<LinkTransportSecurity> {
+    let mode = match value {
+        "native-aead" => LinkTransportMode::NativeAead,
+        "native-aead+tls" | "native-aead-with-tls" => LinkTransportMode::NativeAeadWithTls,
+        _ => {
+            return Err(invalid(
+                "transport security must be native-aead or native-aead+tls",
+            ));
+        }
+    };
+    Ok(LinkTransportSecurity {
+        mode,
+        framing_profile: FramingProfile::PublicEnvelopeV1,
+    })
+}
+
 fn parse_release_regions(value: &str) -> std::collections::BTreeSet<String> {
     if value == "-" {
         Default::default()
@@ -1349,17 +1613,58 @@ fn send_cli(address: &str, request: Request) -> io::Result<()> {
         .map_err(|_| invalid("ZCGLOBAL_FEDERATION_ID must identify the target federation"))?;
     let token_path = env::var("ZCGLOBAL_ADMIN_TOKEN_FILE")
         .map_err(|_| invalid("ZCGLOBAL_ADMIN_TOKEN_FILE must name the management token file"))?;
-    let admin_token = String::from_utf8(read_secret_file(Path::new(&token_path))?)
-        .map_err(|_| invalid("management token must be UTF-8"))?;
-    let response = rpc_with_timeout(
-        address
-            .parse()
-            .map_err(|_| invalid("invalid server address"))?,
-        &federation_id,
-        Some(admin_token),
-        &request,
-        CLIENT_TIMEOUT,
-    )?;
+    let policy = admin_secret_policy_from_env()?;
+    let now_ms = unix_now_ms()?;
+    let bundle = read_bundle(Path::new(&token_path), now_ms, &policy)?;
+    let active = bundle.active_secret(now_ms, &policy)?.to_owned();
+    let mut candidates = vec![active.clone()];
+    candidates.extend(
+        bundle
+            .credentials
+            .iter()
+            .filter(|credential| {
+                credential.secret != active
+                    && credential
+                        .not_before_unix_ms
+                        .saturating_sub(policy.activation_clock_skew_ms)
+                        <= now_ms
+                    && now_ms < credential.expires_at_unix_ms
+            })
+            .map(|credential| credential.secret.clone()),
+    );
+    let address = address
+        .parse()
+        .map_err(|_| invalid("invalid server address"))?;
+    let mut response = None;
+    let mut last_transport_error = None;
+    for admin_token in candidates {
+        let attempt = match rpc_with_timeout(
+            address,
+            &federation_id,
+            Some(admin_token),
+            &request,
+            CLIENT_TIMEOUT,
+        ) {
+            Ok(attempt) => attempt,
+            Err(error) => {
+                last_transport_error = Some(error);
+                continue;
+            }
+        };
+        let auth_miss = attempt.error.as_deref() == Some("management_authentication_failed");
+        response = Some(attempt);
+        if !auth_miss {
+            break;
+        }
+    }
+    let response = response.ok_or_else(|| {
+        last_transport_error.unwrap_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "no accepted management credential",
+            )
+        })
+    })?;
     println!("{}", serde_json::to_string(&response).unwrap());
     if response.ok {
         Ok(())
@@ -1368,6 +1673,89 @@ fn send_cli(address: &str, request: Request) -> io::Result<()> {
             response.error.unwrap_or_else(|| "request rejected".into()),
         ))
     }
+}
+
+fn admin_secret_policy_from_env() -> io::Result<SecretPolicy> {
+    let policy = SecretPolicy {
+        minimum_secret_bytes: 32,
+        maximum_ttl_ms: duration_env_ms("ZCGLOBAL_ADMIN_MAX_TTL", "90d")?,
+        rotate_before_ms: duration_env_ms("ZCGLOBAL_ADMIN_ROTATE_BEFORE", "7d")?,
+        activation_clock_skew_ms: duration_env_ms("ZCGLOBAL_ADMIN_ACTIVATION_CLOCK_SKEW", "2s")?,
+        maximum_versions: env::var("ZCGLOBAL_ADMIN_MAX_VERSIONS")
+            .unwrap_or_else(|_| "16".into())
+            .parse::<usize>()
+            .map_err(|_| invalid("ZCGLOBAL_ADMIN_MAX_VERSIONS must be an integer"))?,
+    };
+    policy.validate()?;
+    Ok(policy)
+}
+
+fn duration_env(name: &str, default: &str) -> io::Result<Duration> {
+    let millis = duration_env_ms(name, default)?;
+    if millis == 0 {
+        return Err(invalid(format!("{name} must be greater than zero")));
+    }
+    Ok(Duration::from_millis(millis))
+}
+
+fn duration_env_ms(name: &str, default: &str) -> io::Result<u64> {
+    parse_duration_ms(&env::var(name).unwrap_or_else(|_| default.to_owned()), name)
+}
+
+fn parse_duration_ms(value: &str, name: &str) -> io::Result<u64> {
+    let (number, multiplier) = if let Some(number) = value.strip_suffix("ms") {
+        (number, 1u64)
+    } else if let Some(number) = value.strip_suffix('s') {
+        (number, 1_000)
+    } else if let Some(number) = value.strip_suffix('m') {
+        (number, 60_000)
+    } else if let Some(number) = value.strip_suffix('h') {
+        (number, 3_600_000)
+    } else if let Some(number) = value.strip_suffix('d') {
+        (number, 86_400_000)
+    } else {
+        (value, 1)
+    };
+    let number = number.parse::<u64>().map_err(|_| {
+        invalid(format!(
+            "{name} must be an integer duration (ms, s, m, h, d)"
+        ))
+    })?;
+    number
+        .checked_mul(multiplier)
+        .ok_or_else(|| invalid(format!("{name} duration overflow")))
+}
+
+fn credential_init(path: &Path, ttl: &str) -> io::Result<()> {
+    let policy = admin_secret_policy_from_env()?;
+    let now_ms = unix_now_ms()?;
+    let bundle = SecretBundle::new(now_ms, parse_duration_ms(ttl, "credential TTL")?, &policy)?;
+    write_bundle_atomic(path, &bundle)
+}
+
+fn credential_rotate(path: &Path, ttl: &str) -> io::Result<()> {
+    let policy = admin_secret_policy_from_env()?;
+    let now_ms = unix_now_ms()?;
+    let mut bundle = read_bundle(path, now_ms, &policy)?;
+    bundle.rotate(now_ms, parse_duration_ms(ttl, "credential TTL")?, &policy)?;
+    write_bundle_atomic(path, &bundle)
+}
+
+fn credential_status(path: &Path) -> io::Result<()> {
+    let policy = admin_secret_policy_from_env()?;
+    let now_ms = unix_now_ms()?;
+    let status = read_bundle(path, now_ms, &policy)?.status(now_ms, &policy)?;
+    println!("{}", serde_json::to_string(&status).unwrap());
+    Ok(())
+}
+
+fn read_failover_command(path: &str) -> io::Result<GlobalFailoverCommand> {
+    let bytes = fs::read(path)?;
+    if bytes.len() + 1 > MAX_RPC_FRAME_BYTES {
+        return Err(invalid("global failover command exceeds RPC frame limit"));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| invalid(format!("invalid global failover command JSON: {error}")))
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -1386,32 +1774,17 @@ fn valid_federation_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let mut difference = left.len() ^ right.len();
-    let maximum = left.len().max(right.len());
-    for index in 0..maximum {
-        difference |= usize::from(
-            left.get(index).copied().unwrap_or(0) ^ right.get(index).copied().unwrap_or(0),
-        );
-    }
-    difference == 0
-}
-
-fn read_secret_file(path: &Path) -> io::Result<Vec<u8>> {
-    let mut secret = fs::read(path)?;
-    while matches!(secret.last(), Some(b'\n' | b'\r')) {
-        secret.pop();
-    }
-    Ok(secret)
-}
-
 fn usage() -> io::Error {
     invalid(
         "usage:\n  zcglobal-policy-node serve FEDERATION ID REGION BIND STATE ID@ADDR#leader,ID@ADDR#leader,ID@ADDR#voter ADMIN_TOKEN_FILE\n  \
+         zcglobal-policy-node credential-init FILE TTL\n  \
+         zcglobal-policy-node credential-rotate FILE TTL\n  \
+         zcglobal-policy-node credential-status FILE\n  \
          zcglobal-policy-node status ADDR\n  zcglobal-policy-node set-rate ADDR REV GLOBAL_GUARANTEE \
          GLOBAL_CEILING REGION:GUARANTEE:CEILING:WEIGHT,... REGION:DEMAND,...\n  \
          zcglobal-policy-node link-clusters ADDR LINK_ID SOURCE_CLUSTER TARGET_CLUSTER SOURCE_REGION \
-         TARGET_REGION GENERATION RESERVED_IOPS CEILING_IOPS TRUST_GRANT_ID TRUST_GENERATION\n  \
+         TARGET_REGION GENERATION RESERVED_IOPS CEILING_IOPS TRUST_GRANT_ID TRUST_GENERATION \
+         [native-aead|native-aead+tls]\n  \
          zcglobal-policy-node unlink-clusters ADDR LINK_ID GENERATION\n  \
          zcglobal-policy-node grant-region ADDR GRANT_ID OWNER_REGION DELEGATE_REGION GENERATION \
          STORE_ENCRYPTED STORE_UNENCRYPTED RESTORE_SERVE ESCROW_MODE RELEASE_REGION,...|-\n  \
@@ -1419,13 +1792,22 @@ fn usage() -> io::Error {
          zcglobal-policy-node set-inbound-policy ADDR REGION GENERATION SOURCE,... \
          ACCEPT_ENCRYPTED ACCEPT_UNENCRYPTED ESCROW_MODE MAX_BYTES CLASS,...|- \
          REQUIRED_KEY=VALUE,...|- DENIED_KEY=VALUE,...|-\n  \
-         zcglobal-policy-node revoke-inbound-policy ADDR REGION GENERATION",
+         zcglobal-policy-node revoke-inbound-policy ADDR REGION GENERATION\n  \
+         zcglobal-policy-node set-network-trust ADDR GENERATION SAME_AZ SAME_REGION\n  \
+         zcglobal-policy-node failover-apply ADDR COMMAND_JSON_FILE",
     )
 }
 
 fn main() -> io::Result<()> {
     let args = env::args().collect::<Vec<_>>();
     match args.get(1).map(String::as_str) {
+        Some("credential-init") if args.len() == 4 => {
+            credential_init(Path::new(&args[2]), &args[3])
+        }
+        Some("credential-rotate") if args.len() == 4 => {
+            credential_rotate(Path::new(&args[2]), &args[3])
+        }
+        Some("credential-status") if args.len() == 3 => credential_status(Path::new(&args[2])),
         Some("serve") if args.len() == 9 => {
             let peers = parse_peers(&args[7])?;
             let node = Node::open(
@@ -1434,7 +1816,7 @@ fn main() -> io::Result<()> {
                 args[4].clone(),
                 peers,
                 args[6].clone().into(),
-                read_secret_file(Path::new(&args[8]))?,
+                args[8].clone().into(),
             )?;
             serve(
                 node,
@@ -1462,7 +1844,7 @@ fn main() -> io::Result<()> {
                 },
             },
         ),
-        Some("link-clusters") if args.len() == 13 => send_cli(
+        Some("link-clusters") if args.len() == 13 || args.len() == 14 => send_cli(
             &args[2],
             Request::Propose {
                 command: GlobalPolicyCommand::LinkClusters {
@@ -1477,6 +1859,11 @@ fn main() -> io::Result<()> {
                         ceiling_iops: parse_u64(&args[10], "link ceiling")?,
                         trust_grant_id: args[11].clone(),
                         trust_grant_generation: parse_u64(&args[12], "trust grant generation")?,
+                        transport_security: args
+                            .get(13)
+                            .map(|value| parse_transport_security(value))
+                            .transpose()?
+                            .unwrap_or_default(),
                     },
                 },
             },
@@ -1562,6 +1949,26 @@ fn main() -> io::Result<()> {
                 },
             },
         ),
+        Some("set-network-trust") if args.len() == 6 => send_cli(
+            &args[2],
+            Request::Propose {
+                command: GlobalPolicyCommand::SetNetworkTrustPolicy {
+                    policy: NetworkTrustPolicy {
+                        generation: parse_u64(&args[3], "network trust generation")?,
+                        same_az: parse_segment_trust(&args[4], "same-AZ trust")?,
+                        same_region: parse_segment_trust(&args[5], "same-region trust")?,
+                    },
+                },
+            },
+        ),
+        Some("failover-apply") if args.len() == 4 => send_cli(
+            &args[2],
+            Request::Propose {
+                command: GlobalPolicyCommand::ApplyFailover {
+                    command: read_failover_command(&args[3])?,
+                },
+            },
+        ),
         _ => Err(usage()),
     }
 }
@@ -1569,6 +1976,19 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_credentials(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "zcglobal-policy-credential-{}-{label}.json",
+            std::process::id()
+        ));
+        let policy = admin_secret_policy_from_env().unwrap();
+        let bundle =
+            SecretBundle::new(unix_now_ms().unwrap(), policy.maximum_ttl_ms, &policy).unwrap();
+        let _ = fs::remove_file(&path);
+        write_bundle_atomic(&path, &bundle).unwrap();
+        path
+    }
 
     fn test_node(id: &str, label: &str) -> Arc<Node> {
         Node::open(
@@ -1583,7 +2003,7 @@ mod tests {
                 "zcglobal-policy-eligibility-{}-{id}-{label}.json",
                 std::process::id(),
             )),
-            b"test-management-token-32-bytes-minimum".to_vec(),
+            test_credentials(&format!("{id}-{label}")),
         )
         .unwrap()
     }
@@ -1636,9 +2056,13 @@ mod tests {
     #[test]
     fn management_requests_require_the_exact_federation_token() {
         let node = test_node("us", "management-auth");
+        let token = {
+            let credentials = node.admin_credentials.lock().unwrap();
+            credentials.bundle.credentials[0].secret.clone()
+        };
         let authorized = RequestEnvelope {
             federation_id: "test-federation".into(),
-            admin_token: Some("test-management-token-32-bytes-minimum".into()),
+            admin_token: Some(token),
             request: Request::Status,
         };
         assert!(node.management_authorized(&authorized));
@@ -1670,13 +2094,14 @@ mod tests {
             "us@127.0.0.11:9910#leader,uk@127.0.0.12:9910#leader,pottsylvania@127.0.0.13:9910#voter",
         )
         .unwrap();
+        let credential_path = test_credentials("federation-binding");
         let node = Node::open(
             "federation-a".into(),
             "us".into(),
             "us".into(),
             peers.clone(),
             path.clone(),
-            b"test-management-token-32-bytes-minimum".to_vec(),
+            credential_path.clone(),
         )
         .unwrap();
         {
@@ -1690,12 +2115,13 @@ mod tests {
             "us".into(),
             peers,
             path.clone(),
-            b"test-management-token-32-bytes-minimum".to_vec(),
+            credential_path.clone(),
         ) {
             Ok(_) => panic!("state was reopened under a foreign federation"),
             Err(error) => error,
         };
         assert!(error.to_string().contains("different federation"));
         fs::remove_file(path).unwrap();
+        fs::remove_file(credential_path).unwrap();
     }
 }

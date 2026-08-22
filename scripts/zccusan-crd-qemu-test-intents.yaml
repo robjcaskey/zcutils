@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: qemu-cross-region-key
+type: Opaque
+stringData:
+  token: ZCCUSAN_QEMU_EPHEMERAL_TOKEN
+---
+apiVersion: storage.zcutils.io/v1alpha1
+kind: TieringPolicy
+metadata:
+  name: qemu-hot-spill
+spec:
+  hot:
+    kind: MemoryEmptyDir
+    maximumVolumeSize: 32Mi
+  spill:
+    kind: HostPathFile
+    rootPath: /var/lib/zcutils/tier-spill
+  backpressureBytes: 4Mi
+  rehydrateOnColdStart: true
+  reclaimPolicy: Retain
+---
+apiVersion: storage.zcutils.io/v1alpha1
+kind: MediaGrant
+metadata:
+  name: qemu-memory
+spec:
+  mediaSets:
+    - name: memory
+      publishAs:
+        mediaClass: qemu-tier-memory
+        durability: Volatile
+        mayContributeToDurableAcknowledgement: false
+      dynamicSources:
+        - kind: MemoryArena
+          maximumVolumeSize: 32Mi
+---
+apiVersion: storage.zcutils.io/v1alpha1
+kind: StorageProfile
+metadata:
+  name: qemu-tiered-mirror
+spec:
+  frontend: LinuxBlock
+  placement:
+    primitive: Mirror
+    execution: Userspace
+    copies: 2
+    mediaClass: qemu-tier-memory
+    excludeClientNode: false
+    distinctTopologyKeys:
+      - kubernetes.io/hostname
+  tieringPolicyRef: qemu-hot-spill
+  transport:
+    kind: TcpMux
+    addressSource: InternalIP
+    lanes: 1
+    connectionsPerLane: 1
+    chunkBytes: 4096
+---
+apiVersion: storage.zcutils.io/v1alpha1
+kind: ZcVolume
+metadata:
+  name: qemu-tiered-volume
+spec:
+  profileRef: qemu-tiered-mirror
+  capacityBytes: 16777216
+  clientNode: region-us
+  frontend: LinuxBlock
+---
+apiVersion: storage.zcutils.io/v1alpha1
+kind: CrossRegionReplication
+metadata:
+  name: qemu-us-to-uk
+spec:
+  mode: AsynchronousCheckpoint
+  source:
+    region: region-us
+    nodeName: region-us
+    path: /var/lib/zcutils/checkpoints/source.bin
+    address: 10.46.0.2
+  target:
+    region: region-uk
+    nodeName: region-uk
+    path: /var/lib/zcutils/checkpoints/target.bin
+    address: 10.46.0.3
+  bytes: 4096
+  credentialSecretRef:
+    name: qemu-cross-region-key
+    key: token
+  transport:
+    kind: Aes256AuthenticatedTcp
+  allowTargetOverwrite: true
+  automaticFailover: false

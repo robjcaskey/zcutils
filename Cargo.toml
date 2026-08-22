@@ -10,18 +10,31 @@ license = "MIT OR Apache-2.0 OR BSD-2-Clause"
 [dependencies]
 arc-swap = "1.7"
 aws-lc-rs = "1.15"
+futures = "0.3"
 k8s-csi = "0.4.0"
 hdrhistogram = { version = "7.6", default-features = false }
+k8s-openapi = { version = "0.22", features = ["v1_30"] }
+kube = { version = "0.94.2", default-features = false, features = ["client", "derive", "runtime", "rustls-tls"] }
 libc = "0.2"
 prost = "0.8"
 prost-types = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
+schemars = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = { version = "1", features = ["std"] }
 sha2 = "0.10"
 tokio = { version = "1.0", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { version = "0.5", features = ["transport"] }
+vhost = { version = "0.17", features = ["vhost-user-backend"] }
+vhost-user-backend = "0.23"
+virtio-bindings = "0.2.7"
+virtio-queue = "0.18"
+vm-memory = { version = "0.18", features = ["backend-mmap", "backend-atomic", "backend-bitmap"] }
+vmm-sys-util = "0.15"
 
 [[bin]]
 name = "zcutils"
@@ -30,6 +43,10 @@ path = "src/main.rs"
 [[bin]]
 name = "zcracing-mirror"
 path = "src/bin/zcracing-mirror.rs"
+
+[[bin]]
+name = "zciscsi-target"
+path = "src/bin/zciscsi-target.rs"
 
 [[bin]]
 name = "zcprobe"
@@ -232,6 +249,30 @@ name = "zcnblk-wal-leaf"
 path = "src/bin/zcnblk-wal-leaf.rs"
 
 [[bin]]
+name = "zcnblk-wal-quorum"
+path = "src/bin/zcnblk-wal-quorum.rs"
+
+[[bin]]
+name = "zcnblk-wal-ha-route"
+path = "src/bin/zcnblk-wal-ha-route.rs"
+
+[[bin]]
+name = "zcglobal-kubernetes-adapter"
+path = "src/bin/zcglobal-kubernetes-adapter.rs"
+
+[[bin]]
+name = "zccusan-operator"
+path = "src/bin/zccusan-operator.rs"
+
+[[bin]]
+name = "zccusan-crdgen"
+path = "src/bin/zccusan-crdgen.rs"
+
+[[bin]]
+name = "zcvhost-user-blk"
+path = "src/bin/zcvhost-user-blk.rs"
+
+[[bin]]
 name = "zcwal-route-gateway"
 path = "src/bin/zcwal-route-gateway.rs"
 
@@ -250,6 +291,14 @@ path = "src/bin/zcnblk-order-smoke.rs"
 [[bin]]
 name = "zcnblk-live-cutover-smoke"
 path = "src/bin/zcnblk-live-cutover-smoke.rs"
+
+[[bin]]
+name = "zcglobal-volume-workload"
+path = "src/bin/zcglobal-volume-workload.rs"
+
+[[bin]]
+name = "zcnblk-wal-failover"
+path = "src/bin/zcnblk-wal-failover.rs"
 
 [[bin]]
 name = "zcnblk-contract-smoke"

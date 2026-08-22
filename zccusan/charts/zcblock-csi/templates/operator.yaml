@@ -1,0 +1,47 @@
+{{- if .Values.operator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zcblock-csi.fullname" . }}-operator
+  namespace: {{ include "zcblock-csi.namespace" . }}
+  labels:
+    {{- include "zcblock-csi.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  # The preview reconciler is intentionally single-active until leader
+  # election is part of its availability contract.
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "zcblock-csi.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: operator
+  template:
+    metadata:
+      labels:
+        {{- include "zcblock-csi.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: {{ include "zcblock-csi.serviceAccountName" . }}
+      containers:
+        - name: operator
+          image: {{ include "zcblock-csi.mainImage" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/usr/local/bin/zccusan-operator]
+          env:
+            - name: ZCCUSAN_RUNTIME_IMAGE
+              value: {{ include "zcblock-csi.mainImage" . | quote }}
+            - name: ZCCUSAN_RUNTIME_IMAGE_PULL_POLICY
+              value: {{ .Values.image.pullPolicy | quote }}
+            - name: ZCCUSAN_CSI_PROVISIONER
+              value: {{ .Values.driverName | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
+{{- end }}

@@ -16,6 +16,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::RawRing;
+
 pub const ZCNBLK_APP_ARENA_MAGIC: u64 = 0x3141_5041_434e_435a; // "ZCNCAPA1"
 pub const ZCNBLK_APP_ARENA_VERSION: u32 = 1;
 pub const ZCNBLK_APP_ARENA_F_EXTERNAL_HUGETLB: u32 = 1 << 0;
@@ -461,6 +463,105 @@ impl Drop for ZcnblkAppArenaBuffer {
         }
         self.inner.local_slots[self.inner.global_slot(self.lane, self.slot)]
             .store(false, Ordering::Release);
+    }
+}
+
+/// A lane-local asynchronous submission ring for buffers leased from the
+/// application arena. The ring only transports an already selected lane's
+/// pointer through the zcnblk client edge; it does not choose placement,
+/// mirrors, stripes, tiers, or downstream paths.
+pub struct ZcnblkAppArenaIoRing {
+    ring: RawRing,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ZcnblkAppArenaIoCompletion {
+    pub user_data: u64,
+    pub result: i32,
+}
+
+impl ZcnblkAppArenaIoRing {
+    pub fn new(entries: u32) -> io::Result<Self> {
+        if entries == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcnblk arena io_uring needs at least one entry",
+            ));
+        }
+        Ok(Self {
+            ring: RawRing::new(entries, entries.saturating_mul(2))?,
+        })
+    }
+
+    pub fn queue_read(
+        &mut self,
+        file: &File,
+        buffer: &mut ZcnblkAppArenaBuffer,
+        offset: u64,
+        user_data: u64,
+    ) -> io::Result<()> {
+        self.queue(file, buffer, offset, user_data, false)
+    }
+
+    pub fn queue_write(
+        &mut self,
+        file: &File,
+        buffer: &mut ZcnblkAppArenaBuffer,
+        offset: u64,
+        user_data: u64,
+    ) -> io::Result<()> {
+        self.queue(file, buffer, offset, user_data, true)
+    }
+
+    fn queue(
+        &mut self,
+        file: &File,
+        buffer: &mut ZcnblkAppArenaBuffer,
+        offset: u64,
+        user_data: u64,
+        write: bool,
+    ) -> io::Result<()> {
+        let (pointer, len) = buffer.handoff_to_kernel()?;
+        let len = u32::try_from(len)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "arena buffer exceeds u32"))?;
+        let queued = if write {
+            self.ring.queue_write(
+                file.as_raw_fd(),
+                pointer.cast_const(),
+                len,
+                offset,
+                user_data,
+            )
+        } else {
+            self.ring
+                .queue_read(file.as_raw_fd(), pointer, len, offset, user_data)
+        };
+        if let Err(error) = queued {
+            let _ = buffer.recover_unsubmitted();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn submit(&mut self) -> io::Result<()> {
+        self.ring.submit_pending()
+    }
+
+    pub fn try_completion(&mut self) -> Option<ZcnblkAppArenaIoCompletion> {
+        self.ring
+            .try_pop_cqe()
+            .map(|completion| ZcnblkAppArenaIoCompletion {
+                user_data: completion.user_data,
+                result: completion.res,
+            })
+    }
+
+    pub fn wait_completion(&mut self) -> io::Result<ZcnblkAppArenaIoCompletion> {
+        let completion = self.ring.wait_cqe()?;
+        Ok(ZcnblkAppArenaIoCompletion {
+            user_data: completion.user_data,
+            result: completion.res,
+        })
     }
 }
 

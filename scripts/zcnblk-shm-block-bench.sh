@@ -1668,6 +1668,24 @@ if [ "$KERNEL_STATE_INTERVAL_MS" -gt 0 ]; then
 	kernel_state_pid=$!
 fi
 
+# A frontend integration test may reuse the exact representative topology
+# setup while replacing zcblockbench with QEMU, iSCSI, or another userspace
+# edge.  The command receives only the already-established edge paths; it does
+# not gain any placement responsibility.
+if [ -n "${EXTERNAL_FRONTEND_COMMAND:-}" ]; then
+	log "running external frontend against the established userspace stage"
+	export URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET="$app_arena_socket"
+	export ZCNBLK_FRONTEND_DEVICE=/dev/zcnblk0
+	bash -c "$EXTERNAL_FRONTEND_COMMAND" | tee "$OUTDIR/external-frontend.log"
+	safe_stop_target
+	target_pid=""
+	wait "$target_job_pid" || true
+	target_job_pid=""
+	grep 'zcnblk-shm-target-summary:' "$OUTDIR/target.log" | tee "$OUTDIR/summary.log"
+	trap - EXIT INT TERM
+	exit 0
+fi
+
 if [ "$ORDER_SMOKE_PAIRS" -gt 0 ]; then
 	log "proving same-sector ordering and sync across the live $LANES-lane path"
 	order_started_ns="$(date +%s%N)"
