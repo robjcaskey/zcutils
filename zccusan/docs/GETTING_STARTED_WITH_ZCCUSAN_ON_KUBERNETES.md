@@ -110,7 +110,7 @@ spec:
   storageClassName: zc-mirror-ram
   resources:
     requests:
-      storage: 512Mi
+      storage: 256Mi
 ```
 <!-- END FILE: zccusan/deploy/zcblock-csi/getting-started/mirror-pvc.yaml -->
 
