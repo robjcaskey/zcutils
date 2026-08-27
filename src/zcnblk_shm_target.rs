@@ -323,6 +323,7 @@ const ZCNBLK_SHM_IOC_IMPORT_ARENA: libc::c_ulong =
     ioctl_code(IOC_WRITE, 4, size_of::<ZcnblkShmArenaImport>());
 const ZCNBLK_SHM_IOC_FREEZE_DISPATCH: libc::c_ulong = ioctl_code(0, 5, 0);
 const ZCNBLK_SHM_IOC_THAW_DISPATCH: libc::c_ulong = ioctl_code(0, 6, 0);
+const ZCNBLK_SHM_IOC_RESET_SESSION: libc::c_ulong = ioctl_code(0, 7, 0);
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -9672,6 +9673,36 @@ impl SharedTarget {
             header.reserved[ZCNBLK_SHM_HEADER_CAPABILITIES] & ZCNBLK_SHM_CAP_BIO_ARENA_ALIAS != 0,
             unsafe { libc::sched_getcpu() },
         );
+        let rings_fresh = Self::rings_fresh(&mapping, &header)?;
+        if header.daemon_generation != 0 || !rings_fresh {
+            let ret = unsafe { libc::ioctl(file.as_raw_fd(), ZCNBLK_SHM_IOC_RESET_SESSION) };
+            if ret < 0 {
+                let error = io::Error::last_os_error();
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "zcnblk shared-session recycle failed after daemon generation {} (fresh_rings={rings_fresh}): {error}",
+                        header.daemon_generation,
+                    ),
+                ));
+            }
+            let ret =
+                unsafe { libc::ioctl(file.as_raw_fd(), ZCNBLK_SHM_IOC_GET_INFO, &mut header) };
+            if ret < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Self::validate_header(&header)?;
+            if !Self::rings_fresh(&mapping, &header)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "kernel reported a successful zcnblk session recycle but shared rings remain active",
+                ));
+            }
+            eprintln!(
+                "zcnblk-shm-target-session-recycle: previous_generation={} transport_state=reset placement_state=userspace reconnect=required",
+                header.daemon_generation,
+            );
+        }
         let app_arena_export_requested = env::var_os("URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET")
             .is_some_and(|value| !value.is_empty());
         if app_arena_export_requested
@@ -10254,21 +10285,49 @@ impl SharedTarget {
     }
 
     fn validate_fresh_rings(&self) -> io::Result<()> {
-        for channel in 0..self.header.channels {
-            let control = unsafe { &*self.channel_ptr(channel)? };
+        if Self::rings_fresh(&self.mapping, &self.header)? {
+            return Ok(());
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "shared rings are not fresh after session recycle",
+        ))
+    }
+
+    fn rings_fresh(mapping: &Mapping, header: &ZcnblkShmHeader) -> io::Result<bool> {
+        for channel in 0..header.channels {
+            let channel_offset = usize::try_from(header.channel_offset)
+                .ok()
+                .and_then(|base| {
+                    (channel as usize)
+                        .checked_mul(size_of::<ZcnblkShmChannel>())
+                        .and_then(|offset| base.checked_add(offset))
+                })
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "shared channel offset overflow")
+                })?;
+            let end = channel_offset
+                .checked_add(size_of::<ZcnblkShmChannel>())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "shared channel end overflow")
+                })?;
+            if end > mapping.len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "shared channel lies outside the mapped arena",
+                ));
+            }
+            let control = unsafe { &*mapping.ptr.add(channel_offset).cast::<ZcnblkShmChannel>() };
             if control.req_prod != 0
                 || control.req_cons != 0
                 || control.comp_prod != 0
                 || control.comp_cons != 0
                 || control.payload_lease_hwm != 0
             {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "shared rings are not fresh; reload zcnblk_client_mod before attaching a new daemon",
-                ));
+                return Ok(false);
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn head_request(&self, channel: u32) -> io::Result<Option<(u64, ZcnblkShmRequest)>> {
@@ -15664,6 +15723,7 @@ mod tests {
         assert_eq!(ZCNBLK_SHM_IOC_IMPORT_ARENA, 0x4020_bc04);
         assert_eq!(ZCNBLK_SHM_IOC_FREEZE_DISPATCH, 0x0000_bc05);
         assert_eq!(ZCNBLK_SHM_IOC_THAW_DISPATCH, 0x0000_bc06);
+        assert_eq!(ZCNBLK_SHM_IOC_RESET_SESSION, 0x0000_bc07);
     }
 
     #[test]

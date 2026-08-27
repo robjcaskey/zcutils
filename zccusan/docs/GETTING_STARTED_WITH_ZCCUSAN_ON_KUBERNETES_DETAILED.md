@@ -68,7 +68,7 @@ test.
    helm repo update
    helm upgrade --install zccusan \
      zcutils/zcblock-csi \
-     --version 0.1.4 \
+     --version 0.1.5 \
      --namespace zccusan \
      "${HELM_ARGS[@]}" \
      --wait \

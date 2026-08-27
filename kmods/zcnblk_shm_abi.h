@@ -212,5 +212,12 @@ struct zcnblk_shm_arena_import {
  */
 #define ZCNBLK_SHM_IOC_FREEZE_DISPATCH _IO(ZCNBLK_SHM_IOC_MAGIC, 5)
 #define ZCNBLK_SHM_IOC_THAW_DISPATCH _IO(ZCNBLK_SHM_IOC_MAGIC, 6)
+/*
+ * Cold-path daemon-incarnation recycle. The caller must own shmctl without
+ * having attached it. The kernel quiesces blk-mq, fails any abandoned
+ * requests, rebuilds the lane workers, and clears transport-only shared-ring
+ * state. Remote placement and volume data remain userspace responsibilities.
+ */
+#define ZCNBLK_SHM_IOC_RESET_SESSION _IO(ZCNBLK_SHM_IOC_MAGIC, 7)
 
 #endif /* ZCNBLK_SHM_ABI_H */

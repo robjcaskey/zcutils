@@ -29,7 +29,7 @@ Install the CSI.
 ```bash
 helm repo add zcutils https://robjcaskey.github.io/zcutils
 helm repo update
-helm upgrade --install zccusan zcutils/zcblock-csi --version 0.1.4 --namespace zccusan --wait --timeout 120s
+helm upgrade --install zccusan zcutils/zcblock-csi --version 0.1.5 --namespace zccusan --wait --timeout 120s
 # If your nodes use EFA-direct, add --set backplane.rdma.enabled=true --set backplane.rdma.provider=efa-direct to this command.
 ```
 
@@ -146,7 +146,7 @@ spec:
                   - "true"
   containers:
     - name: fio
-      image: docker.io/robjcaskey/zccusan-storage-test:0.1.4
+      image: docker.io/robjcaskey/zccusan-storage-test:0.1.5
       imagePullPolicy: IfNotPresent
       command: [fio]
       args:
@@ -221,7 +221,7 @@ spec:
                   - "true"
   containers:
     - name: pgbench
-      image: docker.io/robjcaskey/zccusan-storage-test:0.1.4
+      image: docker.io/robjcaskey/zccusan-storage-test:0.1.5
       imagePullPolicy: IfNotPresent
       command: [/bin/bash, -ec]
       args:

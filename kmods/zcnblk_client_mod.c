@@ -388,6 +388,7 @@ struct zcnblk_dev {
 
 static struct zcnblk_dev *zcnblk_dev;
 static struct dentry *zcnblk_debugfs_dir;
+static int zcnblk_shm_reset_session(struct zcnblk_dev *dev);
 static __be32 zcnblk_remote_addrs[ZCNBLK_MAX_REMOTE_IPS];
 static u32 zcnblk_remote_addr_count;
 
@@ -3327,11 +3328,13 @@ static int zcnblk_shm_ctl_open(struct inode *inode, struct file *file)
 static int zcnblk_shm_ctl_release(struct inode *inode, struct file *file)
 {
 	struct zcnblk_shm_state *shm = file->private_data;
+	bool was_online;
 	u32 i;
 
 	(void)inode;
 	if (!shm)
 		return 0;
+	was_online = smp_load_acquire(&shm->header->daemon_online);
 	smp_store_release(&shm->header->daemon_online, 0);
 	mutex_lock(&shm->dispatch_freeze_lock);
 	if (shm->dispatch_frozen && zcnblk_dev && zcnblk_dev->disk) {
@@ -3339,7 +3342,8 @@ static int zcnblk_shm_ctl_release(struct inode *inode, struct file *file)
 		shm->dispatch_frozen = false;
 	}
 	mutex_unlock(&shm->dispatch_freeze_lock);
-	if (zcnblk_dev && zcnblk_dev->conns) {
+	/* A pre-ATTACH setup failure never owned the block path. */
+	if (was_online && zcnblk_dev && zcnblk_dev->conns) {
 		for (i = 0; i < zcnblk_dev->active_conns; i++) {
 			WRITE_ONCE(zcnblk_dev->conns[i].failed, true);
 			wake_up(&zcnblk_dev->conns[i].wait);
@@ -3451,6 +3455,8 @@ static long zcnblk_shm_ctl_ioctl(struct file *file, unsigned int cmd,
 		shm->dispatch_frozen = false;
 		mutex_unlock(&shm->dispatch_freeze_lock);
 		return 0;
+	case ZCNBLK_SHM_IOC_RESET_SESSION:
+		return zcnblk_shm_reset_session(zcnblk_dev);
 	default:
 		return -ENOTTY;
 	}
@@ -3943,6 +3949,88 @@ static int zcnblk_shm_connect_all(struct zcnblk_dev *dev)
 		}
 	}
 	return 0;
+}
+
+/*
+ * Recycle only transport incarnation state.  This is intentionally a control
+ * operation rather than a queue_rq branch: CSI can reuse /dev/zcnblk0 after a
+ * prior daemon exits without unloading the module, while the data-plane hot
+ * path remains unchanged.  The new userspace RAID stages reconnect to the
+ * authoritative leaves after this reset.
+ */
+static int zcnblk_shm_reset_session(struct zcnblk_dev *dev)
+{
+	struct zcnblk_shm_state *shm;
+	struct zcnblk_shm_header *hdr;
+	u32 lane;
+	u32 stream;
+	u32 idx = 0;
+	int ret = 0;
+
+	if (!dev || !dev->shm || !dev->disk || !dev->conns)
+		return -ENODEV;
+	shm = dev->shm;
+	hdr = shm->header;
+	if (smp_load_acquire(&hdr->daemon_online))
+		return -EBUSY;
+	if (hdr->header_bytes > shm->region_bytes)
+		return -EIO;
+
+	mutex_lock(&shm->dispatch_freeze_lock);
+	if (shm->dispatch_frozen) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+	blk_mq_quiesce_queue_nowait(dev->disk->queue);
+	if (dev->tag_set.flags & BLK_MQ_F_BLOCKING)
+		synchronize_srcu_expedited(dev->tag_set.srcu);
+	else
+		synchronize_rcu_expedited();
+	shm->dispatch_frozen = true;
+
+	/* Stopped lane workers fail every request they still own before return. */
+	zcnblk_disconnect_all(dev);
+	memset(dev->conns, 0, dev->total_conns * sizeof(*dev->conns));
+
+	/* Keep the ABI/layout header and imported arena, clear ring incarnation. */
+	memset((u8 *)shm->region + hdr->header_bytes, 0,
+	       shm->region_bytes - hdr->header_bytes);
+	memset(shm->sector_predecessors, 0,
+	       shm_sector_order_slots * sizeof(*shm->sector_predecessors));
+	hdr->global_submit_sequence = 0;
+	shm->transfer_payload_slots = false;
+	shm->lane_local_sequences = false;
+	atomic64_set(&shm->submit_sequence, 0);
+	atomic64_set(&shm->ordering_epoch, 1);
+	atomic64_set(&dev->next_conn, 0);
+	for (idx = 0; idx < dev->total_conns; idx++)
+		atomic64_set((atomic64_t *)&zcnblk_shm_channel(dev, idx)
+						->payload_free_slots,
+			     hdr->payload_entries);
+
+	idx = 0;
+	for (lane = 0; lane < lanes; lane++) {
+		for (stream = 0; stream < connections_per_lane; stream++) {
+			ret = zcnblk_shm_connect_one(dev, &dev->conns[idx], lane,
+						 stream, idx);
+			if (ret)
+				goto out_disconnect;
+			idx++;
+			dev->active_conns = idx;
+		}
+	}
+	pr_info("zcnblk: reset userspace shm session generation=%llu lanes=%u\n",
+		READ_ONCE(hdr->daemon_generation), dev->active_conns);
+	goto out_thaw;
+
+out_disconnect:
+	zcnblk_disconnect_all(dev);
+out_thaw:
+	blk_mq_unquiesce_queue(dev->disk->queue);
+	shm->dispatch_frozen = false;
+out_unlock:
+	mutex_unlock(&shm->dispatch_freeze_lock);
+	return ret;
 }
 
 static int zcnblk_connect_one(struct zcnblk_dev *dev, struct zcnblk_conn *conn,
