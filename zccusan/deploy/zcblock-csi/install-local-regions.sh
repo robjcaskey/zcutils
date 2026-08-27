@@ -27,6 +27,8 @@ Environment:
   IMAGE_FIPS_ASPIRING=localhost/zcblock-csi-fips:dev
   DOCKERFILE (optional)
   IMAGE (optional custom override)
+  IMAGE_A / IMAGE_B / IMAGE_C (optional per-region image overrides)
+  REGION_IMAGES='a=IMAGE b=IMAGE c=IMAGE' (arbitrary per-region overrides)
   BUILD_IMAGE=1
   INSTALL_SNAPSHOT_API=1
   SNAPSHOT_MODE=auto
@@ -69,6 +71,30 @@ add_region() {
     fi
   done
   REGIONS+=("$region")
+}
+
+image_for_region() {
+  local region="$1"
+  local token token_region token_image
+  local variable="IMAGE_${region^^}"
+  variable="${variable//-/_}"
+  if [ -n "${!variable:-}" ]; then
+    printf '%s\n' "${!variable}"
+    return
+  fi
+  for token in ${REGION_IMAGES:-}; do
+    token_region="${token%%=*}"
+    token_image="${token#*=}"
+    if [ "$token" = "$token_region" ] || [ -z "$token_image" ]; then
+      echo "invalid REGION_IMAGES entry: $token (expected region=image)" >&2
+      return 1
+    fi
+    if [ "$token_region" = "$region" ]; then
+      printf '%s\n' "$token_image"
+      return
+    fi
+  done
+  printf '%s\n' "$IMAGE"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -121,7 +147,9 @@ if [ "$INSTALL_SNAPSHOT_API" = "1" ]; then
 fi
 
 for region in "${REGIONS[@]}"; do
-  IMAGE="$IMAGE" zccusan/deploy/zcblock-csi/render-region-install.sh "$region" | kubectl apply -f -
+  region_image="$(image_for_region "$region")"
+  printf 'installing local region %s with image %s\n' "$region" "$region_image"
+  IMAGE="$region_image" zccusan/deploy/zcblock-csi/render-region-install.sh "$region" | kubectl apply -f -
 done
 
 for region in "${REGIONS[@]}"; do

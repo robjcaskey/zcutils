@@ -42,7 +42,29 @@ CSI identities while sharing the snapshot CRDs/controller:
 zccusan/deploy/zcblock-csi/install-local-regions.sh -a -b -c
 zccusan/deploy/zcblock-csi/test-local-regions-cohesive.sh
 zccusan/deploy/zcblock-csi/test-local-regions-stream-repl.sh
+zccusan/deploy/zcblock-csi/test-local-regions-failover.sh
 ```
+
+The failover acceptance test provisions distinct A, B, and C volumes, fences
+all writers, replicates A to B and C, promotes B, then replicates and promotes C.
+It is an asynchronous planned-failover proof, not an automatic or zero-RPO
+promotion claim.
+
+To exercise a real stair-step version skew in one cluster, select each region's
+image independently:
+
+```sh
+BUILD_IMAGE=0 \
+IMAGE_A=docker.io/robjcaskey/zcblock-csi:0.1.4 \
+IMAGE_B=docker.io/robjcaskey/zcblock-csi:0.1.5 \
+IMAGE_C=docker.io/robjcaskey/zcblock-csi:0.1.6 \
+  zccusan/deploy/zcblock-csi/install-local-regions.sh -a -b -c
+```
+
+`REGION_IMAGES='a=IMAGE b=IMAGE c=IMAGE'` supports arbitrary local-region
+names. See the
+[cross-region getting-started guide](../../docs/GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md)
+for the complete workflow and its trust/failover boundaries.
 
 You can run both scripts against the FIPS-aspiring track with:
 
