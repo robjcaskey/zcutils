@@ -29,7 +29,7 @@ Install the CSI.
 ```bash
 helm repo add zcutils https://robjcaskey.github.io/zcutils
 helm repo update
-helm upgrade --install zccusan zcutils/zcblock-csi --version 0.1.5 --namespace zccusan --wait --timeout 120s
+helm upgrade --install zccusan zcutils/zcblock-csi --version 0.1.6 --namespace zccusan --wait --timeout 120s
 # If your nodes use EFA-direct, add --set backplane.rdma.enabled=true --set backplane.rdma.provider=efa-direct to this command.
 ```
 

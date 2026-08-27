@@ -1,4 +1,6 @@
-FROM docker.io/library/rust:1.97-bookworm AS builder
+# Keep the builder distro aligned with runtime-tools: the libfabric headers,
+# link-time library, and shipped provider must come from the same Debian ABI.
+FROM docker.io/library/rust:1.97-trixie AS builder
 
 WORKDIR /work
 

@@ -102,7 +102,7 @@ covers unsupported kernels, real media, RDMA, topology checks, and cleanup.
 helm repo add zcutils https://robjcaskey.github.io/zcutils
 helm repo update
 helm install zcblock-csi zcutils/zcblock-csi \
-  --version 0.1.5 \
+  --version 0.1.6 \
   --namespace zcblock-csi \
   --create-namespace
 ```
@@ -118,8 +118,8 @@ second zccusan kernel-module repository:
 
 ```sh
 skopeo copy --all \
-  docker://docker.io/robjcaskey/zcblock-csi:0.1.5 \
-  docker://registry.internal.example/zcblock-csi:0.1.5
+  docker://docker.io/robjcaskey/zcblock-csi:0.1.6 \
+  docker://registry.internal.example/zcblock-csi:0.1.6
 ```
 
 ## Automatic node setup
