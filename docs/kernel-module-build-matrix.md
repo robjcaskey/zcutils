@@ -19,7 +19,7 @@ The current lock was researched on 2026-08-27 UTC. It covers:
 | EKS AL2023, maintained minor | EKS `1.35.6-20260818`, release `v20260818`, Linux `6.12.100-125.179.amzn2023` | amd64, arm64 |
 | GKE Regular COS | GKE `1.35.6-gke.1641000`, COS `cos-125-19216-395-138`, Linux `6.12.85+` | amd64, arm64 |
 | AKS default Ubuntu | node image `202607.29.0`, Ubuntu 24.04 Azure kernel `6.8.0-1063-azure` | amd64 |
-| Debian stable | Debian `13.6`, Linux `6.12.105+deb13` | amd64, arm64 |
+| Debian stable | Debian `13.6`, Linux `6.12.105+deb13` generic and cloud-image kernels | amd64, arm64 |
 | UBI 10.2 / EL10 | UBI 10.2 toolchain, CentOS Stream 10 Linux `6.12.0-264.el10` | amd64, arm64 |
 | NixOS stable | NixOS `26.05.8477.062346a6d85b`, Linux `6.18.46` | amd64 |
 
