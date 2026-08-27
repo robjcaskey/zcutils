@@ -26,6 +26,22 @@ kubectl label node some-node-c storage.zcutils.io/example-client=true
 
 Install the CSI.
 
+On EKS with EFA-direct, first make sure the three selected nodes are
+EFA-capable and install the pinned AWS EFA device plugin. TCP users skip this
+block.
+
+```bash
+helm repo add aws-eks https://aws.github.io/eks-charts
+helm repo update aws-eks
+helm upgrade --install aws-efa-device-plugin \
+  aws-eks/aws-efa-k8s-device-plugin \
+  --version v0.5.30 --namespace kube-system --wait --timeout 120s
+kubectl get nodes \
+  -o 'custom-columns=NAME:.metadata.name,EFA:.status.allocatable.vpc\.amazonaws\.com/efa'
+```
+
+Each selected EKS node must report `1` in the `EFA` column before continuing.
+
 ```bash
 helm repo add zcutils https://robjcaskey.github.io/zcutils
 helm repo update

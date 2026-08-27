@@ -48,14 +48,22 @@ test.
      storage.zcutils.io/backplane-address=10.20.0.12
    ```
 
-11. Leave `HELM_ARGS` empty for TCP, or add the strict RDMA capability gate and your provider only when every selected node exposes the required device and libfabric provider.
+11. Leave `HELM_ARGS` empty for TCP. For EFA-direct on EKS, use EFA-capable nodes configured for EFA traffic, install the pinned AWS EFA device plugin, and verify that all three selected nodes advertise one EFA resource before enabling the strict RDMA capability gate. Other RDMA environments must provide their corresponding device plugin and resource name.
 
    ```bash
    HELM_ARGS=()
 
-   # EFA example
+   # EKS EFA-direct example; TCP users skip these commands.
+   helm repo add aws-eks https://aws.github.io/eks-charts
+   helm repo update aws-eks
+   helm upgrade --install aws-efa-device-plugin \
+     aws-eks/aws-efa-k8s-device-plugin \
+     --version v0.5.30 --namespace kube-system --wait --timeout 120s
+   kubectl get nodes \
+     -o 'custom-columns=NAME:.metadata.name,EFA:.status.allocatable.vpc\.amazonaws\.com/efa'
+
    # HELM_ARGS+=(--set backplane.rdma.enabled=true)
-   # HELM_ARGS+=(--set backplane.rdma.provider=efa)
+   # HELM_ARGS+=(--set backplane.rdma.provider=efa-direct)
 
    # A custom unsupported kernel can use reviewed host or HTTP module-source
    # values, or a custom full DaemonSet image; the matrix needs no extra values.
