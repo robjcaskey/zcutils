@@ -135,7 +135,7 @@ jobs:
           docker run --rm "${image}" fio --version
           docker run --rm "${image}" pgbench --version
           docker run --rm "${image}" postgres --version
-          docker run --rm --read-only --tmpfs /tmp:rw,size=64m \
+          docker run --rm --read-only --tmpfs /tmp:rw,size=512m \
             --entrypoint /bin/bash "${image}" -ec '
               export PGDATA=/tmp/postgres PGHOST=/tmp
               initdb --auth=trust --encoding=UTF8 --no-locale >/dev/null
