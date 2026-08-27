@@ -26,7 +26,7 @@ the kernel accepting the module.
 
 Build a module for the exact target kernel using the reproducible build
 environment your organization owns. The existing image helper packages that
-result for the Helm `image` source. For a distribution-neutral workflow that
+result into the full DaemonSet image used by every first-party container. For a distribution-neutral workflow that
 compiles on an exact-match throwaway node and downloads the result, see
 [Build a kernel-module bundle on a throwaway Kubernetes node](../zccusan/docs/BUILD_KERNEL_MODULE_ON_KUBERNETES_NODE.md).
 
@@ -34,7 +34,7 @@ compiles on an exact-match throwaway node and downloads the result, see
 MODULE_FILE=./zcnblk_client_mod.ko \
 KERNEL_RELEASE=7.2.0 \
 MODULE_ARCH=x86_64 \
-IMAGE=registry.example.test/storage/zcnblk-kmod:linux-7.2.0-amd64 \
+IMAGE=registry.example.test/storage/zcblock-csi:linux-7.2.0-amd64 \
   zccusan/deploy/zcblock-csi/build-kmod-image.sh
 ```
 

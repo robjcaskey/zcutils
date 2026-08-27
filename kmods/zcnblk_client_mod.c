@@ -23,7 +23,9 @@
 #include <linux/ktime.h>
 #include <linux/list.h>
 #include <linux/log2.h>
+#include <linux/magic.h>
 #include <linux/mm.h>
+#include <linux/mman.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -342,6 +344,8 @@ struct zcnblk_shm_state {
 	struct file *arena_file;
 	struct folio **arena_folios;
 	unsigned long arena_nr_folios;
+	struct page **arena_pages;
+	unsigned long arena_nr_pages;
 	bool external_hugetlb;
 	struct mutex arena_lock;
 	struct miscdevice misc;
@@ -2285,13 +2289,15 @@ static int zcnblk_shm_submit_pdu(struct zcnblk_conn *conn,
 		if (pdu->rq->cmd_flags & REQ_POLLED)
 			io_contract->flags |=
 				ZCNBLK_SHM_IO_F_POLLED_COMPLETION;
+		io_contract->ioprio = req_get_ioprio(pdu->rq);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 		if (wire_op == ZCNBLK_SHM_OP_WRITE &&
 		    pdu->rq->cmd_flags & REQ_ATOMIC)
 			io_contract->flags |= ZCNBLK_SHM_IO_F_ATOMIC_WRITE;
-		io_contract->ioprio = req_get_ioprio(pdu->rq);
 		if (wire_op == ZCNBLK_SHM_OP_WRITE && pdu->rq->bio)
 			io_contract->write_lifetime =
 				pdu->rq->bio->bi_write_hint;
+#endif
 		if (dev->shm->transfer_payload_slots) {
 			io_contract->flags |=
 				ZCNBLK_SHM_IO_F_REGISTERED_LEASE;
@@ -3073,13 +3079,18 @@ static int zcnblk_shm_import_hugetlb_arena(
 	struct file *file = NULL;
 	void *new_region = NULL;
 	unsigned long page_count;
-	unsigned long page_index = 0;
 	unsigned long i;
-	pgoff_t first_offset = 0;
-	long nr_folios = 0;
 	long seals;
 	u64 old_region_bytes;
 	int ret = 0;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
+	unsigned long page_index = 0;
+	long nr_folios = 0;
+	pgoff_t first_offset = 0;
+#else
+	long nr_pages = 0;
+	unsigned long mmap_addr;
+#endif
 
 	if (import->magic != ZCNBLK_SHM_MAGIC ||
 	    import->version != ZCNBLK_SHM_VERSION ||
@@ -3105,9 +3116,9 @@ static int zcnblk_shm_import_hugetlb_arena(
 		ret = -EBADF;
 		goto out_unlock;
 	}
-	if (!is_file_hugepages(file) ||
+	if (file_inode(file)->i_sb->s_magic != HUGETLBFS_MAGIC ||
 	    !IS_ALIGNED(import->region_bytes,
-			 huge_page_size(hstate_file(file))) ||
+			 huge_page_size(hstate_inode(file_inode(file)))) ||
 	    i_size_read(file_inode(file)) != import->region_bytes) {
 		ret = -EINVAL;
 		goto out_file;
@@ -3121,35 +3132,36 @@ static int zcnblk_shm_import_hugetlb_arena(
 	}
 
 	page_count = import->region_bytes >> PAGE_SHIFT;
+	pages = kvmalloc_array(page_count, sizeof(*pages), GFP_KERNEL);
+	if (!pages) {
+		ret = -ENOMEM;
+		goto out_file;
+	}
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 	folios = kvmalloc_array(page_count, sizeof(*folios), GFP_KERNEL);
 	if (!folios) {
 		ret = -ENOMEM;
-		goto out_file;
+		goto out_pages;
 	}
 	nr_folios = memfd_pin_folios(file, 0, import->region_bytes - 1,
 				      folios, page_count, &first_offset);
 	if (nr_folios <= 0) {
 		ret = nr_folios ? nr_folios : -EINVAL;
 		nr_folios = 0;
-		goto out_folios;
+		goto out_pages;
 	}
 	if (first_offset) {
 		ret = -EINVAL;
 		goto out_unpin;
 	}
 
-	pages = kvmalloc_array(page_count, sizeof(*pages), GFP_KERNEL);
-	if (!pages) {
-		ret = -ENOMEM;
-		goto out_unpin;
-	}
 	for (i = 0; i < nr_folios && page_index < page_count; i++) {
 		unsigned long subpage;
 		unsigned long folio_pages;
 
 		if (!folio_test_hugetlb(folios[i])) {
 			ret = -EINVAL;
-			goto out_pages;
+			goto out_unpin;
 		}
 		folio_pages = folio_nr_pages(folios[i]);
 		for (subpage = 0;
@@ -3159,8 +3171,31 @@ static int zcnblk_shm_import_hugetlb_arena(
 	}
 	if (page_index != page_count) {
 		ret = -EINVAL;
+		goto out_unpin;
+	}
+#else
+	/*
+	 * Linux before 6.12 has no exported memfd_pin_folios().  Map the
+	 * already-validated sealed HugeTLB file into the importing process long
+	 * enough to take long-term page pins, then discard that temporary VMA.
+	 * The retained page array owns those pins until module teardown.
+	 */
+	mmap_addr = vm_mmap(file, 0, import->region_bytes,
+			    PROT_READ | PROT_WRITE, MAP_SHARED, 0);
+	if (IS_ERR_VALUE(mmap_addr)) {
+		ret = (long)mmap_addr;
 		goto out_pages;
 	}
+	nr_pages = pin_user_pages(mmap_addr, page_count,
+				  FOLL_WRITE | FOLL_LONGTERM, pages);
+	vm_munmap(mmap_addr, import->region_bytes);
+	if (nr_pages != page_count) {
+		ret = nr_pages < 0 ? nr_pages : -EFAULT;
+		if (nr_pages < 0)
+			nr_pages = 0;
+		goto out_unpin;
+	}
+#endif
 	for (i = 0; i < page_count; i++) {
 		ret = xa_err(xa_store(&shm->arena_page_indices,
 				      page_to_pfn(pages[i]), xa_mk_value(i),
@@ -3238,8 +3273,14 @@ static int zcnblk_shm_import_hugetlb_arena(
 	shm->region_bytes = import->region_bytes;
 	shm->header = new_header;
 	shm->arena_file = file;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 	shm->arena_folios = folios;
 	shm->arena_nr_folios = nr_folios;
+#else
+	shm->arena_pages = pages;
+	shm->arena_nr_pages = nr_pages;
+	pages = NULL;
+#endif
 	shm->external_hugetlb = true;
 	new_region = NULL;
 	file = NULL;
@@ -3251,12 +3292,16 @@ out_page_index:
 		xa_destroy(&shm->arena_page_indices);
 		xa_init(&shm->arena_page_indices);
 	}
-out_pages:
-	kvfree(pages);
 out_unpin:
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 	if (ret && nr_folios > 0)
 		unpin_folios(folios, nr_folios);
-out_folios:
+#else
+	if (ret && nr_pages > 0)
+		unpin_user_pages(pages, nr_pages);
+#endif
+out_pages:
+	kvfree(pages);
 	kvfree(folios);
 out_file:
 	if (file)
@@ -3464,9 +3509,12 @@ static unsigned long zcnblk_shm_ctl_get_unmapped_area(
 	if (!arena_file) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 19, 0)
 		return mm_get_unmapped_area(file, addr, len, pgoff, flags);
-#else
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 		return mm_get_unmapped_area(current->mm, file, addr, len,
 					    pgoff, flags);
+#else
+		return current->mm->get_unmapped_area(file, addr, len, pgoff,
+						      flags);
 #endif
 	}
 
@@ -3483,9 +3531,12 @@ static unsigned long zcnblk_shm_ctl_get_unmapped_area(
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 19, 0)
 		area = mm_get_unmapped_area(
 			arena_file, addr, len, pgoff, flags);
-#else
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 		area = mm_get_unmapped_area(
 			current->mm, arena_file, addr, len, pgoff, flags);
+#else
+		area = current->mm->get_unmapped_area(
+			arena_file, addr, len, pgoff, flags);
 #endif
 	}
 	fput(arena_file);
@@ -3794,8 +3845,13 @@ static void zcnblk_shm_layout_destroy(struct zcnblk_dev *dev)
 		misc_deregister(&shm->misc);
 	if (shm->external_hugetlb) {
 		vunmap(shm->region);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 		unpin_folios(shm->arena_folios, shm->arena_nr_folios);
 		kvfree(shm->arena_folios);
+#else
+		unpin_user_pages(shm->arena_pages, shm->arena_nr_pages);
+		kvfree(shm->arena_pages);
+#endif
 		fput(shm->arena_file);
 		vfree(shm->fallback_region);
 	} else {
@@ -4050,7 +4106,9 @@ static int zcnblk_connect_all(struct zcnblk_dev *dev)
 
 static int __init zcnblk_init(void)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 	struct queue_limits lim = { };
+#endif
 	u64 capacity_bytes;
 	u32 total_conns;
 	u32 nr_queues;
@@ -4164,6 +4222,7 @@ static int __init zcnblk_init(void)
 	if (ret)
 		goto out_unregister;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
 	lim.logical_block_size = logical_block_size;
 	lim.physical_block_size = logical_block_size;
 	lim.io_min = logical_block_size;
@@ -4172,13 +4231,28 @@ static int __init zcnblk_init(void)
 	lim.max_hw_sectors = max_frame_bytes >> SECTOR_SHIFT;
 	/* Normal writes are cached; REQ_FUA is carried to the userspace WAL leaf. */
 	lim.features = BLK_FEAT_WRITE_CACHE | BLK_FEAT_FUA;
-
 	zcnblk_dev->disk = blk_mq_alloc_disk(&zcnblk_dev->tag_set, &lim, zcnblk_dev);
+#else
+	zcnblk_dev->disk = blk_mq_alloc_disk(&zcnblk_dev->tag_set, zcnblk_dev);
+#endif
 	if (IS_ERR(zcnblk_dev->disk)) {
 		ret = PTR_ERR(zcnblk_dev->disk);
 		zcnblk_dev->disk = NULL;
 		goto out_tags;
 	}
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
+	blk_queue_logical_block_size(zcnblk_dev->disk->queue,
+				     logical_block_size);
+	blk_queue_physical_block_size(zcnblk_dev->disk->queue,
+				      logical_block_size);
+	blk_queue_io_min(zcnblk_dev->disk->queue, logical_block_size);
+	blk_queue_max_segments(zcnblk_dev->disk->queue, USHRT_MAX);
+	blk_queue_max_segment_size(zcnblk_dev->disk->queue, UINT_MAX);
+	blk_queue_max_hw_sectors(zcnblk_dev->disk->queue,
+				 max_frame_bytes >> SECTOR_SHIFT);
+	/* Normal writes are cached; REQ_FUA is carried to the userspace WAL leaf. */
+	blk_queue_write_cache(zcnblk_dev->disk->queue, true, true);
+#endif
 	zcnblk_dev->disk->flags |= GENHD_FL_NO_PART;
 	zcnblk_dev->disk->major = zcnblk_dev->major;
 	zcnblk_dev->disk->first_minor = 0;

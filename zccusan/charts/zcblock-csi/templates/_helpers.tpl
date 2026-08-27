@@ -49,7 +49,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "zcblock-csi.mainImage" -}}
+{{- if and .Values.image.digest (not (regexMatch "^sha256:[A-Fa-f0-9]{64}$" .Values.image.digest)) -}}
+{{- fail "image.digest must be sha256: followed by exactly 64 hexadecimal characters" -}}
+{{- end -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else -}}
 {{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "zcblock-csi.telemetryServiceName" -}}
@@ -69,11 +76,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "zcblock-csi.nodeSetupImage" -}}
-{{- if .Values.nodeSetup.image.digest -}}
-{{- printf "%s@%s" .Values.nodeSetup.image.repository .Values.nodeSetup.image.digest -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.nodeSetup.image.repository .Values.nodeSetup.image.tag -}}
+{{- include "zcblock-csi.mainImage" . -}}
 {{- end -}}
+
+{{- define "zcblock-csi.nodeSetupImagePullPolicy" -}}
+{{- .Values.image.pullPolicy -}}
 {{- end -}}
 
 {{- define "zcblock-csi.nodeSetupConfigMapName" -}}
@@ -93,7 +100,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "zcblock-csi.nodeSetupChecksum" -}}
-{{- printf "%s\n%s\n%s\n%s" (toYaml .Values.nodeSetup) (.Files.Get "files/kmod/zcnblk_client_mod.c") (.Files.Get "files/kmod/zcnblk_shm_abi.h") (.Files.Get "files/kmod/Makefile") | sha256sum -}}
+{{- printf "%s\n%s\n%s\n%s\n%s" (toYaml .Values.nodeSetup) (.Files.Get "files/kmod/zcnblk_client_mod.c") (.Files.Get "files/kmod/zcnblk_shm_abi.h") (.Files.Get "files/kmod/Makefile") (.Files.Get "files/kmod/Kbuild") | sha256sum -}}
 {{- end -}}
 
 {{- define "zcblock-csi.installationSecretName" -}}

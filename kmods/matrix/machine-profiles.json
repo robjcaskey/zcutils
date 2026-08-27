@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "researchedAt": "2026-08-27T02:52:02Z",
+  "note": "Machine profiles are scheduling and transport examples. Module selection always uses architecture plus the node's exact uname -r; a profile never weakens that check.",
+  "profiles": [
+    {
+      "id": "eks-standard-amd64",
+      "provider": "aws",
+      "orchestrator": "eks",
+      "kubernetesVersion": "1.36",
+      "nodeImage": "amazon-linux-2023/x86_64/standard",
+      "exampleMachineTypes": ["m7i.large", "c8i.4xlarge"],
+      "artifactTarget": "eks-al2023-1.36-amd64",
+      "transportCapabilities": ["tcp", "efa-when-supported"]
+    },
+    {
+      "id": "eks-standard-arm64",
+      "provider": "aws",
+      "orchestrator": "eks",
+      "kubernetesVersion": "1.36",
+      "nodeImage": "amazon-linux-2023/arm64/standard",
+      "exampleMachineTypes": ["m8g.large", "c8g.4xlarge"],
+      "artifactTarget": "eks-al2023-1.36-arm64",
+      "transportCapabilities": ["tcp", "efa-when-supported"]
+    },
+    {
+      "id": "eks-efa-arm64",
+      "provider": "aws",
+      "orchestrator": "eks",
+      "kubernetesVersion": "1.36",
+      "nodeImage": "amazon-linux-2023/arm64/standard",
+      "exampleMachineTypes": ["c8gn.16xlarge", "c8gn.48xlarge"],
+      "artifactTarget": "eks-al2023-1.36-arm64",
+      "transportCapabilities": ["tcp", "efa", "multiple-network-cards"]
+    },
+    {
+      "id": "eks-accelerated-amd64",
+      "provider": "aws",
+      "orchestrator": "eks",
+      "kubernetesVersion": "1.36",
+      "nodeImage": "amazon-linux-2023/x86_64/nvidia",
+      "exampleMachineTypes": ["p5.48xlarge"],
+      "artifactTarget": "eks-al2023-1.36-amd64",
+      "transportCapabilities": ["tcp", "efa", "multiple-network-cards"],
+      "runtimeValidationRequired": true
+    },
+    {
+      "id": "eks-neuron-amd64",
+      "provider": "aws",
+      "orchestrator": "eks",
+      "kubernetesVersion": "1.36",
+      "nodeImage": "amazon-linux-2023/x86_64/neuron",
+      "exampleMachineTypes": ["trn2.48xlarge"],
+      "artifactTarget": "eks-al2023-1.36-amd64",
+      "transportCapabilities": ["tcp", "efa", "multiple-network-cards"],
+      "runtimeValidationRequired": true
+    },
+    {
+      "id": "eks-current-1.35-standard-amd64",
+      "provider": "aws",
+      "orchestrator": "eks",
+      "kubernetesVersion": "1.35",
+      "nodeImage": "amazon-linux-2023/x86_64/standard",
+      "exampleMachineTypes": ["m7i.large", "c8i.4xlarge"],
+      "artifactTarget": "eks-al2023-1.35-amd64",
+      "transportCapabilities": ["tcp", "efa-when-supported"]
+    },
+    {
+      "id": "eks-current-1.35-standard-arm64",
+      "provider": "aws",
+      "orchestrator": "eks",
+      "kubernetesVersion": "1.35",
+      "nodeImage": "amazon-linux-2023/arm64/standard",
+      "exampleMachineTypes": ["m8g.large", "c8g.4xlarge"],
+      "artifactTarget": "eks-al2023-1.35-arm64",
+      "transportCapabilities": ["tcp", "efa-when-supported"]
+    },
+    {
+      "id": "gke-default-amd64",
+      "provider": "gcp",
+      "orchestrator": "gke",
+      "nodeImage": "COS_CONTAINERD",
+      "exampleMachineTypes": ["e2-medium", "n4-standard-8", "c4-standard-16"],
+      "artifactTarget": "gke-cos-regular-amd64",
+      "transportCapabilities": ["tcp", "gvnic"]
+    },
+    {
+      "id": "gke-arm64",
+      "provider": "gcp",
+      "orchestrator": "gke",
+      "nodeImage": "COS_CONTAINERD",
+      "exampleMachineTypes": ["c4a-standard-16", "n4a-standard-16", "t2a-standard-16"],
+      "artifactTarget": "gke-cos-regular-arm64",
+      "transportCapabilities": ["tcp", "gvnic"]
+    },
+    {
+      "id": "gke-h4d-rdma-amd64",
+      "provider": "gcp",
+      "orchestrator": "gke",
+      "nodeImage": "COS_CONTAINERD",
+      "exampleMachineTypes": ["h4d-standard-192", "h4d-highmem-192-lssd"],
+      "artifactTarget": "gke-cos-regular-amd64",
+      "transportCapabilities": ["tcp", "gvnic", "irdma", "multiple-network-interfaces"],
+      "runtimeValidationRequired": true
+    },
+    {
+      "id": "aks-default-amd64",
+      "provider": "azure",
+      "orchestrator": "aks",
+      "nodeImage": "Ubuntu 24.04 with containerd Gen2",
+      "exampleMachineTypes": ["Standard_D4ds_v5"],
+      "artifactTarget": "aks-ubuntu-2404-amd64",
+      "transportCapabilities": ["tcp", "accelerated-networking"]
+    },
+    {
+      "id": "aks-hbv4-rdma-amd64",
+      "provider": "azure",
+      "orchestrator": "aks",
+      "nodeImage": "Ubuntu 24.04 with containerd Gen2",
+      "exampleMachineTypes": ["Standard_HB176rs_v4"],
+      "artifactTarget": "aks-ubuntu-2404-amd64",
+      "transportCapabilities": ["tcp", "infiniband"],
+      "runtimeValidationRequired": true
+    }
+  ],
+  "sources": [
+    "https://docs.aws.amazon.com/eks/latest/userguide/retrieve-ami-id.html",
+    "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa.html",
+    "https://docs.cloud.google.com/kubernetes-engine/docs/reference/rest/v1/NodeConfig",
+    "https://docs.cloud.google.com/kubernetes-engine/docs/how-to/create-arm-clusters-nodes",
+    "https://docs.cloud.google.com/kubernetes-engine/docs/how-to/run-hpc-workloads",
+    "https://learn.microsoft.com/en-us/azure/aks/node-images",
+    "https://learn.microsoft.com/en-us/azure/virtual-machines/hbv4-series-overview"
+  ]
+}

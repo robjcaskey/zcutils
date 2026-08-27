@@ -1,0 +1,153 @@
+name: zcnblk kernel ABI matrix
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/zcnblk-kmod-matrix.yml'
+      - 'kmods/matrix/**'
+      - 'kmods/zcnblk_client_mod.c'
+      - 'kmods/zcnblk_shm_abi.h'
+      - 'scripts/zccusan-build-kmod-matrix.sh'
+      - 'zccusan/charts/zcblock-csi/files/kmod/**'
+      - 'zccusan/deploy/zcblock-csi/zcnblk-client-only.*'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/zcnblk-kmod-matrix.yml'
+      - 'kmods/matrix/**'
+      - 'kmods/zcnblk_client_mod.c'
+      - 'kmods/zcnblk_shm_abi.h'
+      - 'scripts/zccusan-build-kmod-matrix.sh'
+      - 'zccusan/charts/zcblock-csi/files/kmod/**'
+      - 'zccusan/deploy/zcblock-csi/zcnblk-client-only.*'
+  schedule:
+    - cron: '35 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate matrix lock and sources
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate exact source copies and lock references
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp kmods/zcnblk_client_mod.c \
+            zccusan/charts/zcblock-csi/files/kmod/zcnblk_client_mod.c
+          cmp zccusan/deploy/zcblock-csi/zcnblk-client-only.mk \
+            zccusan/charts/zcblock-csi/files/kmod/Makefile
+          cmp zccusan/deploy/zcblock-csi/zcnblk-client-only.kbuild \
+            zccusan/charts/zcblock-csi/files/kmod/Kbuild
+          bash -n scripts/zccusan-build-kmod-matrix.sh
+          jq -e '
+            .schemaVersion == 1 and
+            ([.targets[] | select(.family == "amazon-linux")] | length >= 4) and
+            ([.targets[] | select(.family == "amazon-linux") | .orchestratorVersion] | unique | length >= 2) and
+            ([.targets[] | select(.family == "amazon-linux") | .architecture] | unique | sort == ["amd64", "arm64"]) and
+            ([.targets[] | select(.family == "cos") | .architecture] | unique | sort == ["amd64", "arm64"]) and
+            ([.targets[] | select(.family == "ubuntu")] | length >= 1) and
+            ([.targets[] | select(.family == "debian") | .architecture] | unique | sort == ["amd64", "arm64"]) and
+            ([.targets[] | select(.family == "ubi-el") | .architecture] | unique | sort == ["amd64", "arm64"]) and
+            ([.targets[] | select(.family == "nixos")] | length >= 1) and
+            ([.targets[].architecture] | all(. == "amd64" or . == "arm64")) and
+            ([.targets[].expectedVermagicPrefix] | all(endswith(" ")))
+          ' kmods/matrix/targets.json >/dev/null
+          jq -e --slurpfile targets kmods/matrix/targets.json '
+            .schemaVersion == 1 and
+            ([.profiles[].artifactTarget] | all(. as $target | $targets[0].targets[$target] != null))
+          ' kmods/matrix/machine-profiles.json >/dev/null
+          scripts/zccusan-build-kmod-matrix.sh --list
+      - name: Derive build jobs from the target lock
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          matrix="$(jq -c '{include: [
+            .targets | to_entries[] |
+            {
+              target: .key,
+              runner: (
+                if .value.architecture == "arm64" and .value.family != "cos"
+                then "ubuntu-24.04-arm"
+                else "ubuntu-24.04"
+                end
+              )
+            }
+          ]}' kmods/matrix/targets.json)"
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$matrix" | jq .
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache pinned headers and toolchains
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/zccusan-kmod-matrix
+          key: zcnblk-kmod-${{ matrix.target }}-${{ hashFiles('kmods/matrix/targets.json', 'kmods/matrix/cos-kernel-devenv*', 'kmods/matrix/nixos-module.nix') }}
+      - name: Build exact kernel ABI
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/zccusan-build-kmod-matrix.sh \
+            --target '${{ matrix.target }}' \
+            --engine docker
+      - name: Audit artifact metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="$(find dist/zccusan-kmod-matrix/'${{ matrix.target }}' \
+            -type f -name zcnblk_client_mod.ko -print -quit)"
+          test -n "$artifact"
+          artifact_dir="$(dirname "$artifact")"
+          sha256sum -c "$artifact_dir/zcnblk_client_mod.ko.sha256"
+          sha256sum -c "$artifact_dir/source-files.sha256"
+          test -s "$artifact_dir/vermagic.txt"
+          test -s "$artifact_dir/metadata.env"
+          jq -S --arg target '${{ matrix.target }}' '.targets[$target]' \
+            kmods/matrix/targets.json > expected-target-lock.json
+          jq -S . "$artifact_dir/target-lock.json" > actual-target-lock.json
+          cmp expected-target-lock.json actual-target-lock.json
+          artifact_count="$(find dist/zccusan-kmod-matrix/'${{ matrix.target }}' \
+            -type f -name zcnblk_client_mod.ko | wc -l)"
+          test "$artifact_count" -eq 1
+          kernel_release="$(awk -F= '$1 == "KERNEL_RELEASE" {print substr($0, index($0, "=") + 1)}' \
+            "$artifact_dir/metadata.env")"
+          test "$kernel_release" = "$(jq -r '.kernelRelease' "$artifact_dir/target-lock.json")"
+          test "$(awk -F= '$1 == "TARGET" {print substr($0, index($0, "=") + 1)}' \
+            "$artifact_dir/metadata.env")" = '${{ matrix.target }}'
+          architecture="$(jq -r '.architecture' "$artifact_dir/target-lock.json")"
+          elf_machine="$(readelf -h "$artifact" | awk -F: '$1 ~ /^[[:space:]]*Machine$/ {sub(/^[[:space:]]+/, "", $2); print $2}')"
+          case "$architecture:$elf_machine" in
+            'amd64:Advanced Micro Devices X86-64'|'arm64:AArch64') ;;
+            *) printf 'ELF architecture mismatch: %s -> %s\n' \
+                 "$architecture" "$elf_machine" >&2; exit 1 ;;
+          esac
+          vermagic="$(tr -d '\n' < "$artifact_dir/vermagic.txt")"
+          vermagic_prefix="$(jq -r '.expectedVermagicPrefix' "$artifact_dir/target-lock.json")"
+          case "$vermagic" in
+            "$vermagic_prefix"*) ;;
+            *) printf 'vermagic mismatch: %s (wanted prefix %s)\n' \
+                 "$vermagic" "$vermagic_prefix" >&2; exit 1 ;;
+          esac
+      - name: Upload exact-ABI module bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zcnblk-kmod-${{ matrix.target }}
+          path: dist/zccusan-kmod-matrix/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 14

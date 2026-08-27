@@ -1,0 +1,65 @@
+diff --git a/src/cmd/cos_kernel_devenv/devenv.sh b/src/cmd/cos_kernel_devenv/devenv.sh
+index 3c2044d..662f3ce 100755
+--- a/src/cmd/cos_kernel_devenv/devenv.sh
++++ b/src/cmd/cos_kernel_devenv/devenv.sh
+@@ -248,32 +248,39 @@ install_build_cross_toolchain() {
+   local -r tc_url_file_path="${bucket}/${TOOLCHAIN_URL_FILENAME}"
+-
++
+   info "Obtaining toolchain_env file from ${tc_env_file_path}"
+-
++
+   # Download toolchain_env if present
+   if ! download_from_gcs "${tc_env_file_path}" "${BUILD_DIR}/${TOOLCHAIN_ENV_FILENAME}"; then
+         error "Failed to download toolchain file"
+         error "Make sure build id '$RELEASE_ID' is valid"
+         return ${RETCODE_ERROR}
+   fi
+-
++
+-  # Download toolchain_path if present
+-  if ! download_from_gcs "${tc_url_file_path}" "${BUILD_DIR}/${TOOLCHAIN_URL_FILENAME}"; then
+-        error "Failed to download toolchain file"
+-        error "Make sure build id '$RELEASE_ID' is valid"
+-        return ${RETCODE_ERROR}
+-  fi
++  # Custom COS buckets normally publish toolchain_path, but the public GKE
++  # Arm release directory publishes the same descriptor as
++  # toolchain.tar.xz.gcs. Accept both official layouts.
++  if download_from_gcs "${tc_url_file_path}" "${BUILD_DIR}/${TOOLCHAIN_URL_FILENAME}"; then
++    local -r tc_path="$(cat ${BUILD_DIR}/${TOOLCHAIN_URL_FILENAME})"
++    local tc_download_url="${COS_TC_DOWNLOAD_GCS}${tc_path}"
++    if ! gcloud storage -q ls "${tc_download_url}"; then
++      tc_download_url="${CROS_TC_DOWNLOAD_GCS}${tc_path}"
++    fi
+-
++
+-  local -r tc_path="$(cat ${BUILD_DIR}/${TOOLCHAIN_URL_FILENAME})"
+-  local tc_download_url="${COS_TC_DOWNLOAD_GCS}${tc_path}"
+-  if ! gcloud storage -q ls "${tc_download_url}"; then
+-    tc_download_url="${CROS_TC_DOWNLOAD_GCS}${tc_path}"
+-  fi
++    if ! gcloud storage -q ls "${tc_download_url}"; then
++          error "Toolchain path '${tc_path}' does not exist in either COS or CrOS GCS buckets"
++          return ${RETCODE_ERROR}
++    fi
++  else
++    local -r tc_gcs_download_url="${bucket}/${TOOLCHAIN_ARCHIVE_GCS}"
++    if ! download_from_gcs "${tc_gcs_download_url}" "${BUILD_DIR}/${TOOLCHAIN_ARCHIVE_GCS}"; then
++          error "Neither toolchain_path nor toolchain.tar.xz.gcs exists"
++          return ${RETCODE_ERROR}
++    fi
++    local -r tc_bucket=$(grep '^bucket:' "${BUILD_DIR}/${TOOLCHAIN_ARCHIVE_GCS}" | cut -d ' ' -f 2)
++    local -r tc_object=$(grep '^path:' "${BUILD_DIR}/${TOOLCHAIN_ARCHIVE_GCS}" | cut -d ' ' -f 2)
++    local -r tc_download_url="gs://${tc_bucket}/${tc_object}"
++  fi
+-
++
+-  if ! gcloud storage -q ls "${tc_download_url}"; then
+-        error "Toolchain path '${tc_path}' does not exist in either COS or CrOS GCS buckets"
+-        return ${RETCODE_ERROR}
+-  fi
+-
+   # Install toolchain pkg
+   install_cross_toolchain_pkg "${tc_download_url}"
+ }

@@ -18,6 +18,7 @@ COPY src ./src
 RUN RUST_MIN_STACK=33554432 cargo build --release --jobs 16 \
     --bin zcutils \
     --bin zcblock-csi \
+    --bin zcblock-node-setup \
     --bin zcblock-control \
     --bin zcblock-freeze \
     --bin zccusan-telemetry-server \
@@ -43,6 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /work/target/release/zcblock-csi /runtime-root/usr/local/bin/zcblock-csi
+COPY --from=builder /work/target/release/zcblock-node-setup /runtime-root/usr/local/bin/zcblock-node-setup
 COPY --from=builder /work/target/release/zcutils /runtime-root/usr/local/bin/zcutils
 COPY --from=builder /work/target/release/zcblock-control /runtime-root/usr/local/bin/zcblock-control
 COPY --from=builder /work/target/release/zcblock-freeze /runtime-root/usr/local/bin/zcblock-freeze
@@ -60,7 +62,7 @@ COPY zccusan/deploy/zcblock-csi/allowed-raw-partitions.empty.txt /runtime-root/e
 
 RUN set -eux; \
     mkdir -p /runtime-root/lib /runtime-root/lib64 /runtime-root/usr /runtime-root/etc; \
-    bins="/runtime-root/usr/local/bin/zcutils /runtime-root/usr/local/bin/zcblock-csi /runtime-root/usr/local/bin/zcblock-control /runtime-root/usr/local/bin/zcblock-freeze /runtime-root/usr/local/bin/zccusan-telemetry-server /runtime-root/usr/local/bin/zccusan-operator /runtime-root/usr/local/bin/zcrepl /runtime-root/usr/local/bin/zcpit /runtime-root/usr/local/bin/zctier /runtime-root/usr/local/bin/zcnblk-fan /runtime-root/usr/local/bin/zcnblk-shm-target /runtime-root/usr/local/bin/zcnblk-wal-failover /runtime-root/usr/local/bin/zcnblk-wal-leaf /runtime-root/usr/local/bin/zcnblk-order-smoke /usr/bin/fi_info /usr/bin/mount /usr/bin/umount /usr/bin/findmnt /usr/sbin/blkid /usr/sbin/losetup /usr/sbin/mkfs.ext4 /usr/sbin/mkfs.xfs /usr/sbin/fsfreeze"; \
+    bins="/runtime-root/usr/local/bin/zcutils /runtime-root/usr/local/bin/zcblock-csi /runtime-root/usr/local/bin/zcblock-node-setup /runtime-root/usr/local/bin/zcblock-control /runtime-root/usr/local/bin/zcblock-freeze /runtime-root/usr/local/bin/zccusan-telemetry-server /runtime-root/usr/local/bin/zccusan-operator /runtime-root/usr/local/bin/zcrepl /runtime-root/usr/local/bin/zcpit /runtime-root/usr/local/bin/zctier /runtime-root/usr/local/bin/zcnblk-fan /runtime-root/usr/local/bin/zcnblk-shm-target /runtime-root/usr/local/bin/zcnblk-wal-failover /runtime-root/usr/local/bin/zcnblk-wal-leaf /runtime-root/usr/local/bin/zcnblk-order-smoke /usr/bin/fi_info /usr/bin/mount /usr/bin/umount /usr/bin/findmnt /usr/sbin/blkid /usr/sbin/losetup /usr/sbin/mkfs.ext4 /usr/sbin/mkfs.xfs /usr/sbin/fsfreeze"; \
     for bin in /usr/bin/fi_info /usr/bin/mount /usr/bin/umount /usr/bin/findmnt /usr/sbin/blkid /usr/sbin/losetup /usr/sbin/mkfs.ext4 /usr/sbin/mkfs.xfs /usr/sbin/fsfreeze; do \
       mkdir -p "/runtime-root$(dirname "$bin")"; \
       cp "$bin" "/runtime-root$bin"; \
@@ -99,6 +101,12 @@ RUN set -eux; \
       cp /etc/mke2fs.conf /runtime-root/etc/mke2fs.conf; \
     fi
 
+# CI replaces this default empty directory with the audited, architecture-local
+# exact-ABI bundle. Keeping the copy unconditional makes local image builds
+# deterministic and keeps all module delivery in this one OCI image.
+ARG KMOD_BUNDLE_ROOT=zccusan/deploy/zcblock-csi/kmod-bundle
+COPY ${KMOD_BUNDLE_ROOT}/ /runtime-root/opt/zcutils/kmods/
+
 FROM gcr.io/distroless/cc-debian13
 
 # Distroless uses /lib -> /usr/lib (and, where present, /lib64 ->
@@ -108,6 +116,7 @@ COPY --from=runtime-tools /runtime-root/usr/ /usr/
 COPY --from=runtime-tools /runtime-root/lib/ /usr/lib/
 COPY --from=runtime-tools /runtime-root/lib64/ /usr/lib64/
 COPY --from=runtime-tools /runtime-root/etc/ /etc/
+COPY --from=runtime-tools /runtime-root/opt/ /opt/
 
 ENV PATH="/usr/local/bin:/usr/sbin:/usr/bin"
 USER 0:0

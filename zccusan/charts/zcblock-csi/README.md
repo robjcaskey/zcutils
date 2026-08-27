@@ -105,6 +105,18 @@ helm install zcblock-csi zcutils/zcblock-csi \
 The chart defaults to `docker.io/robjcaskey/zcblock-csi:nightly`. Pin the image
 and chart to dated versions for a reproducible deployment.
 
+The one multi-architecture `zcblock-csi` image is also the node-setup image.
+Each architecture manifest contains the Rust loader and only that
+architecture's audited exact-ABI kernel modules. An air-gapped mirror therefore
+copies one first-party image (plus the standard Kubernetes CSI sidecars), not a
+second zccusan kernel-module repository:
+
+```sh
+skopeo copy --all \
+  docker://docker.io/robjcaskey/zcblock-csi:nightly \
+  docker://registry.internal.example/zcblock-csi:nightly
+```
+
 ## Automatic node setup
 
 `nodeSetup.enabled=true` makes the CSI node DaemonSet load the client-edge
@@ -123,8 +135,13 @@ need an artifact signed by a key trusted by their kernel. A module artifact is
 specific to its CPU architecture and compatible kernel build; `%ARCH%` and
 `%KERNEL_RELEASE%` in paths and URLs expand on each node.
 
-The default source is `host`, for fleets that bake or provision the module at
-`/opt/zcutils/kmods/zcnblk_client_mod.ko`:
+The default source is `image`. The init container reuses the exact main image
+reference and selects
+`/opt/zcutils/kmods/%ARCH%/%KERNEL_RELEASE%/zcnblk_client_mod.ko`; an unsupported
+kernel fails before CSI starts. See the
+[current exact-ABI matrix](../../../docs/kernel-module-build-matrix.md).
+
+Fleets that bake or provision a custom module on each host can select `host`:
 
 ```yaml
 nodeSetup:
@@ -134,23 +151,24 @@ nodeSetup:
     sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
 
-For an image-carried artifact, build a small architecture/kernel-specific
-image with `zccusan/deploy/zcblock-csi/build-kmod-image.sh`, then select it by
-immutable OCI digest:
+For a custom kernel, build the same full DaemonSet image with
+`zccusan/deploy/zcblock-csi/build-kmod-image.sh` and select it by immutable OCI
+digest. The init container and long-running containers deliberately use one
+image reference:
 
 ```sh
 MODULE_FILE=./zcnblk_client_mod.ko \
 KERNEL_RELEASE=6.18.0-101.11.1.el10_1.x86_64 \
 MODULE_ARCH=x86_64 \
-IMAGE=registry.example.com/storage/zcnblk-kmod:6.18.0-x86_64 \
+IMAGE=registry.example.com/storage/zcblock-csi:6.18.0-x86_64 \
   zccusan/deploy/zcblock-csi/build-kmod-image.sh
 ```
 
 ```yaml
+image:
+  repository: registry.example.com/storage/zcblock-csi
+  digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 nodeSetup:
-  image:
-    repository: registry.example.com/storage/zcnblk-kmod
-    digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   moduleSource:
     type: image
     imagePathTemplate: /opt/zcutils/kmods/%ARCH%/%KERNEL_RELEASE%/zcnblk_client_mod.ko
@@ -195,9 +213,12 @@ nodeSetup:
 ```
 
 This mode carries the chart's source ConfigMap. Production modes do not mount
-source or invoke a compiler. Set
+source or invoke a compiler. Node setup and HTTP cache refresh are compiled Rust
+programs; the normal DaemonSet image remains shell-free. Set
 `nodeSetup.developmentBuild.sourceConfigMap` only to supply reviewed replacement
-source with `zcnblk_client_mod.c`, `zcnblk_shm_abi.h`, and `Makefile` keys.
+source with `zcnblk_client_mod.c`, `zcnblk_shm_abi.h`, `Makefile`, and `Kbuild`
+keys. `Kbuild` is required because current kernels may generate an output
+`Makefile` while preparing an external-module build.
 
 ### TCP and RDMA nodes
 

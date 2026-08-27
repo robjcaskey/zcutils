@@ -35,6 +35,12 @@ for architecture in amd64 arm64; do
 
 		rg -q "kubernetes.io/arch: $architecture" "$rendered"
 		rg -q '^    transport=shm$' "$rendered"
+		rg -q '^          image: "docker.io/robjcaskey/zcblock-csi:nightly"$' "$rendered"
+		rg -q '^          command: \[/usr/local/bin/zcblock-node-setup\]$' "$rendered"
+		if rg -q '/bin/bash|setup\.sh|fetch\.sh' "$rendered"; then
+			echo "rendered node setup unexpectedly depends on a shell script" >&2
+			exit 1
+		fi
 		if [ "$transport" = rdma ]; then
 			rg -q '^        - name: rdma-preflight$' "$rendered"
 			rg -q '^            - rdma-preflight$' "$rendered"
@@ -70,11 +76,11 @@ module_digest="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 image_render="$(mktemp /tmp/zccusan-helm-kmod-image.XXXXXX.yaml)"
 helm template image-module "$chart" \
 	--set nodeSetup.moduleSource.type=image \
-	--set-string nodeSetup.image.repository=registry.example.invalid/zcnblk-kmod \
-	--set-string "nodeSetup.image.digest=$artifact_digest" \
+	--set-string image.repository=registry.example.invalid/zcblock-csi \
+	--set-string "image.digest=$artifact_digest" \
 	--set-string "nodeSetup.moduleSource.sha256=$module_digest" \
 	>"$image_render"
-rg -q "registry.example.invalid/zcnblk-kmod@$artifact_digest" "$image_render"
+rg -q "registry.example.invalid/zcblock-csi@$artifact_digest" "$image_render"
 if rg -q 'name: image-module-zcblock-csi-zcnblk-source' "$image_render"; then
 	echo "production image mode unexpectedly rendered kernel source" >&2
 	exit 1

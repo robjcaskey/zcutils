@@ -73,14 +73,14 @@ region. CRD installation and snapshot-controller stair-step upgrades stay
 outside the chart and remain handled by
 `zccusan/deploy/zcblock-csi/install-snapshot-api.sh`.
 
-The Helm node loader accepts a prebuilt module from a fleet-managed host path,
-an artifact image, or a user-provided static HTTP(S) server. Build a local
-architecture/kernel-specific artifact image with:
+The Helm node loader accepts a module bundled into the normal DaemonSet image,
+from a fleet-managed host path, or from a user-provided static HTTP(S) server.
+Build a local architecture/kernel-specific full DaemonSet image with:
 
 ```sh
 MODULE_FILE=./zcnblk_client_mod.ko \
 KERNEL_RELEASE="$(uname -r)" \
-IMAGE=localhost/zcnblk-kmod:dev \
+IMAGE=localhost/zcblock-csi:custom-kernel \
   zccusan/deploy/zcblock-csi/build-kmod-image.sh
 ```
 

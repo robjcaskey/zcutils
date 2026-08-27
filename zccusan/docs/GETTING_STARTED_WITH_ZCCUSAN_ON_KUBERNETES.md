@@ -14,7 +14,7 @@
 
 6. You need Helm 3, `kubectl`, three distinct Ready Linux workers, an encrypted pod or physical backplane, and permission to run the chart's privileged node setup and CSI containers.
 
-7. Before installing, use a supplied module only for an exact architecture and full `uname -r` match, or follow the [kernel-module build example](BUILD_KERNEL_MODULE.md) to build, validate, sign, and publish one; the first supplied profile is for Amazon Linux 2023 x86_64 with kernel `6.12.100-125.179.amzn2023.x86_64`.
+7. The normal multi-architecture DaemonSet image contains the Rust node loader and the [current audited module matrix](../../docs/kernel-module-build-matrix.md); it selects only an exact architecture and full `uname -r` match and fails closed before CSI startup on an unsupported kernel.
 
 8. Select two storage workers and leave at least one other worker available for the client workload.
 
@@ -48,27 +48,20 @@
    # HELM_ARGS+=(--set backplane.rdma.enabled=true)
    # HELM_ARGS+=(--set backplane.rdma.provider=efa)
 
-   # Add this when using image or HTTP module-source values
-   # HELM_ARGS+=(--values node-module-values.yaml)
+   # A custom unsupported kernel can use reviewed host or HTTP module-source
+   # values, or a custom full DaemonSet image; the matrix needs no extra values.
    ```
 
-11. Install the CRDs, operator, CSI driver, artifact cache, and node bootstrap with the checked command below, which rejects every kernel or architecture mismatch before selecting the immutable module image; other Linux hosts should use the generic Helm form after supplying their reviewed image or HTTP values.
+11. Install the CRDs, operator, CSI driver, and Rust node bootstrap in one Helm step; pin `image.digest` for a reproducible deployment, and provide custom module-source values only when your exact kernel is outside the bundled matrix.
 
    ```bash
-   # Supplied fast path: exact AL2023 x86_64 kernel match only
-   scripts/zccusan-install-kmod-fastpath.sh \
-     al2023-6.12.100-125.179-x86_64 \
-     -- "${HELM_ARGS[@]}"
-
-   # Other exact-match Linux kernels, after creating node-module-values.yaml
-   # helm upgrade --install zccusan \
-   #   ./zccusan/charts/zcblock-csi \
-   #   --namespace zccusan \
-   #   --create-namespace \
-   #   --values node-module-values.yaml \
-   #   "${HELM_ARGS[@]}" \
-   #   --wait \
-   #   --timeout 10m
+   helm upgrade --install zccusan \
+     ./zccusan/charts/zcblock-csi \
+     --namespace zccusan \
+     --create-namespace \
+     "${HELM_ARGS[@]}" \
+     --wait \
+     --timeout 10m
    ```
 
 12. Wait for the operator and node DaemonSet, then inspect setup logs if `/dev/zcnblk0` and `/dev/zcnblk-shmctl` do not appear on eligible client nodes.

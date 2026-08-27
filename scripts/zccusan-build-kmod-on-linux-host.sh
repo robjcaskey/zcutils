@@ -59,7 +59,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 module_source="$repo_root/kmods/zcnblk_client_mod.c"
 abi_header="$repo_root/kmods/zcnblk_shm_abi.h"
 module_makefile="$repo_root/zccusan/charts/zcblock-csi/files/kmod/Makefile"
-for source_file in "$module_source" "$abi_header" "$module_makefile"; do
+module_kbuild="$repo_root/zccusan/deploy/zcblock-csi/zcnblk-client-only.kbuild"
+for source_file in "$module_source" "$abi_header" "$module_makefile" "$module_kbuild"; do
 	[ -r "$source_file" ] || die "required source is not readable: $source_file"
 done
 
@@ -83,6 +84,7 @@ trap cleanup EXIT
 install -m 0644 "$module_source" "$temporary_root/zcnblk_client_mod.c"
 install -m 0644 "$abi_header" "$temporary_root/zcnblk_shm_abi.h"
 install -m 0644 "$module_makefile" "$temporary_root/Makefile"
+install -m 0644 "$module_kbuild" "$temporary_root/Kbuild"
 make -C "$kernel_build_dir" M="$temporary_root" modules
 
 module_file="$temporary_root/zcnblk_client_mod.ko"
@@ -112,8 +114,12 @@ install -m 0644 "$module_file" "$destination/zcnblk_client_mod.ko"
 	sha256sum zcnblk_client_mod.ko > zcnblk_client_mod.ko.sha256
 )
 (
-	cd "$temporary_root"
-	sha256sum zcnblk_client_mod.c zcnblk_shm_abi.h Makefile \
+	cd "$repo_root"
+	sha256sum \
+		kmods/zcnblk_client_mod.c \
+		kmods/zcnblk_shm_abi.h \
+		zccusan/charts/zcblock-csi/files/kmod/Makefile \
+		zccusan/deploy/zcblock-csi/zcnblk-client-only.kbuild \
 		> "$destination/source-files.sha256"
 )
 module_sha256="$(awk 'NR == 1 {print $1}' "$destination/zcnblk_client_mod.ko.sha256")"

@@ -59,8 +59,9 @@ spec:
         {{- if .Values.nodeSetup.enabled }}
         - name: zcnblk-node-setup
           image: {{ include "zcblock-csi.nodeSetupImage" . | quote }}
-          imagePullPolicy: {{ .Values.nodeSetup.image.pullPolicy }}
-          command: [/bin/bash, /node-setup/setup.sh]
+          imagePullPolicy: {{ include "zcblock-csi.nodeSetupImagePullPolicy" . }}
+          command: [/usr/local/bin/zcblock-node-setup]
+          args: [setup]
           env:
             - name: ZCNBLK_INSTALL_MODULE_TOOLS
               value: {{ .Values.nodeSetup.installModuleTools | quote }}

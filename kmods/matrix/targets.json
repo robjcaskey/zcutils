@@ -1,0 +1,243 @@
+{
+  "schemaVersion": 1,
+  "researchedAt": "2026-08-27T02:52:02Z",
+  "module": "zcnblk_client_mod",
+  "targets": {
+    "eks-al2023-1.36-amd64": {
+      "family": "amazon-linux",
+      "architecture": "amd64",
+      "platform": "linux/amd64",
+      "distribution": "Amazon EKS optimized AL2023",
+      "distributionVersion": "2023.12.20260817.0",
+      "orchestratorVersion": "1.36.2-20260818",
+      "release": "v20260818",
+      "compatibleAmiTypes": [
+        "AL2023_x86_64_STANDARD",
+        "AL2023_x86_64_NVIDIA",
+        "AL2023_x86_64_NEURON"
+      ],
+      "containerImage": "public.ecr.aws/amazonlinux/amazonlinux@sha256:26b860d6ace0e868b1dd786be29b2a6b32a213b72f43074043090512871e9532",
+      "kernelRelease": "6.18.41-94.142.amzn2023.x86_64",
+      "kernelPackage": "kernel6.18-devel-6.18.41-94.142.amzn2023.x86_64",
+      "expectedVermagicPrefix": "6.18.41-94.142.amzn2023.x86_64 ",
+      "sources": [
+        "https://github.com/awslabs/amazon-eks-ami/releases/tag/v20260818",
+        "https://docs.aws.amazon.com/eks/latest/userguide/retrieve-ami-id.html"
+      ]
+    },
+    "eks-al2023-1.36-arm64": {
+      "family": "amazon-linux",
+      "architecture": "arm64",
+      "platform": "linux/arm64",
+      "distribution": "Amazon EKS optimized AL2023",
+      "distributionVersion": "2023.12.20260817.0",
+      "orchestratorVersion": "1.36.2-20260818",
+      "release": "v20260818",
+      "compatibleAmiTypes": [
+        "AL2023_ARM_64_STANDARD",
+        "AL2023_ARM_64_NVIDIA"
+      ],
+      "containerImage": "public.ecr.aws/amazonlinux/amazonlinux@sha256:d114e9857686bd3faa025755505a293f281cbcca7800890baa6db899832a0060",
+      "kernelRelease": "6.18.41-94.142.amzn2023.aarch64",
+      "kernelPackage": "kernel6.18-devel-6.18.41-94.142.amzn2023.aarch64",
+      "expectedVermagicPrefix": "6.18.41-94.142.amzn2023.aarch64 ",
+      "sources": [
+        "https://github.com/awslabs/amazon-eks-ami/releases/tag/v20260818",
+        "https://docs.aws.amazon.com/eks/latest/userguide/retrieve-ami-id.html"
+      ]
+    },
+    "eks-al2023-1.35-amd64": {
+      "family": "amazon-linux",
+      "architecture": "amd64",
+      "platform": "linux/amd64",
+      "distribution": "Amazon EKS optimized AL2023",
+      "distributionVersion": "2023.12.20260817.0",
+      "orchestratorVersion": "1.35.6-20260818",
+      "release": "v20260818",
+      "compatibleAmiTypes": [
+        "AL2023_x86_64_STANDARD",
+        "AL2023_x86_64_NVIDIA",
+        "AL2023_x86_64_NEURON"
+      ],
+      "containerImage": "public.ecr.aws/amazonlinux/amazonlinux@sha256:26b860d6ace0e868b1dd786be29b2a6b32a213b72f43074043090512871e9532",
+      "kernelRelease": "6.12.100-125.179.amzn2023.x86_64",
+      "kernelPackage": "kernel6.12-devel-6.12.100-125.179.amzn2023.x86_64",
+      "expectedVermagicPrefix": "6.12.100-125.179.amzn2023.x86_64 ",
+      "sources": [
+        "https://github.com/awslabs/amazon-eks-ami/releases/tag/v20260818",
+        "https://docs.aws.amazon.com/eks/latest/userguide/retrieve-ami-id.html"
+      ]
+    },
+    "eks-al2023-1.35-arm64": {
+      "family": "amazon-linux",
+      "architecture": "arm64",
+      "platform": "linux/arm64",
+      "distribution": "Amazon EKS optimized AL2023",
+      "distributionVersion": "2023.12.20260817.0",
+      "orchestratorVersion": "1.35.6-20260818",
+      "release": "v20260818",
+      "compatibleAmiTypes": [
+        "AL2023_ARM_64_STANDARD",
+        "AL2023_ARM_64_NVIDIA"
+      ],
+      "containerImage": "public.ecr.aws/amazonlinux/amazonlinux@sha256:d114e9857686bd3faa025755505a293f281cbcca7800890baa6db899832a0060",
+      "kernelRelease": "6.12.100-125.179.amzn2023.aarch64",
+      "kernelPackage": "kernel6.12-devel-6.12.100-125.179.amzn2023.aarch64",
+      "expectedVermagicPrefix": "6.12.100-125.179.amzn2023.aarch64 ",
+      "sources": [
+        "https://github.com/awslabs/amazon-eks-ami/releases/tag/v20260818",
+        "https://docs.aws.amazon.com/eks/latest/userguide/retrieve-ami-id.html"
+      ]
+    },
+    "gke-cos-regular-amd64": {
+      "family": "cos",
+      "architecture": "amd64",
+      "platform": "linux/amd64",
+      "distribution": "GKE Container-Optimized OS",
+      "distributionVersion": "cos-125-19216-395-138",
+      "orchestratorVersion": "1.35.6-gke.1641000",
+      "cosRelease": "19216.395.138",
+      "cosBucket": "gs://cos-tools/19216.395.138",
+      "cosToolRevision": "685d8e69a6edfb91e5997525ae2cd22de4d6ef02",
+      "cosToolSource": "https://cos.googlesource.com/cos/tools.git",
+      "devenvBaseImage": "docker.io/library/ubuntu@sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d",
+      "kernelRelease": "6.12.85+",
+      "expectedVermagicPrefix": "6.12.85+ ",
+      "sources": [
+        "https://docs.cloud.google.com/kubernetes-engine/docs/release-notes",
+        "https://cos.googlesource.com/cos/tools.git/+/685d8e69a6edfb91e5997525ae2cd22de4d6ef02/src/cmd/cos_kernel_devenv/README.md"
+      ]
+    },
+    "gke-cos-regular-arm64": {
+      "family": "cos",
+      "architecture": "arm64",
+      "platform": "linux/arm64",
+      "distribution": "GKE Container-Optimized OS for Arm",
+      "distributionVersion": "cos-arm64-125-19216-395-138",
+      "orchestratorVersion": "1.35.6-gke.1641000",
+      "cosRelease": "19216.395.138",
+      "cosBucket": "gs://cos-tools/19216.395.138/gke-arm64-gcp",
+      "cosToolRevision": "685d8e69a6edfb91e5997525ae2cd22de4d6ef02",
+      "cosToolSource": "https://cos.googlesource.com/cos/tools.git",
+      "devenvBaseImage": "docker.io/library/ubuntu@sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d",
+      "kernelRelease": "6.12.85+",
+      "kernelCommit": "97bb848ad07a5d645a2ca2193f223dbb01908690",
+      "expectedVermagicPrefix": "6.12.85+ ",
+      "sources": [
+        "https://docs.cloud.google.com/kubernetes-engine/docs/release-notes",
+        "https://docs.cloud.google.com/container-optimized-os/docs/how-to/arm",
+        "https://cos.googlesource.com/cos/tools.git/+/685d8e69a6edfb91e5997525ae2cd22de4d6ef02/src/cmd/cos_kernel_devenv/README.md"
+      ]
+    },
+    "aks-ubuntu-2404-amd64": {
+      "family": "ubuntu",
+      "architecture": "amd64",
+      "platform": "linux/amd64",
+      "distribution": "AKS Ubuntu 24.04",
+      "distributionVersion": "202607.29.0",
+      "release": "2026-08-07",
+      "containerImage": "docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316",
+      "kernelRelease": "6.8.0-1063-azure",
+      "kernelPackage": "linux-headers-6.8.0-1063-azure",
+      "kernelPackageVersion": "6.8.0-1063.71",
+      "nodeImageManifestRevision": "f7f87b4a4b4602224a6c9ac8f4f1c6c6f8d9bca1",
+      "expectedVermagicPrefix": "6.8.0-1063-azure ",
+      "sources": [
+        "https://learn.microsoft.com/en-us/azure/aks/node-images",
+        "https://github.com/Azure/AKS/releases/tag/2026-08-07",
+        "https://github.com/Azure/AgentBaker/blob/f7f87b4a4b4602224a6c9ac8f4f1c6c6f8d9bca1/vhdbuilder/release-notes/AKSUbuntu/gen2/2404containerd/202607.29.0.txt"
+      ]
+    },
+    "debian-13-amd64": {
+      "family": "debian",
+      "architecture": "amd64",
+      "platform": "linux/amd64",
+      "distribution": "Debian stable",
+      "distributionVersion": "13.6",
+      "containerImage": "docker.io/library/debian@sha256:6788062a1b42ac281f053ac876170b79a3eaed5d61383b8ed7eaca6c6965f3b1",
+      "kernelRelease": "6.12.105+deb13-amd64",
+      "kernelPackage": "linux-headers-6.12.105+deb13-amd64",
+      "kernelPackageVersion": "6.12.105-1",
+      "expectedVermagicPrefix": "6.12.105+deb13-amd64 ",
+      "sources": [
+        "https://www.debian.org/releases/stable/",
+        "https://www.debian.org/News/2026/20260711"
+      ]
+    },
+    "debian-13-arm64": {
+      "family": "debian",
+      "architecture": "arm64",
+      "platform": "linux/arm64",
+      "distribution": "Debian stable",
+      "distributionVersion": "13.6",
+      "containerImage": "docker.io/library/debian@sha256:0aa0908407cce3da2a90c1d80acc6ca5ca57401ed63eecfa8149b7ba3cc40829",
+      "kernelRelease": "6.12.105+deb13-arm64",
+      "kernelPackage": "linux-headers-6.12.105+deb13-arm64",
+      "kernelPackageVersion": "6.12.105-1",
+      "expectedVermagicPrefix": "6.12.105+deb13-arm64 ",
+      "sources": [
+        "https://www.debian.org/releases/stable/",
+        "https://www.debian.org/News/2026/20260711"
+      ]
+    },
+    "ubi10-el10-amd64": {
+      "family": "ubi-el",
+      "architecture": "amd64",
+      "platform": "linux/amd64",
+      "distribution": "Red Hat UBI 10 toolchain with EL10-compatible host ABI",
+      "distributionVersion": "10.2",
+      "containerImage": "registry.access.redhat.com/ubi10/ubi@sha256:d30b2222aceaf7421f7c4e2c983f080f67c178c0084d576f1d8b45a443187d8f",
+      "kernelRelease": "6.12.0-264.el10.x86_64",
+      "kernelPackage": "kernel-devel-6.12.0-264.el10.x86_64",
+      "centosBaseOs": "https://mirror.stream.centos.org/10-stream/BaseOS/x86_64/os/",
+      "centosAppStream": "https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/",
+      "centosKey": "https://www.centos.org/keys/RPM-GPG-KEY-CentOS-Official-SHA256",
+      "centosKeyFingerprint": "99DB70FAE1D7CE227FB6488205B555B38483C65D",
+      "expectedVermagicPrefix": "6.12.0-264.el10.x86_64 ",
+      "sources": [
+        "https://catalog.redhat.com/software/containers/ubi10/ubi/",
+        "https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/Packages/",
+        "https://www.centos.org/keys/"
+      ]
+    },
+    "ubi10-el10-arm64": {
+      "family": "ubi-el",
+      "architecture": "arm64",
+      "platform": "linux/arm64",
+      "distribution": "Red Hat UBI 10 toolchain with EL10-compatible host ABI",
+      "distributionVersion": "10.2",
+      "containerImage": "registry.access.redhat.com/ubi10/ubi@sha256:46d1d65d033957f995a785b06c78290471965cc659c7478976d8a9f709cebd35",
+      "kernelRelease": "6.12.0-264.el10.aarch64",
+      "kernelPackage": "kernel-devel-6.12.0-264.el10.aarch64",
+      "centosBaseOs": "https://mirror.stream.centos.org/10-stream/BaseOS/aarch64/os/",
+      "centosAppStream": "https://mirror.stream.centos.org/10-stream/AppStream/aarch64/os/",
+      "centosKey": "https://www.centos.org/keys/RPM-GPG-KEY-CentOS-Official-SHA256",
+      "centosKeyFingerprint": "99DB70FAE1D7CE227FB6488205B555B38483C65D",
+      "expectedVermagicPrefix": "6.12.0-264.el10.aarch64 ",
+      "sources": [
+        "https://catalog.redhat.com/software/containers/ubi10/ubi/",
+        "https://mirror.stream.centos.org/10-stream/AppStream/aarch64/os/Packages/",
+        "https://www.centos.org/keys/"
+      ]
+    },
+    "nixos-26.05-amd64": {
+      "family": "nixos",
+      "architecture": "amd64",
+      "platform": "linux/amd64",
+      "distribution": "NixOS stable",
+      "distributionVersion": "26.05.8477.062346a6d85b",
+      "channel": "nixos-26.05",
+      "nixpkgsRevision": "062346a6d85bc4b49dfaa61c986e9c5be21217d1",
+      "nixpkgsUrl": "https://releases.nixos.org/nixos/26.05/nixos-26.05.8477.062346a6d85b/nixexprs.tar.xz",
+      "nixpkgsSha256": "4a58e8bb7bfd36ec434df503923b020c84ddcbb0e4407d33758faf4db5f95d49",
+      "nixpkgsNixHash": "1dizay460b52frxlnqvcv7mrn46n1f6v9fr3r23vd96qhzmc2qwq",
+      "containerImage": "docker.io/nixos/nix@sha256:617d914dba5384bf75adf17081583b69371031ec7defce36c34c5fa14fc819b0",
+      "kernelRelease": "6.18.46",
+      "expectedVermagicPrefix": "6.18.46 ",
+      "sources": [
+        "https://channels.nixos.org/nixos-26.05",
+        "https://releases.nixos.org/nixos/26.05/nixos-26.05.8477.062346a6d85b/"
+      ]
+    }
+  }
+}

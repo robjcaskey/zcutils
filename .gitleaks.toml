@@ -1,0 +1,12 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Public CentOS RPM signing-key fingerprint in the kernel build matrix"
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^99DB70FAE1D7CE227FB6488205B555B38483C65D$''']
+paths = ['''^kmods/matrix/targets\.json$''']

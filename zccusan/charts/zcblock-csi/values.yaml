@@ -10,6 +10,9 @@ driverName: io.zcutils.zcblock
 image:
   repository: docker.io/robjcaskey/zcblock-csi
   tag: nightly
+  # When set, this takes precedence over tag for every first-party DaemonSet
+  # container, including the node-setup init container.
+  digest: ""
   pullPolicy: IfNotPresent
 
 sidecars:
@@ -73,13 +76,8 @@ backplane:
 # Disable this when another node lifecycle manager loads the module.
 nodeSetup:
   enabled: true
-  image:
-    repository: public.ecr.aws/amazonlinux/amazonlinux
-    tag: "2023"
-    # When set, this takes precedence over tag. Use an immutable digest for
-    # production images that carry kernel modules.
-    digest: ""
-    pullPolicy: IfNotPresent
+  # The init container always uses the normal DaemonSet image. That image
+  # contains the Rust loader and its architecture-local exact-ABI bundle.
   # Install kmod only when a selected node image lacks insmod/modinfo. This is
   # independent of development compilation and is disabled by default so a
   # production install does not mutate the host package set unexpectedly.
@@ -89,9 +87,9 @@ nodeSetup:
   moduleSource:
     # host, image, http, or build. There is deliberately no automatic fallback
     # from a missing production artifact to an on-node source build.
-    type: host
+    type: image
     # %KERNEL_RELEASE% and %ARCH% are expanded by the init container. `host`
-    # paths are viewed under /host; `image` paths are inside nodeSetup.image.
+    # paths are viewed under /host; `image` paths are inside the DaemonSet image.
     hostPathTemplate: /opt/zcutils/kmods/zcnblk_client_mod.ko
     imagePathTemplate: /opt/zcutils/kmods/%ARCH%/%KERNEL_RELEASE%/zcnblk_client_mod.ko
     http:

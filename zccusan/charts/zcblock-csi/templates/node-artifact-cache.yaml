@@ -45,8 +45,9 @@ spec:
       containers:
         - name: module-cache
           image: {{ include "zcblock-csi.nodeSetupImage" . | quote }}
-          imagePullPolicy: {{ .Values.nodeSetup.image.pullPolicy }}
-          command: [/bin/bash, /node-setup/fetch.sh]
+          imagePullPolicy: {{ include "zcblock-csi.nodeSetupImagePullPolicy" . }}
+          command: [/usr/local/bin/zcblock-node-setup]
+          args: [cache]
           env:
             - name: ZCNBLK_MODULE_CACHE_ROOT
               value: {{ .Values.nodeSetup.moduleSource.cacheRoot | quote }}
@@ -73,16 +74,9 @@ spec:
           resources:
             {{- toYaml .Values.nodeSetup.resources | nindent 12 }}
           volumeMounts:
-            - name: node-setup
-              mountPath: /node-setup
-              readOnly: true
             - name: module-cache
               mountPath: /module-cache
       volumes:
-        - name: node-setup
-          configMap:
-            name: {{ include "zcblock-csi.nodeSetupConfigMapName" . }}
-            defaultMode: 0555
         - name: module-cache
           hostPath:
             path: {{ .Values.nodeSetup.moduleSource.cacheRoot }}

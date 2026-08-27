@@ -160,9 +160,9 @@ printf 'ZCCUSAN_KMOD_PREFLIGHT_READY profile=%s nodes=%s image=%s@%s module_sha2
 helm upgrade --install "$release" "$chart" \
 	--namespace "$namespace" \
 	--create-namespace \
-	--set-string "nodeSetup.image.repository=$ZCCUSAN_KMOD_IMAGE_REPOSITORY" \
-	--set-string "nodeSetup.image.digest=$ZCCUSAN_KMOD_IMAGE_DIGEST" \
-	--set-string 'nodeSetup.image.pullPolicy=IfNotPresent' \
+	--set-string "image.repository=$ZCCUSAN_KMOD_IMAGE_REPOSITORY" \
+	--set-string "image.digest=$ZCCUSAN_KMOD_IMAGE_DIGEST" \
+	--set-string 'image.pullPolicy=IfNotPresent' \
 	--set-string 'nodeSetup.moduleSource.type=image' \
 	--set-string "nodeSetup.moduleSource.sha256=$ZCCUSAN_KMOD_MODULE_SHA256" \
 	"${helm_args[@]}" \

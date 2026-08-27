@@ -5,6 +5,11 @@ kernel that will load it. The commands below are one concrete example for an
 Amazon Linux 2023 machine; adapt the package-manager step for other Linux
 systems, but keep the exact `uname -r` check.
 
+For the researched EKS, GKE, AKS, Debian, UBI/EL10, and NixOS container/QEMU
+matrix, see [Kernel-module build matrix](../../docs/kernel-module-build-matrix.md).
+That builder creates no cloud resources and pins exact versions and research
+sources in `kmods/matrix/targets.json`.
+
 From a reviewed zcutils checkout, run:
 
 ```bash
@@ -46,16 +51,17 @@ the resulting image by immutable digest:
 export MODULE_FILE="$module"
 export MODULE_ARCH="$(uname -m)"
 export KERNEL_RELEASE="$(uname -r)"
-export IMAGE="registry.example.com/storage/zccusan-kmod:${KERNEL_RELEASE}-${MODULE_ARCH}"
+export IMAGE="registry.example.com/storage/zcblock-csi:${KERNEL_RELEASE}-${MODULE_ARCH}"
 
 zccusan/deploy/zcblock-csi/build-kmod-image.sh
 docker push "$IMAGE"
 docker inspect --format '{{json .RepoDigests}}' "$IMAGE"
 ```
 
-Record both the OCI digest and the module SHA-256 in the values supplied to
-Helm. If the kernel enforces module signatures, sign the final module with a
-key that kernel trusts before calculating its final checksum and packaging it.
+Record the resulting full DaemonSet OCI digest as `image.digest` and the module
+SHA-256 as `nodeSetup.moduleSource.sha256` in the values supplied to Helm. If
+the kernel enforces module signatures, sign the final module with a key that
+kernel trusts before calculating its final checksum and packaging it.
 
 Fetch these instructions for inspection without piping them into a shell:
 
