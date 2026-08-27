@@ -8,6 +8,9 @@ BOOTSTRAP_MANIFEST="${ZCUTILS_BOOTSTRAP_MANIFEST:-$HOME/.local/state/zcutils/adh
 MODULE="${MODULE:-$ROOT/kmods/zcnblk_client_mod.ko}"
 TARGET_BIN="${TARGET_BIN:-$ROOT/target/release/zcnblk-shm-target}"
 BENCH_BIN="${BENCH_BIN:-$ROOT/target/release/zcblockbench}"
+EDGE_SYNC_BIN="${EDGE_SYNC_BIN:-$ROOT/target/release/zcnblk-edge-sync}"
+EDGE_CONTINUITY_BIN="${EDGE_CONTINUITY_BIN:-$ROOT/target/release/zcnblk-edge-continuity}"
+DIRECT_MIGRATECTL_BIN="${DIRECT_MIGRATECTL_BIN:-$ROOT/target/release/zcnblk-direct-migratectl}"
 ORDER_BIN="${ORDER_BIN:-$ROOT/target/release/zcnblk-order-smoke}"
 ORDER_SMOKE_PAIRS="${ORDER_SMOKE_PAIRS:-0}"
 CONTRACT_BIN="${CONTRACT_BIN:-$ROOT/target/release/zcnblk-contract-smoke}"
@@ -20,10 +23,13 @@ MIN_MEAN_IOPS="${MIN_MEAN_IOPS:-0}"
 OPS_PER_WORKER="${OPS_PER_WORKER:-2000000}"
 IODEPTH="${IODEPTH:-128}"
 RING_ENTRIES="${RING_ENTRIES:-256}"
+BACKEND="${BACKEND:-memory}"
 BLOCK_RING_MODE="${BLOCK_RING_MODE:-normal}"
+BLOCK_REGISTERED_RING="${URING_PLAY_BLOCKBENCH_REGISTERED_RING:-0}"
 BLOCK_ENGINE="${BLOCK_ENGINE:-uring-fixed}"
 BLOCK_SIZE="${BLOCK_SIZE:-4096}"
 BLOCK_FUA_WRITES="${URING_PLAY_BLOCKBENCH_FUA_WRITES:-0}"
+BLOCK_NOATIME="${URING_PLAY_BLOCKBENCH_NOATIME:-1}"
 SQPOLL_CPU_LIST="${SQPOLL_CPU_LIST:-}"
 SQPOLL_IDLE_MS="${SQPOLL_IDLE_MS:-1000}"
 LATENCY_SAMPLE_RATE="${URING_PLAY_BLOCKBENCH_LATENCY_SAMPLE_RATE:-0}"
@@ -34,9 +40,24 @@ ZCCUSAN_TOPOLOGY_TRANSPORT="${ZCCUSAN_TOPOLOGY_TRANSPORT:-unknown}"
 ZCCUSAN_TOPOLOGY_NUMA_NODE_COUNT="${ZCCUSAN_TOPOLOGY_NUMA_NODE_COUNT:-}"
 ZCCUSAN_TOPOLOGY_NUMA_LOCAL="${ZCCUSAN_TOPOLOGY_NUMA_LOCAL:-0}"
 BLOCK_RING_STATS="${URING_PLAY_BLOCKBENCH_RING_STATS:-1}"
+if [ -n "${URING_PLAY_BLOCKBENCH_COMPLETION_BATCH+x}" ]; then
+	BLOCK_COMPLETION_BATCH="$URING_PLAY_BLOCKBENCH_COMPLETION_BATCH"
+elif [ "$IODEPTH" -ge 128 ] && [ "$BACKEND" = memory ]; then
+	# Saturation controls amortize io_uring entry cost. QD128 measurements put
+	# 128/32 ahead of 64/16 for read, write, and mixed exact-alias workloads.
+	BLOCK_COMPLETION_BATCH=128
+elif [ "$IODEPTH" -lt 64 ]; then
+	BLOCK_COMPLETION_BATCH="$IODEPTH"
+else
+	BLOCK_COMPLETION_BATCH=64
+fi
 if [ -n "${URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS+x}" ]; then
 	BLOCK_WAIT_MIN_COMPLETIONS="$URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS"
+elif [ "$IODEPTH" -ge 128 ] && [ "$BACKEND" = memory ]; then
+	BLOCK_WAIT_MIN_COMPLETIONS=32
 elif [ "$IODEPTH" -ge 128 ]; then
+	# Preserve the measured remote WAL default until the 128/32 candidate is
+	# repeated on a dedicated cross-node transport topology.
 	BLOCK_WAIT_MIN_COMPLETIONS=16
 else
 	BLOCK_WAIT_MIN_COMPLETIONS=1
@@ -48,6 +69,7 @@ BLOCK_CQE_ADAPTIVE_SPIN_MIN="${URING_PLAY_BLOCKBENCH_CQE_ADAPTIVE_SPIN_MIN:-0}"
 BLOCK_CQE_ADAPTIVE_SPIN_MAX="${URING_PLAY_BLOCKBENCH_CQE_ADAPTIVE_SPIN_MAX:-4096}"
 BLOCK_CQE_ADAPTIVE_WAIT_NS="${URING_PLAY_BLOCKBENCH_CQE_ADAPTIVE_WAIT_NS:-50000}"
 BLOCK_CQE_HOT_POLL="${URING_PLAY_BLOCKBENCH_CQE_HOT_POLL:-0}"
+BLOCK_WBT_LAT_USEC="${URING_PLAY_ZCNBLK_WBT_LAT_USEC:-}"
 if [ -n "${URING_PLAY_BLOCKBENCH_CQE_HOT_POLL_PROGRESS_SPINS+x}" ]; then
 	BLOCK_CQE_HOT_POLL_PROGRESS_SPINS="$URING_PLAY_BLOCKBENCH_CQE_HOT_POLL_PROGRESS_SPINS"
 # A short progress window wins through the latency/efficiency curve.  A 4,096
@@ -68,12 +90,17 @@ KERNEL_QUEUE_DEPTH="${KERNEL_QUEUE_DEPTH:-$IODEPTH}"
 KERNEL_PIPELINE_DEPTH="${KERNEL_PIPELINE_DEPTH:-$SHM_RING_ENTRIES}"
 KERNEL_QUEUES="${KERNEL_QUEUES:-$LANES}"
 KERNEL_WORKER_BATCH_DEQUEUE="${KERNEL_WORKER_BATCH_DEQUEUE:-1}"
+KERNEL_DISABLE_MERGES="${KERNEL_DISABLE_MERGES:-1}"
 KERNEL_SEQUENCE_TELEMETRY_INTERVAL="${KERNEL_SEQUENCE_TELEMETRY_INTERVAL:-256}"
 KERNEL_COMPLETION_BATCH="${KERNEL_COMPLETION_BATCH:-256}"
-HCTX_NUMA_NODE="${HCTX_NUMA_NODE:--1}"
+# Keep SMT siblings in the same blk-mq hardware context.  Generic blk-mq
+# mapping can split sibling threads between hctxs, which prevents the strict
+# topology planner from assigning distinct client, target, and completion
+# cores at saturation.  The whole-core map is topology-time only and remains
+# explicitly overridable with HCTX_NUMA_NODE=-1 for kernel-default controls.
+HCTX_NUMA_NODE="${HCTX_NUMA_NODE:--3}"
 SIZE_MIB="${SIZE_MIB:-$((LANES * 128))}"
 REGION_BYTES_PER_WORKER="${REGION_BYTES_PER_WORKER:-67108864}"
-BACKEND="${BACKEND:-memory}"
 case "$BACKEND" in
 	memory|wal-tcp) lane_local_sequences_default=1 ;;
 	*) lane_local_sequences_default=0 ;;
@@ -131,6 +158,8 @@ else
 	SHM_ARENA_BACKING=vmalloc
 fi
 SHM_ARENA_CPU_LIST="${URING_PLAY_ZCNBLK_SHM_ARENA_CPU_LIST:-}"
+SHM_ARENA_CPU_LIST_SOURCE="$([ -n "$SHM_ARENA_CPU_LIST" ] && printf explicit || printf unassigned)"
+SHM_ARENA_LOCALITY=inactive
 LEAF_ADDR="${LEAF_ADDR:-127.0.0.1}"
 LEAF_PORT="${LEAF_PORT:-29000}"
 LEAF_SOURCE_ADDR="${LEAF_SOURCE_ADDR:-}"
@@ -360,16 +389,43 @@ BUILD="${BUILD:-0}"
 SET_GOVERNOR="${SET_GOVERNOR:-}"
 OUTDIR="${OUTDIR:-$ROOT/bench-results/local-zcnblk-shm-$(date -u +%Y%m%dT%H%M%SZ)}"
 APP_ARENA_SOCKET="${URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET:-/tmp/zcnblk-app-arena-$$.sock}"
+LIVE_MIGRATION_CONTROL_ADDR="${ZCNBLK_WAL_LIVE_MIGRATION_CONTROL_ADDR:-}"
+LIVE_MIGRATION_START_BEFORE_REPEAT="${ZCNBLK_WAL_LIVE_MIGRATION_START_BEFORE_REPEAT:-2}"
+LIVE_MIGRATION_CUTOVER_AFTER_REPEAT="${ZCNBLK_WAL_LIVE_MIGRATION_CUTOVER_AFTER_REPEAT:-2}"
+LIVE_MIGRATION_READY_TIMEOUT_SECONDS="${ZCNBLK_WAL_LIVE_MIGRATION_READY_TIMEOUT_SECONDS:-120}"
+DIRECT_MIGRATION_CONTROL_SOCKET="${URING_PLAY_ZCNBLK_SHM_MIGRATION_CONTROL_SOCKET:-}"
+DIRECT_MIGRATION_SOURCE_ADDR="${URING_PLAY_ZCNBLK_SHM_MIGRATION_SOURCE_ADDR:-}"
+DIRECT_MIGRATION_DEST_ADDR="${URING_PLAY_ZCNBLK_SHM_MIGRATION_DEST_ADDR:-}"
+DIRECT_MIGRATION_COPY_METHOD="${URING_PLAY_ZCNBLK_SHM_MIGRATION_TCP_COPY_METHOD:-splice}"
+DIRECT_MIGRATION_CATCHUP_PASSES="${URING_PLAY_ZCNBLK_SHM_MIGRATION_CATCHUP_PASSES:-2}"
+DIRECT_MIGRATION_QUIESCE_TIMEOUT_MS="${URING_PLAY_ZCNBLK_SHM_MIGRATION_QUIESCE_TIMEOUT_MS:-5000}"
+DIRECT_MIGRATION_COPY_CPU_LIST="${ZCNBLK_WAL_MIGRATION_COPY_CPU_LIST:-}"
+DIRECT_MIGRATION_CONTROL_CPU="${ZCNBLK_WAL_MIGRATION_CONTROL_CPU:-}"
+DIRECT_MIGRATION_AFTER_REPEAT="${ZCNBLK_WAL_DIRECT_MIGRATION_AFTER_REPEAT:-0}"
+DIRECT_MIGRATION_EPOCH="${ZCNBLK_WAL_DIRECT_MIGRATION_EPOCH:-2}"
+DIRECT_MIGRATION_VOLUME_BYTES="${ZCNBLK_WAL_DIRECT_MIGRATION_VOLUME_BYTES:-$((SIZE_MIB * 1024 * 1024))}"
+DIRECT_MIGRATION_CHUNK_BYTES="${ZCNBLK_WAL_DIRECT_MIGRATION_CHUNK_BYTES:-1048576}"
+DIRECT_MIGRATION_GRANULE_BYTES="${ZCNBLK_WAL_DIRECT_MIGRATION_GRANULE_BYTES:-4096}"
+CONTINUITY_PROOF="${ZCNBLK_WAL_LIVE_MIGRATION_CONTINUITY_PROOF:-0}"
+CONTINUITY_PROOF_OFFSET="${ZCNBLK_WAL_LIVE_MIGRATION_CONTINUITY_OFFSET:-0}"
+CONTINUITY_PROOF_SLOTS="${ZCNBLK_WAL_LIVE_MIGRATION_CONTINUITY_SLOTS:-64}"
+CONTINUITY_PROOF_INTERVAL_US="${ZCNBLK_WAL_LIVE_MIGRATION_CONTINUITY_INTERVAL_US:-500}"
+CONTINUITY_PROOF_SYNC_EVERY="${ZCNBLK_WAL_LIVE_MIGRATION_CONTINUITY_SYNC_EVERY:-4096}"
+CONTINUITY_CPU="${ZCNBLK_WAL_LIVE_MIGRATION_CONTINUITY_CPU:-}"
 
 block_lease=""
 perf_lease=""
 target_pid=""
 target_job_pid=""
+continuity_pid=""
+continuity_job_pid=""
 leaf_pid=""
 kernel_state_pid=""
+kernel_log_start_line=0
 declare -a tracked_pids=()
 declare -a kthread_pids=()
 pid_file="$OUTDIR/target.pid"
+continuity_pid_file="$OUTDIR/continuity.pid"
 governors_file="$OUTDIR/governors.before"
 
 log() {
@@ -435,6 +491,29 @@ cpu_numa_node() {
 	printf unknown
 }
 
+cpu_llc_domain() {
+	local cpu="$1" cache_path cache_level cache_type
+	local best_level=-1 best_domain=unknown
+
+	for cache_path in "/sys/devices/system/cpu/cpu$cpu"/cache/index*; do
+		[ -d "$cache_path" ] || continue
+		[ -r "$cache_path/level" ] && [ -r "$cache_path/type" ] && \
+			[ -r "$cache_path/shared_cpu_list" ] || continue
+		cache_level="$(cat "$cache_path/level")"
+		cache_type="$(cat "$cache_path/type")"
+		[[ "$cache_level" =~ ^[0-9]+$ ]] || continue
+		case "$cache_type" in
+		Unified|Data) ;;
+		*) continue ;;
+		esac
+		if [ "$cache_level" -gt "$best_level" ]; then
+			best_level="$cache_level"
+			best_domain="$(cat "$cache_path/shared_cpu_list")"
+		fi
+	done
+	printf '%s' "$best_domain"
+}
+
 snapshot_contexts() {
 	local output="$1" pid
 	: >"$output"
@@ -448,6 +527,30 @@ snapshot_contexts() {
 			END { printf "%s %s %s %s %s\n", pid, name, cpus, voluntary+0, involuntary+0 }
 		' "/proc/$pid/status" >>"$output"
 	done
+}
+
+check_kernel_timing_faults() {
+	local current_line strict=0
+
+	current_line="$(sudo -n dmesg | wc -l)"
+	if [ "$current_line" -ge "$kernel_log_start_line" ]; then
+		sudo -n dmesg | tail -n "+$((kernel_log_start_line + 1))" \
+			>"$OUTDIR/kernel-timing.log"
+	else
+		# The ring wrapped; conservatively inspect the complete retained log.
+		sudo -n dmesg >"$OUTDIR/kernel-timing.log"
+	fi
+	if grep -Eiq 'watchdog: BUG: soft lockup|rcu[^:]*: INFO:.*stall|blocked for more than|hung[_ -]task' \
+		"$OUTDIR/kernel-timing.log"; then
+		grep -Ei 'watchdog: BUG: soft lockup|rcu[^:]*: INFO:.*stall|blocked for more than|hung[_ -]task' \
+			"$OUTDIR/kernel-timing.log" >&2 || true
+		[ "$REPRESENTATIVE" = 1 ] && strict=1
+		[ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] && strict=1
+		[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ] && strict=1
+		[ "$strict" != 1 ] || \
+			die "kernel timing fault invalidates this representative run; no benchmark result is accepted"
+		printf 'PERF WARNING: kernel timing fault observed; results are non-representative\n' >&2
+	fi
 }
 
 safe_stop_target() {
@@ -478,12 +581,31 @@ safe_stop_target() {
 	done
 }
 
+safe_stop_continuity() {
+	[ -n "$continuity_pid" ] || return 0
+	[ -r "/proc/$continuity_pid/comm" ] || return 0
+	local comm
+	comm="$(cat "/proc/$continuity_pid/comm")"
+	[ "$comm" = "zcnblk-edge-con" ] || {
+		printf 'refusing to signal continuity pid=%s comm=%s\n' "$continuity_pid" "$comm" >&2
+		return 1
+	}
+	sudo -n kill -TERM "$continuity_pid" 2>/dev/null || true
+	for _ in $(seq 1 200); do
+		[ ! -e "/proc/$continuity_pid" ] && return 0
+		[[ "$(awk '{print $3}' "/proc/$continuity_pid/stat" 2>/dev/null || true)" == Z ]] && return 0
+		sleep 0.01
+	done
+	printf 'continuity proof pid=%s did not stop after SIGTERM\n' "$continuity_pid" >&2
+	return 1
+}
+
 safe_stop_leaf() {
 	[ -n "$leaf_pid" ] || return 0
 	[ -r "/proc/$leaf_pid/comm" ] || return 0
 	local comm
 	comm="$(cat "/proc/$leaf_pid/comm")"
-	[ "$comm" = "zcnblk-wal-lea" ] || {
+	[ "$comm" = "zcnblk-wal-leaf" ] || {
 		printf 'refusing to signal leaf pid=%s comm=%s\n' "$leaf_pid" "$comm" >&2
 		return 1
 	}
@@ -514,12 +636,83 @@ restore_governors() {
 	done <"$governors_file"
 }
 
+live_migration_command() {
+	local command="$1" emit="${2:-1}" response host port
+	[ -n "$LIVE_MIGRATION_CONTROL_ADDR" ] || die "live migration control address is empty"
+	host="${LIVE_MIGRATION_CONTROL_ADDR%:*}"
+	port="${LIVE_MIGRATION_CONTROL_ADDR##*:}"
+	exec 8<>"/dev/tcp/$host/$port"
+	printf '%s\n' "$command" >&8
+	IFS= read -r response <&8
+	exec 8>&-
+	if [ "$emit" = 1 ]; then
+		printf 'command=%s response=%s\n' "$command" "$response" | tee -a "$OUTDIR/live-migration-control.log" >&2
+	fi
+	[[ "$response" == OK\ * ]] || die "live migration command $command failed: $response"
+	printf '%s' "$response"
+}
+
+wait_for_live_migration_base() {
+	local deadline status ready
+	deadline=$((SECONDS + LIVE_MIGRATION_READY_TIMEOUT_SECONDS))
+	while :; do
+		status="$(live_migration_command status 0)"
+		ready="$(awk '{ value=$0; count=0; while (sub(/base=true/, "", value)) count++; print count }' <<<"$status")"
+		if [ "$ready" -eq "$LANES" ]; then
+			printf 'command=status response=%s\n' "$status" | tee -a "$OUTDIR/live-migration-control.log" >&2
+			return 0
+		fi
+		[ "$SECONDS" -lt "$deadline" ] || \
+			die "live migration base copy did not become ready on all $LANES lanes: $status"
+		sleep 0.01
+	done
+}
+
+drive_live_migration_cutover() {
+	local barrier_started_ns barrier_elapsed_ns cutover_started_ns cutover_elapsed_ns deadline status
+	[ -x "$EDGE_SYNC_BIN" ] || die "live migration edge-sync binary is missing: $EDGE_SYNC_BIN"
+	barrier_started_ns="$(date +%s%N)"
+	# The userspace target interprets fsync(2) on the block edge as a global
+	# admitted-lane-vector HWM drain. No placement decision occurs in the edge.
+	sudo -n "$EDGE_SYNC_BIN" /dev/zcnblk0 | tee "$OUTDIR/live-migration-edge-sync.log"
+	barrier_elapsed_ns=$(( $(date +%s%N) - barrier_started_ns ))
+	printf 'edge_barrier=global-sync-hwm elapsed_ns=%s block_identity=unchanged\n' \
+		"$barrier_elapsed_ns" | tee -a "$OUTDIR/live-migration-control.log"
+	cutover_started_ns="$(date +%s%N)"
+	live_migration_command cutover >/dev/null
+	deadline=$((SECONDS + LIVE_MIGRATION_READY_TIMEOUT_SECONDS))
+	while :; do
+		status="$(live_migration_command status 0)"
+		grep -q 'phase=active_secondary' <<<"$status" && break
+		[ "$SECONDS" -lt "$deadline" ] || \
+			die "idle-lane cutover wake did not publish the destination route: $status"
+		sleep 0.001
+	done
+	printf 'command=status response=%s\n' "$status" | tee -a "$OUTDIR/live-migration-control.log" >&2
+	cutover_elapsed_ns=$(( $(date +%s%N) - cutover_started_ns ))
+	# Prove a global barrier traverses the already-published destination while
+	# the target and block device remain the same sessions and identity.
+	sudo -n "$EDGE_SYNC_BIN" /dev/zcnblk0 | tee "$OUTDIR/live-migration-post-cutover-sync.log"
+	if [ "$REMOTE_TRANSPORT" = ofi ] || [ "$REMOTE_TRANSPORT" = rdm ] || \
+		[ "$REMOTE_TRANSPORT" = efa ]; then
+		wake_source=existing-ofi-cq-progress-loop-phase-check
+	else
+		wake_source=userspace-coordinator-targeted-signal
+	fi
+	printf 'cutover_probe=pass wake_source=%s lanes=%s client_target_session_reconnect=false control_observed_elapsed_ns=%s\n' \
+		"$wake_source" "$LANES" "$cutover_elapsed_ns" | tee -a "$OUTDIR/live-migration-control.log"
+}
+
 cleanup() {
 	local status=$? cleanup_failed=0
 	set +e
 	if [ -n "$kernel_state_pid" ] && kill -0 "$kernel_state_pid" 2>/dev/null; then
 		kill "$kernel_state_pid" 2>/dev/null
 		wait "$kernel_state_pid" 2>/dev/null
+	fi
+	safe_stop_continuity || cleanup_failed=1
+	if [ -n "$continuity_job_pid" ]; then
+		wait "$continuity_job_pid" 2>/dev/null
 	fi
 	safe_stop_target
 	if [ -n "$target_job_pid" ]; then
@@ -543,6 +736,70 @@ trap cleanup EXIT INT TERM
 [ "$BLOCK_SIZE" = 4096 ] || [ "$MODE" = read ] || \
 	die "sub-4K block edges are deliberately read-only until sub-page write ordering is implemented"
 [ "$REPEATS" -gt 0 ] || die "REPEATS must be positive"
+[ "$CONTINUITY_PROOF" = 0 ] || [ "$CONTINUITY_PROOF" = 1 ] || \
+	die "ZCNBLK_WAL_LIVE_MIGRATION_CONTINUITY_PROOF must be zero or one"
+if [ "$CONTINUITY_PROOF" = 1 ]; then
+	[ -n "$LIVE_MIGRATION_CONTROL_ADDR$DIRECT_MIGRATION_CONTROL_SOCKET" ] || \
+		die "continuity proof requires a gateway control address or direct migration control socket"
+	for value in "$CONTINUITY_PROOF_OFFSET" "$CONTINUITY_PROOF_SLOTS" \
+		"$CONTINUITY_PROOF_INTERVAL_US" "$CONTINUITY_PROOF_SYNC_EVERY"; do
+		[[ "$value" =~ ^[0-9]+$ ]] || die "continuity proof values must be unsigned integers"
+	done
+	[ "$CONTINUITY_PROOF_SLOTS" -gt 0 ] || die "continuity proof slots must be non-zero"
+	[ $((CONTINUITY_PROOF_OFFSET % 4096)) -eq 0 ] || \
+		die "continuity proof offset must be 4096-aligned"
+	proof_end=$((CONTINUITY_PROOF_OFFSET + CONTINUITY_PROOF_SLOTS * 4096))
+	benchmark_end=$((REGION_BYTES_PER_WORKER * LANES))
+	[ "$CONTINUITY_PROOF_OFFSET" -ge "$benchmark_end" ] || \
+		die "continuity proof range overlaps the random-I/O benchmark region"
+	[ "$proof_end" -le "$((SIZE_MIB * 1024 * 1024))" ] || \
+		die "continuity proof range exceeds the block device"
+fi
+if [ -n "$DIRECT_MIGRATION_CONTROL_SOCKET" ]; then
+	[ "$BACKEND" = wal-tcp ] || die "direct migration currently requires BACKEND=wal-tcp"
+	[ "$START_LOCAL_LEAF" = 0 ] || die "direct migration requires explicit external terminal leaves"
+	[ "$WAL_OWNER_INGRESS" = 1 ] || die "direct migration requires stable userspace owner ingress"
+	[ -n "$DIRECT_MIGRATION_SOURCE_ADDR" ] || die "direct migration source address is empty"
+	[ -n "$DIRECT_MIGRATION_DEST_ADDR" ] || die "direct migration destination address is empty"
+	[ -x "$DIRECT_MIGRATECTL_BIN" ] || die "direct migration control binary is missing: $DIRECT_MIGRATECTL_BIN"
+	[[ "$DIRECT_MIGRATION_AFTER_REPEAT" =~ ^[1-9][0-9]*$ ]] && \
+		[ "$DIRECT_MIGRATION_AFTER_REPEAT" -lt "$REPEATS" ] || \
+		die "direct migration cutover repeat must be in 1..REPEATS-1"
+	for value in "$DIRECT_MIGRATION_EPOCH" "$DIRECT_MIGRATION_VOLUME_BYTES" \
+		"$DIRECT_MIGRATION_CHUNK_BYTES" "$DIRECT_MIGRATION_GRANULE_BYTES" \
+		"$DIRECT_MIGRATION_CATCHUP_PASSES" "$DIRECT_MIGRATION_QUIESCE_TIMEOUT_MS"; do
+		[[ "$value" =~ ^[0-9]+$ ]] || die "direct migration values must be unsigned integers"
+	done
+	[ $((DIRECT_MIGRATION_VOLUME_BYTES % 4096)) -eq 0 ] && \
+		[ $((DIRECT_MIGRATION_CHUNK_BYTES % 4096)) -eq 0 ] && \
+		[ $((DIRECT_MIGRATION_GRANULE_BYTES % 4096)) -eq 0 ] || \
+		die "direct migration volume, chunk, and granule bytes must be 4K aligned"
+	if [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
+		[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; then
+		[ -n "$DIRECT_MIGRATION_COPY_CPU_LIST" ] || \
+			die "strict direct migration requires ZCNBLK_WAL_MIGRATION_COPY_CPU_LIST"
+		[ -n "$DIRECT_MIGRATION_CONTROL_CPU" ] || \
+			die "strict direct migration requires ZCNBLK_WAL_MIGRATION_CONTROL_CPU"
+		[ -n "$CONTINUITY_CPU" ] || [ "$CONTINUITY_PROOF" != 1 ] || \
+			die "strict continuity proof requires ZCNBLK_WAL_LIVE_MIGRATION_CONTINUITY_CPU"
+		mapfile -t direct_copy_cpus < <(expand_cpu_list "$DIRECT_MIGRATION_COPY_CPU_LIST")
+		[ "${#direct_copy_cpus[@]}" -eq "$WAL_OWNER_COUNT" ] || \
+			die "direct migration copy CPU list must provide one CPU per owner"
+	fi
+fi
+if [ -n "$LIVE_MIGRATION_CONTROL_ADDR" ]; then
+	[[ "$LIVE_MIGRATION_START_BEFORE_REPEAT" =~ ^[0-9]+$ ]] && \
+		[ "$LIVE_MIGRATION_START_BEFORE_REPEAT" -ge 1 ] && \
+		[ "$LIVE_MIGRATION_START_BEFORE_REPEAT" -le "$REPEATS" ] || \
+		die "migration start repeat must be in 1..REPEATS"
+	[[ "$LIVE_MIGRATION_CUTOVER_AFTER_REPEAT" =~ ^[0-9]+$ ]] && \
+		[ "$LIVE_MIGRATION_CUTOVER_AFTER_REPEAT" -ge "$LIVE_MIGRATION_START_BEFORE_REPEAT" ] && \
+		[ "$LIVE_MIGRATION_CUTOVER_AFTER_REPEAT" -lt "$REPEATS" ] || \
+		die "migration cutover repeat must be >= start repeat and < REPEATS"
+	[[ "$LIVE_MIGRATION_READY_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] && \
+		[ "$LIVE_MIGRATION_READY_TIMEOUT_SECONDS" -gt 0 ] || \
+		die "migration ready timeout must be positive"
+fi
 [[ "$MIN_IOPS_PER_REP" =~ ^[0-9]+$ ]] || die "MIN_IOPS_PER_REP must be a non-negative integer"
 [[ "$MIN_MEAN_IOPS" =~ ^[0-9]+$ ]] || die "MIN_MEAN_IOPS must be a non-negative integer"
 if [ "$REPRESENTATIVE" = 1 ] && [ "$REPEATS" -lt 3 ]; then
@@ -550,8 +807,19 @@ if [ "$REPRESENTATIVE" = 1 ] && [ "$REPEATS" -lt 3 ]; then
 fi
 [[ "$EXTERNAL_NIC_LOW_LATENCY_CONFIRMED" =~ ^[01]$ ]] || \
 	die "URING_PLAY_EXTERNAL_NIC_LOW_LATENCY_CONFIRMED must be zero or one"
+[[ "$BLOCK_COMPLETION_BATCH" =~ ^[0-9]+$ ]] && \
+	[ "$BLOCK_COMPLETION_BATCH" -gt 0 ] && [ "$BLOCK_COMPLETION_BATCH" -le "$IODEPTH" ] || \
+	die "URING_PLAY_BLOCKBENCH_COMPLETION_BATCH must be in 1..IODEPTH"
+[[ "$BLOCK_WAIT_MIN_COMPLETIONS" =~ ^[0-9]+$ ]] && \
+	[ "$BLOCK_WAIT_MIN_COMPLETIONS" -gt 0 ] && \
+	[ "$BLOCK_WAIT_MIN_COMPLETIONS" -le "$BLOCK_COMPLETION_BATCH" ] || \
+	die "URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS must be in 1..completion batch"
 [[ "$BLOCK_FUA_WRITES" =~ ^[01]$ ]] || \
 	die "URING_PLAY_BLOCKBENCH_FUA_WRITES must be zero or one"
+[[ "$BLOCK_NOATIME" =~ ^[01]$ ]] || \
+	die "URING_PLAY_BLOCKBENCH_NOATIME must be zero or one"
+[[ "$BLOCK_REGISTERED_RING" =~ ^[01]$ ]] || \
+	die "URING_PLAY_BLOCKBENCH_REGISTERED_RING must be zero or one"
 case "$SHM_ARENA_BACKING" in
 vmalloc|hugetlb|auto) ;;
 *) die "URING_PLAY_ZCNBLK_SHM_ARENA_BACKING must be vmalloc, hugetlb, or auto" ;;
@@ -585,6 +853,10 @@ done
 	die "KERNEL_SEQUENCE_TELEMETRY_INTERVAL must be a non-negative integer"
 [[ "$KERNEL_COMPLETION_BATCH" =~ ^[0-9]+$ ]] && [ "$KERNEL_COMPLETION_BATCH" -gt 0 ] || \
 	die "KERNEL_COMPLETION_BATCH must be a positive integer"
+if [ -n "$BLOCK_WBT_LAT_USEC" ]; then
+	[[ "$BLOCK_WBT_LAT_USEC" =~ ^[0-9]+$ ]] || \
+		die "URING_PLAY_ZCNBLK_WBT_LAT_USEC must be a non-negative integer"
+fi
 [[ "$LANE_LOCAL_SEQUENCES" =~ ^[01]$ ]] || \
 	die "URING_PLAY_ZCNBLK_SHM_LANE_LOCAL_SEQUENCES must be zero or one"
 [[ "$APP_ARENA_BUFFERS" =~ ^[01]$ ]] || \
@@ -914,7 +1186,8 @@ esac
 if [ "$BUILD" = 1 ]; then
 	log "building release benchmark binaries and kernel modules"
 	(cd "$ROOT" && cargo build --release --bin zcnblk-shm-target --bin zcblockbench \
-		--bin zcnblk-order-smoke --bin zcnblk-wal-leaf)
+		--bin zcnblk-order-smoke --bin zcnblk-wal-leaf --bin zcnblk-edge-sync \
+		--bin zcnblk-edge-continuity)
 	make -C "$ROOT/kmods" all
 	sign_file="/usr/src/linux-headers-$(uname -r)/scripts/sign-file"
 	[ -x "$sign_file" ] || die "module signing helper is missing: $sign_file"
@@ -923,16 +1196,23 @@ fi
 
 [ -x "$TARGET_BIN" ] || die "target binary is missing: $TARGET_BIN (set BUILD=1)"
 [ -x "$BENCH_BIN" ] || die "benchmark binary is missing: $BENCH_BIN (set BUILD=1)"
+[ "$CONTINUITY_PROOF" != 1 ] || [ -x "$EDGE_CONTINUITY_BIN" ] || \
+	die "continuity proof binary is missing: $EDGE_CONTINUITY_BIN (set BUILD=1)"
 [ "$ORDER_SMOKE_PAIRS" = 0 ] || [ -x "$ORDER_BIN" ] || \
 	die "order smoke binary is missing: $ORDER_BIN (set BUILD=1)"
 [ "$START_LOCAL_LEAF" != 1 ] || [ -x "$LEAF_BIN" ] || die "leaf binary is missing: $LEAF_BIN (set BUILD=1)"
 [ -r "$MODULE" ] || die "kernel module is missing: $MODULE (set BUILD=1)"
+
+# Capture before module insertion so representative numbers cannot be printed
+# after a soft-lockup, RCU stall, or hung-task event caused during setup or I/O.
+kernel_log_start_line="$(sudo -n dmesg | wc -l)"
 
 log "loading placement-free shared-memory client edge"
 sudo -n insmod "$MODULE" transport=shm lanes="$LANES" connections_per_lane=1 \
 	size_mib="$SIZE_MIB" queues="$KERNEL_QUEUES" queue_depth="$KERNEL_QUEUE_DEPTH" \
 	logical_block_size="$BLOCK_SIZE" read_only="$([ "$BLOCK_SIZE" = 4096 ] && printf 0 || printf 1)" \
 	worker_batch_dequeue="$KERNEL_WORKER_BATCH_DEQUEUE" \
+	disable_merges="$KERNEL_DISABLE_MERGES" \
 	shm_sequence_telemetry_interval="$KERNEL_SEQUENCE_TELEMETRY_INTERVAL" \
 	shm_completion_batch="$KERNEL_COMPLETION_BATCH" \
 	shm_bio_arena_zero_copy="$APP_ARENA_BUFFERS" \
@@ -953,6 +1233,29 @@ actual_block_ro="$(cat /sys/block/zcnblk0/ro)"
 [ "$actual_block_ro" = "$expected_block_ro" ] || \
 	die "zcnblk0 read-only contract mismatch: block_size=$BLOCK_SIZE expected_ro=$expected_block_ro actual_ro=$actual_block_ro"
 log "verified block edge read-only contract: block_size=$BLOCK_SIZE ro=$actual_block_ro"
+expected_nomerges="$([ "$KERNEL_DISABLE_MERGES" = 1 ] && printf 2 || printf 0)"
+actual_nomerges="$(cat /sys/block/zcnblk0/queue/nomerges)"
+[ "$actual_nomerges" = "$expected_nomerges" ] || \
+	die "zcnblk0 merge contract mismatch: requested=$KERNEL_DISABLE_MERGES expected_nomerges=$expected_nomerges actual_nomerges=$actual_nomerges"
+printf 'block_nomerges=%s source=verified-sysfs\n' "$actual_nomerges" | \
+	tee -a "$OUTDIR/preflight.log"
+wbt_path=/sys/block/zcnblk0/queue/wbt_lat_usec
+if [ -r "$wbt_path" ]; then
+	block_wbt_before="$(cat "$wbt_path")"
+	if [ -n "$BLOCK_WBT_LAT_USEC" ]; then
+		printf '%s\n' "$BLOCK_WBT_LAT_USEC" | sudo -n tee "$wbt_path" >/dev/null
+	fi
+	block_wbt_actual="$(cat "$wbt_path")"
+	[ -z "$BLOCK_WBT_LAT_USEC" ] || [ "$block_wbt_actual" = "$BLOCK_WBT_LAT_USEC" ] || \
+		die "zcnblk0 WBT latency mismatch: requested=$BLOCK_WBT_LAT_USEC actual=$block_wbt_actual"
+	printf 'block_wbt_lat_usec_before=%s block_wbt_lat_usec_actual=%s source=%s\n' \
+		"$block_wbt_before" "$block_wbt_actual" \
+		"$([ -n "$BLOCK_WBT_LAT_USEC" ] && printf explicit || printf kernel-default)" | \
+		tee -a "$OUTDIR/preflight.log"
+else
+	printf 'block_wbt_lat_usec_before=unavailable block_wbt_lat_usec_actual=unavailable source=kernel-interface-absent\n' | \
+		tee -a "$OUTDIR/preflight.log"
+fi
 
 declare -a client_cpus=() target_cpus=() kernel_cpus=() leaf_cpus=() transport_cpus=() owner_cpus=() all_cpus=()
 declare -A used_cores=()
@@ -1015,17 +1318,71 @@ if [ -n "$CLIENT_CPU_LIST$TARGET_CPU_LIST$KERNEL_CPU_LIST$LEAF_CPU_LIST" ]; then
 	all_cpus=("${client_cpus[@]}" "${target_cpus[@]}" "${kernel_cpus[@]}" "${leaf_cpus[@]}")
 	for ((lane = 0; lane < LANES; lane++)); do
 		hctx="$(cat "/sys/block/zcnblk0/mq/$lane/cpu_list")"
-		for cpu in "${client_cpus[$lane]}" "${target_cpus[$lane]}" "${kernel_cpus[$lane]}"; do
-			cpu_allowed=false
-			while IFS= read -r allowed_cpu; do
-				if [ "$allowed_cpu" = "$cpu" ]; then
-					cpu_allowed=true
-					break
-				fi
-			done < <(expand_cpu_list "$hctx")
-			[ "$cpu_allowed" = true ] || die "explicit lane $lane CPU $cpu is outside hctx map $hctx"
-		done
+		cpu="${client_cpus[$lane]}"
+		cpu_allowed=false
+		while IFS= read -r allowed_cpu; do
+			if [ "$allowed_cpu" = "$cpu" ]; then
+				cpu_allowed=true
+				break
+			fi
+		done < <(expand_cpu_list "$hctx")
+		[ "$cpu_allowed" = true ] || \
+			die "explicit lane $lane client CPU $cpu is outside hctx map $hctx"
+
 	done
+fi
+declare -a client_numa_nodes=() target_numa_nodes=() kernel_numa_nodes=()
+lane_numa_local=true
+for ((lane = 0; lane < LANES; lane++)); do
+	client_node="$(cpu_numa_node "${client_cpus[$lane]}")"
+	target_node="$(cpu_numa_node "${target_cpus[$lane]}")"
+	kernel_node="$(cpu_numa_node "${kernel_cpus[$lane]}")"
+	client_numa_nodes+=("$client_node")
+	target_numa_nodes+=("$target_node")
+	kernel_numa_nodes+=("$kernel_node")
+	if [ "$client_node" = unknown ] || [ "$target_node" = unknown ] || \
+		[ "$kernel_node" = unknown ] || [ "$client_node" != "$target_node" ] || \
+		[ "$client_node" != "$kernel_node" ]; then
+		lane_numa_local=false
+		printf 'PERF WARNING: lane=%s is not NUMA-local: client_cpu=%s node=%s target_cpu=%s node=%s kernel_cpu=%s node=%s\n' \
+			"$lane" "${client_cpus[$lane]}" "$client_node" \
+			"${target_cpus[$lane]}" "$target_node" \
+			"${kernel_cpus[$lane]}" "$kernel_node" >&2
+	fi
+done
+if [ "$lane_numa_local" != true ] && { [ "$REPRESENTATIVE" = 1 ] || \
+	[ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
+	[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; }; then
+	die "strict topology requires every lane's client, target, and completion CPUs to share one NUMA node"
+fi
+declare -a client_llc_domains=() target_llc_domains=() kernel_llc_domains=()
+lane_llc_local=true
+for ((lane = 0; lane < LANES; lane++)); do
+	client_llc="$(cpu_llc_domain "${client_cpus[$lane]}")"
+	target_llc="$(cpu_llc_domain "${target_cpus[$lane]}")"
+	kernel_llc="$(cpu_llc_domain "${kernel_cpus[$lane]}")"
+	client_llc_domains+=("$client_llc")
+	target_llc_domains+=("$target_llc")
+	kernel_llc_domains+=("$kernel_llc")
+	if [ "$client_llc" = unknown ] || [ "$target_llc" = unknown ] || \
+		[ "$kernel_llc" = unknown ]; then
+		lane_llc_local=false
+		printf 'PERF WARNING: lane=%s cannot prove client/target/kernel last-level-cache locality: client_cpu=%s llc=%s target_cpu=%s llc=%s kernel_cpu=%s llc=%s\n' \
+			"$lane" "${client_cpus[$lane]}" "$client_llc" \
+			"${target_cpus[$lane]}" "$target_llc" \
+			"${kernel_cpus[$lane]}" "$kernel_llc" >&2
+	elif [ "$client_llc" != "$target_llc" ] || [ "$client_llc" != "$kernel_llc" ]; then
+		lane_llc_local=false
+		printf 'PERF WARNING: lane=%s crosses last-level-cache domains: client_cpu=%s llc=%s target_cpu=%s llc=%s kernel_cpu=%s llc=%s; shared-ring and completion cachelines will cross the interconnect\n' \
+			"$lane" "${client_cpus[$lane]}" "$client_llc" \
+			"${target_cpus[$lane]}" "$target_llc" \
+			"${kernel_cpus[$lane]}" "$kernel_llc" >&2
+	fi
+done
+if [ "$lane_llc_local" != true ] && \
+	{ [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
+		[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; }; then
+	die "representative/strict block runs require client, target, and completion worker locality within each lane's last-level-cache domain"
 fi
 role_cpu_sharing=none
 for ((lane = 0; lane < LANES; lane++)); do
@@ -1116,6 +1473,38 @@ target_cpu_list="$(join_comma "${target_cpus[@]}")"
 kernel_cpu_list="$(join_comma "${kernel_cpus[@]}")"
 leaf_cpu_list="none"
 [ "$START_LOCAL_LEAF" != 1 ] || leaf_cpu_list="$(join_comma "${leaf_cpus[@]}")"
+case "$SHM_ARENA_BACKING" in
+hugetlb|auto)
+	if [ -z "$SHM_ARENA_CPU_LIST" ]; then
+		# The shared request/completion/payload arena is touched before lane
+		# workers start. Leaving that first touch on target_cpus[0] silently
+		# makes every lane on another NUMA node perform remote-memory ring
+		# traffic. The lane target CPUs are the authoritative locality map.
+		SHM_ARENA_CPU_LIST="$target_cpu_list"
+		SHM_ARENA_CPU_LIST_SOURCE=auto-target-lanes
+	fi
+	SHM_ARENA_LOCALITY=lane-target-numa
+	mapfile -t arena_cpus < <(expand_cpu_list "$SHM_ARENA_CPU_LIST")
+	[ "${#arena_cpus[@]}" -eq "$LANES" ] || \
+		die "URING_PLAY_ZCNBLK_SHM_ARENA_CPU_LIST must provide exactly one CPU per lane"
+	for ((lane = 0; lane < LANES; lane++)); do
+		arena_node="$(cpu_numa_node "${arena_cpus[$lane]}")"
+		target_node="$(cpu_numa_node "${target_cpus[$lane]}")"
+		if [ "$arena_node" != unknown ] && [ "$target_node" != unknown ] && \
+			[ "$arena_node" != "$target_node" ]; then
+			printf 'PERF WARNING: lane=%s arena_cpu=%s arena_numa=%s target_cpu=%s target_numa=%s; shared-arena memory is not target-lane-local\n' \
+				"$lane" "${arena_cpus[$lane]}" "$arena_node" "${target_cpus[$lane]}" "$target_node" >&2
+			if [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
+				[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; then
+				die "representative shared-arena topology requires every lane to be NUMA-local to its target worker"
+			fi
+		fi
+	done
+	;;
+*)
+	[ "$SHM_ARENA_CPU_LIST_SOURCE" != unassigned ] || SHM_ARENA_CPU_LIST_SOURCE=inactive
+	;;
+esac
 coordinator_cpu="none"
 case "$BACKEND:$LANES" in
 	wal-tcp:1|tcp-leaf:1|fan-tcp:1) coordinator_cpu="${target_cpus[0]}" ;;
@@ -1137,6 +1526,22 @@ case "$BACKEND:$LANES" in
 		;;
 esac
 all_cpu_list="$(join_comma "${all_cpus[@]}")"
+if [ -n "$DIRECT_MIGRATION_CONTROL_SOCKET" ] && \
+	{ [ "$REPRESENTATIVE" = 1 ] || [ "${URING_PLAY_TOPOLOGY_STRICT:-0}" = 1 ] || \
+		[ "${URING_PLAY_TOPOLOGY_FATAL:-0}" = 1 ]; }; then
+	declare -A direct_system_cpu_seen=()
+	direct_system_cpus=("${direct_copy_cpus[@]}" "$DIRECT_MIGRATION_CONTROL_CPU")
+	[ "$CONTINUITY_PROOF" != 1 ] || direct_system_cpus+=("$CONTINUITY_CPU")
+	for cpu in "${direct_system_cpus[@]}"; do
+		[ -d "/sys/devices/system/cpu/cpu$cpu" ] || \
+			die "direct migration system CPU $cpu is not online"
+		[[ ",$all_cpu_list," != *",$cpu,"* ]] || \
+			die "direct migration system CPU $cpu overlaps a foreground block/owner role"
+		[ -z "${direct_system_cpu_seen[$cpu]:-}" ] || \
+			die "direct migration system CPU $cpu is assigned to more than one role"
+		direct_system_cpu_seen[$cpu]=1
+	done
+fi
 
 sqpoll_cpu_list="none"
 case "$BLOCK_RING_MODE" in
@@ -1185,6 +1590,13 @@ if [ "$REPRESENTATIVE" = 1 ] && [ "$coord_honored" != true ]; then
 	die "representative run refused because the soft-exclusive performance lease was not honored"
 fi
 
+block_write_completion=ordinary-device-ack
+if [ "$BLOCK_FUA_WRITES" = 1 ]; then
+	block_write_completion=remote-fua-drain
+elif [ "$BACKEND" = wal-tcp ] && [ "$WAL_OWNER_INGRESS" = 1 ]; then
+	block_write_completion=early-local-retained-wal-admission
+fi
+
 {
 	if [ "$COORDINATION_SCOPE" = dedicated-adhoc ]; then
 		printf 'classification=dedicated-adhoc-control\n'
@@ -1204,10 +1616,18 @@ fi
 	for ((lane = 0; lane < LANES; lane++)); do
 		lane_leaf_cpu=none
 		[ "$START_LOCAL_LEAF" != 1 ] || lane_leaf_cpu="${leaf_cpus[$lane]}"
-		printf 'lane=%s client_cpu=%s target_cpu=%s transport_cpu=%s kernel_cpu=%s leaf_cpu=%s hctx_cpus=%s\n' \
+		printf 'lane=%s client_cpu=%s target_cpu=%s transport_cpu=%s kernel_cpu=%s leaf_cpu=%s hctx_cpus=%s client_numa=%s target_numa=%s kernel_numa=%s numa_local=%s client_llc=%s target_llc=%s kernel_llc=%s llc_local=%s\n' \
 			"$lane" "${client_cpus[$lane]}" "${target_cpus[$lane]}" \
 			"$([ "$WAL_SPLIT_TRANSPORT" = 1 ] && printf '%s' "${transport_cpus[$lane]}" || printf inline)" \
-			"${kernel_cpus[$lane]}" "$lane_leaf_cpu" "$(cat "/sys/block/zcnblk0/mq/$lane/cpu_list")"
+			"${kernel_cpus[$lane]}" "$lane_leaf_cpu" "$(cat "/sys/block/zcnblk0/mq/$lane/cpu_list")" \
+			"${client_numa_nodes[$lane]}" "${target_numa_nodes[$lane]}" \
+			"${kernel_numa_nodes[$lane]}" \
+			"$([ "${client_numa_nodes[$lane]}" = "${target_numa_nodes[$lane]}" ] && \
+				[ "${client_numa_nodes[$lane]}" = "${kernel_numa_nodes[$lane]}" ] && printf true || printf false)" \
+			"${client_llc_domains[$lane]}" "${target_llc_domains[$lane]}" \
+			"${kernel_llc_domains[$lane]}" \
+			"$([ "${client_llc_domains[$lane]}" = "${target_llc_domains[$lane]}" ] && \
+				[ "${client_llc_domains[$lane]}" = "${kernel_llc_domains[$lane]}" ] && printf true || printf false)"
 	done
 	if [ "$WAL_OWNER_INGRESS" = 1 ]; then
 		for ((owner = 0; owner < WAL_OWNER_COUNT; owner++)); do
@@ -1231,25 +1651,34 @@ fi
 	printf 'kernel_completion_poll_us=%s kernel_idle_recheck_us=%s\n' \
 		"$KERNEL_POLL_US" "$KERNEL_POLL_US"
 	printf 'kernel_state_interval_ms=%s\n' "$KERNEL_STATE_INTERVAL_MS"
-	printf 'block_ring_mode=%s sqpoll_cpu_list=%s sqpoll_idle_ms=%s\n' \
-		"$BLOCK_RING_MODE" "$sqpoll_cpu_list" "$SQPOLL_IDLE_MS"
-	printf 'block_engine=%s fua_writes=%s write_completion=%s\n' \
-		"$BLOCK_ENGINE" "$BLOCK_FUA_WRITES" \
-		"$([ "$BLOCK_FUA_WRITES" = 1 ] && printf remote-fua-drain || printf ordinary-device-ack)"
+	printf 'block_ring_mode=%s registered_ring=%s sqpoll_cpu_list=%s sqpoll_idle_ms=%s\n' \
+		"$BLOCK_RING_MODE" "$BLOCK_REGISTERED_RING" "$sqpoll_cpu_list" "$SQPOLL_IDLE_MS"
+	printf 'block_engine=%s fua_writes=%s noatime=%s write_completion=%s\n' \
+		"$BLOCK_ENGINE" "$BLOCK_FUA_WRITES" "$BLOCK_NOATIME" "$block_write_completion"
 	printf 'block_size=%s block_edge_read_only=%s\n' "$BLOCK_SIZE" \
 		"$([ "$BLOCK_SIZE" = 4096 ] && printf false || printf true)"
 	printf 'block_latency_sample_rate=%s\n' "$LATENCY_SAMPLE_RATE"
+	printf 'live_migration_continuity_proof=%s proof_offset=%s proof_slots=%s proof_interval_us=%s proof_sync_every=%s\n' \
+		"$CONTINUITY_PROOF" "$CONTINUITY_PROOF_OFFSET" "$CONTINUITY_PROOF_SLOTS" \
+		"$CONTINUITY_PROOF_INTERVAL_US" "$CONTINUITY_PROOF_SYNC_EVERY"
+	printf 'direct_migration_control=%s after_repeat=%s source=%s destination=%s copy_method=%s copy_cpu_list=%s control_cpu=%s continuity_cpu=%s foreground_hops=1 migration_gateway=false\n' \
+		"$([ -n "$DIRECT_MIGRATION_CONTROL_SOCKET" ] && printf enabled || printf disabled)" \
+		"$DIRECT_MIGRATION_AFTER_REPEAT" "${DIRECT_MIGRATION_SOURCE_ADDR:-none}" \
+		"${DIRECT_MIGRATION_DEST_ADDR:-none}" "$DIRECT_MIGRATION_COPY_METHOD" \
+		"${DIRECT_MIGRATION_COPY_CPU_LIST:-none}" "${DIRECT_MIGRATION_CONTROL_CPU:-none}" \
+		"${CONTINUITY_CPU:-none}"
 	printf 'community_frontend=linux-block topology_class=%s placement_scope=%s transport=%s paths=%s\n' \
 		"$ZCCUSAN_TOPOLOGY_CLASS" "$ZCCUSAN_PLACEMENT_SCOPE" \
 		"$ZCCUSAN_TOPOLOGY_TRANSPORT" "$ZCCUSAN_TOPOLOGY_PATH_COUNT"
-	printf 'block_ring_stats=%s block_wait_min_completions=%s block_fused_submit_wait=%s block_cqe_spin=%s block_cqe_adaptive_spin=%s block_cqe_adaptive_spin_min=%s block_cqe_adaptive_spin_max=%s block_cqe_adaptive_wait_ns=%s block_cqe_hot_poll=%s block_cqe_hot_poll_progress_spins=%s\n' \
-		"$BLOCK_RING_STATS" "$BLOCK_WAIT_MIN_COMPLETIONS" "$BLOCK_FUSED_SUBMIT_WAIT" "$BLOCK_CQE_SPIN" "$BLOCK_CQE_ADAPTIVE_SPIN" \
+	printf 'block_ring_stats=%s block_completion_batch=%s block_wait_min_completions=%s block_fused_submit_wait=%s block_cqe_spin=%s block_cqe_adaptive_spin=%s block_cqe_adaptive_spin_min=%s block_cqe_adaptive_spin_max=%s block_cqe_adaptive_wait_ns=%s block_cqe_hot_poll=%s block_cqe_hot_poll_progress_spins=%s\n' \
+		"$BLOCK_RING_STATS" "$BLOCK_COMPLETION_BATCH" "$BLOCK_WAIT_MIN_COMPLETIONS" "$BLOCK_FUSED_SUBMIT_WAIT" "$BLOCK_CQE_SPIN" "$BLOCK_CQE_ADAPTIVE_SPIN" \
 		"$BLOCK_CQE_ADAPTIVE_SPIN_MIN" "$BLOCK_CQE_ADAPTIVE_SPIN_MAX" \
 		"$BLOCK_CQE_ADAPTIVE_WAIT_NS" "$BLOCK_CQE_HOT_POLL" "$BLOCK_CQE_HOT_POLL_PROGRESS_SPINS"
 	printf 'shm_descriptor_entries_per_channel=%s index_operation=bit-mask\n' "$SHM_RING_ENTRIES"
 	printf 'kernel_queues=%s kernel_queue_depth=%s kernel_pipeline_depth=%s hctx_numa_node=%s\n' \
 		"$KERNEL_QUEUES" "$KERNEL_QUEUE_DEPTH" "$KERNEL_PIPELINE_DEPTH" "$HCTX_NUMA_NODE"
 	printf 'kernel_worker_batch_dequeue=%s\n' "$KERNEL_WORKER_BATCH_DEQUEUE"
+	printf 'kernel_disable_merges=%s\n' "$KERNEL_DISABLE_MERGES"
 	printf 'kernel_sequence_telemetry_interval=%s\n' \
 		"$KERNEL_SEQUENCE_TELEMETRY_INTERVAL"
 	printf 'kernel_completion_batch=%s\n' "$KERNEL_COMPLETION_BATCH"
@@ -1260,6 +1689,8 @@ fi
 		"$APP_ARENA_BUFFERS" "$([ "$APP_ARENA_BUFFERS" = 1 ] && printf no || printf yes)"
 	printf 'shm_sector_order_slots=%s\n' "$SECTOR_ORDER_SLOTS"
 	printf 'shm_payload_entries_per_channel=%s index_operation=bit-mask\n' "$SHM_PAYLOAD_ENTRIES"
+	printf 'shm_arena_cpu_list=%s shm_arena_cpu_list_source=%s locality=%s\n' \
+		"${SHM_ARENA_CPU_LIST:-none}" "$SHM_ARENA_CPU_LIST_SOURCE" "$SHM_ARENA_LOCALITY"
 	printf 'ofi_selective_completion=%s ofi_rma_read_completion_stride=%s ofi_rma_defer_tail_completion=%s ofi_rma_read_more=%s ofi_rma_read_tail_marker=%s synthetic_partial_flush=fallback-only\n' \
 		"$OFI_SELECTIVE_COMPLETION" "$OFI_RMA_READ_COMPLETION_STRIDE" \
 		"$OFI_RMA_DEFER_TAIL_COMPLETION" "$OFI_RMA_READ_MORE" \
@@ -1553,6 +1984,14 @@ fi
 	URING_PLAY_ROUTE_PROBE="${URING_PLAY_ROUTE_PROBE:-0}" \
 	URING_PLAY_EXPECT_ROUTE_DEV="${URING_PLAY_EXPECT_ROUTE_DEV:-}" \
 	URING_PLAY_EXPECT_ROUTE_SRC="${URING_PLAY_EXPECT_ROUTE_SRC:-}" \
+	URING_PLAY_ZCNBLK_SHM_MIGRATION_CONTROL_SOCKET="$DIRECT_MIGRATION_CONTROL_SOCKET" \
+	URING_PLAY_ZCNBLK_SHM_MIGRATION_SOURCE_ADDR="$DIRECT_MIGRATION_SOURCE_ADDR" \
+	URING_PLAY_ZCNBLK_SHM_MIGRATION_DEST_ADDR="$DIRECT_MIGRATION_DEST_ADDR" \
+	URING_PLAY_ZCNBLK_SHM_MIGRATION_TCP_COPY_METHOD="$DIRECT_MIGRATION_COPY_METHOD" \
+	URING_PLAY_ZCNBLK_SHM_MIGRATION_CATCHUP_PASSES="$DIRECT_MIGRATION_CATCHUP_PASSES" \
+	URING_PLAY_ZCNBLK_SHM_MIGRATION_QUIESCE_TIMEOUT_MS="$DIRECT_MIGRATION_QUIESCE_TIMEOUT_MS" \
+	ZCNBLK_WAL_MIGRATION_COPY_CPU_LIST="$DIRECT_MIGRATION_COPY_CPU_LIST" \
+	ZCNBLK_WAL_MIGRATION_CONTROL_CPU="$DIRECT_MIGRATION_CONTROL_CPU" \
 	URING_PLAY_TOPOLOGY_STRICT="${URING_PLAY_TOPOLOGY_STRICT:-0}" \
 	URING_PLAY_TOPOLOGY_FATAL="${URING_PLAY_TOPOLOGY_FATAL:-0}" \
 	URING_PLAY_ZCNBLK_SHM_LEAF_ADDR="$LEAF_ADDR:$LEAF_PORT" \
@@ -1563,13 +2002,29 @@ fi
 	"$target_cpu_list" "$POLL_US" "$BUSY_POLL_US" "$BUSY_HYSTERESIS_US" \
 	>"$OUTDIR/target.log" 2>&1 &
 target_job_pid=$!
-for _ in $(seq 1 "${TARGET_READY_ATTEMPTS:-100}"); do
+for _ in $(seq 1 "${TARGET_READY_ATTEMPTS:-400}"); do
 	[ -s "$pid_file" ] && break
+	if ! kill -0 "$target_job_pid" 2>/dev/null; then
+		wait "$target_job_pid" || true
+		die "target exited before publishing its PID file; inspect $OUTDIR/target.log"
+	fi
 	sleep 0.05
 done
 [ -s "$pid_file" ] || die "target did not publish its PID file"
 target_pid="$(cat "$pid_file")"
 [[ "$target_pid" =~ ^[0-9]+$ ]] || die "invalid target PID: $target_pid"
+if [ -n "$DIRECT_MIGRATION_CONTROL_SOCKET" ]; then
+	for _ in $(seq 1 400); do
+		[ -S "$DIRECT_MIGRATION_CONTROL_SOCKET" ] && break
+		[ -r "/proc/$target_pid/comm" ] || die "target exited before publishing direct migration control"
+		sleep 0.01
+	done
+	[ -S "$DIRECT_MIGRATION_CONTROL_SOCKET" ] || \
+		die "target did not publish direct migration control socket"
+	grep -q "^zcnblk-shm-target-direct-route-control: .* control_cpu=$DIRECT_MIGRATION_CONTROL_CPU " \
+		"$OUTDIR/target.log" || \
+		die "target did not confirm the requested direct migration control CPU"
+fi
 arena_line="$(grep '^zcnblk-shm-target-shared-arena:' "$OUTDIR/target.log" | tail -n 1 || true)"
 [ -n "$arena_line" ] || die "target did not report the shared-arena backing before benchmarking"
 printf 'actual_%s\n' "$arena_line" | tee -a "$OUTDIR/topology.log"
@@ -1586,6 +2041,10 @@ fi
 if [ "$SHM_ARENA_BACKING" = hugetlb ]; then
 	grep -q ' backing=external-hugetlb-memfd .* import_active=true ' <<<"$arena_line" || \
 		die "target did not activate the required external HugeTLB shared arena"
+	arena_topology_line="$(grep '^zcnblk-shm-target-arena-topology:' "$OUTDIR/target.log" | tail -n 1 || true)"
+	[ -n "$arena_topology_line" ] || \
+		die "HugeTLB target did not report per-lane shared-arena first-touch topology"
+	printf 'actual_%s\n' "$arena_topology_line" | tee -a "$OUTDIR/topology.log"
 fi
 if [ "$APP_ARENA_BUFFERS" = 1 ]; then
 	for _ in $(seq 1 100); do
@@ -1651,6 +2110,32 @@ if [ "$START_LOCAL_LEAF" = 1 ]; then
 	[ "${#leaf_tasks[@]}" -ge 2 ] || die "leaf stream worker thread did not appear"
 	tracked_pids+=("${leaf_tasks[@]}")
 fi
+if [ "$CONTINUITY_PROOF" = 1 ]; then
+	log "starting one-open-descriptor migration continuity and data proof"
+	continuity_prefix=(sudo -n env ZCNBLK_EDGE_CONTINUITY_PID_FILE="$continuity_pid_file")
+	if [ -n "$CONTINUITY_CPU" ]; then
+		continuity_prefix+=(taskset -c "$CONTINUITY_CPU")
+	fi
+	"${continuity_prefix[@]}" \
+		"$EDGE_CONTINUITY_BIN" /dev/zcnblk0 "$CONTINUITY_PROOF_OFFSET" \
+		"$CONTINUITY_PROOF_SLOTS" "$CONTINUITY_PROOF_INTERVAL_US" \
+		"$CONTINUITY_PROOF_SYNC_EVERY" >"$OUTDIR/continuity.log" 2>&1 &
+	continuity_job_pid=$!
+	for _ in $(seq 1 400); do
+		[ -s "$continuity_pid_file" ] && \
+			grep -q '^zcnblk-edge-continuity-start:' "$OUTDIR/continuity.log" && break
+		if ! kill -0 "$continuity_job_pid" 2>/dev/null; then
+			wait "$continuity_job_pid" || true
+			die "continuity proof exited before becoming ready; inspect $OUTDIR/continuity.log"
+		fi
+		sleep 0.01
+	done
+	[ -s "$continuity_pid_file" ] || die "continuity proof did not publish its PID"
+	continuity_pid="$(cat "$continuity_pid_file")"
+	[[ "$continuity_pid" =~ ^[0-9]+$ ]] || die "invalid continuity proof PID"
+	grep -q '^zcnblk-edge-continuity-start:' "$OUTDIR/continuity.log" || \
+		die "continuity proof did not finish seeding its reserved range"
+fi
 snapshot_contexts "$OUTDIR/hot-contexts.initial"
 
 if [ "$KERNEL_STATE_INTERVAL_MS" -gt 0 ]; then
@@ -1676,7 +2161,51 @@ if [ -n "${EXTERNAL_FRONTEND_COMMAND:-}" ]; then
 	log "running external frontend against the established userspace stage"
 	export URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET="$app_arena_socket"
 	export ZCNBLK_FRONTEND_DEVICE=/dev/zcnblk0
+	set +e
 	bash -c "$EXTERNAL_FRONTEND_COMMAND" | tee "$OUTDIR/external-frontend.log"
+	external_frontend_status=${PIPESTATUS[0]}
+	set -e
+	preserve_external_frontend_log() {
+		local key=$1 destination=$2 required=$3 source
+		source="$(awk -F= -v key="$key" '$1 == key { print substr($0, length(key) + 2) }' \
+			"$OUTDIR/external-frontend.log" | tail -n 1)"
+		if [ -z "$source" ] || [ ! -r "$source" ]; then
+			[ "$required" != 1 ] || \
+				die "external frontend did not leave a readable $key artifact: ${source:-missing}"
+			return 0
+		fi
+		cp -- "$source" "$OUTDIR/$destination"
+	}
+	if [ "$external_frontend_status" -eq 0 ]; then
+		external_artifact_required=1
+	else
+		external_artifact_required=0
+	fi
+	preserve_external_frontend_log guest_log qemu-exact.log "$external_artifact_required"
+	preserve_external_frontend_log backend_log backend-exact.log "$external_artifact_required"
+	preserve_external_frontend_log qemu_vcpu_pin_log qemu-vcpu-pinning.log 0
+	# Preserve the exact kernel-edge alias accounting before module teardown.
+	# An external frontend replaces zcblockbench, so its application-arena proof
+	# must not disappear with the ordinary EXIT cleanup.
+	if [ "$APP_ARENA_BUFFERS" = 1 ]; then
+		debug_state=/sys/kernel/debug/zcnblk/state
+		sudo -n test -r "$debug_state" || \
+			die "application-arena external frontend has no readable $debug_state"
+		sudo -n cat "$debug_state" | tee "$OUTDIR/block-edge-state.after-external.log"
+		if [ "$external_frontend_status" -ne 0 ]; then
+			die "external frontend exited with status $external_frontend_status; exact failure artifacts were preserved when available"
+		fi
+		grep -q 'bio_arena_zero_copy_required=1' "$OUTDIR/block-edge-state.after-external.log" || \
+			die "external frontend did not retain required block-edge arena aliasing"
+		grep -Eq 'bio_alias_(writes|reads)=[1-9][0-9]*' "$OUTDIR/block-edge-state.after-external.log" || \
+			die "external frontend completed no block-edge arena aliases"
+		grep -q 'bio_alias_busy_fallbacks=0' "$OUTDIR/block-edge-state.after-external.log" || \
+			die "external frontend used a block-edge arena copy fallback"
+		grep -q 'bio_alias_required_rejects=0' "$OUTDIR/block-edge-state.after-external.log" || \
+			die "external frontend submitted a non-aliasing buffer to the required arena path"
+	fi
+	[ "$external_frontend_status" -eq 0 ] || \
+		die "external frontend exited with status $external_frontend_status; exact failure artifacts were preserved when available"
 	safe_stop_target
 	target_pid=""
 	wait "$target_job_pid" || true
@@ -1717,12 +2246,18 @@ fi
 
 log "running $REPEATS repeated $MODE controls on the shared host"
 for ((rep = 1; rep <= REPEATS; rep++)); do
+	if [ -n "$LIVE_MIGRATION_CONTROL_ADDR" ] && \
+		[ "$rep" -eq "$LIVE_MIGRATION_START_BEFORE_REPEAT" ]; then
+		log "starting userspace base copy before repeat $rep"
+		live_migration_command start >/dev/null
+	fi
 	result_log="$OUTDIR/rep$rep.log"
 	perf_log="$OUTDIR/rep$rep.perf"
 	context_before="$OUTDIR/rep$rep.context.before"
 	context_after="$OUTDIR/rep$rep.context.after"
 	snapshot_contexts "$context_before"
 	bench=(env "URING_PLAY_PIN_CPU_LIST=$client_cpu_list"
+		"URING_PLAY_BLOCKBENCH_WRITE_COMPLETION_SEMANTICS=$block_write_completion"
 		"URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET=$app_arena_socket"
 		"ZCCUSAN_PLACEMENT_SCOPE=$ZCCUSAN_PLACEMENT_SCOPE"
 		"ZCCUSAN_TOPOLOGY_CLASS=$ZCCUSAN_TOPOLOGY_CLASS"
@@ -1734,6 +2269,7 @@ for ((rep = 1; rep <= REPEATS; rep++)); do
 		"ZCCUSAN_TOPOLOGY_NUMA_LOCAL=$ZCCUSAN_TOPOLOGY_NUMA_LOCAL"
 		"URING_PLAY_TOPOLOGY_STRICT=$REPRESENTATIVE"
 		"URING_PLAY_BLOCKBENCH_RING_STATS=$BLOCK_RING_STATS"
+		"URING_PLAY_BLOCKBENCH_COMPLETION_BATCH=$BLOCK_COMPLETION_BATCH"
 		"URING_PLAY_BLOCKBENCH_WAIT_MIN_COMPLETIONS=$BLOCK_WAIT_MIN_COMPLETIONS"
 		"URING_PLAY_BLOCKBENCH_FUSED_SUBMIT_WAIT=$BLOCK_FUSED_SUBMIT_WAIT"
 		"URING_PLAY_CQE_SPIN=$BLOCK_CQE_SPIN"
@@ -1750,6 +2286,8 @@ for ((rep = 1; rep <= REPEATS; rep++)); do
 		--read-percent "$READ_PERCENT" --ring-entries "$RING_ENTRIES"
 		--ring-mode "$BLOCK_RING_MODE" --sqpoll-idle-ms "$SQPOLL_IDLE_MS"
 		--buffer-mode "$BUFFER_MODE" --pin true)
+	bench+=(--noatime "$BLOCK_NOATIME")
+	bench+=(--registered-ring "$BLOCK_REGISTERED_RING")
 	if [ "$LATENCY_SAMPLE_RATE" -gt 0 ]; then
 		bench+=(--latency-sample-rate "$LATENCY_SAMPLE_RATE")
 	fi
@@ -1766,6 +2304,7 @@ for ((rep = 1; rep <= REPEATS; rep++)); do
 	else
 		sudo -n "${bench[@]}" >"$result_log" 2>&1
 	fi
+	check_kernel_timing_faults
 	snapshot_contexts "$context_after"
 	awk -v logical_ops="$((LANES * OPS_PER_WORKER))" '
 		NR == FNR { voluntary[$1]=$4; involuntary[$1]=$5; next }
@@ -1809,7 +2348,46 @@ for ((rep = 1; rep <= REPEATS; rep++)); do
 	[ -z "$latency_line" ] || printf 'repeat=%s %s\n' "$rep" "$latency_line" | tee -a "$OUTDIR/results.log"
 	ring_line="$(grep 'zcblockbench-ring:' "$result_log" | tail -n 1 || true)"
 	[ -z "$ring_line" ] || printf 'repeat=%s %s\n' "$rep" "$ring_line" | tee -a "$OUTDIR/results.log"
+	if [ -n "$LIVE_MIGRATION_CONTROL_ADDR" ] && \
+		[ "$rep" -eq "$LIVE_MIGRATION_CUTOVER_AFTER_REPEAT" ]; then
+		log "waiting for base copy, draining the edge HWM, and cutting over after repeat $rep"
+		wait_for_live_migration_base
+		drive_live_migration_cutover
+	fi
+	if [ -n "$DIRECT_MIGRATION_CONTROL_SOCKET" ] && \
+		[ "$rep" -eq "$DIRECT_MIGRATION_AFTER_REPEAT" ]; then
+		log "copying source directly into the destination and switching the userspace owner route after repeat $rep"
+		sudo -n timeout "$LIVE_MIGRATION_READY_TIMEOUT_SECONDS" \
+			"$DIRECT_MIGRATECTL_BIN" "$DIRECT_MIGRATION_CONTROL_SOCKET" migrate \
+			"$DIRECT_MIGRATION_EPOCH" "$DIRECT_MIGRATION_VOLUME_BYTES" \
+			"$DIRECT_MIGRATION_CHUNK_BYTES" "$DIRECT_MIGRATION_GRANULE_BYTES" | \
+			tee "$OUTDIR/direct-migration-control.log"
+		grep -q '^OK active_destination=true ' "$OUTDIR/direct-migration-control.log" || \
+			die "direct migration did not activate its destination"
+		grep -q 'foreground_hops=1 foreground_payload_rebuffer_copies=0' \
+			"$OUTDIR/direct-migration-control.log" || \
+			die "direct migration reintroduced a foreground proxy or payload copy"
+		grep -q 'copy_payload_userspace_buffers=0 copy_method=Splice' \
+			"$OUTDIR/direct-migration-control.log" || \
+			die "direct migration did not retain the socket-pipe-socket splice path"
+	fi
 done
+
+if [ "$CONTINUITY_PROOF" = 1 ]; then
+	log "stopping continuity proof after destination activation and verifying its final HWM"
+	safe_stop_continuity || die "continuity proof did not stop cleanly"
+	wait "$continuity_job_pid" || die "continuity proof reported a data or identity failure"
+	continuity_job_pid=""
+	continuity_pid=""
+	grep 'ZCNBLK_EDGE_CONTINUITY_PASS' "$OUTDIR/continuity.log" | tee -a "$OUTDIR/results.log"
+	grep -q 'identity_stable=true open_descriptor_replaced=false .* mismatches=0 ' \
+		"$OUTDIR/continuity.log" || die "continuity proof did not prove stable identity and exact data"
+fi
+if [ -n "$DIRECT_MIGRATION_CONTROL_SOCKET" ]; then
+	grep -q '^zcnblk-shm-target-direct-route-cutover: .*foreground_hops=1 payload_rebuffer_copies=0 client_block_reconnect=false$' \
+		"$OUTDIR/target.log" || \
+		die "target did not prove an exact direct-route cutover"
+fi
 
 if [ "$APP_ARENA_BUFFERS" = 1 ]; then
 	sudo -n cat /sys/kernel/debug/zcnblk/state | tee "$OUTDIR/kernel-arena-final.log"
@@ -1822,14 +2400,16 @@ if [ "$APP_ARENA_BUFFERS" = 1 ]; then
 	actual_alias_writes="$(alias_counter bio_alias_writes)"
 	actual_alias_reads="$(alias_counter bio_alias_reads)"
 	alias_fallbacks="$(alias_counter bio_alias_busy_fallbacks)"
+	alias_retries="$(alias_counter bio_alias_required_retries)"
 	alias_rejects="$(alias_counter bio_alias_required_rejects)"
 	[ "$actual_alias_writes" = "$expected_alias_writes" ] || \
 		die "arena write alias count $actual_alias_writes does not match completed writes $expected_alias_writes"
 	[ "$actual_alias_reads" = "$expected_alias_reads" ] || \
 		die "arena read alias count $actual_alias_reads does not match completed reads $expected_alias_reads"
 	[ "$alias_fallbacks" = 0 ] || die "arena alias path recorded $alias_fallbacks copy fallbacks"
+	[ "$alias_retries" = 0 ] || die "arena alias path recorded $alias_retries required-slot retries"
 	[ "$alias_rejects" = 0 ] || die "arena alias path recorded $alias_rejects rejected mismatches"
-	printf 'arena_alias_validation=pass writes=%s reads=%s copy_fallbacks=0 rejected_mismatches=0\n' \
+	printf 'arena_alias_validation=pass writes=%s reads=%s copy_fallbacks=0 required_slot_retries=0 rejected_mismatches=0\n' \
 		"$actual_alias_writes" "$actual_alias_reads" | tee -a "$OUTDIR/results.log"
 fi
 
@@ -1869,7 +2449,24 @@ mean_iops="$(awk '{ for (i=1; i<=NF; i++) if ($i ~ /^mean_iops=/) { split($i,a,"
 awk -v actual="$mean_iops" -v minimum="$MIN_MEAN_IOPS" \
 	'BEGIN { exit !(actual + 0 >= minimum + 0) }' || \
 	die "mean IOPS $mean_iops is below required $MIN_MEAN_IOPS"
-grep 'zcnblk-shm-target-summary:' "$OUTDIR/target.log" | tee -a "$OUTDIR/summary.log"
+target_summary="$(grep 'zcnblk-shm-target-summary:' "$OUTDIR/target.log" | tail -n 1)"
+[ -n "$target_summary" ] || die "target produced no final summary"
+printf '%s\n' "$target_summary" | tee -a "$OUTDIR/summary.log"
+if [ "$CONTINUITY_PROOF" = 1 ]; then
+	awk '
+		{
+			for (i=1; i<=NF; i++) {
+				if ($i ~ /^reads=/) { split($i,a,"="); reads=a[2]+0 }
+				if ($i ~ /^dirty_read_hits=/) { split($i,a,"="); dirty=a[2]+0 }
+				if ($i ~ /^syncs=/) { split($i,a,"="); syncs=a[2]+0 }
+			}
+		}
+		END { exit !(reads > 0 && dirty > 0 && syncs > 1) }
+	' <<<"$target_summary" || \
+		die "continuity proof did not exercise dirty look-aside reads and repeated global HWM drains"
+	printf 'continuity_cache_evidence=pass dirty_overlay_reads=true repeated_global_hwm_drains=true route_epoch_fence=required-by-parent-harness\n' | \
+		tee -a "$OUTDIR/summary.log"
+fi
 grep 'zcnblk-shm-target-ofi-rma-queue:' "$OUTDIR/target.log" | tee -a "$OUTDIR/summary.log" || true
 if [ "$SHM_OFI_RMA_READS" = 1 ] && [ "$OFI_SELECTIVE_COMPLETION" = 1 ] &&
 	[ "$OFI_RMA_READ_COMPLETION_STRIDE" -gt 1 ] && [ "$OFI_RMA_DEFER_TAIL_COMPLETION" = 1 ]; then

@@ -819,6 +819,8 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
                                        const char *node, const char *service, int server,
                                        const char *domain_name, uint64_t caps,
                                        uint64_t tx_bind_flags, uint64_t rx_bind_flags,
+                                       size_t read_depth_override,
+                                       size_t write_depth_override,
                                        struct zc_ofi_endpoint **out, char *err,
                                        size_t err_len) {
     if (!out) {
@@ -853,11 +855,25 @@ static int zc_ofi_open_on_domain_caps(const char *provider, const char *endpoint
         rc = zc_ofi_env_size("URING_PLAY_OFI_RX_QUEUE_DEPTH", 64, 1, 65536,
                              &recv_depth, err, err_len);
     }
-    if (!rc) {
+    if (!rc && read_depth_override > 65536) {
+        zc_ofi_write_err(err, err_len,
+                         "OFI RMA read depth override=%zu exceeds 65536",
+                         read_depth_override);
+        rc = -FI_EINVAL;
+    } else if (!rc && read_depth_override != 0) {
+        read_depth = read_depth_override;
+    } else if (!rc) {
         rc = zc_ofi_env_size("URING_PLAY_OFI_RMA_READ_QD", 1, 1, 65536,
                              &read_depth, err, err_len);
     }
-    if (!rc) {
+    if (!rc && write_depth_override > 65536) {
+        zc_ofi_write_err(err, err_len,
+                         "OFI RMA write depth override=%zu exceeds 65536",
+                         write_depth_override);
+        rc = -FI_EINVAL;
+    } else if (!rc && write_depth_override != 0) {
+        write_depth = write_depth_override;
+    } else if (!rc) {
         rc = zc_ofi_env_size("URING_PLAY_OFI_RMA_WRITE_QD", 1, 1, 65536,
                              &write_depth, err, err_len);
     }
@@ -1352,8 +1368,8 @@ int zc_ofi_open_on_domain(const char *provider, const char *endpoint, const char
                           const char *service, int server, const char *domain_name,
                           struct zc_ofi_endpoint **out, char *err, size_t err_len) {
     return zc_ofi_open_on_domain_caps(provider, endpoint, node, service, server,
-                                      domain_name, FI_MSG, FI_SEND, FI_RECV, out, err,
-                                      err_len);
+                                      domain_name, FI_MSG, FI_SEND, FI_RECV, 0, 0,
+                                      out, err, err_len);
 }
 
 int zc_ofi_open(const char *provider, const char *endpoint, const char *node,
@@ -1368,7 +1384,23 @@ int zc_ofi_open_rma_on_domain(const char *provider, const char *endpoint, const 
                               struct zc_ofi_endpoint **out, char *err, size_t err_len) {
     return zc_ofi_open_on_domain_caps(provider, endpoint, node, service, server,
                                       domain_name, FI_MSG | FI_RMA, FI_TRANSMIT,
-                                      FI_RECV, out, err, err_len);
+                                      FI_RECV, 0, 0, out, err, err_len);
+}
+
+int zc_ofi_open_rma_sized_on_domain(
+    const char *provider, const char *endpoint, const char *node,
+    const char *service, int server, const char *domain_name,
+    size_t read_depth, size_t write_depth, struct zc_ofi_endpoint **out,
+    char *err, size_t err_len) {
+    if (read_depth == 0 || write_depth == 0) {
+        zc_ofi_write_err(err, err_len,
+                         "sized OFI RMA endpoint requires nonzero read/write depths");
+        return -FI_EINVAL;
+    }
+    return zc_ofi_open_on_domain_caps(
+        provider, endpoint, node, service, server, domain_name,
+        FI_MSG | FI_RMA, FI_TRANSMIT, FI_RECV,
+        read_depth, write_depth, out, err, err_len);
 }
 
 int zc_ofi_open_rma(const char *provider, const char *endpoint, const char *node,
@@ -3303,5 +3335,43 @@ int zc_ofi_recv_finish(struct zc_ofi_endpoint *ep, size_t *out_len, int timeout_
     ep->legacy_recv_slot = SIZE_MAX;
     ep->last_src_addr = src;
     *out_len = len;
+    return 0;
+}
+
+int zc_ofi_recv_try_finish(struct zc_ofi_endpoint *ep, size_t *out_len,
+                           int *out_ready) {
+    if (!ep || !out_len || !out_ready) {
+        return -FI_EINVAL;
+    }
+    *out_ready = 0;
+    *out_len = 0;
+    if (ep->legacy_recv_slot == SIZE_MAX) {
+        snprintf(ep->err, sizeof(ep->err), "OFI async recv is not pending");
+        return -FI_EINVAL;
+    }
+    size_t slot = ep->legacy_recv_slot;
+    struct zc_ofi_op *op = &ep->recv_ring.ops[slot];
+    if (!op->completed) {
+        int dispatched = zc_ofi_dispatch_cq_counted(ep, 1);
+        if (dispatched < 0) {
+            return dispatched;
+        }
+        if (!op->completed) {
+            return 0;
+        }
+    }
+    size_t len = 0;
+    fi_addr_t src = FI_ADDR_UNSPEC;
+    int rc = zc_ofi_wait_slot(ep, &ep->recv_ring, 1, slot, &len, &src, 1);
+    if (rc) {
+        if (!ep->recv_ring.ops[slot].active) {
+            ep->legacy_recv_slot = SIZE_MAX;
+        }
+        return rc;
+    }
+    ep->legacy_recv_slot = SIZE_MAX;
+    ep->last_src_addr = src;
+    *out_len = len;
+    *out_ready = 1;
     return 0;
 }

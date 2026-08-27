@@ -2,9 +2,9 @@
 
 This chart installs `zccsi`, the zccusan CSI adapter: the `zcblock-csi`
 DaemonSet, the `zcblock-control` local zccusan agent sidecar, minimum RBAC, the
-CSIDriver object, and optional StorageClasses. A `VolumeSnapshotClass` is an
-application/cluster policy choice and is deliberately not created by this
-chart.
+CSIDriver object, automatic host client-edge setup, and optional
+StorageClasses. A `VolumeSnapshotClass` is an application/cluster policy
+choice and is deliberately not created by this chart.
 
 `zccusan` means Zero Copy Cinematic Universe Storage Area Network. CSI is only a
 Kubernetes-facing client of that storage network. The durable control idiom is
@@ -105,6 +105,194 @@ helm install zcblock-csi zcutils/zcblock-csi \
 The chart defaults to `docker.io/robjcaskey/zcblock-csi:nightly`. Pin the image
 and chart to dated versions for a reproducible deployment.
 
+## Automatic node setup
+
+`nodeSetup.enabled=true` makes the CSI node DaemonSet load the client-edge
+module before CSI registration. Module acquisition is explicit and
+fail-closed: production modes never fall back to compiling on a worker.
+
+1. Reuse a loaded module only when both `/dev/zcnblk0` and
+   `/dev/zcnblk-shmctl` are present.
+2. Acquire the module from the selected `host`, `image`, or `http` source.
+3. Verify its configured SHA-256, module name, and running-kernel `vermagic`.
+4. Load it with `transport=shm` and wait for both client-edge devices
+   before the CSI containers can start.
+
+The node must permit privileged Pods and out-of-tree modules. Secure Boot hosts
+need an artifact signed by a key trusted by their kernel. A module artifact is
+specific to its CPU architecture and compatible kernel build; `%ARCH%` and
+`%KERNEL_RELEASE%` in paths and URLs expand on each node.
+
+The default source is `host`, for fleets that bake or provision the module at
+`/opt/zcutils/kmods/zcnblk_client_mod.ko`:
+
+```yaml
+nodeSetup:
+  moduleSource:
+    type: host
+    hostPathTemplate: /opt/zcutils/kmods/%ARCH%/%KERNEL_RELEASE%/zcnblk_client_mod.ko
+    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+For an image-carried artifact, build a small architecture/kernel-specific
+image with `zccusan/deploy/zcblock-csi/build-kmod-image.sh`, then select it by
+immutable OCI digest:
+
+```sh
+MODULE_FILE=./zcnblk_client_mod.ko \
+KERNEL_RELEASE=6.18.0-101.11.1.el10_1.x86_64 \
+MODULE_ARCH=x86_64 \
+IMAGE=registry.example.com/storage/zcnblk-kmod:6.18.0-x86_64 \
+  zccusan/deploy/zcblock-csi/build-kmod-image.sh
+```
+
+```yaml
+nodeSetup:
+  image:
+    repository: registry.example.com/storage/zcnblk-kmod
+    digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  moduleSource:
+    type: image
+    imagePathTemplate: /opt/zcutils/kmods/%ARCH%/%KERNEL_RELEASE%/zcnblk_client_mod.ko
+    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+HTTP(S) is solely for a user-provided static server; the chart contains no
+default artifact URL. A digest may be pinned in values, or the server may
+publish a `sha256sum`-style checksum file:
+
+```yaml
+nodeSetup:
+  moduleSource:
+    type: http
+    http:
+      urlTemplate: https://modules.storage.example/%ARCH%/%KERNEL_RELEASE%/zcnblk_client_mod.ko
+      checksumUrlTemplate: https://modules.storage.example/%ARCH%/%KERNEL_RELEASE%/zcnblk_client_mod.ko.sha256
+      delivery: nodeCacheDaemonSet
+```
+
+`delivery: nodeCacheDaemonSet` creates a small, operator-independent companion
+DaemonSet with ordinary pod networking and no Kubernetes API token. It can
+reach a static ClusterIP Service even when the privileged CSI Pod uses host
+networking for RDMA. It atomically writes the verified artifact and digest to
+a node-local cache; the CSI init container only reads that cache. The static
+server must not itself require a zccusan PVC, which would create a bootstrap
+cycle. Use `delivery: direct` only when the user-provided origin is reachable
+from the CSI Pod's network namespace. Plain HTTP is rejected unless
+`allowInsecureHttp: true`; HTTPS remains recommended even with content hashes.
+
+On-node compilation remains available only as an explicit development/debug
+mode. It requires matching host headers and tools, or explicit permission to
+install them:
+
+```yaml
+nodeSetup:
+  moduleSource:
+    type: build
+  developmentBuild:
+    enabled: true
+    installHostDependencies: false
+```
+
+This mode carries the chart's source ConfigMap. Production modes do not mount
+source or invoke a compiler. Set
+`nodeSetup.developmentBuild.sourceConfigMap` only to supply reviewed replacement
+source with `zcnblk_client_mod.c`, `zcnblk_shm_abi.h`, and `Makefile` keys.
+
+### TCP and RDMA nodes
+
+TCP is the default userspace backplane and requires no RDMA device:
+
+```sh
+helm upgrade --install zccusan ./zccusan/charts/zcblock-csi \
+  --namespace zccusan --create-namespace
+```
+
+To require RDMA-capable nodes, opt in explicitly:
+
+```sh
+helm upgrade --install zccusan ./zccusan/charts/zcblock-csi \
+  --namespace zccusan --create-namespace \
+  --set backplane.rdma.enabled=true \
+  --set backplane.rdma.provider=efa
+```
+
+Valid providers are `efa`, `efa-direct`, and `verbs`; set
+`backplane.rdma.domain` when a particular libfabric domain is required. The
+RDMA init container checks `/dev/infiniband`, an active sysfs port, and the
+selected libfabric provider. It fails the Pod instead of silently changing the
+requested transport to TCP. RDMA mode also gives the node Pod host networking
+so libfabric sees the RDMA interface in the correct network namespace. The
+runtime image contains libfabric 2.1 with EFA
+and verbs support on both supported CPU architectures.
+
+This selection does not change `zcnblk_client_mod`: its only permitted Helm
+configuration is `transport=shm`. TCP/RDMA selection, lane ownership, mirror
+placement, and backpressure remain in the separate userspace stage after the
+block edge. The declarative two-leaf mirror reconciler accepts either `TcpMux`
+or `OfiRdm`. The RDMA gate qualifies the node image; the profile still has to
+request RDMA explicitly because the operator never silently rewrites a TCP
+volume. `OfiRdm` requires the extended resource exported by the cluster's RDMA
+device plugin, and the operator checks that the client and both selected leaf
+nodes advertise it before creating data-plane Pods:
+
+```yaml
+transport:
+  kind: OfiRdm
+  ofiProvider: efa
+  ofiEndpoint: rdm
+  deviceResourceName: vpc.amazonaws.com/efa
+  lanes: 8
+  connectionsPerLane: 1
+  requireOneSidedRma: false
+```
+
+The local `/dev/zcnblk0` edge still enters the separate userspace mirror over a
+node-local TCP session. Only the mirror-to-leaf backplane uses OFI/RDM. WAL
+writes, reads, sync/FUA results, and the mirrored HWM remain part of the same
+bidirectional libfabric protocol. The optional one-sided RMA payload window is
+not synonymous with RDMA transport: this release rejects
+`requireOneSidedRma=true` so an initiator cannot write through one leaf's
+registered window and bypass the other mirror leg. See
+`zccusan/deploy/zcblock-csi/getting-started/mirror-rdma.template.yaml`.
+
+The defaults are a functional one-lane edge. Set module arguments in values:
+
+```yaml
+nodeSetup:
+  module:
+    parameters:
+      - transport=shm
+      - lanes=8
+      - connections_per_lane=1
+      - shard_count=1
+      - size_mib=4096
+      - queues=8
+      - queue_depth=256
+      - pipeline_depth=128
+      - pin_threads=0
+```
+
+`shard_count=1` is mandatory: the block client is only the edge. Userspace
+stages after `/dev/zcnblk0` continue to own mirroring, striping, placement,
+tiering, locality, lane selection, and backpressure.
+
+For fleet-owned configuration, create a ConfigMap containing one `name=value`
+token per line and point Helm at it:
+
+```sh
+kubectl -n zcblock-csi create configmap zcnblk-node-config \
+  --from-literal=module-parameters=$'transport=shm\nlanes=8\nconnections_per_lane=1\nshard_count=1\nsize_mib=4096\nqueues=8\nqueue_depth=256\npipeline_depth=128\npin_threads=0'
+
+helm upgrade --install zcblock-csi zcutils/zcblock-csi \
+  --namespace zcblock-csi --create-namespace \
+  --set nodeSetup.existingConfigMap=zcnblk-node-config
+```
+
+Disable `nodeSetup` only when the node image or a separate lifecycle manager
+already guarantees the two devices. Helm uninstall deliberately does not
+unload an in-use module or destroy a live block edge.
+
 For a checkout-local render instead:
 
 ```sh
@@ -161,9 +349,10 @@ helm template zcblock-csi zccusan/charts/zcblock-csi \
   | kubectl apply -f -
 ```
 
-For a cross-node fabric volume, prepare `/dev/zcnblk0` on every eligible client
-node and connect each edge through the separate userspace onramp to the same
-logical volume. Then enable the topology-free fabric StorageClass:
+For a cross-node fabric volume, the Helm-managed node init prepares
+`/dev/zcnblk0` on every selected client node. The operator connects each edge
+through a separate userspace onramp to the declared logical volume. Enable the
+fabric StorageClass with:
 
 ```sh
 helm upgrade --install zcblock-csi zccusan/charts/zcblock-csi \

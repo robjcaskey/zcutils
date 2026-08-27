@@ -1434,6 +1434,7 @@ fn run_uring_worker(
             io_poll_mode: crate::RawRingIoPollMode::Off,
             registered_ring_fd: false,
             sq_thread_idle_ms: 0,
+            defer_taskrun: true,
         },
     )?;
     ring.register_files(&mut fds)?;

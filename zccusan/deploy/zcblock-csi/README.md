@@ -73,6 +73,21 @@ region. CRD installation and snapshot-controller stair-step upgrades stay
 outside the chart and remain handled by
 `zccusan/deploy/zcblock-csi/install-snapshot-api.sh`.
 
+The Helm node loader accepts a prebuilt module from a fleet-managed host path,
+an artifact image, or a user-provided static HTTP(S) server. Build a local
+architecture/kernel-specific artifact image with:
+
+```sh
+MODULE_FILE=./zcnblk_client_mod.ko \
+KERNEL_RELEASE="$(uname -r)" \
+IMAGE=localhost/zcnblk-kmod:dev \
+  zccusan/deploy/zcblock-csi/build-kmod-image.sh
+```
+
+The script uses Docker or Podman. On-node source compilation is an explicitly
+gated development mode, not a production fallback; see the chart README for
+the corresponding values.
+
 The CSI container now has a sibling `zcblock-control` sidecar in the same pod.
 That sidecar is the first local zccusan agent. It exposes the local control
 plane on `http://127.0.0.1:9788` using the OpenAPI contract in

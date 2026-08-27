@@ -72,9 +72,14 @@ spec:
                   addressSource: NodeAnnotationThenInternalIP
                   chunkBytes: 4096
                   connectionsPerLane: 1
+                  deviceResourceName: null
                   kind: TcpMux
                   lanes: 1
                   nodeAddressAnnotation: storage.zcutils.io/backplane-address
+                  ofiDomainAnnotation: storage.zcutils.io/ofi-domains
+                  ofiEndpoint: rdm
+                  ofiProvider: efa
+                  requireOneSidedRma: false
                 properties:
                   addressSource:
                     default: NodeAnnotationThenInternalIP
@@ -89,6 +94,10 @@ spec:
                     format: uint16
                     minimum: 0.0
                     type: integer
+                  deviceResourceName:
+                    description: Kubernetes extended resource handed out by the installed RDMA device plugin, such as vpc.amazonaws.com/efa. OfiRdm profiles require it so the operator can prove every selected node owns a usable device.
+                    nullable: true
+                    type: string
                   kind:
                     default: TcpMux
                     type: string
@@ -100,6 +109,21 @@ spec:
                   nodeAddressAnnotation:
                     default: storage.zcutils.io/backplane-address
                     type: string
+                  ofiDomainAnnotation:
+                    default: storage.zcutils.io/ofi-domains
+                    description: Optional node annotation whose comma-separated values map lanes to libfabric domains. Absence means provider-selected locality.
+                    type: string
+                  ofiEndpoint:
+                    default: rdm
+                    type: string
+                  ofiProvider:
+                    default: efa
+                    description: Libfabric provider used when kind=OfiRdm (for example efa, verbs, or sockets for a non-representative software smoke).
+                    type: string
+                  requireOneSidedRma:
+                    default: false
+                    description: Reserved for the one-sided registered-arena fast path. The current mirror rejects true rather than allowing a payload to bypass a leg.
+                    type: boolean
                 type: object
             required:
             - placement
@@ -173,6 +197,16 @@ spec:
                           pinned:
                             default: false
                             type: boolean
+                          totalCapacityPerNode:
+                            description: Optional aggregate byte budget contributed by every matching node. Omitting it preserves the legacy unbounded-count behavior; production profiles should declare it so admission can fail closed.
+                            nullable: true
+                            type: string
+                          totalProvisionedIopsPerNode:
+                            description: Optional aggregate provisioned-IOPS budget contributed by every matching node. Burst IOPS are deliberately not charged here.
+                            format: uint64
+                            minimum: 0.0
+                            nullable: true
+                            type: integer
                         required:
                         - kind
                         - maximumVolumeSize
@@ -539,6 +573,12 @@ spec:
                 type: string
               profileRef:
                 type: string
+              provisionedIops:
+                default: 0
+                description: Hard IOPS reservation used by control-plane admission. Zero means the caller requested byte-capacity admission only.
+                format: uint64
+                minimum: 0.0
+                type: integer
             required:
             - capacityBytes
             - clientNode

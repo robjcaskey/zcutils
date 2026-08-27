@@ -24,6 +24,10 @@ use crate::wal_contract::{
     ZCNBLK_WAL_FEATURE_FUA, ZCNBLK_WAL_FEATURE_IO_PRIORITY, ZCNBLK_WAL_FEATURE_POLLED_COMPLETION,
     ZCNBLK_WAL_FEATURE_REGISTERED_LEASE, ZCNBLK_WAL_FEATURE_WRITE_LIFETIME, ZcnblkWalIoContract,
 };
+use crate::wal_failover::Endpoint;
+use crate::wal_live_migration::{
+    TcpBulkCopyMethod, TcpWalRangeCopier, WalBaseCopySpec, WalBaseCopyStats,
+};
 use crate::zcnblk_app_arena::{
     ZCNBLK_APP_ARENA_F_EXTERNAL_HUGETLB, ZCNBLK_APP_ARENA_MAGIC, ZCNBLK_APP_ARENA_VERSION,
     ZCNBLK_SHM_PAYLOAD_OWNER_APP_RESERVED, ZcnblkAppArenaDescriptor, send_descriptor,
@@ -45,7 +49,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering}
 use std::sync::mpsc::{
     Receiver, Sender, SyncSender, TryRecvError, TrySendError, channel, sync_channel,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
@@ -317,6 +321,8 @@ const ZCNBLK_SHM_IOC_GET_INFO: libc::c_ulong =
     ioctl_code(IOC_READ, 3, size_of::<ZcnblkShmHeader>());
 const ZCNBLK_SHM_IOC_IMPORT_ARENA: libc::c_ulong =
     ioctl_code(IOC_WRITE, 4, size_of::<ZcnblkShmArenaImport>());
+const ZCNBLK_SHM_IOC_FREEZE_DISPATCH: libc::c_ulong = ioctl_code(0, 5, 0);
+const ZCNBLK_SHM_IOC_THAW_DISPATCH: libc::c_ulong = ioctl_code(0, 6, 0);
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -979,6 +985,11 @@ struct RemoteWalLeaf {
     rma_write_calls: u64,
     rma_write_bytes: u64,
     rma_write_time: Duration,
+    route_epoch: u64,
+    route_epoch_changes: u64,
+    route_change_pending: bool,
+    remote_completion_hwm: u64,
+    route_cutover_hwm: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -2548,6 +2559,20 @@ impl RemoteWalLeaf {
         let base_address = lane_env_entry("URING_PLAY_ZCNBLK_SHM_LEAF_ADDRS", lane_id, lane_count)?
             .or_else(|| env::var("URING_PLAY_ZCNBLK_SHM_LEAF_ADDR").ok())
             .unwrap_or_else(|| "127.0.0.1:29000".to_string());
+        Self::connect_at(lane_id, lane_count, rma_read_buffer_bytes, &base_address)
+    }
+
+    /// Open a terminal-leaf session for an explicitly selected userspace
+    /// route.  The normal fast path still calls `connect`, whose environment
+    /// contract is unchanged.  Live migration uses this constructor to
+    /// preconnect a destination beside the active source; it must never put a
+    /// forwarding listener between `/dev/zcnblk0` and either leaf.
+    fn connect_at(
+        lane_id: u32,
+        lane_count: u32,
+        rma_read_buffer_bytes: usize,
+        base_address: &str,
+    ) -> io::Result<Self> {
         let mut socket_address = resolve_remote_wal_leaf_address(&base_address)?;
         let lane_offset = u16::try_from(lane_id).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidInput, "remote WAL lane exceeds u16")
@@ -2867,6 +2892,11 @@ impl RemoteWalLeaf {
             rma_write_calls: 0,
             rma_write_bytes: 0,
             rma_write_time: Duration::ZERO,
+            route_epoch: hello_ack.placement_epoch,
+            route_epoch_changes: 0,
+            route_change_pending: false,
+            remote_completion_hwm: 0,
+            route_cutover_hwm: 0,
         })
     }
 
@@ -3278,7 +3308,36 @@ impl RemoteWalLeaf {
     fn read_result_frame(&mut self) -> io::Result<ZcnblkFanWalFrame> {
         let mut header = [0u8; ZCNBLK_FAN_WAL_HEADER_LEN];
         self.stream.recv_exact(&mut self.recv_wait, &mut header)?;
-        ZcnblkFanWalFrame::decode(&header)
+        let frame = ZcnblkFanWalFrame::decode(&header)?;
+        // Epoch zero is the legacy/no-route-signal value used by terminal
+        // leaves. A placement-owning intermediary publishes a non-zero epoch.
+        if frame.placement_epoch != 0 && frame.placement_epoch < self.route_epoch {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "remote WAL route epoch rolled back from {} to {}",
+                    self.route_epoch, frame.placement_epoch
+                ),
+            ));
+        }
+        if frame.placement_epoch != 0 && frame.placement_epoch > self.route_epoch {
+            self.route_epoch = frame.placement_epoch;
+            self.route_epoch_changes = self.route_epoch_changes.saturating_add(1);
+            self.route_change_pending = true;
+        }
+        Ok(frame)
+    }
+
+    fn note_remote_completion(&mut self, sequence: u64) {
+        self.remote_completion_hwm = self.remote_completion_hwm.max(sequence);
+        if self.route_change_pending {
+            self.route_cutover_hwm = self.remote_completion_hwm;
+            self.route_change_pending = false;
+            eprintln!(
+                "zcnblk-shm-target-route-fence: lane={} placement_epoch={} completion_hwm={} cache_policy=dirty-sequence-overlay-retained-until-remote-completion clean_cache_policy=epoch-invalidated result_boundary=true",
+                self.lane_id, self.route_epoch, self.route_cutover_hwm,
+            );
+        }
     }
 
     fn recv_result_exact(&mut self, out: &mut [u8]) -> io::Result<()> {
@@ -3441,6 +3500,9 @@ impl RemoteWalLeaf {
         self.write_batches += 1;
         self.write_records += writes.len() as u64;
         self.write_bytes += payload_len as u64;
+        if let Some(hwm) = writes.iter().map(|write| write.submit_sequence).max() {
+            self.note_remote_completion(hwm);
+        }
         Ok(())
     }
 
@@ -3473,6 +3535,7 @@ impl RemoteWalLeaf {
         self.recv_result_exact(out)?;
         self.read_records += 1;
         self.read_bytes += out.len() as u64;
+        self.note_remote_completion(request.submit_sequence);
         Ok(())
     }
 
@@ -3848,6 +3911,13 @@ impl RemoteWalLeaf {
             self.write_records += requests.len() as u64;
             self.write_bytes += write_payload_len as u64;
             self.finish_request_batch_tracking()?;
+            if let Some(hwm) = requests
+                .iter()
+                .map(|request| request.request.submit_sequence)
+                .max()
+            {
+                self.note_remote_completion(hwm);
+            }
             return Ok(());
         }
         let expected_result_len = if rma_read_results {
@@ -3979,6 +4049,13 @@ impl RemoteWalLeaf {
             self.write_bytes += write_payload_len as u64;
         }
         self.finish_request_batch_tracking()?;
+        if let Some(hwm) = requests
+            .iter()
+            .map(|request| request.request.submit_sequence)
+            .max()
+        {
+            self.note_remote_completion(hwm);
+        }
         Ok(())
     }
 
@@ -4016,6 +4093,7 @@ impl RemoteWalLeaf {
         }
         self.syncs += 1;
         self.sync_time = self.sync_time.saturating_add(started.elapsed());
+        self.note_remote_completion(submit_sequence);
         Ok(())
     }
 
@@ -4731,7 +4809,223 @@ enum WalOwnerIngressCommand {
         ingress: u32,
         sequence: u64,
     },
+    /// A destination session is fully connected and has completed all
+    /// transport/MR setup before it enters the owner command stream.  Merely
+    /// preparing it cannot affect foreground routing.
+    PrepareDirectRoute {
+        route: PreparedRemoteWalRoute,
+        response: SyncSender<io::Result<WalDirectRouteStatus>>,
+    },
+    /// Validate every per-owner fence before any owner mutates its route. The
+    /// control plane performs this for the complete vector while ingress is
+    /// gang-quiesced, making the following activation phase non-fallible under
+    /// normal operation rather than risking a partially switched owner set.
+    ValidateDirectRoute {
+        required_hwm: u64,
+        destination_hwm: u64,
+        placement_epoch: u64,
+        response: SyncSender<io::Result<WalDirectRouteStatus>>,
+    },
+    /// Replace the active source session at this ordered owner boundary.
+    /// The destination HWM is supplied by the off-path copier/replay worker;
+    /// both it and the locally observed source HWM must cover `required_hwm`.
+    ActivateDirectRoute {
+        required_hwm: u64,
+        destination_hwm: u64,
+        placement_epoch: u64,
+        response: SyncSender<io::Result<WalDirectRouteStatus>>,
+    },
+    AbortDirectRoute {
+        response: SyncSender<io::Result<WalDirectRouteStatus>>,
+    },
+    BeginDirectDirtyTracking {
+        volume_bytes: u64,
+        granule_bytes: u64,
+        response: SyncSender<io::Result<WalDirectRouteStatus>>,
+    },
+    TakeDirectDirty {
+        response: SyncSender<io::Result<WalDirectDirtySnapshot>>,
+    },
+    StopDirectDirtyTracking {
+        response: SyncSender<io::Result<WalDirectRouteStatus>>,
+    },
+    FenceDirectSource {
+        sequence: u64,
+        response: SyncSender<io::Result<WalDirectRouteStatus>>,
+    },
     Eof,
+}
+
+struct PreparedRemoteWalRoute {
+    remote: RemoteWalLeaf,
+    destination_hwm: u64,
+    placement_epoch: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WalDirectRouteStatus {
+    lane: u32,
+    placement_epoch: u64,
+    source_hwm: u64,
+    destination_hwm: u64,
+    prepared: bool,
+    active_destination: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct WalDirectDirtySnapshot {
+    lane: u32,
+    granule_bytes: u64,
+    volume_bytes: u64,
+    words: Vec<u64>,
+    source_hwm: u64,
+}
+
+impl WalDirectDirtySnapshot {
+    fn dirty_ranges(&self) -> Vec<(u64, usize)> {
+        let mut ranges = Vec::new();
+        let mut open = None::<u64>;
+        let granules = self.volume_bytes.div_ceil(self.granule_bytes);
+        for granule in 0..=granules {
+            let dirty = granule < granules
+                && self.words[granule as usize / 64] & (1u64 << (granule % 64)) != 0;
+            match (open, dirty) {
+                (None, true) => open = Some(granule),
+                (Some(start), false) => {
+                    let offset = start * self.granule_bytes;
+                    let end = (granule * self.granule_bytes).min(self.volume_bytes);
+                    ranges.push((offset, (end - offset) as usize));
+                    open = None;
+                }
+                _ => {}
+            }
+        }
+        ranges
+    }
+
+    fn dirty_bytes(&self) -> u64 {
+        self.dirty_ranges()
+            .into_iter()
+            .map(|(_, len)| len as u64)
+            .sum()
+    }
+}
+
+struct WalDirectDirtyTracker {
+    granule_bytes: u64,
+    volume_bytes: u64,
+    words: Vec<u64>,
+    source_hwm: u64,
+}
+
+impl WalDirectDirtyTracker {
+    fn new(volume_bytes: u64, granule_bytes: u64) -> io::Result<Self> {
+        if volume_bytes == 0
+            || granule_bytes == 0
+            || !granule_bytes.is_power_of_two()
+            || granule_bytes < 4096
+            || volume_bytes % 4096 != 0
+            || granule_bytes % 4096 != 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "direct migration volume/granule must be non-zero 4K multiples and granule must be a power of two",
+            ));
+        }
+        let granules = volume_bytes.div_ceil(granule_bytes);
+        let word_count = usize::try_from(granules.div_ceil(64)).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "direct migration dirty bitmap exceeds address space",
+            )
+        })?;
+        Ok(Self {
+            granule_bytes,
+            volume_bytes,
+            words: vec![0; word_count],
+            source_hwm: 0,
+        })
+    }
+
+    fn mark_batch(&mut self, requests: &[PendingRemoteRead]) -> io::Result<()> {
+        for pending in requests
+            .iter()
+            .filter(|pending| pending.request.op == ZCNBLK_SHM_OP_WRITE)
+        {
+            let offset = pending.request.offset;
+            let end = offset
+                .checked_add(u64::from(pending.request.len))
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "dirty range overflow")
+                })?;
+            if end > self.volume_bytes || end <= offset {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "direct migration dirty range is outside the volume",
+                ));
+            }
+            let first = offset / self.granule_bytes;
+            let last = (end - 1) / self.granule_bytes;
+            for granule in first..=last {
+                self.words[granule as usize / 64] |= 1u64 << (granule % 64);
+            }
+            self.source_hwm = self.source_hwm.max(
+                pending
+                    .request
+                    .submit_sequence
+                    .max(pending.request_sequence + 1),
+            );
+        }
+        Ok(())
+    }
+
+    fn take(&mut self, lane: u32, remote_hwm: u64) -> WalDirectDirtySnapshot {
+        let word_count = self.words.len();
+        let words = std::mem::replace(&mut self.words, vec![0; word_count]);
+        let source_hwm = self.source_hwm.max(remote_hwm);
+        self.source_hwm = source_hwm;
+        WalDirectDirtySnapshot {
+            lane,
+            granule_bytes: self.granule_bytes,
+            volume_bytes: self.volume_bytes,
+            words,
+            source_hwm,
+        }
+    }
+}
+
+fn validate_direct_route_cutover(
+    current_epoch: u64,
+    requested_epoch: u64,
+    source_hwm: u64,
+    destination_hwm: u64,
+    required_hwm: u64,
+) -> io::Result<()> {
+    if requested_epoch <= current_epoch {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "direct-route epoch must advance: current={current_epoch} requested={requested_epoch}"
+            ),
+        ));
+    }
+    if source_hwm < required_hwm {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!(
+                "source route has not reached cutover HWM: source={source_hwm} required={required_hwm}"
+            ),
+        ));
+    }
+    if destination_hwm < required_hwm {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!(
+                "destination route has not reached cutover HWM: destination={destination_hwm} required={required_hwm}"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 enum WalOwnerIngressResult {
@@ -4865,6 +5159,1177 @@ struct WalOwnerIngressWorker {
     handle: Option<thread::JoinHandle<io::Result<RemoteWalLeaf>>>,
 }
 
+/// Stop every block-ingress lane at an owner-command boundary without moving
+/// the foreground payload path through a migration process.  The gate is only
+/// constructed when the migration control socket is configured.  The normal
+/// benchmark path is separately monomorphized with `MIGRATABLE=false`, so it
+/// contains neither these atomic loads nor a third poll descriptor.
+struct WalDirectMigrationGate {
+    lanes: usize,
+    control_fd: OwnedFd,
+    requested_generation: AtomicU64,
+    released_generation: AtomicU64,
+    lane_generations: Box<[AtomicU64]>,
+    lane_wake_fds: Box<[OwnedFd]>,
+    wait_lock: Mutex<()>,
+    wait_cv: Condvar,
+}
+
+impl WalDirectMigrationGate {
+    fn new(lanes: u32, control_fd: i32) -> io::Result<Self> {
+        if lanes == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "direct migration gate requires at least one lane",
+            ));
+        }
+        let lane_wake_fds = (0..lanes)
+            .map(|_| {
+                let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+                if fd < 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+                }
+            })
+            .collect::<io::Result<Vec<_>>>()?
+            .into_boxed_slice();
+        let control_fd = unsafe { libc::fcntl(control_fd, libc::F_DUPFD_CLOEXEC, 3) };
+        if control_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            lanes: lanes as usize,
+            control_fd: unsafe { OwnedFd::from_raw_fd(control_fd) },
+            requested_generation: AtomicU64::new(0),
+            released_generation: AtomicU64::new(0),
+            lane_generations: (0..lanes)
+                .map(|_| AtomicU64::new(0))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            lane_wake_fds,
+            wait_lock: Mutex::new(()),
+            wait_cv: Condvar::new(),
+        })
+    }
+
+    fn lane_wake_fd(&self, lane: u32) -> io::Result<i32> {
+        self.lane_wake_fds
+            .get(lane as usize)
+            .map(AsRawFd::as_raw_fd)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "direct migration wake lane {lane} exceeds {} lanes",
+                        self.lanes
+                    ),
+                )
+            })
+    }
+
+    fn wake_all_lanes(&self) -> io::Result<()> {
+        let value = 1u64;
+        for fd in &self.lane_wake_fds {
+            loop {
+                let written = unsafe {
+                    libc::write(
+                        fd.as_raw_fd(),
+                        ptr::from_ref(&value).cast::<libc::c_void>(),
+                        size_of::<u64>(),
+                    )
+                };
+                if written == size_of::<u64>() as isize {
+                    break;
+                }
+                let error = io::Error::last_os_error();
+                match error.kind() {
+                    io::ErrorKind::Interrupted => continue,
+                    io::ErrorKind::WouldBlock => break,
+                    _ => return Err(error),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn drain_lane_wake(&self, lane: u32) -> io::Result<()> {
+        let fd = self.lane_wake_fd(lane)?;
+        let mut value = 0u64;
+        loop {
+            let read = unsafe {
+                libc::read(
+                    fd,
+                    ptr::from_mut(&mut value).cast::<libc::c_void>(),
+                    size_of::<u64>(),
+                )
+            };
+            if read == size_of::<u64>() as isize {
+                return Ok(());
+            }
+            let error = io::Error::last_os_error();
+            match error.kind() {
+                io::ErrorKind::Interrupted => continue,
+                io::ErrorKind::WouldBlock => return Ok(()),
+                _ => return Err(error),
+            }
+        }
+    }
+
+    fn requested_after(&self, lane_generation: u64) -> Option<u64> {
+        let requested = self.requested_generation.load(Ordering::Acquire);
+        let released = self.released_generation.load(Ordering::Acquire);
+        (requested > lane_generation && requested > released).then_some(requested)
+    }
+
+    fn all_lanes_at(&self, generation: u64) -> bool {
+        self.lane_generations
+            .iter()
+            .all(|lane| lane.load(Ordering::Acquire) >= generation)
+    }
+
+    fn request_quiesce(&self, timeout: Duration) -> io::Result<u64> {
+        let mut guard = self
+            .wait_lock
+            .lock()
+            .map_err(|_| io::Error::other("direct migration gate mutex poisoned"))?;
+        let requested = self.requested_generation.load(Ordering::Acquire);
+        let released = self.released_generation.load(Ordering::Acquire);
+        if requested != released {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!(
+                    "direct migration quiesce is already active: requested={requested} released={released}"
+                ),
+            ));
+        }
+        let generation = requested.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "direct migration gate generation overflow",
+            )
+        })?;
+        let freeze =
+            unsafe { libc::ioctl(self.control_fd.as_raw_fd(), ZCNBLK_SHM_IOC_FREEZE_DISPATCH) };
+        if freeze < 0 {
+            return Err(io::Error::new(
+                io::Error::last_os_error().kind(),
+                format!(
+                    "failed to freeze /dev/zcnblk0 dispatch for direct migration: {}",
+                    io::Error::last_os_error(),
+                ),
+            ));
+        }
+        self.requested_generation
+            .store(generation, Ordering::Release);
+        if let Err(error) = self.wake_all_lanes() {
+            let _ =
+                unsafe { libc::ioctl(self.control_fd.as_raw_fd(), ZCNBLK_SHM_IOC_THAW_DISPATCH) };
+            self.released_generation
+                .store(generation, Ordering::Release);
+            return Err(error);
+        }
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        while !self.all_lanes_at(generation) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let _ = self.release(generation);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "direct migration timed out waiting for {}/{} lanes at generation {generation}",
+                        self.lane_generations
+                            .iter()
+                            .filter(|lane| lane.load(Ordering::Acquire) >= generation)
+                            .count(),
+                        self.lanes,
+                    ),
+                ));
+            }
+            let waited = self
+                .wait_cv
+                .wait_timeout(guard, remaining)
+                .map_err(|_| io::Error::other("direct migration gate mutex poisoned"))?;
+            guard = waited.0;
+            if waited.1.timed_out() && !self.all_lanes_at(generation) {
+                let _ = self.release(generation);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "direct migration timed out waiting for lanes at generation {generation}"
+                    ),
+                ));
+            }
+        }
+        Ok(generation)
+    }
+
+    fn release(&self, generation: u64) -> io::Result<()> {
+        let thaw =
+            unsafe { libc::ioctl(self.control_fd.as_raw_fd(), ZCNBLK_SHM_IOC_THAW_DISPATCH) };
+        let thaw_error = (thaw < 0).then(io::Error::last_os_error);
+        self.released_generation
+            .fetch_max(generation, Ordering::Release);
+        self.wait_cv.notify_all();
+        if let Some(error) = thaw_error {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("failed to thaw /dev/zcnblk0 dispatch after direct migration: {error}"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn with_quiesced<T>(
+        &self,
+        timeout: Duration,
+        operation: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        let generation = self.request_quiesce(timeout)?;
+        let result = operation();
+        let release = self.release(generation);
+        match (result, release) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Ok(value), Ok(())) => Ok(value),
+        }
+    }
+
+    fn quiesce_lane(&self, lane: u32, generation: u64) -> io::Result<()> {
+        let lane_generation = self.lane_generations.get(lane as usize).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("direct migration gate has no lane {lane}"),
+            )
+        })?;
+        lane_generation.store(generation, Ordering::Release);
+        self.wait_cv.notify_all();
+        let mut guard = self
+            .wait_lock
+            .lock()
+            .map_err(|_| io::Error::other("direct migration gate mutex poisoned"))?;
+        while self.released_generation.load(Ordering::Acquire) < generation
+            && RUNNING.load(Ordering::Acquire)
+        {
+            guard = self
+                .wait_cv
+                .wait(guard)
+                .map_err(|_| io::Error::other("direct migration gate mutex poisoned"))?;
+        }
+        Ok(())
+    }
+}
+
+struct WalDirectRouteControl {
+    stop: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for WalDirectRouteControl {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+struct WalDirectRouteSocketGuard {
+    path: PathBuf,
+    dev: u64,
+    ino: u64,
+}
+
+impl Drop for WalDirectRouteSocketGuard {
+    fn drop(&mut self) {
+        if let Ok(metadata) = fs::symlink_metadata(&self.path)
+            && metadata.dev() == self.dev
+            && metadata.ino() == self.ino
+        {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn direct_route_response(
+    response: Receiver<io::Result<WalDirectRouteStatus>>,
+) -> io::Result<WalDirectRouteStatus> {
+    response
+        .recv_timeout(Duration::from_secs(30))
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("direct-route owner response timed out: {error}"),
+            )
+        })?
+}
+
+fn abort_prepared_direct_routes(commands: &[SyncSender<WalOwnerIngressCommand>]) {
+    for command in commands {
+        let (response_tx, response_rx) = sync_channel(1);
+        if command
+            .send(WalOwnerIngressCommand::AbortDirectRoute {
+                response: response_tx,
+            })
+            .is_ok()
+        {
+            let _ = direct_route_response(response_rx);
+        }
+    }
+}
+
+fn prepare_direct_routes(
+    commands: &[SyncSender<WalOwnerIngressCommand>],
+    lane_count: u32,
+    rma_read_buffer_bytes: usize,
+    placement_epoch: u64,
+    destination_hwms: &[u64],
+) -> io::Result<Vec<WalDirectRouteStatus>> {
+    if destination_hwms.len() != commands.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "direct-route destination HWM vector has {} entries for {} owners",
+                destination_hwms.len(),
+                commands.len(),
+            ),
+        ));
+    }
+    let connect_handles = (0..lane_count)
+        .map(|lane| {
+            let address = lane_env_entry(
+                "URING_PLAY_ZCNBLK_SHM_MIGRATION_DEST_ADDRS",
+                lane,
+                lane_count,
+            )?
+            .or_else(|| env::var("URING_PLAY_ZCNBLK_SHM_MIGRATION_DEST_ADDR").ok())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "direct migration requires URING_PLAY_ZCNBLK_SHM_MIGRATION_DEST_ADDR or per-owner ADDRS",
+                )
+            })?;
+            Ok(thread::spawn(move || {
+                RemoteWalLeaf::connect_at(lane, lane_count, rma_read_buffer_bytes, &address)
+            }))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut routes = Vec::with_capacity(connect_handles.len());
+    for handle in connect_handles {
+        routes.push(
+            handle
+                .join()
+                .map_err(|_| io::Error::other("direct-route destination connect panicked"))??,
+        );
+    }
+    if routes.len() != commands.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "direct-route owner count mismatch routes={} owners={}",
+                routes.len(),
+                commands.len()
+            ),
+        ));
+    }
+    let mut statuses = Vec::with_capacity(routes.len());
+    for ((command, remote), &destination_hwm) in commands.iter().zip(routes).zip(destination_hwms) {
+        let (response_tx, response_rx) = sync_channel(1);
+        if let Err(error) = command.send(WalOwnerIngressCommand::PrepareDirectRoute {
+            route: PreparedRemoteWalRoute {
+                remote,
+                destination_hwm,
+                placement_epoch,
+            },
+            response: response_tx,
+        }) {
+            abort_prepared_direct_routes(commands);
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("direct-route owner command failed: {error}"),
+            ));
+        }
+        match direct_route_response(response_rx) {
+            Ok(status) => statuses.push(status),
+            Err(error) => {
+                abort_prepared_direct_routes(commands);
+                return Err(error);
+            }
+        }
+    }
+    Ok(statuses)
+}
+
+fn activate_direct_routes(
+    commands: &[SyncSender<WalOwnerIngressCommand>],
+    placement_epoch: u64,
+    required_hwms: &[u64],
+    destination_hwms: &[u64],
+) -> io::Result<Vec<WalDirectRouteStatus>> {
+    if required_hwms.len() != commands.len() || destination_hwms.len() != commands.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "direct-route HWM vector mismatch: owners={} required={} destination={}",
+                commands.len(),
+                required_hwms.len(),
+                destination_hwms.len(),
+            ),
+        ));
+    }
+    let mut validations = Vec::with_capacity(commands.len());
+    for ((command, &required_hwm), &destination_hwm) in
+        commands.iter().zip(required_hwms).zip(destination_hwms)
+    {
+        let (response_tx, response_rx) = sync_channel(1);
+        command
+            .send(WalOwnerIngressCommand::ValidateDirectRoute {
+                required_hwm,
+                destination_hwm,
+                placement_epoch,
+                response: response_tx,
+            })
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("direct-route owner validation command failed: {error}"),
+                )
+            })?;
+        validations.push(response_rx);
+    }
+    for validation in validations {
+        direct_route_response(validation)?;
+    }
+    let mut responses = Vec::with_capacity(commands.len());
+    for ((command, &required_hwm), &destination_hwm) in
+        commands.iter().zip(required_hwms).zip(destination_hwms)
+    {
+        let (response_tx, response_rx) = sync_channel(1);
+        command
+            .send(WalOwnerIngressCommand::ActivateDirectRoute {
+                required_hwm,
+                destination_hwm,
+                placement_epoch,
+                response: response_tx,
+            })
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("direct-route owner command failed: {error}"),
+                )
+            })?;
+        responses.push(response_rx);
+    }
+    responses.into_iter().map(direct_route_response).collect()
+}
+
+fn parse_direct_hwm_vector(value: &str, owners: usize, field: &str) -> io::Result<Vec<u64>> {
+    let values = value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value.parse::<u64>().map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid {field} HWM {value:?}: {error}"),
+                )
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    if values.len() != owners {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{field} HWM vector must contain one comma-separated value per owner: got {} expected {owners}",
+                values.len(),
+            ),
+        ));
+    }
+    Ok(values)
+}
+
+fn begin_direct_dirty_tracking(
+    commands: &[SyncSender<WalOwnerIngressCommand>],
+    volume_bytes: u64,
+    granule_bytes: u64,
+) -> io::Result<Vec<WalDirectRouteStatus>> {
+    let mut responses = Vec::with_capacity(commands.len());
+    for command in commands {
+        let (response_tx, response_rx) = sync_channel(1);
+        command
+            .send(WalOwnerIngressCommand::BeginDirectDirtyTracking {
+                volume_bytes,
+                granule_bytes,
+                response: response_tx,
+            })
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("direct migration dirty-start command failed: {error}"),
+                )
+            })?;
+        responses.push(response_rx);
+    }
+    responses.into_iter().map(direct_route_response).collect()
+}
+
+fn take_direct_dirty(
+    commands: &[SyncSender<WalOwnerIngressCommand>],
+) -> io::Result<Vec<WalDirectDirtySnapshot>> {
+    let mut responses = Vec::with_capacity(commands.len());
+    for command in commands {
+        let (response_tx, response_rx) = sync_channel(1);
+        command
+            .send(WalOwnerIngressCommand::TakeDirectDirty {
+                response: response_tx,
+            })
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("direct migration dirty-take command failed: {error}"),
+                )
+            })?;
+        responses.push(response_rx);
+    }
+    responses
+        .into_iter()
+        .map(|response| {
+            response
+                .recv_timeout(Duration::from_secs(30))
+                .map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("direct migration dirty snapshot timed out: {error}"),
+                    )
+                })?
+        })
+        .collect()
+}
+
+fn stop_direct_dirty_tracking(
+    commands: &[SyncSender<WalOwnerIngressCommand>],
+) -> io::Result<Vec<WalDirectRouteStatus>> {
+    let mut responses = Vec::with_capacity(commands.len());
+    for command in commands {
+        let (response_tx, response_rx) = sync_channel(1);
+        command
+            .send(WalOwnerIngressCommand::StopDirectDirtyTracking {
+                response: response_tx,
+            })
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("direct migration dirty-stop command failed: {error}"),
+                )
+            })?;
+        responses.push(response_rx);
+    }
+    responses.into_iter().map(direct_route_response).collect()
+}
+
+fn merge_direct_dirty_snapshots(
+    snapshots: &[WalDirectDirtySnapshot],
+) -> io::Result<(Vec<(u64, usize)>, Vec<u64>)> {
+    let first = snapshots.first().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "direct migration has no dirty snapshots",
+        )
+    })?;
+    let mut merged = WalDirectDirtySnapshot {
+        lane: 0,
+        granule_bytes: first.granule_bytes,
+        volume_bytes: first.volume_bytes,
+        words: vec![0; first.words.len()],
+        source_hwm: 0,
+    };
+    let mut source_hwms = Vec::with_capacity(snapshots.len());
+    for snapshot in snapshots {
+        if snapshot.granule_bytes != merged.granule_bytes
+            || snapshot.volume_bytes != merged.volume_bytes
+            || snapshot.words.len() != merged.words.len()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "direct migration owner dirty bitmap shapes differ",
+            ));
+        }
+        for (merged, word) in merged.words.iter_mut().zip(&snapshot.words) {
+            *merged |= *word;
+        }
+        source_hwms.push(snapshot.source_hwm);
+    }
+    Ok((merged.dirty_ranges(), source_hwms))
+}
+
+fn partition_direct_copy_ranges(
+    ranges: &[(u64, usize)],
+    lanes: usize,
+    chunk_bytes: usize,
+) -> io::Result<Vec<Vec<(u64, usize)>>> {
+    if lanes == 0 || chunk_bytes == 0 || chunk_bytes % 4096 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "direct migration replay requires lanes and a 4K-aligned chunk",
+        ));
+    }
+    let mut work = vec![Vec::new(); lanes];
+    let mut next_lane = 0usize;
+    for &(range_offset, range_len) in ranges {
+        let mut offset = range_offset;
+        let mut remaining = range_len;
+        while remaining != 0 {
+            let len = remaining.min(chunk_bytes);
+            work[next_lane].push((offset, len));
+            next_lane = (next_lane + 1) % lanes;
+            offset = offset.checked_add(len as u64).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "direct migration replay range overflow",
+                )
+            })?;
+            remaining -= len;
+        }
+    }
+    Ok(work)
+}
+
+fn add_direct_copy_stats(total: &mut WalBaseCopyStats, next: WalBaseCopyStats) {
+    total.bytes_copied = total.bytes_copied.saturating_add(next.bytes_copied);
+    total.ranges_copied = total.ranges_copied.saturating_add(next.ranges_copied);
+    total.payload_userspace_buffers = total
+        .payload_userspace_buffers
+        .saturating_add(next.payload_userspace_buffers);
+    total.splice_payload_syscalls = total
+        .splice_payload_syscalls
+        .saturating_add(next.splice_payload_syscalls);
+    total.elapsed_ns = total.elapsed_ns.max(next.elapsed_ns);
+}
+
+fn copy_direct_base_parallel(
+    copiers: &mut [TcpWalRangeCopier],
+    specs: &[WalBaseCopySpec],
+) -> io::Result<WalBaseCopyStats> {
+    thread::scope(|scope| {
+        let handles = copiers
+            .iter_mut()
+            .zip(specs.iter().copied())
+            .map(|(copier, spec)| {
+                scope.spawn(move || {
+                    crate::wal_live_migration::pin_migration_role("copy", spec.lane_id)?;
+                    copier.copy_striped_base(spec, None)
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut total = WalBaseCopyStats::default();
+        for handle in handles {
+            let stats = handle
+                .join()
+                .map_err(|_| io::Error::other("direct migration base-copy lane panicked"))??;
+            add_direct_copy_stats(&mut total, stats);
+        }
+        Ok(total)
+    })
+}
+
+fn copy_direct_ranges_parallel(
+    copiers: &mut [TcpWalRangeCopier],
+    ranges: &[(u64, usize)],
+    chunk_bytes: usize,
+) -> io::Result<WalBaseCopyStats> {
+    let work = partition_direct_copy_ranges(ranges, copiers.len(), chunk_bytes)?;
+    if copiers.len() == 1 {
+        crate::wal_live_migration::pin_migration_role("copy", 0)?;
+        return copiers[0].copy_ranges(&work[0], chunk_bytes);
+    }
+    thread::scope(|scope| {
+        let handles = copiers
+            .iter_mut()
+            .zip(&work)
+            .enumerate()
+            .map(|(lane, (copier, ranges))| {
+                scope.spawn(move || {
+                    crate::wal_live_migration::pin_migration_role("copy", lane as u32)?;
+                    copier.copy_ranges(ranges, chunk_bytes)
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut total = WalBaseCopyStats::default();
+        for handle in handles {
+            let stats = handle
+                .join()
+                .map_err(|_| io::Error::other("direct migration replay lane panicked"))??;
+            add_direct_copy_stats(&mut total, stats);
+        }
+        Ok(total)
+    })
+}
+
+fn run_tcp_direct_migration(
+    commands: &[SyncSender<WalOwnerIngressCommand>],
+    owner_count: u32,
+    rma_read_buffer_bytes: usize,
+    migration_gate: &WalDirectMigrationGate,
+    quiesce_timeout: Duration,
+    placement_epoch: u64,
+    volume_bytes: u64,
+    chunk_bytes: usize,
+    granule_bytes: u64,
+) -> io::Result<String> {
+    let transport =
+        env::var("URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT").unwrap_or_else(|_| "tcp".to_string());
+    if transport != "tcp" {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the integrated direct-route migration command currently supports TCP; OFI must not fall back through the foreground proxy",
+        ));
+    }
+    let source_address = env::var("URING_PLAY_ZCNBLK_SHM_MIGRATION_SOURCE_ADDR")
+        .or_else(|_| env::var("URING_PLAY_ZCNBLK_SHM_LEAF_ADDR"))
+        .unwrap_or_else(|_| "127.0.0.1:29000".to_string());
+    let destination_address =
+        env::var("URING_PLAY_ZCNBLK_SHM_MIGRATION_DEST_ADDR").map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "direct migration requires URING_PLAY_ZCNBLK_SHM_MIGRATION_DEST_ADDR",
+            )
+        })?;
+    let source = Endpoint::parse(&source_address)?;
+    let destination = Endpoint::parse(&destination_address)?;
+    let method = match env::var("URING_PLAY_ZCNBLK_SHM_MIGRATION_TCP_COPY_METHOD")
+        .unwrap_or_else(|_| "splice".to_string())
+        .as_str()
+    {
+        "splice" => TcpBulkCopyMethod::Splice,
+        "buffered" => TcpBulkCopyMethod::Buffered,
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown direct migration TCP copy method {other:?}"),
+            ));
+        }
+    };
+    let specs = (0..owner_count)
+        .map(|lane| WalBaseCopySpec {
+            volume_bytes,
+            chunk_bytes,
+            lane_id: lane,
+            lane_count: owner_count,
+            method,
+        })
+        .collect::<Vec<_>>();
+    let mut connect_handles = Vec::with_capacity(owner_count as usize);
+    for spec in specs.iter().copied() {
+        let source = source.clone();
+        let destination = destination.clone();
+        let hello = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_HELLO,
+            flags: ZCNBLK_FAN_WAL_FLAG_RESULT_RANGE_BATCH,
+            lane_id: spec.lane_id,
+            lane_count: spec.lane_count,
+            branch_id: 0,
+            branch_count: 1,
+            placement_epoch,
+            ..ZcnblkFanWalFrame::default()
+        }
+        .with_hello_features(ZCNBLK_WAL_FEATURE_ALL)?;
+        connect_handles.push(thread::spawn(move || {
+            crate::wal_live_migration::pin_migration_role("copy", spec.lane_id)?;
+            TcpWalRangeCopier::connect(&source, &destination, hello, spec)
+        }));
+    }
+    let mut copiers = Vec::with_capacity(connect_handles.len());
+    for handle in connect_handles {
+        copiers.push(
+            handle
+                .join()
+                .map_err(|_| io::Error::other("direct migration copier connect panicked"))??,
+        );
+    }
+
+    let zero_hwms = vec![0; commands.len()];
+    prepare_direct_routes(
+        commands,
+        owner_count,
+        rma_read_buffer_bytes,
+        placement_epoch,
+        &zero_hwms,
+    )?;
+    if let Err(error) = begin_direct_dirty_tracking(commands, volume_bytes, granule_bytes) {
+        abort_prepared_direct_routes(commands);
+        let _ = stop_direct_dirty_tracking(commands);
+        return Err(error);
+    }
+
+    let migration_started = Instant::now();
+    let result = (|| {
+        let base = copy_direct_base_parallel(&mut copiers, &specs)?;
+        let catchup_passes = env::var("URING_PLAY_ZCNBLK_SHM_MIGRATION_CATCHUP_PASSES")
+            .ok()
+            .map(|value| value.parse::<usize>())
+            .transpose()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+            .unwrap_or(2);
+        let mut replay = WalBaseCopyStats::default();
+        for _ in 0..catchup_passes {
+            let snapshots = take_direct_dirty(commands)?;
+            let (ranges, _) = merge_direct_dirty_snapshots(&snapshots)?;
+            let stats = copy_direct_ranges_parallel(&mut copiers, &ranges, chunk_bytes)?;
+            add_direct_copy_stats(&mut replay, stats);
+        }
+
+        let cutover_started = Instant::now();
+        let (
+            final_copy,
+            source_hwms,
+            destination_hwms,
+            frozen_entry_ns,
+            final_copy_ns,
+            sync_ns,
+            route_switch_ns,
+        ) = migration_gate.with_quiesced(quiesce_timeout, || {
+            let frozen_entry_ns = cutover_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            let snapshots = take_direct_dirty(commands)?;
+            let (ranges, source_hwms) = merge_direct_dirty_snapshots(&snapshots)?;
+            let final_copy_started = Instant::now();
+            let final_copy = copy_direct_ranges_parallel(&mut copiers, &ranges, chunk_bytes)?;
+            let final_copy_ns = final_copy_started
+                .elapsed()
+                .as_nanos()
+                .min(u64::MAX as u128) as u64;
+            let sync_started = Instant::now();
+            let mut destination_hwms = Vec::with_capacity(copiers.len());
+            for (copier, &source_hwm) in copiers.iter_mut().zip(&source_hwms) {
+                destination_hwms.push(copier.sync_destination(source_hwm)?);
+            }
+            let sync_ns = sync_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            let route_switch_started = Instant::now();
+            stop_direct_dirty_tracking(commands)?;
+            activate_direct_routes(commands, placement_epoch, &source_hwms, &destination_hwms)?;
+            let route_switch_ns = route_switch_started
+                .elapsed()
+                .as_nanos()
+                .min(u64::MAX as u128) as u64;
+            Ok((
+                final_copy,
+                source_hwms,
+                destination_hwms,
+                frozen_entry_ns,
+                final_copy_ns,
+                sync_ns,
+                route_switch_ns,
+            ))
+        })?;
+        let cutover_ns = cutover_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let thaw_ns = cutover_ns.saturating_sub(
+            frozen_entry_ns
+                .saturating_add(final_copy_ns)
+                .saturating_add(sync_ns)
+                .saturating_add(route_switch_ns),
+        );
+        Ok((
+            base,
+            replay,
+            final_copy,
+            source_hwms,
+            destination_hwms,
+            cutover_ns,
+            frozen_entry_ns,
+            final_copy_ns,
+            sync_ns,
+            route_switch_ns,
+            thaw_ns,
+        ))
+    })();
+    match result {
+        Ok((
+            base,
+            replay,
+            final_copy,
+            source_hwms,
+            destination_hwms,
+            cutover_ns,
+            freeze_drain_ns,
+            final_copy_ns,
+            sync_ns,
+            route_switch_ns,
+            thaw_ns,
+        )) => Ok(format!(
+            "OK active_destination=true placement_epoch={placement_epoch} owners={owner_count} base_bytes={} replay_bytes={} final_replay_bytes={} source_hwm_vector={source_hwms:?} destination_hwm_vector={destination_hwms:?} elapsed_ms={} cutover_us={} freeze_drain_us={} final_copy_us={} sync_us={} route_switch_us={} thaw_us={} foreground_hops=1 foreground_payload_rebuffer_copies=0 copy_payload_userspace_buffers={} copy_method={method:?}",
+            base.bytes_copied,
+            replay.bytes_copied,
+            final_copy.bytes_copied,
+            migration_started.elapsed().as_millis(),
+            cutover_ns / 1_000,
+            freeze_drain_ns / 1_000,
+            final_copy_ns / 1_000,
+            sync_ns / 1_000,
+            route_switch_ns / 1_000,
+            thaw_ns / 1_000,
+            base.payload_userspace_buffers
+                .saturating_add(replay.payload_userspace_buffers)
+                .saturating_add(final_copy.payload_userspace_buffers),
+        )),
+        Err(error) => {
+            let _ = stop_direct_dirty_tracking(commands);
+            abort_prepared_direct_routes(commands);
+            Err(error)
+        }
+    }
+}
+
+fn handle_direct_route_command(
+    command: &str,
+    commands: &[SyncSender<WalOwnerIngressCommand>],
+    lane_count: u32,
+    rma_read_buffer_bytes: usize,
+    migration_gate: &WalDirectMigrationGate,
+    quiesce_timeout: Duration,
+) -> io::Result<String> {
+    let fields = command.split_whitespace().collect::<Vec<_>>();
+    match fields.as_slice() {
+        ["migrate", epoch, volume_bytes, chunk_bytes]
+        | ["migrate", epoch, volume_bytes, chunk_bytes, "4096"] => {
+            let epoch = epoch
+                .parse::<u64>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+            let volume_bytes = volume_bytes
+                .parse::<u64>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+            let chunk_bytes = chunk_bytes
+                .parse::<usize>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+            run_tcp_direct_migration(
+                commands,
+                lane_count,
+                rma_read_buffer_bytes,
+                migration_gate,
+                quiesce_timeout,
+                epoch,
+                volume_bytes,
+                chunk_bytes,
+                4096,
+            )
+        }
+        ["migrate", epoch, volume_bytes, chunk_bytes, granule_bytes] => {
+            let epoch = epoch
+                .parse::<u64>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+            let volume_bytes = volume_bytes
+                .parse::<u64>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+            let chunk_bytes = chunk_bytes
+                .parse::<usize>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+            let granule_bytes = granule_bytes
+                .parse::<u64>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+            run_tcp_direct_migration(
+                commands,
+                lane_count,
+                rma_read_buffer_bytes,
+                migration_gate,
+                quiesce_timeout,
+                epoch,
+                volume_bytes,
+                chunk_bytes,
+                granule_bytes,
+            )
+        }
+        ["prepare", epoch, destination_hwms] => {
+            let epoch = epoch
+                .parse::<u64>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+            let destination_hwms =
+                parse_direct_hwm_vector(destination_hwms, commands.len(), "destination")?;
+            let statuses = prepare_direct_routes(
+                commands,
+                lane_count,
+                rma_read_buffer_bytes,
+                epoch,
+                &destination_hwms,
+            )?;
+            Ok(format!(
+                "OK prepared=true lanes={} placement_epoch={epoch} destination_hwm_vector={destination_hwms:?}",
+                statuses.len()
+            ))
+        }
+        ["cutover", epoch, required_hwms, destination_hwms] => {
+            if !env_enabled_or(
+                "URING_PLAY_ZCNBLK_SHM_MIGRATION_ALLOW_EXTERNAL_HWM_PROOF",
+                false,
+            ) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "external HWM cutover proof is disabled; use the integrated migrate command",
+                ));
+            }
+            let epoch = epoch
+                .parse::<u64>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+            let required_hwms = parse_direct_hwm_vector(required_hwms, commands.len(), "required")?;
+            let destination_hwms =
+                parse_direct_hwm_vector(destination_hwms, commands.len(), "destination")?;
+            let statuses = migration_gate.with_quiesced(quiesce_timeout, || {
+                activate_direct_routes(commands, epoch, &required_hwms, &destination_hwms)
+            })?;
+            Ok(format!(
+                "OK active_destination=true lanes={} placement_epoch={epoch} required_hwm_vector={required_hwms:?} destination_hwm_vector={destination_hwms:?} foreground_hops=1 payload_rebuffer_copies=0",
+                statuses.len()
+            ))
+        }
+        ["abort"] => {
+            abort_prepared_direct_routes(commands);
+            Ok("OK prepared=false active_destination=false".to_string())
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "use: migrate EPOCH VOLUME_BYTES CHUNK_BYTES [GRANULE_BYTES] | prepare EPOCH DESTINATION_HWM_CSV | cutover EPOCH REQUIRED_HWM_CSV DESTINATION_HWM_CSV | abort",
+        )),
+    }
+}
+
+fn wal_direct_route_control_from_env(
+    commands: Option<Arc<[SyncSender<WalOwnerIngressCommand>]>>,
+    rma_read_buffer_bytes: usize,
+    migration_gate: Option<Arc<WalDirectMigrationGate>>,
+) -> io::Result<Option<WalDirectRouteControl>> {
+    let Some(path) = env::var_os("URING_PLAY_ZCNBLK_SHM_MIGRATION_CONTROL_SOCKET")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
+        return Ok(None);
+    };
+    let commands = commands.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "direct live migration currently requires stable userspace owner ingress",
+        )
+    })?;
+    let migration_gate = migration_gate.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "direct migration control socket is missing its lane gate",
+        )
+    })?;
+    let quiesce_timeout = Duration::from_millis(
+        env::var("URING_PLAY_ZCNBLK_SHM_MIGRATION_QUIESCE_TIMEOUT_MS")
+            .ok()
+            .map(|value| value.parse::<u64>())
+            .transpose()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+            .unwrap_or(5_000)
+            .max(1),
+    );
+    let lane_count = u32::try_from(commands.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "direct-route owner count exceeds u32",
+        )
+    })?;
+    let listener = UnixListener::bind(&path)?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o660))?;
+    listener.set_nonblocking(true)?;
+    let metadata = fs::symlink_metadata(&path)?;
+    let guard = WalDirectRouteSocketGuard {
+        path: path.clone(),
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = Arc::clone(&stop);
+    let topology_strict = ["URING_PLAY_TOPOLOGY_STRICT", "URING_PLAY_TOPOLOGY_FATAL"]
+        .iter()
+        .any(|name| {
+            env::var(name)
+                .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+                .unwrap_or(false)
+        });
+    let worker = thread::Builder::new()
+        .name("zcnblk-direct-route-control".to_string())
+        .spawn(move || {
+            let _guard = guard;
+            let control_cpu = match env::var("ZCNBLK_WAL_MIGRATION_CONTROL_CPU") {
+                Ok(value) if !value.trim().is_empty() => match value.parse::<usize>() {
+                    Ok(cpu) => match crate::set_current_thread_affinity(cpu) {
+                        Ok(()) => Some(cpu),
+                        Err(error) => {
+                            eprintln!(
+                                "zcnblk-shm-target-direct-route-control-error: failed to pin control CPU {cpu}: {error}"
+                            );
+                            return;
+                        }
+                    },
+                    Err(error) => {
+                        eprintln!(
+                            "zcnblk-shm-target-direct-route-control-error: invalid ZCNBLK_WAL_MIGRATION_CONTROL_CPU: {error}"
+                        );
+                        return;
+                    }
+                },
+                _ if topology_strict => {
+                    eprintln!(
+                        "zcnblk-shm-target-direct-route-control-error: TOPOLOGY ERROR: ZCNBLK_WAL_MIGRATION_CONTROL_CPU is required for strict direct migration"
+                    );
+                    return;
+                }
+                _ => None,
+            };
+            eprintln!(
+                "zcnblk-shm-target-direct-route-control: socket={} owners={} control_cpu={} foreground_topology=block-edge->active-terminal-leaf gateway=false",
+                path.display(), lane_count, control_cpu.map_or_else(|| "unpinned".to_string(), |cpu| cpu.to_string()),
+            );
+            while !worker_stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut bytes = [0u8; 4096];
+                        let response = match stream.read(&mut bytes) {
+                            Ok(0) => Err(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "empty direct-route command",
+                            )),
+                            Ok(count) => std::str::from_utf8(&bytes[..count])
+                                .map_err(|error| {
+                                    io::Error::new(io::ErrorKind::InvalidData, error)
+                                })
+                                .and_then(|command| {
+                                    handle_direct_route_command(
+                                        command.trim(),
+                                        &commands,
+                                        lane_count,
+                                        rma_read_buffer_bytes,
+                                        &migration_gate,
+                                        quiesce_timeout,
+                                    )
+                                }),
+                            Err(error) => Err(error),
+                        };
+                        let line = match response {
+                            Ok(response) => response,
+                            Err(error) => format!("ERR kind={:?} message={error}", error.kind()),
+                        };
+                        let _ = stream.write_all(line.as_bytes());
+                        let _ = stream.write_all(b"\n");
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => {
+                        eprintln!("zcnblk-shm-target-direct-route-control-error: {error}");
+                        break;
+                    }
+                }
+            }
+        })?;
+    Ok(Some(WalDirectRouteControl {
+        stop,
+        worker: Some(worker),
+    }))
+}
+
 impl WalOwnerIngressWorker {
     fn mixed_dispatch_is_immediate(
         explicit_immediate: bool,
@@ -4945,6 +6410,13 @@ impl WalOwnerIngressWorker {
                         return Err(error);
                     }
                 };
+                let mut prepared_route =
+                    None::<(PreparedRemoteWalRoute, RemoteWalTxContext)>;
+                // Transmit rings are thread-affine. Retired source routes stay
+                // owned here until shutdown rather than crossing a thread or
+                // extending cutover with a terminal EOF round trip.
+                let mut retired_routes = Vec::<(RemoteWalLeaf, RemoteWalTxContext)>::new();
+                let mut direct_dirty = None::<WalDirectDirtyTracker>;
                 startup_tx.send(Ok(())).map_err(|_| {
                     io::Error::new(
                         io::ErrorKind::BrokenPipe,
@@ -5408,6 +6880,9 @@ impl WalOwnerIngressWorker {
                                         report_failure(&error);
                                         return Err(error);
                                     }
+                                    if let Some(tracker) = direct_dirty.as_mut() {
+                                        tracker.mark_batch(&batch)?;
+                                    }
                                     let mut offset = 0usize;
                                     for (segment_ingress, len) in segments {
                                         let end = offset.checked_add(len).ok_or_else(|| {
@@ -5442,9 +6917,252 @@ impl WalOwnerIngressWorker {
                                 WalOwnerIngressResult::Sync(sequence),
                             )?;
                         }
+                        WalOwnerIngressCommand::PrepareDirectRoute {
+                            mut route,
+                            response,
+                        } => {
+                            let status = (|| {
+                                if route.remote.lane_id != owner
+                                    || route.remote.lane_count != remote.lane_count
+                                {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        format!(
+                                            "prepared route shape differs from owner: owner={owner} route_lane={} active_lanes={} route_lanes={}",
+                                            route.remote.lane_id,
+                                            remote.lane_count,
+                                            route.remote.lane_count,
+                                        ),
+                                    ));
+                                }
+                                if route.placement_epoch <= remote.route_epoch {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        format!(
+                                            "prepared route epoch must advance: current={} prepared={}",
+                                            remote.route_epoch, route.placement_epoch,
+                                        ),
+                                    ));
+                                }
+                                route.remote.attach_mapping(Arc::clone(&mapping))?;
+                                route.remote.target_cpu = Some(cpu);
+                                let prepared_tx = RemoteWalTxContext::new(&route.remote)?;
+                                if let Some(previous) =
+                                    prepared_route.replace((route, prepared_tx))
+                                {
+                                    retired_routes.push((previous.0.remote, previous.1));
+                                }
+                                let prepared = &prepared_route
+                                    .as_ref()
+                                    .expect("prepared route was just installed")
+                                    .0;
+                                Ok(WalDirectRouteStatus {
+                                    lane: owner,
+                                    placement_epoch: remote.route_epoch,
+                                    source_hwm: remote.remote_completion_hwm,
+                                    destination_hwm: prepared.destination_hwm,
+                                    prepared: true,
+                                    active_destination: false,
+                                })
+                            })();
+                            let _ = response.send(status);
+                        }
+                        WalOwnerIngressCommand::ValidateDirectRoute {
+                            required_hwm,
+                            destination_hwm,
+                            placement_epoch,
+                            response,
+                        } => {
+                            let status = (|| {
+                                tx.ensure_idle()?;
+                                let prepared = prepared_route.as_ref().ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::NotFound,
+                                        "direct-route validation has no prepared destination",
+                                    )
+                                })?;
+                                if prepared.0.placement_epoch != placement_epoch {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        format!(
+                                            "prepared route epoch mismatch: prepared={} requested={placement_epoch}",
+                                            prepared.0.placement_epoch,
+                                        ),
+                                    ));
+                                }
+                                let destination_hwm =
+                                    destination_hwm.max(prepared.0.destination_hwm);
+                                validate_direct_route_cutover(
+                                    remote.route_epoch,
+                                    placement_epoch,
+                                    remote.remote_completion_hwm,
+                                    destination_hwm,
+                                    required_hwm,
+                                )?;
+                                Ok(WalDirectRouteStatus {
+                                    lane: owner,
+                                    placement_epoch: remote.route_epoch,
+                                    source_hwm: remote.remote_completion_hwm,
+                                    destination_hwm,
+                                    prepared: true,
+                                    active_destination: false,
+                                })
+                            })();
+                            let _ = response.send(status);
+                        }
+                        WalOwnerIngressCommand::ActivateDirectRoute {
+                            required_hwm,
+                            destination_hwm,
+                            placement_epoch,
+                            response,
+                        } => {
+                            let status = (|| {
+                                tx.ensure_idle()?;
+                                let (mut prepared, prepared_tx) =
+                                    prepared_route.take().ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::NotFound,
+                                        "direct-route activation has no prepared destination",
+                                    )
+                                })?;
+                                if prepared.placement_epoch != placement_epoch {
+                                    let actual = prepared.placement_epoch;
+                                    prepared_route = Some((prepared, prepared_tx));
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        format!(
+                                            "prepared route epoch mismatch: prepared={actual} requested={placement_epoch}"
+                                        ),
+                                    ));
+                                }
+                                let destination_hwm =
+                                    destination_hwm.max(prepared.destination_hwm);
+                                if let Err(error) = validate_direct_route_cutover(
+                                    remote.route_epoch,
+                                    placement_epoch,
+                                    remote.remote_completion_hwm,
+                                    destination_hwm,
+                                    required_hwm,
+                                ) {
+                                    prepared_route = Some((prepared, prepared_tx));
+                                    return Err(error);
+                                }
+                                prepared.remote.route_epoch = placement_epoch;
+                                prepared.remote.route_epoch_changes =
+                                    remote.route_epoch_changes.saturating_add(1);
+                                prepared.remote.route_change_pending = false;
+                                prepared.remote.remote_completion_hwm = destination_hwm;
+                                prepared.remote.route_cutover_hwm = required_hwm;
+                                let old_remote = std::mem::replace(&mut remote, prepared.remote);
+                                let old_tx = std::mem::replace(&mut tx, prepared_tx);
+                                let status = WalDirectRouteStatus {
+                                    lane: owner,
+                                    placement_epoch,
+                                    source_hwm: old_remote.remote_completion_hwm,
+                                    destination_hwm,
+                                    prepared: false,
+                                    active_destination: true,
+                                };
+                                retired_routes.push((old_remote, old_tx));
+                                eprintln!(
+                                    "zcnblk-shm-target-direct-route-cutover: lane={owner} placement_epoch={placement_epoch} required_hwm={required_hwm} destination_hwm={destination_hwm} foreground_hops=1 payload_rebuffer_copies=0 client_block_reconnect=false"
+                                );
+                                Ok(status)
+                            })();
+                            let _ = response.send(status);
+                        }
+                        WalOwnerIngressCommand::AbortDirectRoute { response } => {
+                            if let Some(prepared) = prepared_route.take() {
+                                retired_routes.push((prepared.0.remote, prepared.1));
+                            }
+                            let _ = response.send(Ok(WalDirectRouteStatus {
+                                lane: owner,
+                                placement_epoch: remote.route_epoch,
+                                source_hwm: remote.remote_completion_hwm,
+                                destination_hwm: 0,
+                                prepared: false,
+                                active_destination: false,
+                            }));
+                        }
+                        WalOwnerIngressCommand::BeginDirectDirtyTracking {
+                            volume_bytes,
+                            granule_bytes,
+                            response,
+                        } => {
+                            let status = if direct_dirty.is_some() {
+                                Err(io::Error::new(
+                                    io::ErrorKind::AlreadyExists,
+                                    "direct migration dirty tracking is already active",
+                                ))
+                            } else {
+                                match WalDirectDirtyTracker::new(volume_bytes, granule_bytes) {
+                                    Ok(tracker) => {
+                                        direct_dirty = Some(tracker);
+                                        Ok(WalDirectRouteStatus {
+                                            lane: owner,
+                                            placement_epoch: remote.route_epoch,
+                                            source_hwm: remote.remote_completion_hwm,
+                                            destination_hwm: 0,
+                                            prepared: prepared_route.is_some(),
+                                            active_destination: false,
+                                        })
+                                    }
+                                    Err(error) => Err(error),
+                                }
+                            };
+                            let _ = response.send(status);
+                        }
+                        WalOwnerIngressCommand::TakeDirectDirty { response } => {
+                            let result = direct_dirty
+                                .as_mut()
+                                .map(|tracker| tracker.take(owner, remote.remote_completion_hwm))
+                                .ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::NotFound,
+                                        "direct migration dirty tracking is not active",
+                                    )
+                                });
+                            let _ = response.send(result);
+                        }
+                        WalOwnerIngressCommand::StopDirectDirtyTracking { response } => {
+                            direct_dirty = None;
+                            let _ = response.send(Ok(WalDirectRouteStatus {
+                                lane: owner,
+                                placement_epoch: remote.route_epoch,
+                                source_hwm: remote.remote_completion_hwm,
+                                destination_hwm: 0,
+                                prepared: prepared_route.is_some(),
+                                active_destination: false,
+                            }));
+                        }
+                        WalOwnerIngressCommand::FenceDirectSource { sequence, response } => {
+                            let status = (|| {
+                                tx.ensure_idle()?;
+                                remote.sync(sequence)?;
+                                Ok(WalDirectRouteStatus {
+                                    lane: owner,
+                                    placement_epoch: remote.route_epoch,
+                                    source_hwm: remote.remote_completion_hwm.max(sequence),
+                                    destination_hwm: 0,
+                                    prepared: prepared_route.is_some(),
+                                    active_destination: false,
+                                })
+                            })();
+                            let _ = response.send(status);
+                        }
                         WalOwnerIngressCommand::Eof => {
+                            if let Some(prepared) = prepared_route.take() {
+                                retired_routes.push((prepared.0.remote, prepared.1));
+                            }
                             tx.ensure_idle()?;
                             remote.eof()?;
+                            for (mut retired, retired_tx) in retired_routes.drain(..) {
+                                retired_tx.ensure_idle()?;
+                                // A retired source is no longer on a critical
+                                // path; orderly closure is deferred until
+                                // process shutdown.
+                                let _ = retired.eof();
+                            }
                             eprintln!(
                                 "zcnblk-shm-owner-wait-summary: owner={} adaptive={} min_spins={} max_spins={} final_spins={} quick_wait_ns={} pipeline_refill_spins={} debounce_us={} backlog_low={} backlog_high={} wire_batches={} wire_records={} avg_wire_batch_records={:.2} max_wire_batch_records={} immediate_batches={} debounced_batches={} bulk_batches={} max_queued_records={} final_queued_records={} spin_hits={} blocking_waits={} quick_blocking_waits={}",
                                 owner,
@@ -7510,6 +9228,10 @@ unsafe fn atomic_swap(ptr: *mut u64, value: u64, ordering: Ordering) -> u64 {
     unsafe { (&*ptr.cast::<AtomicU64>()).swap(value, ordering) }
 }
 
+unsafe fn take_armed_wake(ptr: *mut u64) -> bool {
+    unsafe { atomic_swap(ptr, 0, Ordering::AcqRel) != 0 }
+}
+
 fn release_payload_owner_token(
     owner: &AtomicU64,
     free_slots: &AtomicU64,
@@ -9255,6 +10977,119 @@ impl SharedTarget {
         }))
     }
 
+    fn collect_lane_local_wal_window(
+        &self,
+        first_channel: u32,
+        first_sequence: u64,
+        first_request: ZcnblkShmRequest,
+        capacities: &[usize],
+        per_channel: &mut [usize],
+        window_limit: usize,
+    ) -> io::Result<Vec<(u32, PendingRemoteRead)>> {
+        let channels = self.header.channels as usize;
+        if capacities.len() != channels || per_channel.len() != channels {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "lane-local WAL window shape mismatch",
+            ));
+        }
+
+        let mut projected_completed = self.lane_completed.clone();
+        let mut requests = Vec::with_capacity(window_limit);
+        let first = self
+            .wal_tcp_batch_entry(
+                first_channel,
+                first_sequence,
+                first_request,
+                0,
+                capacities[first_channel as usize],
+            )?
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "selected lane-local WAL request is not batchable",
+                )
+            })?;
+        if !lane_token_is_complete(&projected_completed, first_request.sector_predecessor) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "selected lane-local WAL request has an incomplete predecessor",
+            ));
+        }
+        requests.push((first_channel, first));
+        per_channel[first_channel as usize] = 1;
+        projected_completed[first_channel as usize] = projected_completed[first_channel as usize]
+            .checked_add(1)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "lane completion HWM overflow")
+            })?;
+
+        let mut start_channel = (first_channel + 1) % self.header.channels;
+        while requests.len() < window_limit {
+            let mut made_progress = false;
+            for relative in 0..self.header.channels {
+                let channel = (start_channel + relative) % self.header.channels;
+                let channel_index = channel as usize;
+                if per_channel[channel_index] >= capacities[channel_index] {
+                    continue;
+                }
+                let control = self.channel_ptr(channel)?;
+                let consumed =
+                    unsafe { atomic_load(ptr::addr_of!((*control).req_cons), Ordering::Acquire) };
+                let produced =
+                    unsafe { atomic_load(ptr::addr_of!((*control).req_prod), Ordering::Acquire) };
+                let available = produced.wrapping_sub(consumed);
+                if available > u64::from(self.header.ring_entries) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "lane-local WAL request window overflow",
+                    ));
+                }
+                let sequence = consumed + per_channel[channel_index] as u64;
+                if sequence >= produced {
+                    continue;
+                }
+                let request_ptr = self.request_ptr(channel, sequence)?;
+                let published = unsafe {
+                    atomic_load(ptr::addr_of!((*request_ptr).sequence), Ordering::Acquire)
+                };
+                if published != sequence + 1 {
+                    continue;
+                }
+                let request = unsafe { ptr::read(request_ptr) };
+                if !lane_token_is_complete(&projected_completed, request.sector_predecessor) {
+                    continue;
+                }
+                let Some(pending) = self.wal_tcp_batch_entry(
+                    channel,
+                    sequence,
+                    request,
+                    per_channel[channel_index],
+                    capacities[channel_index],
+                )?
+                else {
+                    continue;
+                };
+                requests.push((channel, pending));
+                per_channel[channel_index] += 1;
+                projected_completed[channel_index] = projected_completed[channel_index]
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "lane completion HWM overflow")
+                    })?;
+                made_progress = true;
+                if requests.len() == window_limit {
+                    break;
+                }
+            }
+            if !made_progress {
+                break;
+            }
+            start_channel = (start_channel + 1) % self.header.channels;
+        }
+        Ok(requests)
+    }
+
     fn process_wal_tcp_request_batch(
         &mut self,
         first_channel: u32,
@@ -9291,76 +11126,89 @@ impl SharedTarget {
         loop {
             requests.clear();
             per_channel.fill(0);
-            let mut available = vec![None::<(u32, u64)>; window_limit];
-            for channel in 0..self.header.channels {
-                let control = self.channel_ptr(channel)?;
-                let consumed =
-                    unsafe { atomic_load(ptr::addr_of!((*control).req_cons), Ordering::Acquire) };
-                let produced =
-                    unsafe { atomic_load(ptr::addr_of!((*control).req_prod), Ordering::Acquire) };
-                let count = usize::try_from(produced.wrapping_sub(consumed))
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidData, "request window overflow")
-                    })?
-                    .min(capacities[channel as usize]);
-                for idx in 0..count {
-                    let sequence = consumed + idx as u64;
-                    let request_ptr = self.request_ptr(channel, sequence)?;
-                    let published = unsafe {
-                        atomic_load(ptr::addr_of!((*request_ptr).sequence), Ordering::Acquire)
+            if self.lane_local_sequences {
+                requests = self.collect_lane_local_wal_window(
+                    first_channel,
+                    first_sequence,
+                    first_request,
+                    &capacities,
+                    &mut per_channel,
+                    window_limit,
+                )?;
+            } else {
+                let mut available = vec![None::<(u32, u64)>; window_limit];
+                for channel in 0..self.header.channels {
+                    let control = self.channel_ptr(channel)?;
+                    let consumed = unsafe {
+                        atomic_load(ptr::addr_of!((*control).req_cons), Ordering::Acquire)
                     };
-                    if published != sequence + 1 {
+                    let produced = unsafe {
+                        atomic_load(ptr::addr_of!((*control).req_prod), Ordering::Acquire)
+                    };
+                    let count = usize::try_from(produced.wrapping_sub(consumed))
+                        .map_err(|_| {
+                            io::Error::new(io::ErrorKind::InvalidData, "request window overflow")
+                        })?
+                        .min(capacities[channel as usize]);
+                    for idx in 0..count {
+                        let sequence = consumed + idx as u64;
+                        let request_ptr = self.request_ptr(channel, sequence)?;
+                        let published = unsafe {
+                            atomic_load(ptr::addr_of!((*request_ptr).sequence), Ordering::Acquire)
+                        };
+                        if published != sequence + 1 {
+                            break;
+                        }
+                        let request = unsafe { ptr::read(request_ptr) };
+                        let Some(relative) = request
+                            .submit_sequence
+                            .checked_sub(self.next_submit_sequence)
+                            .and_then(|relative| usize::try_from(relative).ok())
+                        else {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "WAL request precedes the next global submit sequence",
+                            ));
+                        };
+                        if relative >= window_limit {
+                            continue;
+                        }
+                        if available[relative].replace((channel, sequence)).is_some() {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "duplicate global submit sequence in WAL request window",
+                            ));
+                        }
+                    }
+                }
+                for entry in available {
+                    let Some((channel, sequence)) = entry else {
                         break;
-                    }
-                    let request = unsafe { ptr::read(request_ptr) };
-                    let Some(relative) = request
-                        .submit_sequence
-                        .checked_sub(self.next_submit_sequence)
-                        .and_then(|relative| usize::try_from(relative).ok())
-                    else {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "WAL request precedes the next global submit sequence",
-                        ));
                     };
-                    if relative >= window_limit {
-                        continue;
-                    }
-                    if available[relative].replace((channel, sequence)).is_some() {
+                    let request = unsafe { ptr::read(self.request_ptr(channel, sequence)?) };
+                    let Some(pending) = self.wal_tcp_batch_entry(
+                        channel,
+                        sequence,
+                        request,
+                        per_channel[channel as usize],
+                        capacities[channel as usize],
+                    )?
+                    else {
+                        break;
+                    };
+                    if requests.is_empty()
+                        && (channel != first_channel
+                            || sequence != first_sequence
+                            || request.submit_sequence != first_request.submit_sequence)
+                    {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "duplicate global submit sequence in WAL request window",
+                            "WAL global window did not begin with the selected request",
                         ));
                     }
+                    requests.push((channel, pending));
+                    per_channel[channel as usize] += 1;
                 }
-            }
-            for entry in available {
-                let Some((channel, sequence)) = entry else {
-                    break;
-                };
-                let request = unsafe { ptr::read(self.request_ptr(channel, sequence)?) };
-                let Some(pending) = self.wal_tcp_batch_entry(
-                    channel,
-                    sequence,
-                    request,
-                    per_channel[channel as usize],
-                    capacities[channel as usize],
-                )?
-                else {
-                    break;
-                };
-                if requests.is_empty()
-                    && (channel != first_channel
-                        || sequence != first_sequence
-                        || request.submit_sequence != first_request.submit_sequence)
-                {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "WAL global window did not begin with the selected request",
-                    ));
-                }
-                requests.push((channel, pending));
-                per_channel[channel as usize] += 1;
             }
             if fill_us == 0 || requests.len() >= fill_target || Instant::now() >= fill_deadline {
                 break;
@@ -9372,7 +11220,7 @@ impl SharedTarget {
         if requests.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "WAL TCP global request window is empty",
+                "WAL TCP request window is empty",
             ));
         }
 
@@ -9754,14 +11602,8 @@ impl SharedTarget {
 
     fn kick_channel(&self, channel: u32) -> io::Result<bool> {
         let control = self.channel_ptr(channel)?;
-        let armed = unsafe {
-            atomic_swap(
-                ptr::addr_of_mut!((*control).completion_wake_armed),
-                0,
-                Ordering::AcqRel,
-            )
-        };
-        if armed == 0 {
+        let armed = unsafe { take_armed_wake(ptr::addr_of_mut!((*control).completion_wake_armed)) };
+        if !armed {
             return Ok(false);
         }
         let ret = unsafe { libc::ioctl(self.file.as_raw_fd(), ZCNBLK_SHM_IOC_KICK, &channel) };
@@ -9769,22 +11611,6 @@ impl SharedTarget {
             return Err(io::Error::last_os_error());
         }
         Ok(true)
-    }
-
-    fn force_kick_channel(&self, channel: u32) -> io::Result<()> {
-        let control = self.channel_ptr(channel)?;
-        unsafe {
-            atomic_store(
-                ptr::addr_of_mut!((*control).completion_wake_armed),
-                0,
-                Ordering::Release,
-            );
-        }
-        let ret = unsafe { libc::ioctl(self.file.as_raw_fd(), ZCNBLK_SHM_IOC_KICK, &channel) };
-        if ret < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
     }
 
     fn channel_request_ready(&self, channel: u32) -> io::Result<bool> {
@@ -10100,7 +11926,7 @@ impl SharedTarget {
         Ok((read_count, published))
     }
 
-    fn run_wal_lane_channel<const RATE_LIMITED: bool>(
+    fn run_wal_lane_channel<const RATE_LIMITED: bool, const MIGRATABLE: bool>(
         &self,
         channel: u32,
         completions: &WalCompletionTracker,
@@ -10116,6 +11942,7 @@ impl SharedTarget {
         owner_ingress: Option<WalOwnerIngressEndpoint>,
         rate_mailbox: Option<Arc<LaneBudgetMailbox>>,
         rate_epoch: Option<Arc<Instant>>,
+        migration_gate: Option<Arc<WalDirectMigrationGate>>,
     ) -> io::Result<(Stats, Duration, Option<RemoteWalLeaf>)> {
         if let Some(cpu) = cpu {
             pin_current_thread(cpu)?;
@@ -10133,6 +11960,10 @@ impl SharedTarget {
             LaneLimiter::new(0, mailbox.load())
         });
         let mut rate_credit = 0usize;
+        let migration_gate = MIGRATABLE
+            .then(|| migration_gate.expect("migratable WAL lane requires its migration gate"));
+        debug_assert!(MIGRATABLE || migration_gate.is_none());
+        let mut migration_generation = 0u64;
         let mut active = Duration::ZERO;
         let mut active_epoch = None;
         let mut stats = Stats::default();
@@ -10314,6 +12145,10 @@ impl SharedTarget {
             }
             let mut progressed = false;
             let mut force_send = false;
+            let mut requested_migration_generation = migration_gate
+                .as_ref()
+                .and_then(|gate| gate.requested_after(migration_generation));
+            force_send |= requested_migration_generation.is_some();
             let mut sync_completion_ready = false;
             let mut deferred_remote_completions = 0usize;
             while let Some(batch) = transport.try_recv()? {
@@ -10345,6 +12180,12 @@ impl SharedTarget {
             while RUNNING.load(Ordering::Relaxed)
                 && !syncs.lane_needs_service(channel)
                 && pending_send.len() < pending_limit
+                && (!MIGRATABLE
+                    || migration_gate
+                        .as_ref()
+                        .expect("migratable lane has a gate")
+                        .requested_after(migration_generation)
+                        .is_none())
             {
                 let consumed =
                     unsafe { atomic_load(ptr::addr_of!((*control).req_cons), Ordering::Acquire) };
@@ -10580,6 +12421,13 @@ impl SharedTarget {
             if deferred_remote_completions != 0 {
                 remote_completions.advance_hwm();
             }
+            if MIGRATABLE {
+                requested_migration_generation = migration_gate
+                    .as_ref()
+                    .expect("migratable lane has a gate")
+                    .requested_after(migration_generation);
+                force_send |= requested_migration_generation.is_some();
+            }
 
             if syncs.epoch() == 0
                 && syncs.requested_epoch() != 0
@@ -10667,14 +12515,14 @@ impl SharedTarget {
 
             // Stable owners are shared across ingress lanes, so owner progress
             // can keep this loop non-idle after the local request ring drains.
-            // Force the final partial completion batch through the armed-wake
-            // transition race: the kernel cannot publish more work on this
-            // lane until it is woken to consume those completions.
+            // Publish the final partial batch through the same armed-wake
+            // exchange as a full batch. The kernel arms and then rechecks the
+            // completion ring before sleeping, so an unconditional ioctl here
+            // only interrupts an actively polling worker.
             let local_request_ready = self.channel_request_ready(channel)?;
             let force_completion_tail = completion_kicks != 0 && !local_request_ready;
             if force_completion_tail {
-                self.force_kick_channel(channel)?;
-                stats.kicks += 1;
+                stats.kicks += u64::from(self.kick_channel(channel)?);
                 completion_kicks = 0;
             } else if sync_completion_ready || completion_kicks >= completion_kick_batch {
                 stats.kicks += u64::from(self.kick_channel(channel)?);
@@ -10764,7 +12612,9 @@ impl SharedTarget {
             }
 
             if transport.flush_owner_pending_if_due(
-                !RUNNING.load(Ordering::Relaxed) || syncs.lane_needs_service(channel),
+                !RUNNING.load(Ordering::Relaxed)
+                    || syncs.lane_needs_service(channel)
+                    || requested_migration_generation.is_some(),
             )? {
                 progressed = true;
             }
@@ -10774,6 +12624,7 @@ impl SharedTarget {
                 && (!transport.submit_available(lane_window)
                     || !RUNNING.load(Ordering::Relaxed)
                     || syncs.lane_needs_service(channel)
+                    || requested_migration_generation.is_some()
                     || (!progressed
                         && foreground_in_flight != 0
                         && (!channel_ready || send_ready == 0)));
@@ -10808,6 +12659,26 @@ impl SharedTarget {
                 continue;
             }
 
+            if let Some(generation) = requested_migration_generation
+                && pending_send.is_empty()
+                && transport.in_flight_len() == 0
+                && !transport.has_pending()
+                && lane_completions.is_empty()
+                && pending_syncs.is_empty()
+            {
+                if completion_kicks != 0 {
+                    stats.kicks += u64::from(self.kick_channel(channel)?);
+                    completion_kicks = 0;
+                }
+                migration_gate
+                    .as_ref()
+                    .expect("requested migration has a gate")
+                    .quiesce_lane(channel, generation)?;
+                migration_generation = generation;
+                active_epoch.get_or_insert_with(Instant::now);
+                continue;
+            }
+
             if !RUNNING.load(Ordering::Relaxed) {
                 if pending_send.is_empty()
                     && transport.in_flight_len() == 0
@@ -10837,6 +12708,12 @@ impl SharedTarget {
                 while !self.channel_request_ready(channel)?
                     && RUNNING.load(Ordering::Relaxed)
                     && !syncs.lane_needs_service(channel)
+                    && (!MIGRATABLE
+                        || migration_gate
+                            .as_ref()
+                            .expect("migratable lane has a gate")
+                            .requested_after(migration_generation)
+                            .is_none())
                     && transport.in_flight_len() == 0
                     && !transport.has_pending()
                 {
@@ -10847,6 +12724,15 @@ impl SharedTarget {
                     }
                 }
                 if syncs.lane_needs_service(channel) {
+                    continue;
+                }
+                if MIGRATABLE
+                    && migration_gate
+                        .as_ref()
+                        .expect("migratable lane has a gate")
+                        .requested_after(migration_generation)
+                        .is_some()
+                {
                     continue;
                 }
                 if self.channel_request_ready(channel)?
@@ -10877,19 +12763,49 @@ impl SharedTarget {
                     active_epoch.get_or_insert_with(Instant::now);
                     continue;
                 }
-                let mut pfds = [
-                    libc::pollfd {
-                        fd: self.file.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
-                    libc::pollfd {
-                        fd: syncs.lane_wake_fd(channel)?,
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
-                ];
-                let ret = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as _, 100) };
+                let (ret, sync_woke, migration_woke) = if MIGRATABLE {
+                    let mut pfds = [
+                        libc::pollfd {
+                            fd: self.file.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: syncs.lane_wake_fd(channel)?,
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: migration_gate
+                                .as_ref()
+                                .expect("migratable lane has a gate")
+                                .lane_wake_fd(channel)?,
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                    ];
+                    let ret = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as _, 100) };
+                    (
+                        ret,
+                        pfds[1].revents & libc::POLLIN != 0,
+                        pfds[2].revents & libc::POLLIN != 0,
+                    )
+                } else {
+                    let mut pfds = [
+                        libc::pollfd {
+                            fd: self.file.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: syncs.lane_wake_fd(channel)?,
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                    ];
+                    let ret = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as _, 100) };
+                    (ret, pfds[1].revents & libc::POLLIN != 0, false)
+                };
                 unsafe {
                     atomic_store(
                         ptr::addr_of_mut!((*control).request_wake_armed),
@@ -10900,8 +12816,14 @@ impl SharedTarget {
                 if ret < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
                     return Err(io::Error::last_os_error());
                 }
-                if pfds[1].revents & libc::POLLIN != 0 {
+                if sync_woke {
                     syncs.drain_lane_wake(channel)?;
+                }
+                if migration_woke {
+                    migration_gate
+                        .as_ref()
+                        .expect("migration wake has a gate")
+                        .drain_lane_wake(channel)?;
                 }
                 stats.idle_polls += 1;
             }
@@ -11012,6 +12934,7 @@ impl SharedTarget {
             ));
         }
         let mut owner_workers = Vec::<WalOwnerIngressWorker>::new();
+        let mut direct_route_commands = None::<Arc<[SyncSender<WalOwnerIngressCommand>]>>;
         let lane_inputs = if let Some(owner_cpus) = owner_cpus {
             if owner_cpus.len() != leaves.len() {
                 return Err(io::Error::new(
@@ -11060,6 +12983,7 @@ impl SharedTarget {
                 .map(|worker| worker.command_tx.clone())
                 .collect::<Vec<_>>()
                 .into();
+            direct_route_commands = Some(Arc::clone(&owner_commands));
             result_rxs
                 .into_iter()
                 .enumerate()
@@ -11082,6 +13006,18 @@ impl SharedTarget {
                 .map(|remote| (Some(remote), None))
                 .collect::<Vec<_>>()
         };
+        let migration_gate = env::var_os("URING_PLAY_ZCNBLK_SHM_MIGRATION_CONTROL_SOCKET")
+            .filter(|value| !value.is_empty())
+            .map(|_| {
+                WalDirectMigrationGate::new(self.header.channels, self.file.as_raw_fd())
+                    .map(Arc::new)
+            })
+            .transpose()?;
+        let _direct_route_control = wal_direct_route_control_from_env(
+            direct_route_commands,
+            self.header.slot_bytes as usize,
+            migration_gate.as_ref().map(Arc::clone),
+        )?;
         let results = thread::scope(|scope| {
             let mut handles = Vec::with_capacity(lane_inputs.len());
             for (channel, (remote, owner_ingress)) in lane_inputs.into_iter().enumerate() {
@@ -11103,9 +13039,10 @@ impl SharedTarget {
                 let rate_epoch = rate_control
                     .as_ref()
                     .map(|control| Arc::clone(&control.epoch));
+                let migration_gate = migration_gate.as_ref().map(Arc::clone);
                 handles.push(scope.spawn(move || {
-                    let result = if rate_mailbox.is_some() {
-                        target.run_wal_lane_channel::<true>(
+                    let result = if rate_mailbox.is_some() && migration_gate.is_some() {
+                        target.run_wal_lane_channel::<true, true>(
                             channel as u32,
                             completions,
                             remote_completions,
@@ -11120,9 +13057,10 @@ impl SharedTarget {
                             owner_ingress,
                             rate_mailbox,
                             rate_epoch,
+                            migration_gate,
                         )
-                    } else {
-                        target.run_wal_lane_channel::<false>(
+                    } else if rate_mailbox.is_some() {
+                        target.run_wal_lane_channel::<true, false>(
                             channel as u32,
                             completions,
                             remote_completions,
@@ -11135,6 +13073,43 @@ impl SharedTarget {
                             transport_cpu,
                             remote,
                             owner_ingress,
+                            rate_mailbox,
+                            rate_epoch,
+                            None,
+                        )
+                    } else if migration_gate.is_some() {
+                        target.run_wal_lane_channel::<false, true>(
+                            channel as u32,
+                            completions,
+                            remote_completions,
+                            lane_trackers,
+                            remote_lane_trackers,
+                            syncs,
+                            vector_hwm,
+                            dirty,
+                            cpu,
+                            transport_cpu,
+                            remote,
+                            owner_ingress,
+                            None,
+                            None,
+                            migration_gate,
+                        )
+                    } else {
+                        target.run_wal_lane_channel::<false, false>(
+                            channel as u32,
+                            completions,
+                            remote_completions,
+                            lane_trackers,
+                            remote_lane_trackers,
+                            syncs,
+                            vector_hwm,
+                            dirty,
+                            cpu,
+                            transport_cpu,
+                            remote,
+                            owner_ingress,
+                            None,
                             None,
                             None,
                         )
@@ -11254,10 +13229,8 @@ impl SharedTarget {
         let read_payload_destination = match (self.dirty_read_payload_refs, rma_read_negotiated) {
             (true, true) => "dirty-shared-slot-reference-or-rma-direct-shared-slot",
             (false, true) => "dirty-shared-slot-copy-or-rma-direct-shared-slot",
-            (true, false) => {
-                "dirty-shared-slot-reference-or-remote-result-payload+shared-slot-copy"
-            }
-            (false, false) => "dirty-shared-slot-copy-or-remote-result-payload+shared-slot-copy",
+            (true, false) => "dirty-shared-slot-reference-or-remote-result-direct-shared-slot",
+            (false, false) => "dirty-shared-slot-copy-or-remote-result-direct-shared-slot",
         };
         let transport_copy_contract = if rma_write_negotiated {
             "registered-shared-slot-rma-direct-to-leaf-memory;no-userspace-payload-gather;metadata-doorbell-only"
@@ -11431,7 +13404,7 @@ impl SharedTarget {
             let read_payload_destination = if rma_read_negotiated {
                 "registered-shared-slot-direct-rma"
             } else {
-                "remote-result-payload+shared-slot-copy"
+                "remote-result-direct-shared-slot"
             };
             let rma_read_completion = if rma_read_negotiated {
                 "initiator-local-cq-data-visible"
@@ -11463,6 +13436,23 @@ impl SharedTarget {
                 .iter()
                 .map(|remote| remote.send_zc_copied_notifications)
                 .sum::<u64>();
+            let route_epoch = self
+                .remote_leaves
+                .iter()
+                .map(|remote| remote.route_epoch)
+                .max()
+                .unwrap_or(0);
+            let route_epoch_changes = self
+                .remote_leaves
+                .iter()
+                .map(|remote| remote.route_epoch_changes)
+                .sum::<u64>();
+            let route_cutover_hwm = self
+                .remote_leaves
+                .iter()
+                .map(|remote| remote.route_cutover_hwm)
+                .max()
+                .unwrap_or(0);
             let (
                 recv_spin_hits,
                 recv_blocking_fallbacks,
@@ -11483,7 +13473,7 @@ impl SharedTarget {
                     )
                 });
             eprintln!(
-                "zcnblk-shm-target-remote-leaf-summary: address={} lanes={} transport={} send_mode={} recv_policy={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} fan_stage=userspace placement=single-leaf write_batches={} write_records={} write_bytes={} compact_write_batches={} request_descriptor_bytes={} wire_descriptor_bytes={} descriptor_bytes_saved={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} avg_write_iovecs_per_batch={:.2} avg_write_tx_iovecs_per_batch={:.2} avg_write_run_bytes={:.0} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} rma_read_calls={} rma_read_seconds={:.6} avg_rma_read_us={:.3} rma_read_copy_seconds={:.6} avg_rma_read_copy_us={:.3} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} payload_source=shared-slot-coalesced-iovec read_payload_destination={} rma_read_completion={} rma_write_completion={} result_contract=fifo-mixed-request-batch+global-sync-epoch",
+                "zcnblk-shm-target-remote-leaf-summary: address={} lanes={} transport={} send_mode={} recv_policy={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} fan_stage=userspace placement=single-leaf write_batches={} write_records={} write_bytes={} compact_write_batches={} request_descriptor_bytes={} wire_descriptor_bytes={} descriptor_bytes_saved={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} avg_write_iovecs_per_batch={:.2} avg_write_tx_iovecs_per_batch={:.2} avg_write_run_bytes={:.0} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} rma_read_calls={} rma_read_seconds={:.6} avg_rma_read_us={:.3} rma_read_copy_seconds={:.6} avg_rma_read_copy_us={:.3} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} route_epoch={} route_epoch_changes={} route_cutover_hwm={} cache_fence=dirty-sequence-overlay-retained-until-remote-completion+route-epoch payload_source=shared-slot-coalesced-iovec read_payload_destination={} rma_read_completion={} rma_write_completion={} result_contract=fifo-mixed-request-batch+global-sync-epoch",
                 first.address,
                 self.remote_leaves.len(),
                 first.stream.transport_label(),
@@ -11520,6 +13510,9 @@ impl SharedTarget {
                 control_writev_batches,
                 send_zc_notifications,
                 send_zc_copied_notifications,
+                route_epoch,
+                route_epoch_changes,
+                route_cutover_hwm,
                 read_payload_destination,
                 rma_read_completion,
                 rma_write_completion,
@@ -12268,7 +14261,7 @@ impl SharedTarget {
             let read_payload_destination = if rma_read_negotiated {
                 "registered-shared-slot-direct-rma"
             } else {
-                "remote-result-payload+shared-slot-copy"
+                "remote-result-direct-shared-slot"
             };
             let rma_read_completion = if rma_read_negotiated {
                 "initiator-local-cq-data-visible"
@@ -12300,6 +14293,23 @@ impl SharedTarget {
                 .iter()
                 .map(|remote| remote.send_zc_copied_notifications)
                 .sum::<u64>();
+            let route_epoch = self
+                .remote_leaves
+                .iter()
+                .map(|remote| remote.route_epoch)
+                .max()
+                .unwrap_or(0);
+            let route_epoch_changes = self
+                .remote_leaves
+                .iter()
+                .map(|remote| remote.route_epoch_changes)
+                .sum::<u64>();
+            let route_cutover_hwm = self
+                .remote_leaves
+                .iter()
+                .map(|remote| remote.route_cutover_hwm)
+                .max()
+                .unwrap_or(0);
             let (
                 recv_spin_hits,
                 recv_blocking_fallbacks,
@@ -12320,7 +14330,7 @@ impl SharedTarget {
                     )
                 });
             eprintln!(
-                "zcnblk-shm-target-remote-leaf-summary: address={} lanes={} transport={} send_mode={} recv_policy={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} fan_stage=userspace placement=single-leaf write_batches={} write_records={} write_bytes={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} avg_write_iovecs_per_batch={:.2} avg_write_tx_iovecs_per_batch={:.2} avg_write_run_bytes={:.0} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} rma_read_calls={} rma_read_seconds={:.6} avg_rma_read_us={:.3} rma_read_copy_seconds={:.6} avg_rma_read_copy_us={:.3} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} payload_source=shared-slot-coalesced-iovec read_payload_destination={} rma_read_completion={} rma_write_completion={} result_contract=range-hwm+fifo-read-batch",
+                "zcnblk-shm-target-remote-leaf-summary: address={} lanes={} transport={} send_mode={} recv_policy={} recv_spin_hits={} recv_blocking_fallbacks={} recv_would_block_polls={} recv_grows={} recv_shrinks={} fan_stage=userspace placement=single-leaf write_batches={} write_records={} write_bytes={} write_payload_iovecs={} write_payload_tx_iovecs={} write_payload_runs={} avg_write_iovecs_per_batch={:.2} avg_write_tx_iovecs_per_batch={:.2} avg_write_run_bytes={:.0} max_write_payload_run_bytes={} read_batches={} read_records={} read_bytes={} rma_read_calls={} rma_read_seconds={:.6} avg_rma_read_us={:.3} rma_read_copy_seconds={:.6} avg_rma_read_copy_us={:.3} syncs={} control_writev_batches={} send_zc_notifications={} send_zc_copied_notifications={} route_epoch={} route_epoch_changes={} route_cutover_hwm={} cache_fence=dirty-sequence-overlay-retained-until-remote-completion+route-epoch payload_source=shared-slot-coalesced-iovec read_payload_destination={} rma_read_completion={} rma_write_completion={} result_contract=range-hwm+fifo-read-batch",
                 first.address,
                 self.remote_leaves.len(),
                 first.stream.transport_label(),
@@ -12353,6 +14363,9 @@ impl SharedTarget {
                 control_writev_batches,
                 send_zc_notifications,
                 send_zc_copied_notifications,
+                route_epoch,
+                route_epoch_changes,
+                route_cutover_hwm,
                 read_payload_destination,
                 rma_read_completion,
                 rma_write_completion,
@@ -13281,6 +15294,86 @@ mod tests {
     }
 
     #[test]
+    fn direct_migration_dirty_tracker_swaps_generations_without_payloads() {
+        let write = |offset: u64, len: u32, submit_sequence: u64| PendingRemoteRead {
+            request: ZcnblkShmRequest {
+                op: ZCNBLK_SHM_OP_WRITE,
+                len,
+                offset,
+                submit_sequence,
+                ..ZcnblkShmRequest::default()
+            },
+            io_contract: ZcnblkWalIoContract::default(),
+            request_sequence: submit_sequence.saturating_sub(1),
+            payload_offset: usize::MAX,
+            dirty_ref: None,
+        };
+        let mut tracker = WalDirectDirtyTracker::new(32_768, 4096).unwrap();
+        tracker
+            .mark_batch(&[write(0, 4096, 7), write(8192, 8192, 9)])
+            .unwrap();
+        let first = tracker.take(2, 8);
+        assert_eq!(first.lane, 2);
+        assert_eq!(first.source_hwm, 9);
+        assert_eq!(first.dirty_ranges(), vec![(0, 4096), (8192, 8192)]);
+        assert_eq!(first.dirty_bytes(), 12_288);
+
+        tracker.mark_batch(&[write(4096, 4096, 10)]).unwrap();
+        let second = tracker.take(2, 10);
+        assert_eq!(second.dirty_ranges(), vec![(4096, 4096)]);
+        assert_eq!(second.source_hwm, 10);
+        assert!(tracker.take(2, 10).dirty_ranges().is_empty());
+    }
+
+    #[test]
+    fn direct_migration_merges_owner_bitmaps_and_preserves_hwm_vector() {
+        let snapshots = [
+            WalDirectDirtySnapshot {
+                lane: 0,
+                granule_bytes: 4096,
+                volume_bytes: 16_384,
+                words: vec![0b0101],
+                source_hwm: 41,
+            },
+            WalDirectDirtySnapshot {
+                lane: 1,
+                granule_bytes: 4096,
+                volume_bytes: 16_384,
+                words: vec![0b1010],
+                source_hwm: 37,
+            },
+        ];
+        let (ranges, hwms) = merge_direct_dirty_snapshots(&snapshots).unwrap();
+        assert_eq!(ranges, vec![(0, 16_384)]);
+        assert_eq!(hwms, vec![41, 37]);
+    }
+
+    #[test]
+    fn direct_migration_partitions_replay_without_overlap_or_holes() {
+        let work = partition_direct_copy_ranges(&[(0, 32_768)], 3, 4096).unwrap();
+        assert_eq!(work.iter().map(Vec::len).sum::<usize>(), 8);
+        let mut ranges = work.into_iter().flatten().collect::<Vec<_>>();
+        ranges.sort_unstable();
+        assert_eq!(
+            ranges,
+            (0..8).map(|index| (index * 4096, 4096)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn direct_route_cutover_requires_epoch_and_both_hwm_proofs() {
+        validate_direct_route_cutover(3, 4, 20, 20, 20).unwrap();
+        assert!(validate_direct_route_cutover(3, 3, 20, 20, 20).is_err());
+        assert!(validate_direct_route_cutover(3, 4, 19, 20, 20).is_err());
+        assert!(validate_direct_route_cutover(3, 4, 20, 19, 20).is_err());
+        assert_eq!(
+            parse_direct_hwm_vector("11,12", 2, "destination").unwrap(),
+            vec![11, 12]
+        );
+        assert!(parse_direct_hwm_vector("12", 2, "destination").is_err());
+    }
+
+    #[test]
     fn batched_lane_completion_advances_sector_predecessor_hwm() {
         let mut completed = vec![0, 0];
         // Token 7 is lane 0, request sequence 3 in a two-lane topology.
@@ -13569,6 +15662,34 @@ mod tests {
         assert_eq!(ZCNBLK_SHM_IOC_KICK, 0x4004_bc02);
         assert_eq!(ZCNBLK_SHM_IOC_GET_INFO, 0x8090_bc03);
         assert_eq!(ZCNBLK_SHM_IOC_IMPORT_ARENA, 0x4020_bc04);
+        assert_eq!(ZCNBLK_SHM_IOC_FREEZE_DISPATCH, 0x0000_bc05);
+        assert_eq!(ZCNBLK_SHM_IOC_THAW_DISPATCH, 0x0000_bc06);
+    }
+
+    #[test]
+    fn completion_armed_wake_exchange_covers_both_sleep_races() {
+        let mut channel = ZcnblkShmChannel::default();
+        let produced = AtomicU64::new(0);
+
+        // Producer wins the race: no wake is needed because the consumer's
+        // acquire recheck observes the published completion before sleeping.
+        produced.store(1, Ordering::Release);
+        assert!(!unsafe { take_armed_wake(ptr::addr_of_mut!(channel.completion_wake_armed)) });
+        unsafe {
+            atomic_store(
+                ptr::addr_of_mut!(channel.completion_wake_armed),
+                1,
+                Ordering::Release,
+            );
+        }
+        assert_eq!(produced.load(Ordering::Acquire), 1);
+
+        // Consumer wins the race: publishing takes the armed edge exactly
+        // once, so a second completion cannot issue a redundant wake.
+        produced.store(2, Ordering::Release);
+        assert!(unsafe { take_armed_wake(ptr::addr_of_mut!(channel.completion_wake_armed)) });
+        assert!(!unsafe { take_armed_wake(ptr::addr_of_mut!(channel.completion_wake_armed)) });
+        assert_eq!(produced.load(Ordering::Acquire), 2);
     }
 
     #[test]

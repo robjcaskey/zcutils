@@ -1,0 +1,536 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: zccusankernelmodulesources.artifacts.zcutils.io
+spec:
+  group: artifacts.zcutils.io
+  names:
+    categories: []
+    kind: ZccusanKernelModuleSource
+    plural: zccusankernelmodulesources
+    shortNames:
+    - zckms
+    singular: zccusankernelmodulesource
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ZccusanKernelModuleSourceSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              catalogRefs:
+                description: Signed catalogs accepted through these origins.
+                items:
+                  properties:
+                    name:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              enabled:
+                default: true
+                type: boolean
+              endpoints:
+                description: Ordered static origins. Hints order equivalent origins; they do not widen the node selector or confer trust.
+                items:
+                  properties:
+                    allowInsecureHttp:
+                      default: false
+                      type: boolean
+                    baseUrl:
+                      description: User-provided static HTTP(S) origin. There is intentionally no default origin owned by the project or any cloud provider.
+                      type: string
+                    priority:
+                      default: 0
+                      format: uint32
+                      minimum: 0.0
+                      type: integer
+                    topologyHints:
+                      default:
+                        availabilityZones: []
+                        cloudProviders: []
+                        regions: []
+                      properties:
+                        availabilityZones:
+                          default: []
+                          items:
+                            type: string
+                          type: array
+                        cloudProviders:
+                          default: []
+                          items:
+                            type: string
+                          type: array
+                        regions:
+                          default: []
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                  required:
+                  - baseUrl
+                  type: object
+                type: array
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                default: {}
+                description: Only nodes matching these labels may use this source policy. An empty selector applies cluster-wide, which is convenient for a single-region cluster but should be used deliberately in a shared regional cluster.
+                type: object
+              trustedPublicKeyRefs:
+                description: Public verification keys. These are not secret data, but ConfigMaps allow a regional administrator to rotate them without rebuilding Pods.
+                items:
+                  properties:
+                    key:
+                      type: string
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                  required:
+                  - key
+                  - name
+                  - namespace
+                  type: object
+                type: array
+            required:
+            - catalogRefs
+            - endpoints
+            - trustedPublicKeyRefs
+            type: object
+          status:
+            nullable: true
+            properties:
+              message:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                default: ''
+                type: string
+            type: object
+        required:
+        - spec
+        title: ZccusanKernelModuleSource
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: zccusankernelmodulebundles.artifacts.zcutils.io
+spec:
+  group: artifacts.zcutils.io
+  names:
+    categories: []
+    kind: ZccusanKernelModuleBundle
+    plural: zccusankernelmodulebundles
+    shortNames:
+    - zckmb
+    singular: zccusankernelmodulebundle
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ZccusanKernelModuleBundleSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              attestations:
+                default: []
+                items:
+                  properties:
+                    name:
+                      type: string
+                    object:
+                      properties:
+                        mediaType:
+                          type: string
+                        objectPath:
+                          description: Relative immutable key. Its final path component must be `sha256`. Regional source base URLs are configured separately.
+                          type: string
+                        sha256:
+                          type: string
+                        sizeBytes:
+                          format: uint64
+                          minimum: 0.0
+                          type: integer
+                      required:
+                      - mediaType
+                      - objectPath
+                      - sha256
+                      - sizeBytes
+                      type: object
+                  required:
+                  - name
+                  - object
+                  type: object
+                type: array
+              build:
+                properties:
+                  buildRecipeSha256:
+                    type: string
+                  builtAt:
+                    type: string
+                  kernelConfigSha256:
+                    type: string
+                  kernelHeadersSha256:
+                    type: string
+                  moduleSymversSha256:
+                    type: string
+                  sourceRevision:
+                    type: string
+                  sourceTreeSha256:
+                    type: string
+                  toolchainImageDigest:
+                    description: An immutable OCI digest, not a mutable tag.
+                    type: string
+                required:
+                - buildRecipeSha256
+                - builtAt
+                - kernelConfigSha256
+                - kernelHeadersSha256
+                - moduleSymversSha256
+                - sourceRevision
+                - sourceTreeSha256
+                - toolchainImageDigest
+                type: object
+              compatibility:
+                properties:
+                  architecture:
+                    description: OCI architecture spelling, such as `amd64` or `arm64`.
+                    type: string
+                  interfaces:
+                    properties:
+                      maximumUserspaceProtocol:
+                        format: uint32
+                        minimum: 0.0
+                        type: integer
+                      minimumUserspaceProtocol:
+                        format: uint32
+                        minimum: 0.0
+                        type: integer
+                      zcnblkClientEdgeAbi:
+                        format: uint32
+                        minimum: 0.0
+                        type: integer
+                      zcnblkSharedMemoryAbi:
+                        format: uint32
+                        minimum: 0.0
+                        type: integer
+                    required:
+                    - maximumUserspaceProtocol
+                    - minimumUserspaceProtocol
+                    - zcnblkClientEdgeAbi
+                    - zcnblkSharedMemoryAbi
+                    type: object
+                  kernelBuildId:
+                    nullable: true
+                    type: string
+                  kernelRelease:
+                    description: Exact `uname -r` / first vermagic field.
+                    type: string
+                  vermagic:
+                    description: Exact module vermagic string observed in the ELF `.modinfo` section.
+                    type: string
+                required:
+                - architecture
+                - interfaces
+                - kernelRelease
+                - vermagic
+                type: object
+              manifest:
+                description: The immutable canonical manifest from which this CR was materialized.
+                properties:
+                  mediaType:
+                    type: string
+                  objectPath:
+                    description: Relative immutable key. Its final path component must be `sha256`. Regional source base URLs are configured separately.
+                    type: string
+                  sha256:
+                    type: string
+                  sizeBytes:
+                    format: uint64
+                    minimum: 0.0
+                    type: integer
+                required:
+                - mediaType
+                - objectPath
+                - sha256
+                - sizeBytes
+                type: object
+              module:
+                properties:
+                  name:
+                    type: string
+                  object:
+                    properties:
+                      mediaType:
+                        type: string
+                      objectPath:
+                        description: Relative immutable key. Its final path component must be `sha256`. Regional source base URLs are configured separately.
+                        type: string
+                      sha256:
+                        type: string
+                      sizeBytes:
+                        format: uint64
+                        minimum: 0.0
+                        type: integer
+                    required:
+                    - mediaType
+                    - objectPath
+                    - sha256
+                    - sizeBytes
+                    type: object
+                required:
+                - name
+                - object
+                type: object
+              signatures:
+                description: Detached signatures over the canonical manifest bytes. Signer identity is intentionally not a manifest claim; it is established by verifying one of these signatures against keys trusted by the consuming region.
+                items:
+                  properties:
+                    format:
+                      description: Signature envelope format, for example `Dsse` or `Cms`.
+                      type: string
+                    object:
+                      properties:
+                        mediaType:
+                          type: string
+                        objectPath:
+                          description: Relative immutable key. Its final path component must be `sha256`. Regional source base URLs are configured separately.
+                          type: string
+                        sha256:
+                          type: string
+                        sizeBytes:
+                          format: uint64
+                          minimum: 0.0
+                          type: integer
+                      required:
+                      - mediaType
+                      - objectPath
+                      - sha256
+                      - sizeBytes
+                      type: object
+                  required:
+                  - format
+                  - object
+                  type: object
+                type: array
+            required:
+            - build
+            - compatibility
+            - manifest
+            - module
+            - signatures
+            type: object
+          status:
+            nullable: true
+            properties:
+              acceptedManifestSha256:
+                nullable: true
+                type: string
+              message:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                default: ''
+                type: string
+            type: object
+        required:
+        - spec
+        title: ZccusanKernelModuleBundle
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: zccusankernelmodulecatalogs.artifacts.zcutils.io
+spec:
+  group: artifacts.zcutils.io
+  names:
+    categories: []
+    kind: ZccusanKernelModuleCatalog
+    plural: zccusankernelmodulecatalogs
+    shortNames:
+    - zckmc
+    singular: zccusankernelmodulecatalog
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ZccusanKernelModuleCatalogSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              catalog:
+                properties:
+                  mediaType:
+                    type: string
+                  objectPath:
+                    description: Relative immutable key. Its final path component must be `sha256`. Regional source base URLs are configured separately.
+                    type: string
+                  sha256:
+                    type: string
+                  sizeBytes:
+                    format: uint64
+                    minimum: 0.0
+                    type: integer
+                required:
+                - mediaType
+                - objectPath
+                - sha256
+                - sizeBytes
+                type: object
+              catalogGeneration:
+                description: Monotonically increasing generation inside the signed catalog payload.
+                format: uint64
+                minimum: 0.0
+                type: integer
+              entries:
+                items:
+                  properties:
+                    architecture:
+                      type: string
+                    interfaces:
+                      properties:
+                        maximumUserspaceProtocol:
+                          format: uint32
+                          minimum: 0.0
+                          type: integer
+                        minimumUserspaceProtocol:
+                          format: uint32
+                          minimum: 0.0
+                          type: integer
+                        zcnblkClientEdgeAbi:
+                          format: uint32
+                          minimum: 0.0
+                          type: integer
+                        zcnblkSharedMemoryAbi:
+                          format: uint32
+                          minimum: 0.0
+                          type: integer
+                      required:
+                      - maximumUserspaceProtocol
+                      - minimumUserspaceProtocol
+                      - zcnblkClientEdgeAbi
+                      - zcnblkSharedMemoryAbi
+                      type: object
+                    kernelBuildId:
+                      nullable: true
+                      type: string
+                    kernelRelease:
+                      type: string
+                    manifest:
+                      description: Immutable canonical bundle-manifest object, not a regional URL.
+                      properties:
+                        mediaType:
+                          type: string
+                        objectPath:
+                          description: Relative immutable key. Its final path component must be `sha256`. Regional source base URLs are configured separately.
+                          type: string
+                        sha256:
+                          type: string
+                        sizeBytes:
+                          format: uint64
+                          minimum: 0.0
+                          type: integer
+                      required:
+                      - mediaType
+                      - objectPath
+                      - sha256
+                      - sizeBytes
+                      type: object
+                    moduleName:
+                      type: string
+                  required:
+                  - architecture
+                  - interfaces
+                  - kernelRelease
+                  - manifest
+                  - moduleName
+                  type: object
+                type: array
+              signatures:
+                items:
+                  properties:
+                    format:
+                      description: Signature envelope format, for example `Dsse` or `Cms`.
+                      type: string
+                    object:
+                      properties:
+                        mediaType:
+                          type: string
+                        objectPath:
+                          description: Relative immutable key. Its final path component must be `sha256`. Regional source base URLs are configured separately.
+                          type: string
+                        sha256:
+                          type: string
+                        sizeBytes:
+                          format: uint64
+                          minimum: 0.0
+                          type: integer
+                      required:
+                      - mediaType
+                      - objectPath
+                      - sha256
+                      - sizeBytes
+                      type: object
+                  required:
+                  - format
+                  - object
+                  type: object
+                type: array
+            required:
+            - catalog
+            - catalogGeneration
+            - entries
+            - signatures
+            type: object
+          status:
+            nullable: true
+            properties:
+              acceptedCatalogSha256:
+                nullable: true
+                type: string
+              message:
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                default: ''
+                type: string
+            type: object
+        required:
+        - spec
+        title: ZccusanKernelModuleCatalog
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

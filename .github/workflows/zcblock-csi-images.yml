@@ -118,10 +118,42 @@ jobs:
             org.opencontainers.image.revision=${{ needs.prepare.outputs.source_sha }}
           provenance: false
           sbom: false
+      - name: Smoke-test native architecture and RDMA providers
+        env:
+          IMAGE_TAGS: ${{ steps.arch_tags.outputs.tags }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_TAGS%%,*}"
+          docker pull "${image}"
+          actual_arch="$(docker image inspect --format '{{.Architecture}}' "${image}")"
+          [ "${actual_arch}" = "${EXPECTED_ARCH}" ]
+          provider_list="$(docker run --rm --entrypoint /usr/bin/fi_info "${image}" -l)"
+          grep -q '^efa:' <<<"${provider_list}"
+          grep -q '^verbs:' <<<"${provider_list}"
+          set +e
+          preflight="$(docker run --rm --entrypoint /usr/local/bin/zcutils \
+            "${image}" rdma-preflight verbs 2>&1)"
+          preflight_status=$?
+          set -e
+          [ "${preflight_status}" -ne 0 ]
+          grep -q 'no TCP fallback was selected' <<<"${preflight}"
+          printf 'ZCCUSAN_IMAGE_NATIVE_SMOKE_PASS arch=%s providers=efa,verbs rdma_without_device=fail-closed\n' \
+            "${actual_arch}"
+
+  chart-matrix:
+    name: Render Helm transport/architecture matrix
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Check amd64/arm64 and TCP/RDMA DaemonSets
+        run: scripts/zccusan-helm-install-matrix.sh
 
   publish-manifests:
     name: Publish and sign multi-architecture manifests
-    needs: [prepare, build]
+    needs: [prepare, build, chart-matrix]
     runs-on: ubuntu-24.04
     steps:
       - uses: docker/setup-buildx-action@v3

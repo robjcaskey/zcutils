@@ -68,6 +68,34 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s:%s" .repository .tag -}}
 {{- end -}}
 
+{{- define "zcblock-csi.nodeSetupImage" -}}
+{{- if .Values.nodeSetup.image.digest -}}
+{{- printf "%s@%s" .Values.nodeSetup.image.repository .Values.nodeSetup.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.nodeSetup.image.repository .Values.nodeSetup.image.tag -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "zcblock-csi.nodeSetupConfigMapName" -}}
+{{- printf "%s-node-setup" (include "zcblock-csi.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "zcblock-csi.nodeSetupSourceConfigMapName" -}}
+{{- if .Values.nodeSetup.developmentBuild.sourceConfigMap -}}
+{{- .Values.nodeSetup.developmentBuild.sourceConfigMap -}}
+{{- else -}}
+{{- printf "%s-zcnblk-source" (include "zcblock-csi.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "zcblock-csi.nodeArtifactCacheName" -}}
+{{- printf "%s-module-cache" (include "zcblock-csi.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "zcblock-csi.nodeSetupChecksum" -}}
+{{- printf "%s\n%s\n%s\n%s" (toYaml .Values.nodeSetup) (.Files.Get "files/kmod/zcnblk_client_mod.c") (.Files.Get "files/kmod/zcnblk_shm_abi.h") (.Files.Get "files/kmod/Makefile") | sha256sum -}}
+{{- end -}}
+
 {{- define "zcblock-csi.installationSecretName" -}}
 {{- printf "%s-zccusan-installation-secret" (include "zcblock-csi.fullname" .) -}}
 {{- end -}}

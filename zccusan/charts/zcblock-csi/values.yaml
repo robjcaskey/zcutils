@@ -57,6 +57,92 @@ daemonset:
     - operator: Exists
   affinity: {}
 
+# TCP is always available to userspace volume stages. Enable this gate when
+# nodes are also expected to run RDMA stages: the DaemonSet then refuses to
+# become Ready unless the declared libfabric provider and an active device are
+# visible. This does not change the kernel edge, which remains transport=shm.
+backplane:
+  rdma:
+    enabled: false
+    provider: efa
+    domain: ""
+
+# The CSI node Pod does not start until this idempotent init container has
+# prepared the zcnblk client edge on its host. Production installs select an
+# explicit prebuilt module source and never silently fall back to compilation.
+# Disable this when another node lifecycle manager loads the module.
+nodeSetup:
+  enabled: true
+  image:
+    repository: public.ecr.aws/amazonlinux/amazonlinux
+    tag: "2023"
+    # When set, this takes precedence over tag. Use an immutable digest for
+    # production images that carry kernel modules.
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Install kmod only when a selected node image lacks insmod/modinfo. This is
+  # independent of development compilation and is disabled by default so a
+  # production install does not mutate the host package set unexpectedly.
+  installModuleTools: false
+  existingConfigMap: ""
+  parametersKey: module-parameters
+  moduleSource:
+    # host, image, http, or build. There is deliberately no automatic fallback
+    # from a missing production artifact to an on-node source build.
+    type: host
+    # %KERNEL_RELEASE% and %ARCH% are expanded by the init container. `host`
+    # paths are viewed under /host; `image` paths are inside nodeSetup.image.
+    hostPathTemplate: /opt/zcutils/kmods/zcnblk_client_mod.ko
+    imagePathTemplate: /opt/zcutils/kmods/%ARCH%/%KERNEL_RELEASE%/zcnblk_client_mod.ko
+    http:
+      # Intended for a user-provided static HTTP(S) origin. The same template
+      # tokens are supported in the artifact and checksum URLs.
+      urlTemplate: ""
+      # Set one pinned digest, or serve a sha256sum-style file at
+      # checksumUrlTemplate. One of these is mandatory in http mode.
+      sha256: ""
+      checksumUrlTemplate: ""
+      allowInsecureHttp: false
+      connectTimeoutSeconds: 5
+      totalTimeoutSeconds: 60
+      # nodeCacheDaemonSet downloads with ordinary pod networking and relays
+      # through a verified host cache, avoiding any dependency on host-network
+      # access to ClusterIP Services. `direct` downloads in the loader itself.
+      delivery: nodeCacheDaemonSet
+      cacheWaitSeconds: 300
+      refreshSeconds: 300
+    # Optional additional content pin for host/image artifacts. OCI images
+    # should also be selected by immutable digest in production.
+    sha256: ""
+    cacheRoot: /var/lib/zccusan/kmods
+  # On-node compilation is an explicit development/debugging facility. It is
+  # accepted only with moduleSource.type=build and enabled=true.
+  developmentBuild:
+    enabled: false
+    installHostDependencies: false
+    sourceConfigMap: ""
+    buildRoot: /var/lib/zccusan/kmods/build
+  resources: {}
+  module:
+    parameters:
+      - transport=shm
+      - lanes=1
+      - connections_per_lane=1
+      - shard_count=1
+      - size_mib=256
+      - logical_block_size=4096
+      - max_frame_bytes=4096
+      - queues=1
+      - queue_depth=128
+      - pipeline_depth=128
+      - shm_ring_entries=256
+      - shm_payload_entries=4096
+      - shm_poll_us=1000
+      - batch_depth=1
+      - write_acks=1
+      - hctx_affinity=0
+      - pin_threads=0
+
 stateDir: /var/lib/zcblock-csi
 userspaceMountRoot: /var/lib/zcutils/userspace-volumes
 pluginDir: ""
@@ -73,6 +159,12 @@ control:
 operator:
   enabled: true
   waitTimeoutMs: 50000
+  runtimePerformance:
+    enabled: false
+    leafCpuList: ""
+    fanCpuList: ""
+    onrampCpuList: ""
+    ofiCqSleepNs: "0"
   resources: {}
 
 telemetry:

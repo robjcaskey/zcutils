@@ -5,6 +5,9 @@
 //! migration destination is staged and is not a durability witness until the
 //! caller commits the corresponding topology/HWM handoff.
 
+use crate::volume_system_policy::{
+    SystemTaskGrantMailbox, SystemTaskGrantSnapshot, monotonic_time_ns,
+};
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -784,6 +787,24 @@ impl PartitionedVolume {
     where
         F: FnMut(CopyProgress) -> u64,
     {
+        self.copy_migration_base_controlled_result_with_method(
+            partition_id,
+            chunk_bytes,
+            method,
+            |progress| Ok(next_rate(progress)),
+        )
+    }
+
+    fn copy_migration_base_controlled_result_with_method<F>(
+        &self,
+        partition_id: &str,
+        chunk_bytes: usize,
+        method: CopyMethod,
+        mut next_rate: F,
+    ) -> io::Result<u64>
+    where
+        F: FnMut(CopyProgress) -> io::Result<u64>,
+    {
         if chunk_bytes == 0 || chunk_bytes as u64 % IO_ALIGNMENT != 0 {
             return Err(invalid("migration chunk must be a non-zero 4096 multiple"));
         }
@@ -824,12 +845,47 @@ impl PartitionedVolume {
                 bytes_copied: offset,
                 total_bytes: length,
                 elapsed: copy_started.elapsed(),
-            });
+            })?;
             pace_chunk(chunk_started, len as u64, rate);
         }
         migration.destination.sync_data()?;
         self.set_migration_phase(partition_id, MigrationPhase::BaseCopied)?;
         Ok(offset)
+    }
+
+    /// Copy under a leased, off-path system-task grant. A zero grant pauses at
+    /// the next chunk boundary; it never means unthrottled. Lease expiry uses
+    /// the mailbox's protected fallback, and cancellation leaves the durable
+    /// pending migration in place so another worker can resume it safely.
+    ///
+    /// No route, manifest, or placement lock is held while this worker parks.
+    /// Foreground I/O therefore continues while snapshots and migrations are
+    /// reassigned within the volume's aggregate system-operations HTB class.
+    pub fn copy_migration_base_managed_with_method(
+        &self,
+        partition_id: &str,
+        chunk_bytes: usize,
+        method: CopyMethod,
+        grants: &SystemTaskGrantMailbox,
+        cancelled: &AtomicBool,
+        idle_wait: Duration,
+    ) -> io::Result<u64> {
+        if idle_wait.is_zero() {
+            return Err(invalid("managed-copy idle wait must be non-zero"));
+        }
+        // Prevent a newly started task from copying one chunk before its first
+        // grant. Subsequent pauses can overshoot by at most one configured
+        // chunk, which is the explicit control granularity.
+        wait_for_system_task_grant(grants, cancelled, idle_wait)?;
+        self.copy_migration_base_controlled_result_with_method(
+            partition_id,
+            chunk_bytes,
+            method,
+            |_| {
+                Ok(wait_for_system_task_grant(grants, cancelled, idle_wait)?
+                    .target_bytes_per_second)
+            },
+        )
     }
 
     /// Opportunistically drain page-generation fallback dirtiness while
@@ -1608,6 +1664,26 @@ fn pace_chunk(started: Instant, bytes_copied: u64, max_bytes_per_second: u64) {
     }
 }
 
+fn wait_for_system_task_grant(
+    grants: &SystemTaskGrantMailbox,
+    cancelled: &AtomicBool,
+    idle_wait: Duration,
+) -> io::Result<SystemTaskGrantSnapshot> {
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "managed system task cancelled at a copy-chunk boundary",
+            ));
+        }
+        let grant = grants.load(monotonic_time_ns()?);
+        if grant.target_iops != 0 && grant.target_bytes_per_second != 0 {
+            return Ok(grant);
+        }
+        thread::park_timeout(idle_wait);
+    }
+}
+
 fn validate_locality(locality: MigrationLocality) -> io::Result<()> {
     if locality.strict && locality.preferred_cpu.is_none() {
         return Err(invalid(
@@ -2238,6 +2314,108 @@ mod tests {
         let mut direct = vec![0u8; IO_ALIGNMENT as usize];
         read_exact_at(&open_regular_file(&destination).unwrap(), &mut direct, 0).unwrap();
         assert_eq!(direct, final_page);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn managed_copy_rebalances_only_at_chunks_while_foreground_keeps_running() {
+        const PARTITION_BYTES: u64 = 8 * 1024 * 1024;
+        let root = temp_root("managed-copy");
+        let volume = Arc::new(
+            PartitionedVolume::create(
+                &root,
+                "v-managed-copy",
+                PARTITION_BYTES,
+                vec![definition(&root, "p0", 0, PARTITION_BYTES)],
+            )
+            .unwrap(),
+        );
+        volume
+            .begin_migration("p0", "managed-move", root.join("managed-destination.img"))
+            .unwrap();
+
+        let mailbox = Arc::new(SystemTaskGrantMailbox::new(SystemTaskGrantSnapshot {
+            generation: 1,
+            target_iops: 1_000,
+            target_bytes_per_second: 4 * 1024 * 1024,
+            effective_ns: 0,
+            valid_until_ns: 0,
+            fallback_iops: 0,
+            fallback_bytes_per_second: 0,
+        }));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let copy_done = Arc::new(AtomicBool::new(false));
+        let copy_volume = Arc::clone(&volume);
+        let copy_mailbox = Arc::clone(&mailbox);
+        let copy_cancelled = Arc::clone(&cancelled);
+        let copy_done_flag = Arc::clone(&copy_done);
+        let copier = thread::spawn(move || {
+            let result = copy_volume.copy_migration_base_managed_with_method(
+                "p0",
+                64 * 1024,
+                CopyMethod::Buffered,
+                &copy_mailbox,
+                &copy_cancelled,
+                Duration::from_millis(1),
+            );
+            copy_done_flag.store(true, Ordering::Release);
+            result
+        });
+
+        let writer_running = Arc::new(AtomicBool::new(true));
+        let write_count = Arc::new(AtomicU64::new(0));
+        let writer_volume = Arc::clone(&volume);
+        let writer_running_flag = Arc::clone(&writer_running);
+        let writer_count = Arc::clone(&write_count);
+        let writer = thread::spawn(move || {
+            let page_count = PARTITION_BYTES / IO_ALIGNMENT;
+            let mut sequence = 1u64;
+            while writer_running_flag.load(Ordering::Acquire) {
+                let page = sequence.wrapping_mul(7919) % page_count;
+                let payload = vec![sequence as u8; IO_ALIGNMENT as usize];
+                writer_volume
+                    .write_at(page * IO_ALIGNMENT, &payload)
+                    .unwrap();
+                writer_count.fetch_add(1, Ordering::Relaxed);
+                sequence = sequence.wrapping_add(1);
+            }
+        });
+
+        thread::sleep(Duration::from_millis(40));
+        mailbox.publish(SystemTaskGrantSnapshot {
+            generation: 2,
+            target_iops: 0,
+            target_bytes_per_second: 0,
+            effective_ns: 0,
+            valid_until_ns: 0,
+            fallback_iops: 0,
+            fallback_bytes_per_second: 0,
+        });
+        let writes_before_pause = write_count.load(Ordering::Relaxed);
+        thread::sleep(Duration::from_millis(40));
+        let writes_after_pause = write_count.load(Ordering::Relaxed);
+        assert!(writes_after_pause > writes_before_pause);
+        assert!(!copy_done.load(Ordering::Acquire));
+
+        mailbox.publish(SystemTaskGrantSnapshot {
+            generation: 3,
+            target_iops: 250_000,
+            target_bytes_per_second: 1024 * 1024 * 1024,
+            effective_ns: 0,
+            valid_until_ns: 0,
+            fallback_iops: 0,
+            fallback_bytes_per_second: 0,
+        });
+        assert_eq!(copier.join().unwrap().unwrap(), PARTITION_BYTES);
+        writer_running.store(false, Ordering::Release);
+        writer.join().unwrap();
+
+        let mut expected = vec![0u8; PARTITION_BYTES as usize];
+        volume.read_at(0, &mut expected).unwrap();
+        volume.commit_migration("p0").unwrap();
+        let mut migrated = vec![0u8; PARTITION_BYTES as usize];
+        volume.read_at(0, &mut migrated).unwrap();
+        assert_eq!(migrated, expected);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -1,0 +1,108 @@
+apiVersion: artifacts.zcutils.io/v1alpha1
+kind: ZccusanKernelModuleSource
+metadata:
+  name: us-east-1-production
+spec:
+  nodeSelector:
+    topology.kubernetes.io/region: us-east-1
+  endpoints:
+    - baseUrl: https://artifacts.us-east-1.example.test/zccusan
+      priority: 10
+      topologyHints:
+        cloudProviders: [aws]
+        regions: [us-east-1]
+        availabilityZones: [us-east-1a, us-east-1b]
+    - baseUrl: https://artifacts.us-west-2.example.test/zccusan
+      priority: 20
+      topologyHints:
+        cloudProviders: [aws]
+        regions: [us-west-2]
+  catalogRefs:
+    - name: production-2026-08-26
+  trustedPublicKeyRefs:
+    - namespace: zcblock-system
+      name: kernel-module-release-roots
+      key: release-ed25519.raw
+---
+apiVersion: artifacts.zcutils.io/v1alpha1
+kind: ZccusanKernelModuleCatalog
+metadata:
+  name: production-2026-08-26
+spec:
+  catalogGeneration: 1
+  catalog:
+    mediaType: application/vnd.zccusan.kernel-module-catalog.v1+yaml
+    sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    sizeBytes: 2048
+    objectPath: objects/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  entries:
+    - moduleName: zcnblk_client_mod
+      architecture: amd64
+      kernelRelease: 7.2.0
+      interfaces:
+        zcnblkClientEdgeAbi: 1
+        zcnblkSharedMemoryAbi: 1
+        minimumUserspaceProtocol: 1
+        maximumUserspaceProtocol: 1
+      manifest:
+        mediaType: application/vnd.zccusan.kernel-module-bundle.v1+yaml
+        sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        sizeBytes: 4096
+        objectPath: objects/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  signatures:
+    - format: Ed25519Raw
+      object:
+        mediaType: application/vnd.zccusan.ed25519-signature
+        sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+        sizeBytes: 64
+        objectPath: objects/sha256/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+---
+apiVersion: artifacts.zcutils.io/v1alpha1
+kind: ZccusanKernelModuleBundle
+metadata:
+  name: zcnblk-amd64-linux-7-2-0
+spec:
+  manifest:
+    mediaType: application/vnd.zccusan.kernel-module-bundle.v1+yaml
+    sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    sizeBytes: 4096
+    objectPath: objects/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  module:
+    name: zcnblk_client_mod
+    object:
+      mediaType: application/vnd.linux.kernel-module
+      sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      sizeBytes: 1048576
+      objectPath: objects/sha256/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+  compatibility:
+    architecture: amd64
+    kernelRelease: 7.2.0
+    vermagic: 7.2.0 SMP preempt mod_unload
+    interfaces:
+      zcnblkClientEdgeAbi: 1
+      zcnblkSharedMemoryAbi: 1
+      minimumUserspaceProtocol: 1
+      maximumUserspaceProtocol: 1
+  build:
+    sourceRevision: 0123456789abcdef
+    sourceTreeSha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+    buildRecipeSha256: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+    toolchainImageDigest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+    kernelHeadersSha256: 2222222222222222222222222222222222222222222222222222222222222222
+    kernelConfigSha256: 3333333333333333333333333333333333333333333333333333333333333333
+    moduleSymversSha256: 4444444444444444444444444444444444444444444444444444444444444444
+    builtAt: 2026-08-26T12:00:00Z
+  signatures:
+    - format: Ed25519Raw
+      object:
+        mediaType: application/vnd.zccusan.ed25519-signature
+        sha256: 5555555555555555555555555555555555555555555555555555555555555555
+        sizeBytes: 64
+        objectPath: objects/sha256/5555555555555555555555555555555555555555555555555555555555555555
+  attestations:
+    - name: build-provenance
+      object:
+        mediaType: application/vnd.in-toto+json
+        sha256: 6666666666666666666666666666666666666666666666666666666666666666
+        sizeBytes: 1024
+        objectPath: objects/sha256/6666666666666666666666666666666666666666666666666666666666666666

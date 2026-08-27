@@ -24,6 +24,37 @@ Raft policy entries are intentionally coarse:
 - periodic demand sampling, grant calculation, and mailbox renewal remain
   outside the replicated log and outside the I/O path.
 
+## Below-volume system-operation budget
+
+Foreground volume I/O and maintenance work are not peers. The regional/volume
+HTB first protects the admitted foreground guarantee and then grants one
+bounded `system_operations` child. Snapshot, live migration, restore/rebuild,
+replication catch-up, scrub, and compaction share that child. Consequently a
+maintenance deadline can consume reserved maintenance headroom, but it cannot
+silently take a provisioned foreground IOP. If the admitted physical capacity
+cannot satisfy both, the objective is reported infeasible.
+
+`plan_volume_system_tasks` divides the child grant outside the I/O path. Its
+ordering is based on the active objective dependency graph rather than a fixed
+task-kind priority:
+
+1. Protect every task's explicitly admitted hard floor. Floors normally encode
+   an RPO or compliance promise.
+2. Fund tasks on an active deadline's critical path. An upstream snapshot that
+   is needed by a pipelined migration is funded first, and the migration uses
+   the remaining system-operation grant.
+3. If a snapshot is not an ancestor of the migration's RTO terminal, an
+   RTO-critical migration can preempt the snapshot's ordinary and borrowed
+   allocation, but not its hard floor or a separate active RPO/compliance
+   deadline.
+4. Bring non-critical tasks toward their provisioned rates, then distribute
+   remaining capacity by borrowing weight up to each task ceiling.
+
+The planner publishes complete, leased generations to per-task seqlock
+mailboxes. A copy/snapshot worker samples its mailbox at a copy-chunk or batch
+boundary. Descriptor admission and completion do not read a system-task
+counter, clock, lock, or shared token bucket for every I/O.
+
 The repository's `raft-leader`, `raft-follower`, and `raft-wal-*` commands are
 transport/durable-majority benchmarks. They do not implement elections and
 must not be presented as the production regional Raft service. The committed

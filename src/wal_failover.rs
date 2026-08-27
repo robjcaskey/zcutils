@@ -9,8 +9,10 @@
 use crate::{
     ZCNBLK_FAN_WAL_HEADER_LEN, ZCNBLK_FAN_WAL_OP_EOF, ZCNBLK_FAN_WAL_OP_HELLO,
     ZCNBLK_FAN_WAL_OP_HELLO_ACK, ZCNBLK_FAN_WAL_OP_READ_DESC, ZCNBLK_FAN_WAL_OP_REQUEST_BATCH,
-    ZCNBLK_FAN_WAL_OP_RESULT_BATCH, ZCNBLK_FAN_WAL_OP_SYNC, ZCNBLK_FAN_WAL_OP_WRITE_BATCH,
-    ZCNBLK_FAN_WAL_OP_WRITE_DESC, ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH, ZcnblkFanWalFrame,
+    ZCNBLK_FAN_WAL_OP_RESULT, ZCNBLK_FAN_WAL_OP_RESULT_BATCH, ZCNBLK_FAN_WAL_OP_SYNC,
+    ZCNBLK_FAN_WAL_OP_WRITE_BATCH, ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+    ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH, ZcOfiMessageStream, ZcnblkFanWalFrame,
+    pin_current_thread_for_lane,
 };
 use std::env;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -23,6 +25,163 @@ use std::time::{Duration, Instant};
 const PRIMARY_MASK: u8 = 1;
 const SECONDARY_MASK: u8 = 2;
 const BOTH_MASK: u8 = PRIMARY_MASK | SECONDARY_MASK;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WalTransportKind {
+    Tcp,
+    OfiRdm,
+}
+
+impl WalTransportKind {
+    fn parse(value: &str, variable: &str) -> io::Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "tcp" | "tcp-mux" | "tcpmux" => Ok(Self::Tcp),
+            "ofi" | "ofi-rdm" | "rdm" | "efa" => Ok(Self::OfiRdm),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{variable} must be tcp or ofi, got {other:?}"),
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::OfiRdm => "ofi-rdm",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct WalTransport {
+    kind: WalTransportKind,
+    provider: String,
+    endpoint: String,
+    domains: Vec<String>,
+}
+
+impl WalTransport {
+    fn from_env(prefix: &str, default: WalTransportKind) -> io::Result<Self> {
+        let kind_name = format!("{prefix}_TRANSPORT");
+        let kind = env::var(&kind_name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| WalTransportKind::parse(&value, &kind_name))
+            .transpose()?
+            .unwrap_or(default);
+        let provider =
+            env::var(format!("{prefix}_OFI_PROVIDER")).unwrap_or_else(|_| "efa".to_string());
+        let endpoint =
+            env::var(format!("{prefix}_OFI_ENDPOINT")).unwrap_or_else(|_| "rdm".to_string());
+        let domains = env::var(format!("{prefix}_OFI_DOMAINS"))
+            .ok()
+            .into_iter()
+            .flat_map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        if kind == WalTransportKind::OfiRdm && provider.trim().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{prefix}_OFI_PROVIDER must not be empty"),
+            ));
+        }
+        if kind == WalTransportKind::OfiRdm && endpoint != "rdm" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{prefix}_OFI_ENDPOINT must be rdm for the WAL mirror"),
+            ));
+        }
+        Ok(Self {
+            kind,
+            provider,
+            endpoint,
+            domains,
+        })
+    }
+
+    fn lane_domain(&self, lane: u32) -> io::Result<Option<&str>> {
+        if self.domains.is_empty() {
+            return Ok(None);
+        }
+        if self.domains.len() == 1 {
+            return Ok(Some(self.domains[0].as_str()));
+        }
+        let lane = usize::try_from(lane)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "lane overflow"))?;
+        self.domains
+            .get(lane)
+            .map(String::as_str)
+            .map(Some)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "OFI domain list has {} entries but lane {lane} was requested",
+                        self.domains.len()
+                    ),
+                )
+            })
+    }
+}
+
+enum WalStream {
+    Tcp(TcpStream),
+    Ofi(ZcOfiMessageStream),
+}
+
+impl WalStream {
+    fn tcp(&self) -> Option<&TcpStream> {
+        match self {
+            Self::Tcp(stream) => Some(stream),
+            Self::Ofi(_) => None,
+        }
+    }
+
+    fn configure_low_latency(&self) -> io::Result<()> {
+        if let Self::Tcp(stream) = self {
+            stream.set_nodelay(true)?;
+        }
+        Ok(())
+    }
+}
+
+impl Read for WalStream {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.read(out),
+            Self::Ofi(stream) => stream.read(out),
+        }
+    }
+}
+
+impl Write for WalStream {
+    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.write(input),
+            Self::Ofi(stream) => stream.write(input),
+        }
+    }
+
+    fn write_vectored(&mut self, inputs: &[std::io::IoSlice<'_>]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.write_vectored(inputs),
+            Self::Ofi(stream) => stream.write_vectored(inputs),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.flush(),
+            Self::Ofi(stream) => stream.flush(),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReplicationMode {
@@ -372,21 +531,30 @@ fn resolve_one(value: &str) -> io::Result<SocketAddr> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, value.to_string()))
 }
 
-pub(crate) fn read_frame(stream: &mut TcpStream) -> io::Result<(ZcnblkFanWalFrame, Vec<u8>)> {
-    let mut header = [0u8; ZCNBLK_FAN_WAL_HEADER_LEN];
-    stream.read_exact(&mut header)?;
-    let frame = ZcnblkFanWalFrame::decode(&header)?;
-    let mut payload = vec![0u8; frame.payload_len as usize];
+pub(crate) fn read_frame<R: Read + ?Sized>(
+    stream: &mut R,
+) -> io::Result<(ZcnblkFanWalFrame, Vec<u8>)> {
+    let frame = read_frame_header(stream)?;
+    let mut payload = vec![0u8; wire_payload_len(frame)];
     stream.read_exact(&mut payload)?;
     Ok((frame, payload))
 }
 
-pub(crate) fn write_frame(
-    stream: &mut TcpStream,
+/// Read only the fixed WAL header. Bulk migration uses this to validate a
+/// source read result before splicing its payload directly into a destination
+/// write socket, without materializing the payload in userspace.
+pub(crate) fn read_frame_header<R: Read + ?Sized>(stream: &mut R) -> io::Result<ZcnblkFanWalFrame> {
+    let mut header = [0u8; ZCNBLK_FAN_WAL_HEADER_LEN];
+    stream.read_exact(&mut header)?;
+    ZcnblkFanWalFrame::decode(&header)
+}
+
+pub(crate) fn write_frame<W: Write + ?Sized>(
+    stream: &mut W,
     frame: ZcnblkFanWalFrame,
     payload: &[u8],
 ) -> io::Result<()> {
-    if payload.len() != frame.payload_len as usize {
+    if payload.len() != wire_payload_len(frame) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "WAL frame payload length mismatch",
@@ -394,6 +562,18 @@ pub(crate) fn write_frame(
     }
     stream.write_all(&frame.encode())?;
     stream.write_all(payload)
+}
+
+fn wire_payload_len(frame: ZcnblkFanWalFrame) -> usize {
+    match frame.op {
+        ZCNBLK_FAN_WAL_OP_WRITE_DESC
+        | ZCNBLK_FAN_WAL_OP_RESULT
+        | ZCNBLK_FAN_WAL_OP_WRITE_BATCH
+        | ZCNBLK_FAN_WAL_OP_RESULT_BATCH
+        | ZCNBLK_FAN_WAL_OP_REQUEST_BATCH
+        | ZCNBLK_FAN_WAL_OP_WRITE_EXTENT_BATCH => frame.payload_len as usize,
+        _ => 0,
+    }
 }
 
 fn request_batch_contains_write(frame: ZcnblkFanWalFrame, payload: &[u8]) -> io::Result<bool> {
@@ -428,13 +608,33 @@ pub(crate) fn is_write(frame: ZcnblkFanWalFrame, payload: &[u8]) -> io::Result<b
     }
 }
 
-fn send_request_and_read_result(
-    stream: &mut TcpStream,
+fn send_request_and_read_result<S: Read + Write + ?Sized>(
+    stream: &mut S,
     frame: ZcnblkFanWalFrame,
     payload: &[u8],
 ) -> io::Result<(ZcnblkFanWalFrame, Vec<u8>)> {
     write_frame(stream, frame, payload)?;
     read_frame(stream)
+}
+
+fn send_mirrored_request_and_read_results<P, S>(
+    primary: &mut P,
+    secondary: &mut S,
+    frame: ZcnblkFanWalFrame,
+    payload: &[u8],
+) -> io::Result<((ZcnblkFanWalFrame, Vec<u8>), (ZcnblkFanWalFrame, Vec<u8>))>
+where
+    P: Read + Write + ?Sized,
+    S: Read + Write + ?Sized,
+{
+    // Put both mirror legs in flight before waiting for either result.  The
+    // upstream ACK is still withheld until both replies validate, so this
+    // removes serialized network latency without weakening mirror semantics.
+    write_frame(primary, frame, payload)?;
+    write_frame(secondary, frame, payload)?;
+    let primary_result = read_frame(primary)?;
+    let secondary_result = read_frame(secondary)?;
+    Ok((primary_result, secondary_result))
 }
 
 pub(crate) fn connect_leaf(endpoint: &Endpoint, lane: u32) -> io::Result<TcpStream> {
@@ -468,6 +668,47 @@ pub(crate) fn connect_leaf(endpoint: &Endpoint, lane: u32) -> io::Result<TcpStre
                         started.elapsed().as_millis(),
                     );
                 }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn connect_transport_leaf(
+    endpoint: &Endpoint,
+    lane: u32,
+    transport: &WalTransport,
+) -> io::Result<WalStream> {
+    if transport.kind == WalTransportKind::Tcp {
+        return connect_leaf(endpoint, lane).map(WalStream::Tcp);
+    }
+    let address = endpoint.lane_addr(lane)?;
+    let started = Instant::now();
+    let retry_ms = env::var("ZCNBLK_WAL_FAILOVER_CONNECT_RETRY_MS")
+        .ok()
+        .map(|value| value.parse::<u64>())
+        .transpose()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+        .unwrap_or(20_000);
+    loop {
+        match ZcOfiMessageStream::connect_on_domain(
+            &transport.provider,
+            &transport.endpoint,
+            &address.ip().to_string(),
+            address.port(),
+            false,
+            false,
+            transport.lane_domain(lane)?,
+        ) {
+            Ok(stream) => return Ok(WalStream::Ofi(stream)),
+            Err(error) if started.elapsed() < Duration::from_millis(retry_ms) => {
+                eprintln!(
+                    "zcnblk-wal-failover-leaf-connect: transport=ofi-rdm provider={} endpoint={} address={address} lane={lane} elapsed_ms={} status=waiting error={error}",
+                    transport.provider,
+                    transport.endpoint,
+                    started.elapsed().as_millis(),
+                );
                 thread::sleep(Duration::from_millis(50));
             }
             Err(error) => return Err(error),
@@ -571,7 +812,7 @@ fn mirror_payloads_equal(
 }
 
 fn async_replication_worker(
-    mut secondary: TcpStream,
+    mut secondary: WalStream,
     requests: mpsc::Receiver<ReplicationRequest>,
     state: Arc<FailoverState>,
     lane: u32,
@@ -634,12 +875,12 @@ fn async_replication_worker(
 }
 
 fn proxy_session_async(
-    mut upstream: TcpStream,
+    mut upstream: WalStream,
     primary_endpoint: Endpoint,
     secondary_endpoint: Endpoint,
+    leaf_transport: WalTransport,
     state: Arc<FailoverState>,
 ) -> io::Result<()> {
-    upstream.set_nodelay(true)?;
     let (hello, hello_payload) = read_frame(&mut upstream)?;
     if hello.op != ZCNBLK_FAN_WAL_OP_HELLO || !hello_payload.is_empty() {
         return Err(io::Error::new(
@@ -648,13 +889,13 @@ fn proxy_session_async(
         ));
     }
     let lane = hello.lane_id;
-    let mut primary = connect_leaf(&primary_endpoint, lane)?;
-    let mut replica_stream = connect_leaf(&secondary_endpoint, lane)?;
+    let mut primary = connect_transport_leaf(&primary_endpoint, lane, &leaf_transport)?;
+    let mut replica_stream = connect_transport_leaf(&secondary_endpoint, lane, &leaf_transport)?;
     // Reserve the post-promotion session before any HELLO waits. Terminal
     // leaves accept their declared connection topology before dispatching
     // workers, and the standby keeps replication-stream ownership separate
     // from promoted foreground I/O.
-    let mut standby_secondary = connect_leaf(&secondary_endpoint, lane)?;
+    let mut standby_secondary = connect_transport_leaf(&secondary_endpoint, lane, &leaf_transport)?;
     let primary_hello = send_request_and_read_result(&mut primary, hello, &[])?;
     let secondary_hello = send_request_and_read_result(&mut replica_stream, hello, &[])?;
     let standby_hello = send_request_and_read_result(&mut standby_secondary, hello, &[])?;
@@ -768,16 +1009,26 @@ fn proxy_session_async(
 }
 
 fn proxy_session(
-    mut upstream: TcpStream,
+    mut upstream: WalStream,
     primary_endpoint: Endpoint,
     secondary_endpoint: Endpoint,
+    leaf_transport: WalTransport,
     state: Arc<FailoverState>,
 ) -> io::Result<()> {
-    let _registration = state.register_session(&upstream)?;
+    upstream.configure_low_latency()?;
+    let _registration = upstream
+        .tcp()
+        .map(|stream| state.register_session(stream))
+        .transpose()?;
     if state.mode == ReplicationMode::Asynchronous {
-        return proxy_session_async(upstream, primary_endpoint, secondary_endpoint, state);
+        return proxy_session_async(
+            upstream,
+            primary_endpoint,
+            secondary_endpoint,
+            leaf_transport,
+            state,
+        );
     }
-    upstream.set_nodelay(true)?;
     let (hello, hello_payload) = read_frame(&mut upstream)?;
     if hello.op != ZCNBLK_FAN_WAL_OP_HELLO || !hello_payload.is_empty() {
         return Err(io::Error::new(
@@ -786,8 +1037,8 @@ fn proxy_session(
         ));
     }
     let lane = hello.lane_id;
-    let mut primary = connect_leaf(&primary_endpoint, lane)?;
-    let mut secondary = connect_leaf(&secondary_endpoint, lane)?;
+    let mut primary = connect_transport_leaf(&primary_endpoint, lane, &leaf_transport)?;
+    let mut secondary = connect_transport_leaf(&secondary_endpoint, lane, &leaf_transport)?;
     let primary_hello = send_request_and_read_result(&mut primary, hello, &[])?;
     let secondary_hello = send_request_and_read_result(&mut secondary, hello, &[])?;
     if primary_hello.0.op != ZCNBLK_FAN_WAL_OP_HELLO_ACK
@@ -841,19 +1092,29 @@ fn proxy_session(
             state.write_mask.load(Ordering::Acquire)
         };
 
-        let primary_result = if mask & PRIMARY_MASK != 0 {
-            Some(send_request_and_read_result(&mut primary, frame, &payload)?)
-        } else {
-            None
-        };
-        let secondary_result = if mask & SECONDARY_MASK != 0 {
-            Some(send_request_and_read_result(
-                &mut secondary,
-                frame,
-                &payload,
-            )?)
-        } else {
-            None
+        let (primary_result, secondary_result) = match mask {
+            BOTH_MASK => {
+                let (primary_result, secondary_result) = send_mirrored_request_and_read_results(
+                    &mut primary,
+                    &mut secondary,
+                    frame,
+                    &payload,
+                )?;
+                (Some(primary_result), Some(secondary_result))
+            }
+            PRIMARY_MASK => (
+                Some(send_request_and_read_result(&mut primary, frame, &payload)?),
+                None,
+            ),
+            SECONDARY_MASK => (
+                None,
+                Some(send_request_and_read_result(
+                    &mut secondary,
+                    frame,
+                    &payload,
+                )?),
+            ),
+            _ => return Err(io::Error::other("WAL mirror has no active placement leg")),
         };
         if let (Some(primary_result), Some(secondary_result)) = (&primary_result, &secondary_result)
         {
@@ -952,6 +1213,24 @@ pub fn main_entry() -> io::Result<()> {
     }
 
     let mode = ReplicationMode::from_env()?;
+    let ingress_transport =
+        WalTransport::from_env("ZCNBLK_WAL_FAILOVER_INGRESS", WalTransportKind::Tcp)?;
+    let leaf_transport = WalTransport::from_env("ZCNBLK_WAL_FAILOVER_LEAF", WalTransportKind::Tcp)?;
+    if mode == ReplicationMode::Asynchronous && ingress_transport.kind == WalTransportKind::OfiRdm {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "asynchronous declared-loss failover requires a fenceable TCP ingress; OFI ingress fencing is not yet implemented",
+        ));
+    }
+    if env::var("ZCNBLK_WAL_FAILOVER_OFI_RMA_WRITES")
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the WAL mirror does not advertise one-sided RMA payload windows until its userspace fan owns a registered fan-out arena; use OFI/RDM message transport",
+        ));
+    }
     let fence_source_ip = env::var("ZCNBLK_WAL_FAILOVER_FENCE_SOURCE_IP")
         .ok()
         .map(|value| {
@@ -975,7 +1254,7 @@ pub fn main_entry() -> io::Result<()> {
         })?;
 
     println!(
-        "zcnblk-wal-failover: listen={}:{} primary={}:{} secondary={}:{} control={} lanes={lanes} topology=client-block-edge->userspace-failover->regional-userspace-leaves placement_owner=userspace block_client_placement=no initial_active=primary replication_mode={} initial_write_policy={} promotion_fence={} declared_loss_fence_source_ip={}",
+        "zcnblk-wal-failover: listen={}:{} primary={}:{} secondary={}:{} control={} lanes={lanes} ingress_transport={} leaf_transport={} ofi_provider={} ofi_endpoint={} one_sided_rma_payload=disabled-fail-closed topology=client-block-edge->userspace-failover->regional-userspace-leaves placement_owner=userspace block_client_placement=no initial_active=primary replication_mode={} initial_write_policy={} promotion_fence={} declared_loss_fence_source_ip={}",
         listen.host,
         listen.base_port,
         primary.host,
@@ -983,6 +1262,10 @@ pub fn main_entry() -> io::Result<()> {
         secondary.host,
         secondary.base_port,
         control_addr,
+        ingress_transport.kind.label(),
+        leaf_transport.kind.label(),
+        leaf_transport.provider,
+        leaf_transport.endpoint,
         mode.label(),
         if mode == ReplicationMode::Asynchronous {
             "regional-sync-plus-cross-region-async"
@@ -1002,31 +1285,61 @@ pub fn main_entry() -> io::Result<()> {
     let mut handles = Vec::with_capacity(lanes as usize);
     for lane in 0..lanes {
         let address = listen.lane_addr(lane)?;
-        let listener = TcpListener::bind(address)?;
         let primary = primary.clone();
         let secondary = secondary.clone();
         let state = Arc::clone(&state);
+        let ingress_transport = ingress_transport.clone();
+        let leaf_transport = leaf_transport.clone();
         handles.push(
             thread::Builder::new()
                 .name(format!("zcwal-failover-{lane}"))
                 .spawn(move || -> io::Result<()> {
-                    for accepted in listener.incoming() {
-                        let upstream = accepted?;
-                        let primary = primary.clone();
-                        let secondary = secondary.clone();
-                        let state = Arc::clone(&state);
-                        thread::Builder::new()
-                        .name(format!("zcwal-failover-session-{lane}"))
-                        .spawn(move || {
-                            if let Err(error) =
-                                proxy_session(upstream, primary, secondary, state)
-                            {
-                                eprintln!(
-                                    "zcnblk-wal-failover-session-error: lane={lane} error={error}"
-                                );
+                    pin_current_thread_for_lane("zcnblk-wal-failover-lane", lane as usize)?;
+                    if ingress_transport.kind == WalTransportKind::Tcp {
+                        let listener = TcpListener::bind(address)?;
+                        for accepted in listener.incoming() {
+                            let upstream = WalStream::Tcp(accepted?);
+                            let primary = primary.clone();
+                            let secondary = secondary.clone();
+                            let state = Arc::clone(&state);
+                            let leaf_transport = leaf_transport.clone();
+                            thread::Builder::new()
+                                .name(format!("zcwal-failover-session-{lane}"))
+                                .spawn(move || {
+                                    if let Err(error) = proxy_session(
+                                        upstream,
+                                        primary,
+                                        secondary,
+                                        leaf_transport,
+                                        state,
+                                    ) {
+                                        eprintln!("zcnblk-wal-failover-session-error: lane={lane} error={error}");
+                                    }
+                                })?;
+                        }
+                    } else {
+                        loop {
+                            let upstream = ZcOfiMessageStream::connect_on_domain(
+                                &ingress_transport.provider,
+                                &ingress_transport.endpoint,
+                                &address.ip().to_string(),
+                                address.port(),
+                                true,
+                                false,
+                                ingress_transport.lane_domain(lane)?,
+                            )?;
+                            if let Err(error) = proxy_session(
+                                WalStream::Ofi(upstream),
+                                primary.clone(),
+                                secondary.clone(),
+                                leaf_transport.clone(),
+                                Arc::clone(&state),
+                            ) {
+                                eprintln!("zcnblk-wal-failover-session-error: transport=ofi-rdm lane={lane} error={error}");
                             }
-                        })?;
+                        }
                     }
+                    #[allow(unreachable_code)]
                     Ok(())
                 })?,
         );
@@ -1042,6 +1355,89 @@ pub fn main_entry() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(zc_has_libfabric)]
+    fn ofi_test_port() -> u16 {
+        for _ in 0..100 {
+            let socket = TcpListener::bind(("127.0.0.2", 0)).unwrap();
+            let port = socket.local_addr().unwrap().port();
+            drop(socket);
+            let Some(control) = port.checked_add(1000) else {
+                continue;
+            };
+            let probes = [
+                TcpListener::bind(("127.0.0.2", control)),
+                TcpListener::bind(("127.0.0.3", control)),
+            ];
+            if probes.iter().all(Result::is_ok) {
+                return port;
+            }
+        }
+        panic!("could not reserve OFI test service/control ports")
+    }
+
+    #[cfg(zc_has_libfabric)]
+    fn ofi_memory_leaf(bind: &'static str, port: u16) -> io::Result<Vec<u8>> {
+        let mut stream =
+            ZcOfiMessageStream::connect_on_domain("sockets", "rdm", bind, port, true, false, None)?;
+        let mut memory = vec![0u8; 64 * 1024];
+        loop {
+            let (frame, payload) = read_frame(&mut stream)?;
+            match frame.op {
+                ZCNBLK_FAN_WAL_OP_HELLO => write_frame(
+                    &mut stream,
+                    ZcnblkFanWalFrame {
+                        op: ZCNBLK_FAN_WAL_OP_HELLO_ACK,
+                        payload_len: 0,
+                        ..frame
+                    },
+                    &[],
+                )?,
+                ZCNBLK_FAN_WAL_OP_WRITE_DESC => {
+                    let start = frame.leaf_offset as usize;
+                    let end = start + payload.len();
+                    memory[start..end].copy_from_slice(&payload);
+                    write_frame(
+                        &mut stream,
+                        ZcnblkFanWalFrame {
+                            op: ZCNBLK_FAN_WAL_OP_RESULT,
+                            payload_len: 0,
+                            ..frame
+                        },
+                        &[],
+                    )?;
+                }
+                ZCNBLK_FAN_WAL_OP_READ_DESC => {
+                    let start = frame.leaf_offset as usize;
+                    let end = start + frame.payload_len as usize;
+                    write_frame(
+                        &mut stream,
+                        ZcnblkFanWalFrame {
+                            op: ZCNBLK_FAN_WAL_OP_RESULT,
+                            ..frame
+                        },
+                        &memory[start..end],
+                    )?;
+                }
+                ZCNBLK_FAN_WAL_OP_SYNC => write_frame(
+                    &mut stream,
+                    ZcnblkFanWalFrame {
+                        op: ZCNBLK_FAN_WAL_OP_RESULT,
+                        payload_len: 0,
+                        ..frame
+                    },
+                    &[],
+                )?,
+                ZCNBLK_FAN_WAL_OP_EOF => return Ok(memory),
+                other => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("test leaf got unsupported op {other}"),
+                    ));
+                }
+            }
+        }
+    }
 
     #[test]
     fn promotion_requires_synced_generation_and_is_one_way() {
@@ -1104,5 +1500,136 @@ mod tests {
         assert!(result.contains("last_missing=Some(20)"));
         assert_eq!(state.active.load(Ordering::Acquire), SECONDARY_MASK);
         assert_eq!(state.placement_epoch.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn ofi_rdm_is_distinct_from_one_sided_rma_payloads() {
+        assert_eq!(
+            WalTransportKind::parse("ofi", "TEST").unwrap(),
+            WalTransportKind::OfiRdm
+        );
+        assert!(WalTransportKind::parse("rdma-write", "TEST").is_err());
+        let transport = WalTransport {
+            kind: WalTransportKind::OfiRdm,
+            provider: "efa".to_string(),
+            endpoint: "rdm".to_string(),
+            domains: vec!["efa_0-rdm".to_string()],
+        };
+        assert_eq!(transport.lane_domain(0).unwrap(), Some("efa_0-rdm"));
+        assert_eq!(transport.lane_domain(31).unwrap(), Some("efa_0-rdm"));
+    }
+
+    #[cfg(zc_has_libfabric)]
+    #[test]
+    fn ofi_rdm_mirror_preserves_write_sync_read_on_both_leaves() {
+        let leaf_port = ofi_test_port();
+        let primary_leaf = thread::spawn(move || ofi_memory_leaf("127.0.0.2", leaf_port));
+        let secondary_leaf = thread::spawn(move || ofi_memory_leaf("127.0.0.3", leaf_port));
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let fan_address = listener.local_addr().unwrap();
+        let state = Arc::new(FailoverState::new());
+        let fan_state = Arc::clone(&state);
+        let fan = thread::spawn(move || -> io::Result<()> {
+            let (upstream, _) = listener.accept()?;
+            proxy_session(
+                WalStream::Tcp(upstream),
+                Endpoint::parse(&format!("127.0.0.2:{leaf_port}"))?,
+                Endpoint::parse(&format!("127.0.0.3:{leaf_port}"))?,
+                WalTransport {
+                    kind: WalTransportKind::OfiRdm,
+                    provider: "sockets".to_string(),
+                    endpoint: "rdm".to_string(),
+                    domains: Vec::new(),
+                },
+                fan_state,
+            )
+        });
+
+        let mut client = TcpStream::connect(fan_address).unwrap();
+        let hello = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_HELLO,
+            lane_id: 0,
+            lane_count: 1,
+            branch_count: 1,
+            placement_epoch: 1,
+            ..ZcnblkFanWalFrame::default()
+        };
+        write_frame(&mut client, hello, &[]).unwrap();
+        assert_eq!(
+            read_frame(&mut client).unwrap().0.op,
+            ZCNBLK_FAN_WAL_OP_HELLO_ACK
+        );
+
+        let expected = b"mirrored-ofi-rdm";
+        let write = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+            lane_id: 0,
+            lane_count: 1,
+            branch_count: 1,
+            placement_epoch: 1,
+            payload_len: expected.len() as u32,
+            logical_len: expected.len() as u32,
+            ..ZcnblkFanWalFrame::default()
+        };
+        write_frame(&mut client, write, expected).unwrap();
+        assert_eq!(
+            read_frame(&mut client).unwrap().0.op,
+            ZCNBLK_FAN_WAL_OP_RESULT
+        );
+
+        let sync = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_SYNC,
+            lane_id: 0,
+            lane_count: 1,
+            branch_count: 1,
+            placement_epoch: 1,
+            sync_epoch: 7,
+            ..ZcnblkFanWalFrame::default()
+        };
+        write_frame(&mut client, sync, &[]).unwrap();
+        assert_eq!(
+            read_frame(&mut client).unwrap().0.op,
+            ZCNBLK_FAN_WAL_OP_RESULT
+        );
+
+        let read = ZcnblkFanWalFrame {
+            op: ZCNBLK_FAN_WAL_OP_READ_DESC,
+            lane_id: 0,
+            lane_count: 1,
+            branch_count: 1,
+            placement_epoch: 1,
+            payload_len: expected.len() as u32,
+            logical_len: expected.len() as u32,
+            ..ZcnblkFanWalFrame::default()
+        };
+        write_frame(&mut client, read, &[]).unwrap();
+        let (result, payload) = read_frame(&mut client).unwrap();
+        assert_eq!(result.op, ZCNBLK_FAN_WAL_OP_RESULT);
+        assert_eq!(payload, expected);
+
+        write_frame(
+            &mut client,
+            ZcnblkFanWalFrame {
+                op: ZCNBLK_FAN_WAL_OP_EOF,
+                lane_id: 0,
+                lane_count: 1,
+                branch_count: 1,
+                placement_epoch: 1,
+                ..ZcnblkFanWalFrame::default()
+            },
+            &[],
+        )
+        .unwrap();
+        drop(client);
+
+        fan.join().unwrap().unwrap();
+        let primary = primary_leaf.join().unwrap().unwrap();
+        let secondary = secondary_leaf.join().unwrap().unwrap();
+        assert_eq!(&primary[..expected.len()], expected);
+        assert_eq!(&secondary[..expected.len()], expected);
+        assert_eq!(state.write_generation.load(Ordering::Acquire), 1);
+        assert_eq!(state.synced_generation.load(Ordering::Acquire), 1);
+        assert_eq!(state.sync_epoch.load(Ordering::Acquire), 7);
     }
 }

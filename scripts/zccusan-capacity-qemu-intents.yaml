@@ -1,0 +1,40 @@
+apiVersion: storage.zcutils.io/v1alpha1
+kind: MediaGrant
+metadata:
+  name: qemu-storage-node-memory
+spec:
+  nodeSelector:
+    matchLabels:
+      zcutils.io/storage-node: "true"
+  mediaSets:
+    - name: bounded-memory-lane
+      publishAs:
+        mediaClass: qemu-bounded-memory
+        durability: Volatile
+        mayContributeToDurableAcknowledgement: false
+      dynamicSources:
+        - kind: MemoryArena
+          maximumVolumeSize: 8Mi
+          totalCapacityPerNode: 8Mi
+          totalProvisionedIopsPerNode: 100
+---
+apiVersion: storage.zcutils.io/v1alpha1
+kind: StorageProfile
+metadata:
+  name: qemu-bounded-userspace-mirror
+spec:
+  frontend: LinuxBlock
+  placement:
+    primitive: Mirror
+    execution: Userspace
+    copies: 2
+    mediaClass: qemu-bounded-memory
+    excludeClientNode: false
+    distinctTopologyKeys:
+      - kubernetes.io/hostname
+  transport:
+    kind: TcpMux
+    addressSource: InternalIP
+    lanes: 1
+    connectionsPerLane: 1
+    chunkBytes: 4096

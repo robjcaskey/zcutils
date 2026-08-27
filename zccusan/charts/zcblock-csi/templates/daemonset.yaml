@@ -13,8 +13,16 @@ spec:
     metadata:
       labels:
         {{- include "zcblock-csi.selectorLabels" . | nindent 8 }}
-      {{- if or .Values.metrics.enabled .Values.daemonset.podAnnotations }}
+      {{- if or .Values.nodeSetup.enabled .Values.backplane.rdma.enabled .Values.metrics.enabled .Values.daemonset.podAnnotations }}
       annotations:
+        {{- if .Values.nodeSetup.enabled }}
+        zcutils.io/node-setup-checksum: {{ include "zcblock-csi.nodeSetupChecksum" . | quote }}
+        {{- end }}
+        {{- if .Values.backplane.rdma.enabled }}
+        zcutils.io/backplane-rdma-provider: {{ .Values.backplane.rdma.provider | quote }}
+        zcutils.io/backplane-rdma-domain: {{ default "auto" .Values.backplane.rdma.domain | quote }}
+        zcutils.io/backplane-rdma-fallback: "none"
+        {{- end }}
         {{- if .Values.metrics.enabled }}
         prometheus.io/scrape: "true"
         prometheus.io/path: {{ .Values.metrics.path | quote }}
@@ -30,6 +38,10 @@ spec:
     spec:
       serviceAccountName: {{ include "zcblock-csi.serviceAccountName" . }}
       priorityClassName: {{ .Values.daemonset.priorityClassName }}
+      {{- if .Values.backplane.rdma.enabled }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
       {{- with .Values.daemonset.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -41,6 +53,106 @@ spec:
       {{- with .Values.daemonset.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if or .Values.nodeSetup.enabled .Values.backplane.rdma.enabled }}
+      initContainers:
+        {{- if .Values.nodeSetup.enabled }}
+        - name: zcnblk-node-setup
+          image: {{ include "zcblock-csi.nodeSetupImage" . | quote }}
+          imagePullPolicy: {{ .Values.nodeSetup.image.pullPolicy }}
+          command: [/bin/bash, /node-setup/setup.sh]
+          env:
+            - name: ZCNBLK_INSTALL_MODULE_TOOLS
+              value: {{ .Values.nodeSetup.installModuleTools | quote }}
+            - name: ZCNBLK_PARAMETERS_FILE
+              value: {{ ternary (printf "/node-setup-user/%s" .Values.nodeSetup.parametersKey) "/node-setup/module-parameters" (ne .Values.nodeSetup.existingConfigMap "") | quote }}
+            - name: ZCNBLK_MODULE_SOURCE_TYPE
+              value: {{ .Values.nodeSetup.moduleSource.type | quote }}
+            - name: ZCNBLK_MODULE_HOST_PATH_TEMPLATE
+              value: {{ .Values.nodeSetup.moduleSource.hostPathTemplate | quote }}
+            - name: ZCNBLK_MODULE_IMAGE_PATH_TEMPLATE
+              value: {{ .Values.nodeSetup.moduleSource.imagePathTemplate | quote }}
+            - name: ZCNBLK_MODULE_SHA256
+              value: {{ .Values.nodeSetup.moduleSource.sha256 | quote }}
+            - name: ZCNBLK_MODULE_CACHE_ROOT
+              value: {{ .Values.nodeSetup.moduleSource.cacheRoot | quote }}
+            - name: ZCNBLK_MODULE_HTTP_URL_TEMPLATE
+              value: {{ .Values.nodeSetup.moduleSource.http.urlTemplate | quote }}
+            - name: ZCNBLK_MODULE_HTTP_SHA256
+              value: {{ .Values.nodeSetup.moduleSource.http.sha256 | quote }}
+            - name: ZCNBLK_MODULE_HTTP_CHECKSUM_URL_TEMPLATE
+              value: {{ .Values.nodeSetup.moduleSource.http.checksumUrlTemplate | quote }}
+            - name: ZCNBLK_MODULE_HTTP_ALLOW_INSECURE
+              value: {{ .Values.nodeSetup.moduleSource.http.allowInsecureHttp | quote }}
+            - name: ZCNBLK_MODULE_HTTP_CONNECT_TIMEOUT_SECONDS
+              value: {{ .Values.nodeSetup.moduleSource.http.connectTimeoutSeconds | quote }}
+            - name: ZCNBLK_MODULE_HTTP_TOTAL_TIMEOUT_SECONDS
+              value: {{ .Values.nodeSetup.moduleSource.http.totalTimeoutSeconds | quote }}
+            - name: ZCNBLK_MODULE_HTTP_DELIVERY
+              value: {{ .Values.nodeSetup.moduleSource.http.delivery | quote }}
+            - name: ZCNBLK_MODULE_HTTP_CACHE_WAIT_SECONDS
+              value: {{ .Values.nodeSetup.moduleSource.http.cacheWaitSeconds | quote }}
+            - name: ZCNBLK_DEVELOPMENT_BUILD_ENABLED
+              value: {{ .Values.nodeSetup.developmentBuild.enabled | quote }}
+            - name: ZCNBLK_DEVELOPMENT_BUILD_INSTALL_HOST_DEPENDENCIES
+              value: {{ .Values.nodeSetup.developmentBuild.installHostDependencies | quote }}
+            - name: ZCNBLK_DEVELOPMENT_BUILD_ROOT
+              value: {{ .Values.nodeSetup.developmentBuild.buildRoot | quote }}
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}
+            runAsUser: 0
+            runAsGroup: 0
+          resources:
+            {{- toYaml .Values.nodeSetup.resources | nindent 12 }}
+          volumeMounts:
+            - name: node-setup
+              mountPath: /node-setup
+              readOnly: true
+            {{- if .Values.nodeSetup.existingConfigMap }}
+            - name: node-setup-user
+              mountPath: /node-setup-user
+              readOnly: true
+            {{- end }}
+            {{- if eq .Values.nodeSetup.moduleSource.type "build" }}
+            - name: zcnblk-module-source
+              mountPath: /module-source
+              readOnly: true
+            {{- end }}
+            - name: host-root
+              mountPath: /host
+            - name: host-dev
+              mountPath: /host/dev
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: host-sys
+              mountPath: /host/sys
+              readOnly: true
+        {{- end }}
+        {{- if .Values.backplane.rdma.enabled }}
+        - name: rdma-preflight
+          image: {{ include "zcblock-csi.mainImage" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/usr/local/bin/zcutils]
+          args:
+            - rdma-preflight
+            - {{ required "backplane.rdma.provider is required when RDMA is enabled" .Values.backplane.rdma.provider | quote }}
+            {{- if .Values.backplane.rdma.domain }}
+            - {{ .Values.backplane.rdma.domain | quote }}
+            {{- end }}
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}
+          volumeMounts:
+            - name: dev
+              mountPath: /dev
+            - name: host-sys
+              mountPath: /sys
+              readOnly: true
+        {{- end }}
       {{- end }}
       containers:
         - name: zcblock-csi
@@ -217,6 +329,46 @@ spec:
             - name: registration-dir
               mountPath: /registration
       volumes:
+        {{- if .Values.nodeSetup.enabled }}
+        - name: node-setup
+          configMap:
+            name: {{ include "zcblock-csi.nodeSetupConfigMapName" . }}
+            defaultMode: 0555
+        {{- if .Values.nodeSetup.existingConfigMap }}
+        - name: node-setup-user
+          configMap:
+            name: {{ .Values.nodeSetup.existingConfigMap }}
+            items:
+              - key: {{ .Values.nodeSetup.parametersKey }}
+                path: {{ .Values.nodeSetup.parametersKey }}
+        {{- end }}
+        {{- if eq .Values.nodeSetup.moduleSource.type "build" }}
+        - name: zcnblk-module-source
+          configMap:
+            name: {{ include "zcblock-csi.nodeSetupSourceConfigMapName" . }}
+        {{- end }}
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+        - name: host-dev
+          hostPath:
+            path: /dev
+            type: Directory
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: host-sys
+          hostPath:
+            path: /sys
+            type: Directory
+        {{- else if .Values.backplane.rdma.enabled }}
+        - name: host-sys
+          hostPath:
+            path: /sys
+            type: Directory
+        {{- end }}
         - name: plugin-dir
           hostPath:
             path: {{ include "zcblock-csi.pluginDir" . }}

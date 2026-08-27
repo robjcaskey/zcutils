@@ -43,6 +43,7 @@ const DATA_IN_BATCH: usize = 64;
 
 const OP_NOP_OUT: u8 = 0x00;
 const OP_SCSI_COMMAND: u8 = 0x01;
+const OP_TASK_REQUEST: u8 = 0x02;
 const OP_LOGIN_REQUEST: u8 = 0x03;
 const OP_TEXT_REQUEST: u8 = 0x04;
 const OP_DATA_OUT: u8 = 0x05;
@@ -50,11 +51,18 @@ const OP_LOGOUT_REQUEST: u8 = 0x06;
 
 const OP_NOP_IN: u8 = 0x20;
 const OP_SCSI_RESPONSE: u8 = 0x21;
+const OP_TASK_RESPONSE: u8 = 0x22;
 const OP_LOGIN_RESPONSE: u8 = 0x23;
 const OP_TEXT_RESPONSE: u8 = 0x24;
 const OP_DATA_IN: u8 = 0x25;
 const OP_LOGOUT_RESPONSE: u8 = 0x26;
 const OP_R2T: u8 = 0x31;
+
+const TASK_FUNCTION_LOGICAL_UNIT_RESET: u8 = 5;
+const TASK_RESPONSE_COMPLETE: u8 = 0;
+const TASK_RESPONSE_LUN_DOES_NOT_EXIST: u8 = 2;
+const TASK_RESPONSE_FUNCTION_UNSUPPORTED: u8 = 5;
+const TASK_RESPONSE_REJECTED: u8 = u8::MAX;
 
 #[derive(Clone, Copy)]
 struct Header([u8; BHS_BYTES]);
@@ -573,6 +581,10 @@ enum Completion {
         ttt: u32,
         data: Vec<u8>,
     },
+    Task {
+        itt: u32,
+        response: u8,
+    },
     Logout {
         itt: u32,
         ack: Sender<()>,
@@ -1086,6 +1098,14 @@ fn writer_loop(
                 header.set_data_len(data.len())?;
                 write_bytes_pdu(&mut stream, &header, &data)?;
             }
+            Completion::Task { itt, response } => {
+                let mut header = Header::zeroed(OP_TASK_RESPONSE);
+                header.0[1] = 0x80;
+                header.0[2] = response;
+                header.put_u32(16, itt);
+                serial_fields(&mut header, stat_sn, exp);
+                write_bytes_pdu(&mut stream, &header, &[])?;
+            }
             Completion::Logout { itt, ack } => {
                 let mut header = Header::zeroed(OP_LOGOUT_RESPONSE);
                 header.0[1] = 0x80;
@@ -1144,11 +1164,13 @@ fn spawn_lane_workers(
                 LaneCounts::default()
             });
             eprintln!(
-                "zciscsi-target-lane: lane={lane} cpu={} read_blocks={reads} write_blocks={writes} barriers_or_fua={flushes} fan_batches={fan_batches} fan_tasks={fan_tasks} avg_fan_tasks_per_batch={avg_fan_tasks_per_batch:.2} max_fan_batch={max_fan_batch}",
+                "zciscsi-target-lane: lane={lane} cpu={} read_blocks={reads} write_blocks={writes} barriers={barriers} fua_writes={fua_writes} fua_drains={fua_drains} fan_batches={fan_batches} fan_tasks={fan_tasks} avg_fan_tasks_per_batch={avg_fan_tasks_per_batch:.2} max_fan_batch={max_fan_batch}",
                 cpu.map_or_else(|| "unpinned-test-only".to_string(), |value| value.to_string()),
                 reads = counts.reads,
                 writes = counts.writes,
-                flushes = counts.flushes,
+                barriers = counts.barriers,
+                fua_writes = counts.fua_writes,
+                fua_drains = counts.fua_drains,
                 fan_batches = counts.fan_batches,
                 fan_tasks = counts.fan_tasks,
                 avg_fan_tasks_per_batch = counts.fan_tasks as f64
@@ -1165,7 +1187,9 @@ fn spawn_lane_workers(
 struct LaneCounts {
     reads: u64,
     writes: u64,
-    flushes: u64,
+    barriers: u64,
+    fua_writes: u64,
+    fua_drains: u64,
     fan_batches: u64,
     fan_tasks: u64,
     max_fan_batch: usize,
@@ -1584,12 +1608,14 @@ fn fan_complete_window(
         fan_send_tasks(stream, lane, lane_count, batch)?;
     }
     let mut payloads = fan_receive_task_responses(stream, &tasks)?;
-    let fua = tasks
+    let fua_writes = tasks
         .iter()
-        .any(|task| matches!(task, LaneTask::Write { fua: true, .. }));
-    if fua {
+        .filter(|task| matches!(task, LaneTask::Write { fua: true, .. }))
+        .count() as u64;
+    if fua_writes != 0 {
         fan_sync(stream, lane, lane_count)?;
-        counts.flushes += 1;
+        counts.fua_writes += fua_writes;
+        counts.fua_drains += 1;
     }
     for (index, task) in tasks.into_iter().enumerate() {
         let command = fan_task_command(&task).expect("fan completion is data I/O");
@@ -1656,7 +1682,7 @@ fn run_fan_lane(
             }
         };
         if let LaneTask::Barrier(ack) = task {
-            counts.flushes += 1;
+            counts.barriers += 1;
             let result = fan_sync(&mut stream, lane, lane_count);
             let failed = result.is_err();
             let _ = ack.send(result);
@@ -1743,7 +1769,8 @@ fn complete_sync_task(
             match result {
                 Ok(()) => {
                     counts.writes += count as u64;
-                    counts.flushes += u64::from(fua);
+                    counts.fua_writes += u64::from(fua);
+                    counts.fua_drains += u64::from(fua);
                     let _ = completions.send(Completion::Good(command));
                 }
                 Err(_) => {
@@ -1752,7 +1779,7 @@ fn complete_sync_task(
             }
         }
         LaneTask::Barrier(ack) => {
-            counts.flushes += 1;
+            counts.barriers += 1;
             let _ = ack.send(Ok(()));
         }
     }
@@ -1843,7 +1870,7 @@ fn run_arena_lane(
         ring.submit()?;
         if outstanding_blocks == 0 {
             if let Some(ack) = barrier.take() {
-                counts.flushes += 1;
+                counts.barriers += 1;
                 let _ = ack.send(Ok(()));
                 continue;
             }
@@ -2014,7 +2041,8 @@ fn finish_arena_io(
         }
     }
     if let ArenaIoKind::Write { fua: true } = request.kind {
-        counts.flushes += 1;
+        counts.fua_writes += 1;
+        counts.fua_drains += 1;
         if backend.flush().is_err() {
             request.failed = true;
         }
@@ -2117,6 +2145,39 @@ fn handle_connection(
                     .send(Completion::Text {
                         itt: header.u32(16),
                         data: response,
+                    })
+                    .map_err(channel_closed)?;
+            }
+            OP_TASK_REQUEST if !session.discovery => {
+                let _ = read_small_data(&mut stream, header)?;
+                update_exp_cmd(&exp_cmd_sn, header);
+                let function = header.0[1] & 0x7f;
+                let lun = header.u64(8);
+                let (response, action) = if function != TASK_FUNCTION_LOGICAL_UNIT_RESET {
+                    (TASK_RESPONSE_FUNCTION_UNSUPPORTED, "function-unsupported")
+                } else if lun != 0 {
+                    (TASK_RESPONSE_LUN_DOES_NOT_EXIST, "lun-does-not-exist")
+                } else {
+                    // A successful LUN RESET is a control-plane barrier.  It
+                    // must never bypass writes already admitted to any live
+                    // userspace lane.  The frontend does not make placement
+                    // decisions: each lane's separate userspace RAID stage
+                    // owns the actual mirror drain behind this barrier.
+                    match sessions.barrier_all() {
+                        Ok(()) => {
+                            pending.clear();
+                            (TASK_RESPONSE_COMPLETE, "all-userspace-lanes-drained")
+                        }
+                        Err(_) => (TASK_RESPONSE_REJECTED, "userspace-lane-drain-failed"),
+                    }
+                };
+                eprintln!(
+                    "zciscsi-target-task-management: function={function} lun={lun} response={response} action={action} placement_owner=downstream-userspace-raid"
+                );
+                completion_tx
+                    .send(Completion::Task {
+                        itt: header.u32(16),
+                        response,
                     })
                     .map_err(channel_closed)?;
             }
@@ -2230,6 +2291,10 @@ fn handle_scsi_command(
                 completions
                     .send(Completion::Check(command, sense_invalid_field()))
                     .map_err(channel_closed)?;
+            } else if backend.check_range(lba, blocks).is_err() {
+                completions
+                    .send(Completion::Check(command, sense_lba_out_of_range()))
+                    .map_err(channel_closed)?;
             } else {
                 lanes[lane]
                     .send(LaneTask::Read {
@@ -2247,6 +2312,13 @@ fn handle_scsi_command(
                 let _ = read_small_data(stream, header)?;
                 completions
                     .send(Completion::Check(command, sense_invalid_field()))
+                    .map_err(channel_closed)?;
+                return Ok(());
+            }
+            if backend.check_range(lba, blocks).is_err() {
+                let _ = read_small_data(stream, header)?;
+                completions
+                    .send(Completion::Check(command, sense_lba_out_of_range()))
                     .map_err(channel_closed)?;
                 return Ok(());
             }
@@ -2491,6 +2563,10 @@ fn sense_invalid_field() -> Vec<u8> {
 
 fn sense_invalid_lun() -> Vec<u8> {
     fixed_sense(0x05, 0x25, 0)
+}
+
+fn sense_lba_out_of_range() -> Vec<u8> {
+    fixed_sense(0x05, 0x21, 0)
 }
 
 fn sense_medium_error() -> Vec<u8> {
@@ -2829,6 +2905,22 @@ mod tests {
     }
 
     #[test]
+    fn fan_backend_rejects_the_first_block_past_capacity() {
+        let backend = Backend::Fan(FanBackend {
+            addrs: vec!["127.0.0.1:1".to_string()],
+            capacity_bytes: 2 * u64::from(BLOCK_SIZE),
+            lane_cpus: vec![0],
+            window: 1,
+            batch_spin: Duration::ZERO,
+        });
+        assert!(backend.check_range(1, 1).is_ok());
+        assert!(backend.check_range(2, 1).is_err());
+        let sense = sense_lba_out_of_range();
+        assert_eq!(sense[2], 0x05);
+        assert_eq!(sense[12], 0x21);
+    }
+
+    #[test]
     fn login_text_has_nul_delimited_key_values() {
         let mut data = Vec::new();
         append_text(&mut data, "HeaderDigest", "None");
@@ -2843,6 +2935,36 @@ mod tests {
     fn arena_mode_rejects_non_4k_capacity() {
         assert!(validate_capacity(4095).is_err());
         assert!(validate_capacity(4096).is_ok());
+    }
+
+    #[test]
+    fn task_management_response_preserves_itt_and_serial_window() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut reader = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (writer, _) = listener.accept().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let writer_thread = thread::spawn(move || {
+            writer_loop(writer, receiver, Arc::new(AtomicU32::new(17)), 23).unwrap()
+        });
+        sender
+            .send(Completion::Task {
+                itt: 0x1234_5678,
+                response: TASK_RESPONSE_FUNCTION_UNSUPPORTED,
+            })
+            .unwrap();
+        drop(sender);
+
+        let mut encoded = [0u8; BHS_BYTES];
+        reader.read_exact(&mut encoded).unwrap();
+        let response = Header(encoded);
+        assert_eq!(response.opcode(), OP_TASK_RESPONSE);
+        assert_eq!(response.0[1], 0x80);
+        assert_eq!(response.0[2], TASK_RESPONSE_FUNCTION_UNSUPPORTED);
+        assert_eq!(response.u32(16), 0x1234_5678);
+        assert_eq!(response.u32(24), 23);
+        assert_eq!(response.u32(28), 17);
+        assert_eq!(response.u32(32), 17 + COMMAND_WINDOW - 1);
+        writer_thread.join().unwrap();
     }
 
     #[test]

@@ -6,6 +6,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::ptr::NonNull;
 use std::slice;
+use std::time::Duration;
 use std::time::Instant;
 
 const PAGE: usize = 4096;
@@ -55,18 +56,22 @@ fn fill(page: &mut [u8], sequence: u64) {
     }
 }
 
-fn switch(control: &str) -> io::Result<String> {
+fn command(control: &str, command: &str) -> io::Result<String> {
     let mut stream = TcpStream::connect(control)?;
-    stream.write_all(b"secondary\n")?;
+    writeln!(stream, "{command}")?;
     let mut response = String::new();
     BufReader::new(stream).read_line(&mut response)?;
-    if !response.starts_with("OK active=secondary") {
+    if !response.starts_with("OK ") {
         return Err(io::Error::other(format!(
-            "route switch failed: {}",
+            "live control command {command:?} failed: {}",
             response.trim()
         )));
     }
     Ok(response.trim().to_string())
+}
+
+fn migration_is_active(control: &str) -> io::Result<bool> {
+    Ok(command(control, "status")?.contains("phase=active_secondary"))
 }
 
 fn main() -> io::Result<()> {
@@ -95,6 +100,15 @@ fn main() -> io::Result<()> {
     let mut write_page = AlignedPage::new()?;
     let mut read_page = AlignedPage::new()?;
     let mut max_operation_us = 0u128;
+    let control_mode =
+        env::var("ZCNBLK_LIVE_CUTOVER_MODE").unwrap_or_else(|_| "migration".to_string());
+    if !matches!(control_mode.as_str(), "migration" | "route") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ZCNBLK_LIVE_CUTOVER_MODE must be migration or route",
+        ));
+    }
+    let mut start_response = String::new();
     let mut switch_response = String::new();
     let started = Instant::now();
     for sequence in 1..=operations {
@@ -119,8 +133,56 @@ fn main() -> io::Result<()> {
             ));
         }
         max_operation_us = max_operation_us.max(operation_started.elapsed().as_micros());
+        if control_mode == "migration" && sequence == operations / 4 {
+            start_response = command(&control, "start")?;
+        }
         if sequence == operations / 2 {
-            switch_response = switch(&control)?;
+            switch_response = command(
+                &control,
+                if control_mode == "migration" {
+                    "cutover"
+                } else {
+                    "secondary"
+                },
+            )?;
+        }
+    }
+    // A lane proxy deliberately commits at a frame boundary.  If the test's
+    // last operation wins the race with the control socket, the proxy may be
+    // blocked waiting for the next frame even though cutover is armed. Keep
+    // using this same open block fd to supply progress frames until the route
+    // epoch is committed; this proves there was no close/reopen escape hatch.
+    // Production orchestration supplies the equivalent edge-wide drain plus
+    // one progress request per lane before publishing the new route.
+    if control_mode == "migration" {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut progress_sequence = operations;
+        while !migration_is_active(&control)? {
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "live migration did not commit while the stable block fd supplied progress",
+                ));
+            }
+            progress_sequence = progress_sequence.saturating_add(1);
+            let offset = (progress_sequence % SLOTS) * PAGE as u64;
+            fill(write_page.as_mut_slice(), progress_sequence);
+            if file.write_at(write_page.as_slice(), offset)? != PAGE {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "short cutover-progress write",
+                ));
+            }
+            file.sync_data()?;
+            read_page.as_mut_slice().fill(0);
+            if file.read_at(read_page.as_mut_slice(), offset)? != PAGE
+                || read_page.as_slice() != write_page.as_slice()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "cutover-progress readback mismatch",
+                ));
+            }
         }
     }
     let identity_after = identity(fd)?;
@@ -130,11 +192,13 @@ fn main() -> io::Result<()> {
         ));
     }
     println!(
-        "ZCNBLK_LIVE_CUTOVER_PASS operations={operations} acknowledged_sequences=1..{operations} fd={fd} device={} inode={} reconnects=0 remounts=0 max_write_sync_read_us={} elapsed_ms={} switch=\"{}\"",
+        "ZCNBLK_LIVE_CUTOVER_PASS operations={operations} acknowledged_sequences=1..{operations} fd={fd} device={} inode={} reconnects=0 remounts=0 control_mode={} max_write_sync_read_us={} elapsed_ms={} start=\"{}\" switch=\"{}\"",
         identity_before.0,
         identity_before.1,
+        control_mode,
         max_operation_us,
         started.elapsed().as_millis(),
+        start_response,
         switch_response
     );
     Ok(())

@@ -1,0 +1,90 @@
+{{- if and .Values.nodeSetup.enabled (eq .Values.nodeSetup.moduleSource.type "http") (eq .Values.nodeSetup.moduleSource.http.delivery "nodeCacheDaemonSet") }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "zcblock-csi.nodeArtifactCacheName" . }}
+  namespace: {{ include "zcblock-csi.namespace" . }}
+  labels:
+    {{- include "zcblock-csi.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kernel-module-cache
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ printf "%s-module-cache" (include "zcblock-csi.name" .) | trunc 63 | trimSuffix "-" }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: kernel-module-cache
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ printf "%s-module-cache" (include "zcblock-csi.name" .) | trunc 63 | trimSuffix "-" }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: kernel-module-cache
+      annotations:
+        zcutils.io/node-setup-checksum: {{ include "zcblock-csi.nodeSetupChecksum" . | quote }}
+    spec:
+      # This companion intentionally has ordinary pod networking. It can reach
+      # a user-provided in-cluster static HTTP Service even when the privileged
+      # CSI node Pod uses host networking for RDMA. It has no operator or API
+      # dependency and does not receive a service-account token.
+      hostNetwork: false
+      dnsPolicy: ClusterFirst
+      automountServiceAccountToken: false
+      priorityClassName: {{ .Values.daemonset.priorityClassName }}
+      {{- with .Values.daemonset.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.daemonset.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.daemonset.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: module-cache
+          image: {{ include "zcblock-csi.nodeSetupImage" . | quote }}
+          imagePullPolicy: {{ .Values.nodeSetup.image.pullPolicy }}
+          command: [/bin/bash, /node-setup/fetch.sh]
+          env:
+            - name: ZCNBLK_MODULE_CACHE_ROOT
+              value: {{ .Values.nodeSetup.moduleSource.cacheRoot | quote }}
+            - name: ZCNBLK_MODULE_HTTP_URL_TEMPLATE
+              value: {{ .Values.nodeSetup.moduleSource.http.urlTemplate | quote }}
+            - name: ZCNBLK_MODULE_HTTP_SHA256
+              value: {{ .Values.nodeSetup.moduleSource.http.sha256 | quote }}
+            - name: ZCNBLK_MODULE_HTTP_CHECKSUM_URL_TEMPLATE
+              value: {{ .Values.nodeSetup.moduleSource.http.checksumUrlTemplate | quote }}
+            - name: ZCNBLK_MODULE_HTTP_ALLOW_INSECURE
+              value: {{ .Values.nodeSetup.moduleSource.http.allowInsecureHttp | quote }}
+            - name: ZCNBLK_MODULE_HTTP_CONNECT_TIMEOUT_SECONDS
+              value: {{ .Values.nodeSetup.moduleSource.http.connectTimeoutSeconds | quote }}
+            - name: ZCNBLK_MODULE_HTTP_TOTAL_TIMEOUT_SECONDS
+              value: {{ .Values.nodeSetup.moduleSource.http.totalTimeoutSeconds | quote }}
+            - name: ZCNBLK_MODULE_HTTP_REFRESH_SECONDS
+              value: {{ .Values.nodeSetup.moduleSource.http.refreshSeconds | quote }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}
+            runAsUser: 0
+            runAsGroup: 0
+          resources:
+            {{- toYaml .Values.nodeSetup.resources | nindent 12 }}
+          volumeMounts:
+            - name: node-setup
+              mountPath: /node-setup
+              readOnly: true
+            - name: module-cache
+              mountPath: /module-cache
+      volumes:
+        - name: node-setup
+          configMap:
+            name: {{ include "zcblock-csi.nodeSetupConfigMapName" . }}
+            defaultMode: 0555
+        - name: module-cache
+          hostPath:
+            path: {{ .Values.nodeSetup.moduleSource.cacheRoot }}
+            type: DirectoryOrCreate
+{{- end }}

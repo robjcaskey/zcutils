@@ -1,0 +1,14 @@
+ARG BASE_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023
+FROM ${BASE_IMAGE}
+
+ARG MODULE_ARCH
+ARG KERNEL_RELEASE
+
+RUN dnf install -y bash coreutils-single curl-minimal && \
+    dnf clean all && \
+    rm -rf /var/cache/dnf
+
+COPY zcnblk_client_mod.ko /opt/zcutils/kmods/${MODULE_ARCH}/${KERNEL_RELEASE}/zcnblk_client_mod.ko
+
+USER 0:0
+CMD ["/bin/bash"]

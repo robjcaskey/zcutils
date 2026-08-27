@@ -10,6 +10,9 @@ SIZE_MIB="${SIZE_MIB:-128}"
 SHM_RING_ENTRIES="${SHM_RING_ENTRIES:-128}"
 SHM_PAYLOAD_ENTRIES="${SHM_PAYLOAD_ENTRIES:-4096}"
 WRITEBACK_BATCH="${WRITEBACK_BATCH:-2048}"
+POLL_US="${POLL_US:-1000}"
+BUSY_POLL_US="${BUSY_POLL_US:-1000}"
+BUSY_HYSTERESIS_US="${BUSY_HYSTERESIS_US:-10000}"
 OUTDIR="${OUTDIR:-$ROOT/bench-results/local-zcnblk-shm-walmem-correctness-$(date -u +%Y%m%dT%H%M%SZ)}"
 pid_file="$OUTDIR/target.pid"
 
@@ -87,13 +90,14 @@ printf '%s\n' "$result" | tee -a "$OUTDIR/coordination.log"
 cpu_lease="$(token_from_result "$result")"
 [ -n "$cpu_lease" ]
 
-printf 'classification=correctness-only target_cpu=%s lanes=1 ring_entries=%s payload_entries=%s writeback_batch=%s\n' \
-	"$TARGET_CPU" "$SHM_RING_ENTRIES" "$SHM_PAYLOAD_ENTRIES" "$WRITEBACK_BATCH" | tee "$OUTDIR/topology.log"
+printf 'classification=correctness-only target_cpu=%s lanes=1 ring_entries=%s payload_entries=%s writeback_batch=%s poll_us=%s busy_poll_us=%s busy_hysteresis_us=%s\n' \
+	"$TARGET_CPU" "$SHM_RING_ENTRIES" "$SHM_PAYLOAD_ENTRIES" "$WRITEBACK_BATCH" \
+	"$POLL_US" "$BUSY_POLL_US" "$BUSY_HYSTERESIS_US" | tee "$OUTDIR/topology.log"
 
 sudo -n insmod "$MODULE" transport=shm lanes=1 connections_per_lane=1 \
 	size_mib="$SIZE_MIB" queues=1 queue_depth=128 max_frame_bytes=4096 \
 	pipeline_depth="$SHM_RING_ENTRIES" shm_ring_entries="$SHM_RING_ENTRIES" \
-	shm_payload_entries="$SHM_PAYLOAD_ENTRIES" shm_poll_us=1000 pin_threads=0
+	shm_payload_entries="$SHM_PAYLOAD_ENTRIES" shm_poll_us="$POLL_US" pin_threads=0
 for _ in $(seq 1 100); do
 	[ -e /dev/zcnblk0 ] && [ -e /dev/zcnblk-shmctl ] && break
 	sleep 0.05
@@ -102,7 +106,8 @@ done
 
 sudo -n env URING_PLAY_ZCNBLK_SHM_WRITEBACK_BATCH="$WRITEBACK_BATCH" \
 	URING_PLAY_ZCNBLK_SHM_TARGET_PID_FILE="$pid_file" \
-	"$TARGET_BIN" /dev/zcnblk-shmctl wal-memory 128 "$TARGET_CPU" 1000 1000 10000 \
+	"$TARGET_BIN" /dev/zcnblk-shmctl wal-memory 128 "$TARGET_CPU" \
+	"$POLL_US" "$BUSY_POLL_US" "$BUSY_HYSTERESIS_US" \
 	>"$OUTDIR/target.log" 2>&1 &
 target_job_pid=$!
 for _ in $(seq 1 100); do

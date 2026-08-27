@@ -2538,6 +2538,7 @@ impl ZcblockCsi {
             ZcVolumeSpec {
                 profile_ref: profile_ref.to_string(),
                 capacity_bytes,
+                provisioned_iops: 0,
                 client_node: self.cfg.node_id.clone(),
                 frontend: "LinuxBlock".to_string(),
                 claim_ref: self.claim_ref(request),

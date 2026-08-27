@@ -1,0 +1,50 @@
+apiVersion: storage.zcutils.io/v1alpha1
+kind: MediaGrant
+metadata:
+  name: getting-started-rdma-ram
+spec:
+  nodeSelector:
+    matchLabels:
+      storage.zcutils.io/getting-started-leaf: "true"
+  mediaSets:
+    - name: userspace-memory
+      dynamicSources:
+        - kind: MemoryArena
+          maximumVolumeSize: 1Gi
+      publishAs:
+        mediaClass: getting-started-rdma-ram
+        durability: Volatile
+        mayContributeToDurableAcknowledgement: false
+---
+apiVersion: storage.zcutils.io/v1alpha1
+kind: StorageProfile
+metadata:
+  name: getting-started-mirror-rdma-ram
+spec:
+  storageClass:
+    name: zc-mirror-rdma-ram
+  frontend: LinuxBlock
+  placement:
+    primitive: Mirror
+    execution: Userspace
+    copies: 2
+    mediaClass: getting-started-rdma-ram
+    excludeClientNode: true
+    distinctTopologyKeys:
+      - kubernetes.io/hostname
+  transport:
+    kind: OfiRdm
+    addressSource: NodeAnnotationThenInternalIP
+    nodeAddressAnnotation: storage.zcutils.io/backplane-address
+    lanes: 8
+    connectionsPerLane: 1
+    chunkBytes: 4096
+    ofiProvider: efa
+    ofiEndpoint: rdm
+    # Replace this with the extended resource exported by the cluster's RDMA
+    # device plugin. EKS with the EFA device plugin uses this name.
+    deviceResourceName: vpc.amazonaws.com/efa
+    # This release mirrors complete WAL messages over libfabric RDM. It will
+    # reject true until the fan owns a registered arena and can duplicate a
+    # one-sided payload onto both leaves.
+    requireOneSidedRma: false

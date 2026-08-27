@@ -16,6 +16,7 @@ K3S_VERSION="${K3S_VERSION:-v1.36.1+k3s1}"
 K3S_BIN="${K3S_BIN:-$ROOT/target/qemu-zcglobal-volume-failover/k3s-$K3S_VERSION}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-360}"
 VM_MEMORY="${VM_MEMORY:-2048M}"
+TEST_LANES="${ZCCUSAN_TEST_LANES:-1}"
 network_tag="$(printf '%04x' $(( $$ % 65536 )))"
 bridge="zcr${network_tag}b"
 
@@ -43,6 +44,10 @@ done
 [[ -d "$KDIR" ]] || { printf 'kernel build directory missing: %s\n' "$KDIR" >&2; exit 1; }
 [[ -x "$K3S_BIN" ]] || { printf 'verified k3s binary missing: %s\n' "$K3S_BIN" >&2; exit 1; }
 [[ -x /usr/sbin/mkfs.ext4 ]] || { printf 'mkfs.ext4 missing\n' >&2; exit 1; }
+[[ "$TEST_LANES" =~ ^[0-9]+$ ]] && (( TEST_LANES >= 1 && TEST_LANES <= 64 )) || {
+	printf 'ZCCUSAN_TEST_LANES must be in 1..=64\n' >&2
+	exit 2
+}
 
 mkdir -p "$WORK_DIR" "$LOG_DIR"
 CARGO_TARGET_DIR="$CARGO_TARGET_DIR" cargo build --release \
@@ -99,7 +104,8 @@ cp "$WORK_DIR/pause.tar" "$ROOTFS/var/lib/rancher/k3s/agent/images/"
 cp "$ROOT/zccusan/charts/zcblock-csi/crds/storage.zcutils.io.yaml" "$ROOTFS/storage-crds.yaml"
 cp "$ROOT/scripts/zccusan-crd-qemu-operator.yaml" "$ROOTFS/operator.yaml"
 ephemeral_token="$($BIN_DIR/zcrepl token)"
-sed "s|ZCCUSAN_QEMU_EPHEMERAL_TOKEN|$ephemeral_token|" \
+sed -e "s|ZCCUSAN_QEMU_EPHEMERAL_TOKEN|$ephemeral_token|" \
+	-e "s|ZCCUSAN_QEMU_TEST_LANES|$TEST_LANES|" \
 	"$ROOT/scripts/zccusan-crd-qemu-test-intents.yaml" >"$ROOTFS/test-intents.yaml"
 cp "$ROOT/scripts/zccusan-crd-qemu-tier-writer.yaml" "$ROOTFS/tier-writer.yaml"
 cp "$ROOT/scripts/zccusan-crd-qemu-tier-verify.yaml" "$ROOTFS/tier-verify.yaml"
@@ -110,21 +116,32 @@ printf '127.0.0.1 localhost\n10.46.0.1 controller\n10.46.0.2 region-us\n10.46.0.
 printf 'root:x:0:0:root:/root:/bin/sh\n' >"$ROOTFS/etc/passwd"
 printf 'root:x:0:\n' >"$ROOTFS/etc/group"
 
-copy_xz_module()
+stage_kernel_module()
 {
-	local source="$1"
-	local output="$2"
-	xz -dc -- "$source" >"$ROOTFS/modules/$output.ko"
+	local name="$1"
+	local module_root="/lib/modules/$KERNEL_RELEASE"
+	local source
+	source="$(find "$module_root/kernel" -type f \
+		\( -name "$name.ko" -o -name "$name.ko.xz" -o -name "$name.ko.zst" -o -name "$name.ko.gz" \) \
+		-print -quit)"
+	if [[ -z "$source" ]]; then
+		if grep -Eq "(^|/)${name}[.]ko$" "$module_root/modules.builtin"; then
+			: >"$ROOTFS/modules/$name.builtin"
+			return
+		fi
+		printf 'kernel module %s is neither packaged nor built in for %s\n' "$name" "$KERNEL_RELEASE" >&2
+		exit 1
+	fi
+	case "$source" in
+		*.ko) cp "$source" "$ROOTFS/modules/$name.ko" ;;
+		*.ko.xz) xz -dc -- "$source" >"$ROOTFS/modules/$name.ko" ;;
+		*.ko.zst) need zstd; zstd -q -dc -- "$source" >"$ROOTFS/modules/$name.ko" ;;
+		*.ko.gz) gzip -dc -- "$source" >"$ROOTFS/modules/$name.ko" ;;
+	esac
 }
-copy_xz_module "/lib/modules/$KERNEL_RELEASE/kernel/net/core/failover.ko.xz" failover
-copy_xz_module "/lib/modules/$KERNEL_RELEASE/kernel/drivers/net/net_failover.ko.xz" net_failover
-copy_xz_module "/lib/modules/$KERNEL_RELEASE/kernel/drivers/net/virtio_net.ko.xz" virtio_net
-copy_xz_module "/lib/modules/$KERNEL_RELEASE/kernel/drivers/block/virtio_blk.ko.xz" virtio_blk
-copy_xz_module "/lib/modules/$KERNEL_RELEASE/kernel/crypto/aead.ko.xz" aead
-copy_xz_module "/lib/modules/$KERNEL_RELEASE/kernel/lib/crc/crc16.ko.xz" crc16
-copy_xz_module "/lib/modules/$KERNEL_RELEASE/kernel/fs/mbcache.ko.xz" mbcache
-copy_xz_module "/lib/modules/$KERNEL_RELEASE/kernel/fs/jbd2/jbd2.ko.xz" jbd2
-copy_xz_module "/lib/modules/$KERNEL_RELEASE/kernel/fs/ext4/ext4.ko.xz" ext4
+for module in failover net_failover virtio_net virtio_blk aead crc16 crc32c_generic mbcache jbd2 ext4; do
+	stage_kernel_module "$module"
+done
 cp "$ROOT/kmods/zcnblk_client_mod.ko" "$ROOTFS/modules/zcnblk_client_mod.ko"
 
 while IFS= read -r library; do
@@ -180,7 +197,7 @@ launch_vm()
 	qemu-system-x86_64 \
 		-machine accel=kvm -cpu host -m "$VM_MEMORY" -smp 4 -nographic -no-reboot -nodefaults \
 		-serial "file:$log" -kernel "$KERNEL" -initrd "$INITRAMFS" \
-		-append "console=ttyS0 panic=-1 oops=panic quiet net.ifnames=0 rootfstype=tmpfs zccrd.role=$role" \
+		-append "console=ttyS0 panic=-1 oops=panic quiet net.ifnames=0 rootfstype=tmpfs zccrd.role=$role zccrd.lanes=$TEST_LANES" \
 		-netdev "tap,id=net0,ifname=$tap,script=no,downscript=no" \
 		-device "virtio-net-pci,netdev=net0,mac=$mac" \
 		-drive "if=none,id=system,file=$WORK_DIR/$role-system.ext4,format=raw,cache=none,aio=threads" \
@@ -223,4 +240,4 @@ for role in controller region-us region-uk; do
 done
 grep -q 'ZCCUSAN_CRD_TIER_PASS' "$LOG_DIR/controller.log" || { cat "$LOG_DIR/controller.log"; exit 1; }
 grep -q 'ZCCUSAN_CRD_CROSS_REGION_PASS' "$LOG_DIR/controller.log" || { cat "$LOG_DIR/controller.log"; exit 1; }
-printf 'ZCCUSAN_CRD_QEMU_MATRIX_PASS machines=3 tiering_crd=true tier_runtime=true cross_region_crd=true encrypted_checkpoint=true remote_durable_sync=true automatic_failover_fail_closed=true multicast=false logs=%s\n' "$LOG_DIR"
+printf 'ZCCUSAN_CRD_QEMU_MATRIX_PASS machines=3 lanes=%s tiering_crd=true tier_runtime=true cross_region_crd=true encrypted_checkpoint=true remote_durable_sync=true automatic_failover_fail_closed=true multicast=false logs=%s\n' "$TEST_LANES" "$LOG_DIR"

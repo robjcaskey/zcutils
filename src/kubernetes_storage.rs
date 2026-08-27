@@ -50,6 +50,18 @@ fn default_tcp_mux() -> String {
     "TcpMux".to_string()
 }
 
+fn default_ofi_provider() -> String {
+    "efa".to_string()
+}
+
+fn default_ofi_endpoint() -> String {
+    "rdm".to_string()
+}
+
+fn default_ofi_domain_annotation() -> String {
+    "storage.zcutils.io/ofi-domains".to_string()
+}
+
 fn default_linux_block() -> String {
     "LinuxBlock".to_string()
 }
@@ -125,6 +137,25 @@ pub struct BackplaneTransportSpec {
     pub connections_per_lane: u16,
     #[serde(default = "default_chunk_bytes")]
     pub chunk_bytes: u32,
+    /// Libfabric provider used when kind=OfiRdm (for example efa, verbs, or
+    /// sockets for a non-representative software smoke).
+    #[serde(default = "default_ofi_provider")]
+    pub ofi_provider: String,
+    #[serde(default = "default_ofi_endpoint")]
+    pub ofi_endpoint: String,
+    /// Optional node annotation whose comma-separated values map lanes to
+    /// libfabric domains. Absence means provider-selected locality.
+    #[serde(default = "default_ofi_domain_annotation")]
+    pub ofi_domain_annotation: String,
+    /// Kubernetes extended resource handed out by the installed RDMA device
+    /// plugin, such as vpc.amazonaws.com/efa. OfiRdm profiles require it so
+    /// the operator can prove every selected node owns a usable device.
+    #[serde(default)]
+    pub device_resource_name: Option<String>,
+    /// Reserved for the one-sided registered-arena fast path. The current
+    /// mirror rejects true rather than allowing a payload to bypass a leg.
+    #[serde(default)]
+    pub require_one_sided_rma: bool,
 }
 
 impl Default for BackplaneTransportSpec {
@@ -136,6 +167,11 @@ impl Default for BackplaneTransportSpec {
             lanes: default_lanes(),
             connections_per_lane: default_connections_per_lane(),
             chunk_bytes: default_chunk_bytes(),
+            ofi_provider: default_ofi_provider(),
+            ofi_endpoint: default_ofi_endpoint(),
+            ofi_domain_annotation: default_ofi_domain_annotation(),
+            device_resource_name: None,
+            require_one_sided_rma: false,
         }
     }
 }
@@ -203,6 +239,15 @@ pub struct PublishedMedia {
 pub struct DynamicMediaSource {
     pub kind: String,
     pub maximum_volume_size: String,
+    /// Optional aggregate byte budget contributed by every matching node.
+    /// Omitting it preserves the legacy unbounded-count behavior; production
+    /// profiles should declare it so admission can fail closed.
+    #[serde(default)]
+    pub total_capacity_per_node: Option<String>,
+    /// Optional aggregate provisioned-IOPS budget contributed by every
+    /// matching node. Burst IOPS are deliberately not charged here.
+    #[serde(default)]
+    pub total_provisioned_iops_per_node: Option<u64>,
     #[serde(default)]
     pub huge_page_size: Option<String>,
     #[serde(default)]
@@ -413,6 +458,10 @@ pub struct CrossRegionReplicationStatus {
 pub struct ZcVolumeSpec {
     pub profile_ref: String,
     pub capacity_bytes: u64,
+    /// Hard IOPS reservation used by control-plane admission. Zero means the
+    /// caller requested byte-capacity admission only.
+    #[serde(default)]
+    pub provisioned_iops: u64,
     pub client_node: String,
     #[serde(default = "default_linux_block")]
     pub frontend: String,
@@ -517,6 +566,7 @@ mod tests {
             include_str!(
                 "../zccusan/deploy/zcblock-csi/getting-started/mirror-block.template.yaml"
             ),
+            include_str!("../zccusan/deploy/zcblock-csi/getting-started/mirror-rdma.template.yaml"),
         ] {
             let documents = serde_yaml::Deserializer::from_str(source);
             let mut kinds = Vec::new();

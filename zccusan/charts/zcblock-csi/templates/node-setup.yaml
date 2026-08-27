@@ -1,0 +1,596 @@
+{{- if .Values.nodeSetup.enabled }}
+{{- $sourceType := required "nodeSetup.moduleSource.type is required" .Values.nodeSetup.moduleSource.type }}
+{{- if not (has $sourceType (list "host" "image" "http" "build")) }}
+{{- fail "nodeSetup.moduleSource.type must be one of host, image, http, or build" }}
+{{- end }}
+{{- if hasKey .Values.nodeSetup "prebuiltModuleHostPath" }}
+{{- fail "nodeSetup.prebuiltModuleHostPath was replaced by nodeSetup.moduleSource.type=host and hostPathTemplate" }}
+{{- end }}
+{{- if hasKey .Values.nodeSetup "installHostDependencies" }}
+{{- fail "nodeSetup.installHostDependencies moved to nodeSetup.developmentBuild.installHostDependencies and is valid only in build mode" }}
+{{- end }}
+{{- if hasKey .Values.nodeSetup "sourceConfigMap" }}
+{{- fail "nodeSetup.sourceConfigMap moved to nodeSetup.developmentBuild.sourceConfigMap and is valid only in build mode" }}
+{{- end }}
+{{- if hasKey .Values.nodeSetup "buildRoot" }}
+{{- fail "nodeSetup.buildRoot moved to nodeSetup.developmentBuild.buildRoot and is valid only in build mode" }}
+{{- end }}
+{{- if and .Values.nodeSetup.image.digest (not (regexMatch "^sha256:[A-Fa-f0-9]{64}$" .Values.nodeSetup.image.digest)) }}
+{{- fail "nodeSetup.image.digest must be sha256: followed by exactly 64 hexadecimal characters" }}
+{{- end }}
+{{- if not (hasPrefix "/" .Values.nodeSetup.moduleSource.cacheRoot) }}
+{{- fail "nodeSetup.moduleSource.cacheRoot must be an absolute host path" }}
+{{- end }}
+{{- if eq $sourceType "host" }}
+{{- $_ := required "nodeSetup.moduleSource.hostPathTemplate is required in host mode" .Values.nodeSetup.moduleSource.hostPathTemplate }}
+{{- else if eq $sourceType "image" }}
+{{- $_ := required "nodeSetup.moduleSource.imagePathTemplate is required in image mode" .Values.nodeSetup.moduleSource.imagePathTemplate }}
+{{- else if eq $sourceType "http" }}
+{{- $http := .Values.nodeSetup.moduleSource.http }}
+{{- $_ := required "nodeSetup.moduleSource.http.urlTemplate is required in http mode" $http.urlTemplate }}
+{{- if and (not $http.sha256) (not $http.checksumUrlTemplate) }}
+{{- fail "http module artifacts require nodeSetup.moduleSource.http.sha256 or checksumUrlTemplate" }}
+{{- end }}
+{{- if and $http.sha256 (not (regexMatch "^[A-Fa-f0-9]{64}$" $http.sha256)) }}
+{{- fail "nodeSetup.moduleSource.http.sha256 must contain exactly 64 hexadecimal characters" }}
+{{- end }}
+{{- if and (hasPrefix "http://" $http.urlTemplate) (not $http.allowInsecureHttp) }}
+{{- fail "plain HTTP module download requires nodeSetup.moduleSource.http.allowInsecureHttp=true" }}
+{{- end }}
+{{- if and $http.checksumUrlTemplate (hasPrefix "http://" $http.checksumUrlTemplate) (not $http.allowInsecureHttp) }}
+{{- fail "plain HTTP checksum download requires nodeSetup.moduleSource.http.allowInsecureHttp=true" }}
+{{- end }}
+{{- if le (int $http.connectTimeoutSeconds) 0 }}
+{{- fail "nodeSetup.moduleSource.http.connectTimeoutSeconds must be greater than zero" }}
+{{- end }}
+{{- if le (int $http.totalTimeoutSeconds) 0 }}
+{{- fail "nodeSetup.moduleSource.http.totalTimeoutSeconds must be greater than zero" }}
+{{- end }}
+{{- if not (has $http.delivery (list "nodeCacheDaemonSet" "direct")) }}
+{{- fail "nodeSetup.moduleSource.http.delivery must be nodeCacheDaemonSet or direct" }}
+{{- end }}
+{{- if le (int $http.cacheWaitSeconds) 0 }}
+{{- fail "nodeSetup.moduleSource.http.cacheWaitSeconds must be greater than zero" }}
+{{- end }}
+{{- if le (int $http.refreshSeconds) 0 }}
+{{- fail "nodeSetup.moduleSource.http.refreshSeconds must be greater than zero" }}
+{{- end }}
+{{- else if eq $sourceType "build" }}
+{{- if not .Values.nodeSetup.developmentBuild.enabled }}
+{{- fail "nodeSetup.moduleSource.type=build requires nodeSetup.developmentBuild.enabled=true; on-node compilation is development-only" }}
+{{- end }}
+{{- end }}
+{{- if and (ne $sourceType "build") .Values.nodeSetup.developmentBuild.enabled }}
+{{- fail "nodeSetup.developmentBuild.enabled=true is valid only with nodeSetup.moduleSource.type=build" }}
+{{- end }}
+{{- if and (ne $sourceType "build") .Values.nodeSetup.developmentBuild.sourceConfigMap }}
+{{- fail "nodeSetup.developmentBuild.sourceConfigMap is valid only with nodeSetup.moduleSource.type=build" }}
+{{- end }}
+{{- if and (eq $sourceType "http") .Values.nodeSetup.moduleSource.sha256 }}
+{{- fail "HTTP artifacts use nodeSetup.moduleSource.http.sha256; moduleSource.sha256 is for host/image/build artifacts" }}
+{{- end }}
+{{- if and .Values.nodeSetup.moduleSource.sha256 (not (regexMatch "^[A-Fa-f0-9]{64}$" .Values.nodeSetup.moduleSource.sha256)) }}
+{{- fail "nodeSetup.moduleSource.sha256 must contain exactly 64 hexadecimal characters" }}
+{{- end }}
+{{- if not .Values.nodeSetup.existingConfigMap }}
+{{- $transportCount := 0 }}
+{{- range $parameter := .Values.nodeSetup.module.parameters }}
+{{- if hasPrefix "transport=" $parameter }}
+{{- if ne $parameter "transport=shm" }}
+{{- fail "nodeSetup.module.parameters must keep the kernel client edge at transport=shm; select TCP or RDMA for the separate userspace backplane" }}
+{{- end }}
+{{- $transportCount = add1 $transportCount }}
+{{- end }}
+{{- end }}
+{{- if ne $transportCount 1 }}
+{{- fail "nodeSetup.module.parameters must contain exactly one transport=shm declaration" }}
+{{- end }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "zcblock-csi.nodeSetupConfigMapName" . }}
+  namespace: {{ include "zcblock-csi.namespace" . }}
+  labels:
+    {{- include "zcblock-csi.labels" . | nindent 4 }}
+data:
+  setup.sh: |-
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    fail() {
+      printf 'zcnblk-node-setup: ERROR: %s\n' "$*" >&2
+      exit 1
+    }
+
+    expand_template() {
+      local value="$1"
+      value="${value//%KERNEL_RELEASE%/${kernel}}"
+      value="${value//%ARCH%/${architecture}}"
+      printf '%s\n' "$value"
+    }
+
+    validate_absolute_path() {
+      local label="$1" value="$2"
+      case "$value" in
+        /*) ;;
+        *) fail "$label must be an absolute path: $value" ;;
+      esac
+      case "/${value#/}/" in
+        */../*|*/./*) fail "$label must not contain '.' or '..' components: $value" ;;
+      esac
+    }
+
+    validate_sha256() {
+      local label="$1" value="$2"
+      [[ "$value" =~ ^[A-Fa-f0-9]{64}$ ]] || \
+        fail "$label must contain exactly 64 hexadecimal characters"
+      printf '%s\n' "${value,,}"
+    }
+
+    verify_sha256() {
+      local file="$1" expected="$2" actual
+      actual="$(sha256sum "$file" | awk 'NR == 1 {print $1}')"
+      [ "$actual" = "$expected" ] || \
+        fail "module SHA-256 mismatch: expected=$expected actual=$actual"
+    }
+
+    sha256_matches() {
+      local file="$1" expected="$2" actual
+      actual="$(sha256sum "$file" | awk 'NR == 1 {print $1}')"
+      [ "$actual" = "$expected" ]
+    }
+
+    http_protocol() {
+      local url="$1"
+      case "$url" in
+        https://*) printf '%s\n' https ;;
+        http://*)
+          [ "${ZCNBLK_MODULE_HTTP_ALLOW_INSECURE:-false}" = true ] || \
+            fail "plain HTTP requires allowInsecureHttp=true: $url"
+          printf '%s\n' http
+          ;;
+        *) fail "module artifact URL must use http:// or https://: $url" ;;
+      esac
+    }
+
+    download_file() {
+      local url="$1" destination="$2" protocol
+      protocol="$(http_protocol "$url")"
+      command -v curl >/dev/null 2>&1 || \
+        fail "node-setup image lacks curl required for moduleSource.type=http"
+      if [ "$protocol" = https ]; then
+        curl --fail --silent --show-error --location \
+          --proto '=https' --proto-redir '=https' --tlsv1.2 \
+          --connect-timeout "${ZCNBLK_MODULE_HTTP_CONNECT_TIMEOUT_SECONDS:-5}" \
+          --max-time "${ZCNBLK_MODULE_HTTP_TOTAL_TIMEOUT_SECONDS:-60}" \
+          --output "$destination" "$url"
+      else
+        curl --fail --silent --show-error --location \
+          --proto '=http,https' --proto-redir '=http,https' \
+          --connect-timeout "${ZCNBLK_MODULE_HTTP_CONNECT_TIMEOUT_SECONDS:-5}" \
+          --max-time "${ZCNBLK_MODULE_HTTP_TOTAL_TIMEOUT_SECONDS:-60}" \
+          --output "$destination" "$url"
+      fi
+    }
+
+    host_command() {
+      chroot /host /bin/sh -c "command -v '$1'"
+    }
+
+    find_kernel_build_tree() {
+      local candidate
+      for candidate in \
+        "/lib/modules/${kernel}/build" \
+        "/usr/src/kernels/${kernel}" \
+        "/usr/src/linux-headers-${kernel}"; do
+        if [ -r "/host${candidate}/Makefile" ]; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done
+      return 1
+    }
+
+    install_build_dependencies() {
+      local need_headers="$1" package_manager env_bin
+      local -a packages
+      if package_manager="$(host_command dnf 2>/dev/null)"; then
+        packages=(gcc make elfutils-libelf-devel)
+        [ "$need_headers" != true ] || packages+=("kernel-devel-${kernel}")
+        chroot /host "$package_manager" install -y "${packages[@]}"
+      elif package_manager="$(host_command yum 2>/dev/null)"; then
+        packages=(gcc make elfutils-libelf-devel)
+        [ "$need_headers" != true ] || packages+=("kernel-devel-${kernel}")
+        chroot /host "$package_manager" install -y "${packages[@]}"
+      elif package_manager="$(host_command apt-get 2>/dev/null)"; then
+        env_bin="$(host_command env)"
+        packages=(build-essential)
+        [ "$need_headers" != true ] || packages+=("linux-headers-${kernel}")
+        chroot /host "$package_manager" update
+        chroot /host "$env_bin" DEBIAN_FRONTEND=noninteractive \
+          "$package_manager" install -y "${packages[@]}"
+      elif package_manager="$(host_command zypper 2>/dev/null)"; then
+        packages=(gcc make)
+        [ "$need_headers" != true ] || packages+=(kernel-devel kernel-default-devel)
+        chroot /host "$package_manager" --non-interactive install "${packages[@]}"
+      elif package_manager="$(host_command apk 2>/dev/null)"; then
+        packages=(build-base)
+        [ "$need_headers" != true ] || packages+=(linux-headers)
+        chroot /host "$package_manager" add "${packages[@]}"
+      else
+        fail "development build dependencies are absent and the host package manager is unsupported"
+      fi
+    }
+
+    install_module_tools() {
+      local package_manager
+      if package_manager="$(host_command dnf 2>/dev/null)"; then
+        chroot /host "$package_manager" install -y kmod
+      elif package_manager="$(host_command yum 2>/dev/null)"; then
+        chroot /host "$package_manager" install -y kmod
+      elif package_manager="$(host_command apt-get 2>/dev/null)"; then
+        chroot /host "$package_manager" update
+        chroot /host "$package_manager" install -y kmod
+      elif package_manager="$(host_command zypper 2>/dev/null)"; then
+        chroot /host "$package_manager" --non-interactive install kmod
+      elif package_manager="$(host_command apk 2>/dev/null)"; then
+        chroot /host "$package_manager" add kmod
+      else
+        fail "insmod/modinfo are absent and the host package manager is unsupported"
+      fi
+    }
+
+    wait_for_edge() {
+      local _
+      for _ in $(seq 1 100); do
+        if [ -b /host/dev/zcnblk0 ] && [ -c /host/dev/zcnblk-shmctl ]; then
+          printf 'ZCNBLK_NODE_SETUP_READY kernel=%s arch=%s source=%s block=/dev/zcnblk0 control=/dev/zcnblk-shmctl already_loaded=%s\n' \
+            "$kernel" "$architecture" "$module_source_type" "$already_loaded"
+          return 0
+        fi
+        sleep 0.1
+      done
+      fail "zcnblk_client_mod loaded without publishing /dev/zcnblk0 and /dev/zcnblk-shmctl"
+    }
+
+    kernel="$(uname -r)"
+    case "$kernel" in
+      *[!A-Za-z0-9._+-]*) fail "unsafe kernel release: $kernel" ;;
+    esac
+    architecture="$(uname -m)"
+    case "$architecture" in
+      *[!A-Za-z0-9._+-]*) fail "unsafe machine architecture: $architecture" ;;
+    esac
+    module_source_type="${ZCNBLK_MODULE_SOURCE_TYPE:-}"
+    case "$module_source_type" in
+      host|image|http|build) ;;
+      *) fail "module source type must be host, image, http, or build" ;;
+    esac
+    parameters_file="${ZCNBLK_PARAMETERS_FILE:-/node-setup/module-parameters}"
+    [ -r "$parameters_file" ] || fail "module parameter file is not readable: $parameters_file"
+    already_loaded=false
+    if grep -q '^zcnblk_client_mod ' /host/proc/modules; then
+      already_loaded=true
+      module_source_type=already-loaded
+      wait_for_edge
+      exit 0
+    fi
+
+    cache_root="${ZCNBLK_MODULE_CACHE_ROOT:-/var/lib/zccusan/kmods}"
+    validate_absolute_path "module cache root" "$cache_root"
+    cache_dir="${cache_root}/${architecture}/${kernel}"
+    cached_module_path="${cache_dir}/zcnblk_client_mod.ko"
+    module_path=
+    cleanup_module_path=
+
+    case "$module_source_type" in
+      host)
+        module_path="$(expand_template "${ZCNBLK_MODULE_HOST_PATH_TEMPLATE:-}")"
+        validate_absolute_path "host module path" "$module_path"
+        [ -r "/host${module_path}" ] || \
+          fail "configured host module does not exist: $module_path"
+        ;;
+      image)
+        image_module_path="$(expand_template "${ZCNBLK_MODULE_IMAGE_PATH_TEMPLATE:-}")"
+        validate_absolute_path "module image path" "$image_module_path"
+        [ -r "$image_module_path" ] || \
+          fail "node-setup image does not contain module artifact: $image_module_path"
+        mkdir -p "/host${cache_dir}"
+        partial="/host${cached_module_path}.partial.$$"
+        trap 'rm -f "${partial:-}"' EXIT
+        install -m 0644 "$image_module_path" "$partial"
+        if [ -n "${ZCNBLK_MODULE_SHA256:-}" ]; then
+          expected="$(validate_sha256 moduleSource.sha256 "$ZCNBLK_MODULE_SHA256")"
+          verify_sha256 "$partial" "$expected"
+        fi
+        mv -f "$partial" "/host${cached_module_path}"
+        trap - EXIT
+        module_path="$cached_module_path"
+        ;;
+      http)
+        expected="${ZCNBLK_MODULE_HTTP_SHA256:-}"
+        if [ -n "$expected" ]; then
+          expected="$(validate_sha256 moduleSource.http.sha256 "$expected")"
+        fi
+        if [ "${ZCNBLK_MODULE_HTTP_DELIVERY:-nodeCacheDaemonSet}" = nodeCacheDaemonSet ]; then
+          ready_path="/host${cached_module_path}.ready"
+          wait_seconds="${ZCNBLK_MODULE_HTTP_CACHE_WAIT_SECONDS:-300}"
+          [[ "$wait_seconds" =~ ^[1-9][0-9]*$ ]] || fail "invalid HTTP cache wait timeout"
+          for ((attempt=0; attempt < wait_seconds * 10; attempt++)); do
+            if [ -r "$ready_path" ] && [ -r "/host${cached_module_path}" ]; then
+              break
+            fi
+            sleep 0.1
+          done
+          if [ ! -r "$ready_path" ] || [ ! -r "/host${cached_module_path}" ]; then
+            fail "timed out waiting for HTTP artifact cache at $cached_module_path"
+          fi
+          cached_expected="$(awk 'NR == 1 {print $1}' "$ready_path")"
+          cached_expected="$(validate_sha256 cached-module-ready "$cached_expected")"
+          if [ -n "$expected" ] && [ "$cached_expected" != "$expected" ]; then
+            fail "cached module digest does not match the Helm-pinned digest"
+          fi
+          verify_sha256 "/host${cached_module_path}" "$cached_expected"
+          # The cache refresher replaces artifacts atomically, but it can do
+          # so between this init container's verification and insmod. Hold a
+          # private verified inode for the remainder of the load operation.
+          cleanup_module_path="${cache_dir}/zcnblk_client_mod.load.$$"
+          install -m 0644 "/host${cached_module_path}" "/host${cleanup_module_path}"
+          verify_sha256 "/host${cleanup_module_path}" "$cached_expected"
+          module_path="$cleanup_module_path"
+          trap 'rm -f "/host${cleanup_module_path:-}"' EXIT
+        elif [ "${ZCNBLK_MODULE_HTTP_DELIVERY:-}" = direct ]; then
+          artifact_url="$(expand_template "${ZCNBLK_MODULE_HTTP_URL_TEMPLATE:-}")"
+          mkdir -p "/host${cache_dir}"
+          if [ -z "$expected" ]; then
+            checksum_url="$(expand_template "${ZCNBLK_MODULE_HTTP_CHECKSUM_URL_TEMPLATE:-}")"
+            checksum_partial="/host${cached_module_path}.sha256.partial.$$"
+            trap 'rm -f "${checksum_partial:-}" "${partial:-}"' EXIT
+            download_file "$checksum_url" "$checksum_partial"
+            expected="$(awk 'NR == 1 {print $1}' "$checksum_partial")"
+            expected="$(validate_sha256 downloaded-checksum "$expected")"
+          fi
+          if [ -r "/host${cached_module_path}" ] && \
+             sha256_matches "/host${cached_module_path}" "$expected"; then
+            printf 'zcnblk-node-setup: reusing verified HTTP module cache %s\n' "$cached_module_path"
+          else
+            partial="/host${cached_module_path}.partial.$$"
+            trap 'rm -f "${checksum_partial:-}" "${partial:-}"' EXIT
+            download_file "$artifact_url" "$partial"
+            verify_sha256 "$partial" "$expected"
+            chmod 0644 "$partial"
+            mv -f "$partial" "/host${cached_module_path}"
+          fi
+          rm -f "${checksum_partial:-}"
+          trap - EXIT
+          module_path="$cached_module_path"
+        else
+          fail "unsupported HTTP delivery mode"
+        fi
+        ;;
+      build)
+        [ "${ZCNBLK_DEVELOPMENT_BUILD_ENABLED:-false}" = true ] || \
+          fail "on-node compilation requires explicit developmentBuild.enabled=true"
+        build_root="${ZCNBLK_DEVELOPMENT_BUILD_ROOT:-/var/lib/zccusan/kmods/build}"
+        validate_absolute_path "development build root" "$build_root"
+        build_dir="${build_root}/${architecture}/${kernel}"
+        mkdir -p "/host${build_dir}"
+        install -m 0644 /module-source/zcnblk_client_mod.c "/host${build_dir}/zcnblk_client_mod.c"
+        install -m 0644 /module-source/zcnblk_shm_abi.h "/host${build_dir}/zcnblk_shm_abi.h"
+        install -m 0644 /module-source/Makefile "/host${build_dir}/Makefile"
+
+        kernel_build_tree="$(find_kernel_build_tree 2>/dev/null || true)"
+        make_bin="$(host_command make 2>/dev/null || true)"
+        compiler_bin="$(host_command cc 2>/dev/null || host_command gcc 2>/dev/null || true)"
+        if [ -z "$kernel_build_tree" ] || [ -z "$make_bin" ] || [ -z "$compiler_bin" ]; then
+          [ "${ZCNBLK_DEVELOPMENT_BUILD_INSTALL_HOST_DEPENDENCIES:-false}" = true ] || \
+            fail "development build requires host headers/tools or developmentBuild.installHostDependencies=true"
+          need_headers=false
+          [ -n "$kernel_build_tree" ] || need_headers=true
+          install_build_dependencies "$need_headers"
+          kernel_build_tree="$(find_kernel_build_tree)" || \
+            fail "host package installation did not provide headers for ${kernel}"
+          make_bin="$(host_command make 2>/dev/null)" || fail "host package installation did not provide make"
+          compiler_bin="$(host_command cc 2>/dev/null || host_command gcc 2>/dev/null)" || \
+            fail "host package installation did not provide a C compiler"
+        fi
+        chroot /host "$make_bin" -C "$build_dir" KDIR="$kernel_build_tree" all
+        module_path="${build_dir}/zcnblk_client_mod.ko"
+        [ -r "/host${module_path}" ] || fail "kernel build did not produce $module_path"
+        ;;
+    esac
+
+    if [ -n "${ZCNBLK_MODULE_SHA256:-}" ] && [ "$module_source_type" != image ]; then
+      expected="$(validate_sha256 moduleSource.sha256 "$ZCNBLK_MODULE_SHA256")"
+      verify_sha256 "/host${module_path}" "$expected"
+    fi
+
+    insmod_bin="$(host_command insmod 2>/dev/null || true)"
+    modinfo_bin="$(host_command modinfo 2>/dev/null || true)"
+    if [ -z "$insmod_bin" ] || [ -z "$modinfo_bin" ]; then
+      [ "${ZCNBLK_INSTALL_MODULE_TOOLS:-false}" = true ] || \
+        fail "insmod/modinfo are absent and nodeSetup.installModuleTools=false"
+      install_module_tools
+      insmod_bin="$(host_command insmod 2>/dev/null)" || \
+        fail "host package installation did not provide insmod"
+      modinfo_bin="$(host_command modinfo 2>/dev/null)" || \
+        fail "host package installation did not provide modinfo"
+    fi
+
+    module_name="$(chroot /host "$modinfo_bin" -F name "$module_path")"
+    [ "$module_name" = zcnblk_client_mod ] || \
+      fail "module name is '$module_name', expected zcnblk_client_mod"
+    module_vermagic="$(chroot /host "$modinfo_bin" -F vermagic "$module_path")"
+    case "$module_vermagic" in
+      "${kernel} "*|"${kernel}") ;;
+      *) fail "module vermagic '$module_vermagic' does not match running kernel '$kernel'" ;;
+    esac
+    modprobe_bin="$(host_command modprobe 2>/dev/null || true)"
+    if [ -n "$modprobe_bin" ]; then
+      for dependency in authenc gcm sha256_generic; do
+        chroot /host "$modprobe_bin" "$dependency" >/dev/null 2>&1 || true
+      done
+    fi
+
+    set --
+    transport_count=0
+    while IFS= read -r parameter || [ -n "$parameter" ]; do
+      case "$parameter" in
+        ''|'#'*) continue ;;
+        *[!A-Za-z0-9_.,:/+=-]*) fail "unsafe module parameter: $parameter" ;;
+        [A-Za-z_]*=*) ;;
+        *) fail "module parameters must be one name=value token per line: $parameter" ;;
+      esac
+      case "$parameter" in
+        transport=shm) transport_count=$((transport_count + 1)) ;;
+        transport=*) fail "the zcnblk kernel client edge must use transport=shm; TCP and RDMA belong to the separate userspace backplane stage" ;;
+      esac
+      set -- "$@" "$parameter"
+    done < "$parameters_file"
+    [ "$#" -gt 0 ] || fail "no zcnblk module parameters were configured"
+    [ "$transport_count" -eq 1 ] || \
+      fail "module parameters must contain exactly one transport=shm client-edge declaration"
+
+    chroot /host "$insmod_bin" "$module_path" "$@"
+    if [ -n "$cleanup_module_path" ]; then
+      rm -f "/host${cleanup_module_path}"
+      trap - EXIT
+    fi
+    wait_for_edge
+  fetch.sh: |-
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    fail() {
+      printf 'zcnblk-module-cache: ERROR: %s\n' "$*" >&2
+      exit 1
+    }
+
+    expand_template() {
+      local value="$1"
+      value="${value//%KERNEL_RELEASE%/${kernel}}"
+      value="${value//%ARCH%/${architecture}}"
+      printf '%s\n' "$value"
+    }
+
+    validate_sha256() {
+      local label="$1" value="$2"
+      [[ "$value" =~ ^[A-Fa-f0-9]{64}$ ]] || \
+        fail "$label must contain exactly 64 hexadecimal characters"
+      printf '%s\n' "${value,,}"
+    }
+
+    download_file() {
+      local url="$1" destination="$2"
+      command -v curl >/dev/null 2>&1 || fail "artifact-cache image lacks curl"
+      case "$url" in
+        https://*)
+          curl --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --connect-timeout "${ZCNBLK_MODULE_HTTP_CONNECT_TIMEOUT_SECONDS:-5}" \
+            --max-time "${ZCNBLK_MODULE_HTTP_TOTAL_TIMEOUT_SECONDS:-60}" \
+            --output "$destination" "$url"
+          ;;
+        http://*)
+          [ "${ZCNBLK_MODULE_HTTP_ALLOW_INSECURE:-false}" = true ] || \
+            fail "plain HTTP requires allowInsecureHttp=true: $url"
+          curl --fail --silent --show-error --location \
+            --proto '=http,https' --proto-redir '=http,https' \
+            --connect-timeout "${ZCNBLK_MODULE_HTTP_CONNECT_TIMEOUT_SECONDS:-5}" \
+            --max-time "${ZCNBLK_MODULE_HTTP_TOTAL_TIMEOUT_SECONDS:-60}" \
+            --output "$destination" "$url"
+          ;;
+        *) fail "module artifact URL must use http:// or https://: $url" ;;
+      esac
+    }
+
+    kernel="$(uname -r)"
+    architecture="$(uname -m)"
+    case "$kernel/$architecture" in
+      *[!A-Za-z0-9._+/-]*) fail "unsafe kernel or architecture identity" ;;
+    esac
+    cache_root="${ZCNBLK_MODULE_CACHE_ROOT:-/var/lib/zccusan/kmods}"
+    case "$cache_root" in
+      /*) ;;
+      *) fail "module cache root must be absolute" ;;
+    esac
+    cache_mount="${ZCNBLK_MODULE_CACHE_MOUNT:-/module-cache}"
+    case "$cache_mount" in
+      /*) ;;
+      *) fail "module cache mount must be absolute" ;;
+    esac
+    cache_dir="${cache_mount}/${architecture}/${kernel}"
+    module_path="${cache_dir}/zcnblk_client_mod.ko"
+    ready_path="${module_path}.ready"
+    artifact_url="$(expand_template "${ZCNBLK_MODULE_HTTP_URL_TEMPLATE:-}")"
+    checksum_url="$(expand_template "${ZCNBLK_MODULE_HTTP_CHECKSUM_URL_TEMPLATE:-}")"
+    refresh_seconds="${ZCNBLK_MODULE_HTTP_REFRESH_SECONDS:-300}"
+    [[ "$refresh_seconds" =~ ^[1-9][0-9]*$ ]] || fail "invalid refresh interval"
+    mkdir -p "$cache_dir"
+
+    fetch_once() {
+      local expected checksum_partial module_partial ready_partial actual
+      expected="${ZCNBLK_MODULE_HTTP_SHA256:-}"
+      checksum_partial="${module_path}.sha256.partial.$$"
+      module_partial="${module_path}.partial.$$"
+      ready_partial="${ready_path}.partial.$$"
+      trap 'rm -f "$checksum_partial" "$module_partial" "$ready_partial"' RETURN
+
+      if [ -n "$expected" ]; then
+        expected="$(validate_sha256 moduleSource.http.sha256 "$expected")"
+      else
+        [ -n "$checksum_url" ] || fail "HTTP mode requires a pinned SHA-256 or checksum URL"
+        download_file "$checksum_url" "$checksum_partial"
+        expected="$(awk 'NR == 1 {print $1}' "$checksum_partial")"
+        expected="$(validate_sha256 downloaded-checksum "$expected")"
+      fi
+
+      if [ -r "$module_path" ]; then
+        actual="$(sha256sum "$module_path" | awk 'NR == 1 {print $1}')"
+      else
+        actual=
+      fi
+      if [ "$actual" != "$expected" ]; then
+        download_file "$artifact_url" "$module_partial"
+        actual="$(sha256sum "$module_partial" | awk 'NR == 1 {print $1}')"
+        [ "$actual" = "$expected" ] || \
+          fail "downloaded module SHA-256 mismatch: expected=$expected actual=$actual"
+        chmod 0644 "$module_partial"
+        mv -f "$module_partial" "$module_path"
+      fi
+      printf '%s\n' "$expected" > "$ready_partial"
+      chmod 0644 "$ready_partial"
+      mv -f "$ready_partial" "$ready_path"
+      trap - RETURN
+      rm -f "$checksum_partial"
+      printf 'ZCNBLK_MODULE_CACHE_READY kernel=%s arch=%s sha256=%s path=%s\n' \
+        "$kernel" "$architecture" "$expected" "${cache_root}/${architecture}/${kernel}/zcnblk_client_mod.ko"
+    }
+
+    fetch_once
+    while sleep "$refresh_seconds"; do
+      fetch_once
+    done
+  module-parameters: |-
+    {{- range .Values.nodeSetup.module.parameters }}
+    {{ . }}
+    {{- end }}
+{{- if and (eq $sourceType "build") (not .Values.nodeSetup.developmentBuild.sourceConfigMap) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "zcblock-csi.nodeSetupSourceConfigMapName" . }}
+  namespace: {{ include "zcblock-csi.namespace" . }}
+  labels:
+    {{- include "zcblock-csi.labels" . | nindent 4 }}
+data:
+  zcnblk_client_mod.c: |-
+{{ .Files.Get "files/kmod/zcnblk_client_mod.c" | nindent 4 }}
+  zcnblk_shm_abi.h: |-
+{{ .Files.Get "files/kmod/zcnblk_shm_abi.h" | nindent 4 }}
+  Makefile: |-
+{{ .Files.Get "files/kmod/Makefile" | nindent 4 }}
+{{- end }}
+{{- end }}

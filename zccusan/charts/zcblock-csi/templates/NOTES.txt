@@ -1,5 +1,19 @@
 zcblock-csi installed with driver name {{ .Values.driverName }}.
 
+Node client-edge setup:
+{{- if .Values.nodeSetup.enabled }}
+  Managed by the CSI DaemonSet init container from the explicit
+  {{ .Values.nodeSetup.moduleSource.type | quote }} module source. CSI starts only after
+  /dev/zcnblk0 and /dev/zcnblk-shmctl are ready on each selected node.
+{{- if and (eq .Values.nodeSetup.moduleSource.type "http") (eq .Values.nodeSetup.moduleSource.http.delivery "nodeCacheDaemonSet") }}
+  HTTP artifacts are fetched by the operator-independent
+  {{ include "zcblock-csi.nodeArtifactCacheName" . }} DaemonSet over ordinary pod networking.
+{{- end }}
+{{- else }}
+  Disabled. The node image or an external lifecycle manager must provide
+  /dev/zcnblk0 and /dev/zcnblk-shmctl before CSI starts.
+{{- end }}
+
 Control API:
 {{- if .Values.control.enabled }}
   Local pod URL: {{ .Values.control.url }}

@@ -27,7 +27,9 @@ pub mod change_log;
 pub mod cloud_topology;
 pub mod dirty_pool;
 pub mod enterprise_workload;
+pub mod estate_sharding;
 pub mod fanout;
+pub mod gang_scheduler;
 pub mod global_failover;
 pub mod global_policy;
 pub mod global_secure_rpc;
@@ -36,7 +38,9 @@ pub mod htb_controller;
 pub mod integrity_contract;
 mod io_slots;
 pub mod iops_policy;
+pub mod kernel_module_artifacts;
 pub mod kubernetes_storage;
+pub mod migration_cache;
 pub mod ofi_pipe;
 pub mod persistent_wal;
 pub mod racing_mirror;
@@ -48,10 +52,13 @@ pub mod telemetry;
 pub mod topology;
 pub mod topology_controller;
 pub mod transport_security;
+pub mod vhost_ofi;
 pub mod volume_partition;
+pub mod volume_system_policy;
 pub(crate) mod wal_contract;
 pub mod wal_failover;
 pub mod wal_ha_route;
+pub mod wal_live_migration;
 pub mod wal_quorum;
 pub mod window;
 pub mod zcnblk_app_arena;
@@ -101,6 +108,7 @@ const IORING_REGISTER_BUFFERS: u32 = 0;
 const IORING_UNREGISTER_BUFFERS: u32 = 1;
 const IORING_REGISTER_FILES: u32 = 2;
 const IORING_UNREGISTER_FILES: u32 = 3;
+const IORING_REGISTER_EVENTFD: u32 = 4;
 const IORING_REGISTER_NAPI: u32 = 27;
 const IORING_UNREGISTER_NAPI: u32 = 28;
 const IORING_REGISTER_CLONE_BUFFERS: u32 = 30;
@@ -131,6 +139,7 @@ const IORING_ENTER_GETEVENTS: u32 = 1 << 0;
 const IORING_ENTER_SQ_WAKEUP: u32 = 1 << 1;
 const IORING_ENTER_REGISTERED_RING: u32 = 1 << 4;
 const IORING_ENTER_NO_IOWAIT: u32 = 1 << 7;
+const IORING_CQ_EVENTFD_DISABLED: u32 = 1 << 0;
 const IORING_OFF_SQ_RING: u64 = 0;
 const IORING_OFF_CQ_RING: u64 = 0x8000000;
 const IORING_OFF_SQES: u64 = 0x10000000;
@@ -493,6 +502,7 @@ struct RawRingOptions {
     io_poll_mode: RawRingIoPollMode,
     registered_ring_fd: bool,
     sq_thread_idle_ms: u32,
+    defer_taskrun: bool,
 }
 
 impl Default for RawRingOptions {
@@ -504,6 +514,7 @@ impl Default for RawRingOptions {
             io_poll_mode: RawRingIoPollMode::Off,
             registered_ring_fd: false,
             sq_thread_idle_ms: 1000,
+            defer_taskrun: true,
         }
     }
 }
@@ -527,6 +538,7 @@ struct RawRing {
     cq_head: *mut u32,
     cq_tail: *mut u32,
     cq_mask: *mut u32,
+    cq_flags: *mut u32,
     cqes: *mut u8,
     cqe_stride: usize,
     sq_mode: RawRingSqMode,
@@ -539,6 +551,7 @@ struct RawRing {
     cqe_current_spin: u32,
     cqe_hot_poll: bool,
     cqe_hot_poll_progress_spins: u32,
+    defer_taskrun: bool,
     stats_enabled: bool,
     stats: RawRingStats,
 }
@@ -1011,6 +1024,22 @@ impl RawRing {
         Self::new_with_stats(entries, cq_entries, false)
     }
 
+    fn new_event_driven(entries: u32, cq_entries: u32) -> io::Result<Self> {
+        Self::new_with_options(
+            entries,
+            cq_entries,
+            RawRingOptions {
+                // A DEFER_TASKRUN ring cannot use its own completion eventfd
+                // as the only idle wake source: publishing the CQE (and thus
+                // signaling eventfd) itself waits for another enter by the
+                // sleeping issuer. Event-driven consumers require normal
+                // task-work delivery to break that circular dependency.
+                defer_taskrun: false,
+                ..RawRingOptions::default()
+            },
+        )
+    }
+
     fn new_with_stats(entries: u32, cq_entries: u32, stats_enabled: bool) -> io::Result<Self> {
         Self::new_with_options(
             entries,
@@ -1033,6 +1062,9 @@ impl RawRing {
             | options.cqe_mode.setup_flags()
             | options.io_poll_mode.setup_flags()
             | options.sq_mode.setup_flags()?;
+        if !options.defer_taskrun {
+            flags &= !IORING_SETUP_DEFER_TASKRUN_U32;
+        }
         let mut sq_thread_cpu = 0;
         if let RawRingSqMode::SqPoll { cpu: Some(cpu), .. } = options.sq_mode {
             sq_thread_cpu = u32::try_from(cpu).map_err(|_| {
@@ -1215,6 +1247,7 @@ impl RawRing {
             cq_head: ptr_at(cq_ring_ptr, params.cq_off.head) as *mut u32,
             cq_tail: ptr_at(cq_ring_ptr, params.cq_off.tail) as *mut u32,
             cq_mask: ptr_at(cq_ring_ptr, params.cq_off.ring_mask) as *mut u32,
+            cq_flags: ptr_at(cq_ring_ptr, params.cq_off.flags) as *mut u32,
             cqes: ptr_at(cq_ring_ptr, params.cq_off.cqes),
             cqe_stride,
             sq_mode: options.sq_mode,
@@ -1227,6 +1260,7 @@ impl RawRing {
             cqe_current_spin,
             cqe_hot_poll,
             cqe_hot_poll_progress_spins,
+            defer_taskrun: options.defer_taskrun,
             stats_enabled: options.stats_enabled,
             stats: RawRingStats::default(),
         })
@@ -1234,6 +1268,45 @@ impl RawRing {
 
     fn fd(&self) -> i32 {
         self.fd
+    }
+
+    fn register_eventfd(&self, eventfd: i32) -> io::Result<()> {
+        let mut eventfd = eventfd;
+        io_uring_register(
+            self.fd,
+            IORING_REGISTER_EVENTFD,
+            (&mut eventfd as *mut i32).cast(),
+            1,
+        )?;
+        Ok(())
+    }
+
+    fn set_eventfd_enabled(&self, enabled: bool) {
+        unsafe {
+            let current = ptr::read_volatile(self.cq_flags);
+            let next = if enabled {
+                current & !IORING_CQ_EVENTFD_DISABLED
+            } else {
+                current | IORING_CQ_EVENTFD_DISABLED
+            };
+            if next != current {
+                ptr::write_volatile(self.cq_flags, next);
+            }
+        }
+    }
+
+    fn run_task_work(&mut self) -> io::Result<()> {
+        self.submit_pending()?;
+        if !self.defer_taskrun {
+            return Ok(());
+        }
+        io_uring_enter(
+            self.enter_fd,
+            0,
+            0,
+            IORING_ENTER_GETEVENTS | self.enter_flags,
+        )?;
+        Ok(())
     }
 
     fn stats(&self) -> RawRingStats {
@@ -1986,37 +2059,61 @@ impl RawRing {
     }
 
     fn try_pop_cqe(&mut self) -> Option<IoUringCqe32> {
+        let mut completion = None;
+        self.drain_cqes(1, |cqe| completion = Some(cqe));
+        completion
+    }
+
+    /// Drain up to `limit` ready CQEs while publishing the userspace CQ head
+    /// once. The callback must remain lane-local and must not recursively use
+    /// this ring. In particular, this avoids a cache-line handoff to the kernel
+    /// for every completion in high-IOPS consumers which already retire CQEs in
+    /// batches.
+    fn drain_cqes(&mut self, limit: usize, mut consume: impl FnMut(IoUringCqe32)) -> usize {
+        if limit == 0 {
+            return 0;
+        }
         unsafe {
             let head = ptr::read_volatile(self.cq_head);
             let tail = ptr::read_volatile(self.cq_tail);
-
-            if head == tail {
+            let ready = tail.wrapping_sub(head) as usize;
+            let count = ready.min(limit);
+            if count == 0 {
                 if self.stats_enabled {
                     self.stats.try_pop_empty = self.stats.try_pop_empty.saturating_add(1);
                 }
-                return None;
+                return 0;
             }
 
+            // Pair with the kernel's CQ tail publication before reading any
+            // completion payloads. One release publication below returns the
+            // complete contiguous batch to the kernel.
+            fence(Ordering::Acquire);
             let mask = ptr::read_volatile(self.cq_mask);
-            let cqe_ptr = self.cqes.add((head & mask) as usize * self.cqe_stride);
-            let cqe = if self.cqe_stride == size_of::<IoUringCqe32>() {
-                ptr::read(cqe_ptr as *const IoUringCqe32)
-            } else {
-                let cqe16 = ptr::read(cqe_ptr as *const IoUringCqe16);
-                IoUringCqe32 {
-                    user_data: cqe16.user_data,
-                    res: cqe16.res,
-                    flags: cqe16.flags,
-                    zcrx_off: 0,
-                    zcrx_pad: 0,
-                }
-            };
-            fence(Ordering::Release);
-            ptr::write_volatile(self.cq_head, head.wrapping_add(1));
-            if self.stats_enabled {
-                self.stats.cqes_popped = self.stats.cqes_popped.saturating_add(1);
+            for index in 0..count {
+                let cqe_ptr = self
+                    .cqes
+                    .add((head.wrapping_add(index as u32) & mask) as usize * self.cqe_stride);
+                let cqe = if self.cqe_stride == size_of::<IoUringCqe32>() {
+                    ptr::read(cqe_ptr as *const IoUringCqe32)
+                } else {
+                    let cqe16 = ptr::read(cqe_ptr as *const IoUringCqe16);
+                    IoUringCqe32 {
+                        user_data: cqe16.user_data,
+                        res: cqe16.res,
+                        flags: cqe16.flags,
+                        zcrx_off: 0,
+                        zcrx_pad: 0,
+                    }
+                };
+                consume(cqe);
             }
-            Some(cqe)
+            fence(Ordering::Release);
+            ptr::write_volatile(self.cq_head, head.wrapping_add(count as u32));
+            if self.stats_enabled {
+                self.stats.cqes_popped = self.stats.cqes_popped.saturating_add(count as u64);
+            }
+            count
         }
     }
 
@@ -3310,7 +3407,9 @@ fn rdma_probe(netdev: Option<&str>) -> io::Result<()> {
             "libibverbs.so",
             &[
                 "/lib/x86_64-linux-gnu/libibverbs.so.1",
-                "/usr/lib/x86_64-linux-gnu/libibverbs.so.1"
+                "/usr/lib/x86_64-linux-gnu/libibverbs.so.1",
+                "/lib/aarch64-linux-gnu/libibverbs.so.1",
+                "/usr/lib/aarch64-linux-gnu/libibverbs.so.1",
             ],
         )
         .unwrap_or_else(|| "not-found".to_string())
@@ -3321,7 +3420,9 @@ fn rdma_probe(netdev: Option<&str>) -> io::Result<()> {
             "librdmacm.so",
             &[
                 "/lib/x86_64-linux-gnu/librdmacm.so.1",
-                "/usr/lib/x86_64-linux-gnu/librdmacm.so.1"
+                "/usr/lib/x86_64-linux-gnu/librdmacm.so.1",
+                "/lib/aarch64-linux-gnu/librdmacm.so.1",
+                "/usr/lib/aarch64-linux-gnu/librdmacm.so.1",
             ],
         )
         .unwrap_or_else(|| "not-found".to_string())
@@ -3332,7 +3433,9 @@ fn rdma_probe(netdev: Option<&str>) -> io::Result<()> {
             "libfabric.so",
             &[
                 "/lib/x86_64-linux-gnu/libfabric.so.1",
-                "/usr/lib/x86_64-linux-gnu/libfabric.so.1"
+                "/usr/lib/x86_64-linux-gnu/libfabric.so.1",
+                "/lib/aarch64-linux-gnu/libfabric.so.1",
+                "/usr/lib/aarch64-linux-gnu/libfabric.so.1",
             ],
         )
         .unwrap_or_else(|| "not-found".to_string())
@@ -3383,6 +3486,69 @@ fn rdma_probe(netdev: Option<&str>) -> io::Result<()> {
     );
     println!(
         "rdma-next: if no RDMA devices exist and rxe is available, use rdma-rxe-add <netdev> [rxe-name] for a correctness-only Soft-RoCE device"
+    );
+    Ok(())
+}
+
+fn rdma_preflight(provider: &str, domain: Option<&str>) -> io::Result<()> {
+    let transport = match provider {
+        "efa" => ZcPlanTransport::LibfabricEfa,
+        "efa-direct" => ZcPlanTransport::LibfabricEfaDirect,
+        "verbs" => ZcPlanTransport::LibfabricVerbs,
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported RDMA provider {other:?}; use efa, efa-direct, or verbs"),
+            ));
+        }
+    };
+    let char_devices = list_dir_entry_names(Path::new("/dev/infiniband"));
+    if char_devices.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "RDMA was requested but /dev/infiniband contains no device nodes; no TCP fallback was selected",
+        ));
+    }
+    let devices = read_rdma_sysfs_devices();
+    if devices.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "RDMA was requested but /sys/class/infiniband contains no devices; no TCP fallback was selected",
+        ));
+    }
+    let active_ports = devices
+        .iter()
+        .flat_map(|device| &device.ports)
+        .filter(|port| {
+            port.state
+                .as_deref()
+                .is_some_and(|state| state.to_ascii_uppercase().contains("ACTIVE"))
+        })
+        .count();
+    if active_ports == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "RDMA was requested but no InfiniBand-class port reports ACTIVE; no TCP fallback was selected",
+        ));
+    }
+    let (provider_ok, provider_detail) = zcplan_libfabric_probe(transport, domain);
+    if !provider_ok {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "RDMA provider preflight failed: {provider_detail}; no TCP fallback was selected"
+            ),
+        ));
+    }
+    println!(
+        "ZCCUSAN_RDMA_PREFLIGHT_PASS arch={} provider={} domain={} devices={} active_ports={} char_devices={} fallback=none detail={}",
+        std::env::consts::ARCH,
+        provider,
+        domain.unwrap_or("auto"),
+        devices.len(),
+        active_ports,
+        char_devices.join(","),
+        provider_detail,
     );
     Ok(())
 }
@@ -5628,6 +5794,15 @@ fn set_current_thread_affinity(cpu: usize) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+pub(crate) fn pin_current_thread_for_lane(label: &str, lane: usize) -> io::Result<Option<usize>> {
+    let Some(cpu) = affinity_target_cpu(lane) else {
+        return Ok(None);
+    };
+    set_current_thread_affinity(cpu)?;
+    println!("{label}: lane={lane} target_cpu={cpu} status=ok");
+    Ok(Some(cpu))
 }
 
 fn pin_current_thread_to(label: &str, index: usize, cpu: usize) -> ThreadAffinity {
@@ -8836,6 +9011,8 @@ struct ZcWalExtentStats {
     migrations: u64,
     ack_latency: LatencyHistogram,
     uring_recv: UringRecvStats,
+    virtual_volume_ops: Vec<u64>,
+    virtual_volume_hwms: Vec<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -9526,6 +9703,8 @@ fn zcwal_extent_sender_worker(
             .saturating_sub(start_switches.migrations),
         ack_latency,
         uring_recv: UringRecvStats::default(),
+        virtual_volume_ops: Vec::new(),
+        virtual_volume_hwms: Vec::new(),
     })
 }
 
@@ -9753,6 +9932,8 @@ fn zcwal_extent_recv_worker(
             .saturating_sub(start_switches.migrations),
         ack_latency: LatencyHistogram::new(),
         uring_recv,
+        virtual_volume_ops: Vec::new(),
+        virtual_volume_hwms: Vec::new(),
     })
 }
 
@@ -9857,8 +10038,209 @@ fn zcwal_extent_sum(results: &[ZcWalExtentStats]) -> ZcWalExtentStats {
         total.migrations += stats.migrations;
         total.ack_latency.merge(&stats.ack_latency);
         total.uring_recv.merge(&stats.uring_recv);
+        if total.virtual_volume_ops.len() < stats.virtual_volume_ops.len() {
+            total
+                .virtual_volume_ops
+                .resize(stats.virtual_volume_ops.len(), 0);
+            total
+                .virtual_volume_hwms
+                .resize(stats.virtual_volume_hwms.len(), 0);
+        }
+        for (total_ops, worker_ops) in total
+            .virtual_volume_ops
+            .iter_mut()
+            .zip(&stats.virtual_volume_ops)
+        {
+            *total_ops = total_ops.saturating_add(*worker_ops);
+        }
+        for (total_hwm, worker_hwm) in total
+            .virtual_volume_hwms
+            .iter_mut()
+            .zip(&stats.virtual_volume_hwms)
+        {
+            *total_hwm = (*total_hwm).max(*worker_hwm);
+        }
     }
     total
+}
+
+fn zcofi_virtual_volume_count() -> io::Result<usize> {
+    let Some(value) = env_first_nonempty(&["URING_PLAY_ZCOFI_VIRTUAL_VOLUMES"]) else {
+        return Ok(0);
+    };
+    let count = value.parse::<usize>().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid URING_PLAY_ZCOFI_VIRTUAL_VOLUMES={value:?}: {error}"),
+        )
+    })?;
+    if count == 0 || count > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "URING_PLAY_ZCOFI_VIRTUAL_VOLUMES must be in 1..=4294967295",
+        ));
+    }
+    Ok(count)
+}
+
+#[inline(always)]
+fn zcofi_virtual_volume_descriptor(
+    lane: usize,
+    sequence: usize,
+    lane_count: usize,
+    volume_count: usize,
+) -> Option<(usize, u64, u64)> {
+    if volume_count == 0 {
+        return None;
+    }
+    let global_ordinal = (sequence as u64)
+        .wrapping_mul(lane_count as u64)
+        .wrapping_add(lane as u64);
+    let volume = (global_ordinal % volume_count as u64) as usize;
+    let descriptor_id = ((volume as u64) << 32) | (sequence as u32 as u64);
+    Some((volume, descriptor_id, global_ordinal.wrapping_add(1)))
+}
+
+#[inline(always)]
+fn zcofi_virtual_volume_observe(
+    header: ZcWalExtentHeader,
+    lane_count: usize,
+    volume_ops: &mut [u64],
+    volume_hwms: &mut [u64],
+) -> io::Result<()> {
+    if volume_ops.is_empty() {
+        return Ok(());
+    }
+    let sequence = header.extent_sequence as usize;
+    let (volume, descriptor_id, hwm) = zcofi_virtual_volume_descriptor(
+        header.lane_id as usize,
+        sequence,
+        lane_count,
+        volume_ops.len(),
+    )
+    .expect("non-empty virtual-volume state has a descriptor");
+    if header.descriptor_id != descriptor_id {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "OFI WAL virtual-volume descriptor mismatch lane={} seq={} volume={} got={} expected={descriptor_id}",
+                header.lane_id, header.extent_sequence, volume, header.descriptor_id
+            ),
+        ));
+    }
+    volume_ops[volume] = volume_ops[volume].saturating_add(header.record_count as u64);
+    volume_hwms[volume] = volume_hwms[volume].max(hwm);
+    Ok(())
+}
+
+fn zcofi_print_virtual_volume_summary(label: &str, stats: &ZcWalExtentStats) -> io::Result<()> {
+    if stats.virtual_volume_ops.is_empty() {
+        return Ok(());
+    }
+    let active = stats
+        .virtual_volume_ops
+        .iter()
+        .filter(|ops| **ops != 0)
+        .count();
+    if active != stats.virtual_volume_ops.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{label} exercised {active}/{} virtual volumes",
+                stats.virtual_volume_ops.len()
+            ),
+        ));
+    }
+    let min_ops = stats.virtual_volume_ops.iter().copied().min().unwrap_or(0);
+    let max_ops = stats.virtual_volume_ops.iter().copied().max().unwrap_or(0);
+    let mean_ops = stats.records as f64 / active as f64;
+    let max_deviation_pct = if mean_ops == 0.0 {
+        0.0
+    } else {
+        stats
+            .virtual_volume_ops
+            .iter()
+            .map(|ops| (*ops as f64 - mean_ops).abs() * 100.0 / mean_ops)
+            .fold(0.0_f64, f64::max)
+    };
+    let min_hwm = stats.virtual_volume_hwms.iter().copied().min().unwrap_or(0);
+    let max_hwm = stats.virtual_volume_hwms.iter().copied().max().unwrap_or(0);
+    println!(
+        "{label}-virtual-volumes: volume_count={} active_volumes={active} state_owner=lane-local merge=post-interval hotpath_shared_locks=0 hotpath_atomics=0 ops_min={min_ops} ops_max={max_ops} ops_mean={mean_ops:.3} max_deviation_pct={max_deviation_pct:.6} hwm_min={min_hwm} hwm_max={max_hwm} descriptor_namespace=upper-32-bits",
+        stats.virtual_volume_ops.len()
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod zcofi_virtual_volume_tests {
+    use super::*;
+
+    fn test_header(
+        lane: usize,
+        lane_count: usize,
+        sequence: usize,
+        volume_count: usize,
+    ) -> ZcWalExtentHeader {
+        let descriptor_id =
+            zcofi_virtual_volume_descriptor(lane, sequence, lane_count, volume_count)
+                .expect("positive virtual-volume count")
+                .1;
+        ZcWalExtentHeader {
+            flags: 0,
+            lane_id: lane as u32,
+            lane_count: lane_count as u32,
+            shard_id: lane as u32,
+            record_size: ZC_WAL_RECORD_SIZE as u32,
+            record_count: 1,
+            payload_len: ZC_WAL_RECORD_SIZE as u32,
+            table_len: 0,
+            base_logical_index: sequence as u64,
+            extent_sequence: sequence as u64,
+            base_wal_offset: (sequence * ZC_WAL_RECORD_SIZE) as u64,
+            wal_epoch: 0,
+            descriptor_id,
+            payload_crc32c: 0,
+        }
+    }
+
+    #[test]
+    fn thousand_virtual_volumes_are_balanced_across_eighty_lanes() {
+        let lane_count = 80;
+        let volume_count = 1_000;
+        let sequences_per_lane = 12_500;
+        let mut ops = vec![0; volume_count];
+        let mut hwms = vec![0; volume_count];
+
+        for sequence in 0..sequences_per_lane {
+            for lane in 0..lane_count {
+                zcofi_virtual_volume_observe(
+                    test_header(lane, lane_count, sequence, volume_count),
+                    lane_count,
+                    &mut ops,
+                    &mut hwms,
+                )
+                .expect("valid descriptor");
+            }
+        }
+
+        assert_eq!(ops.iter().sum::<u64>(), 1_000_000);
+        assert!(ops.iter().all(|count| *count == 1_000));
+        assert!(hwms.iter().all(|hwm| *hwm != 0));
+    }
+
+    #[test]
+    fn virtual_volume_descriptor_mismatch_is_rejected() {
+        let mut header = test_header(3, 8, 17, 1_000);
+        header.descriptor_id ^= 1_u64 << 32;
+        let mut ops = vec![0; 1_000];
+        let mut hwms = vec![0; 1_000];
+
+        let error = zcofi_virtual_volume_observe(header, 8, &mut ops, &mut hwms)
+            .expect_err("corrupt volume identity must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(ops.iter().all(|count| *count == 0));
+    }
 }
 
 /// Publish a completed transport benchmark only after every measured worker
@@ -10594,6 +10976,19 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn zc_ofi_open_rma_sized_on_domain(
+        provider: *const c_char,
+        endpoint: *const c_char,
+        node: *const c_char,
+        service: *const c_char,
+        server: c_int,
+        domain: *const c_char,
+        read_depth: usize,
+        write_depth: usize,
+        out: *mut *mut ZcOfiRawEndpoint,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn zc_ofi_close(ep: *mut ZcOfiRawEndpoint);
     fn zc_ofi_last_error(ep: *const ZcOfiRawEndpoint) -> *const c_char;
     fn zc_ofi_max_msg_size(ep: *const ZcOfiRawEndpoint) -> usize;
@@ -10675,6 +11070,11 @@ unsafe extern "C" {
         ep: *mut ZcOfiRawEndpoint,
         out_len: *mut usize,
         timeout_ms: c_int,
+    ) -> c_int;
+    fn zc_ofi_recv_try_finish(
+        ep: *mut ZcOfiRawEndpoint,
+        out_len: *mut usize,
+        out_ready: *mut c_int,
     ) -> c_int;
     fn zc_ofi_recv_queue_init(ep: *mut ZcOfiRawEndpoint, depth: usize) -> c_int;
     fn zc_ofi_recv_post(
@@ -10916,6 +11316,74 @@ impl ZcOfiEndpoint {
             true,
             true,
         )
+    }
+
+    fn open_rma_sized_on_domain(
+        provider: &str,
+        endpoint: &str,
+        node: &str,
+        service: &str,
+        server: bool,
+        domain_name: Option<&str>,
+        read_depth: usize,
+        write_depth: usize,
+    ) -> io::Result<Self> {
+        let provider = zcofi_cstring(provider, "OFI provider")?;
+        let endpoint = zcofi_cstring(endpoint, "OFI endpoint")?;
+        let node = zcofi_optional_node(node, server)?;
+        let service = zcofi_cstring(service, "OFI service")?;
+        let domain_name = domain_name
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| zcofi_cstring(value.trim(), "OFI domain"))
+            .transpose()?;
+        let mut raw = ptr::null_mut();
+        let mut err = vec![0 as c_char; 512];
+        let rc = unsafe {
+            zc_ofi_open_rma_sized_on_domain(
+                provider.as_ptr(),
+                endpoint.as_ptr(),
+                node.as_ref().map_or(ptr::null(), |node| node.as_ptr()),
+                service.as_ptr(),
+                if server { 1 } else { 0 },
+                domain_name
+                    .as_ref()
+                    .map_or(ptr::null(), |domain| domain.as_ptr()),
+                read_depth,
+                write_depth,
+                &mut raw,
+                err.as_mut_ptr(),
+                err.len(),
+            )
+        };
+        if rc != 0 {
+            let detail = unsafe { CStr::from_ptr(err.as_ptr()) }
+                .to_string_lossy()
+                .trim_matches('\0')
+                .to_string();
+            return Err(io::Error::other(format!(
+                "zc_ofi_open_rma_sized provider={} endpoint={} node={} service={} server={} domain={} read_depth={} write_depth={} failed rc={}{}{}",
+                provider.to_string_lossy(),
+                endpoint.to_string_lossy(),
+                node.as_ref()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "auto".to_string()),
+                service.to_string_lossy(),
+                yes(server),
+                domain_name
+                    .as_ref()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "auto".to_string()),
+                read_depth,
+                write_depth,
+                rc,
+                if detail.is_empty() { "" } else { ": " },
+                detail,
+            )));
+        }
+        let mut endpoint = Self { raw };
+        let profile = endpoint.profile()?;
+        eprintln!("zcofi-endpoint-profile: {profile}");
+        Ok(endpoint)
     }
 
     fn open_inner(
@@ -11332,6 +11800,20 @@ impl ZcOfiEndpoint {
         Ok(out_len)
     }
 
+    fn recv_try_finish(&mut self) -> io::Result<Option<usize>> {
+        let mut out_len = 0usize;
+        let mut out_ready = 0;
+        let rc = unsafe { zc_ofi_recv_try_finish(self.raw, &mut out_len, &mut out_ready) };
+        if rc != 0 {
+            return Err(zcofi_error_from_endpoint(
+                self,
+                rc,
+                "zc_ofi_recv_try_finish",
+            ));
+        }
+        Ok((out_ready != 0).then_some(out_len))
+    }
+
     fn recv_queue_init(&mut self, depth: usize) -> io::Result<()> {
         let rc = unsafe { zc_ofi_recv_queue_init(self.raw, depth) };
         if rc != 0 {
@@ -11742,6 +12224,22 @@ impl ZcOfiEndpoint {
         ))
     }
 
+    fn open_rma_sized_on_domain(
+        _provider: &str,
+        _endpoint: &str,
+        _node: &str,
+        _service: &str,
+        _server: bool,
+        _domain_name: Option<&str>,
+        _read_depth: usize,
+        _write_depth: usize,
+    ) -> io::Result<Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers; sized OFI RMA commands are unavailable",
+        ))
+    }
+
     fn max_msg_size(&self) -> usize {
         0
     }
@@ -11904,6 +12402,13 @@ impl ZcOfiEndpoint {
     }
 
     fn recv_finish(&mut self) -> io::Result<usize> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "zcutils was built without libfabric headers",
+        ))
+    }
+
+    fn recv_try_finish(&mut self) -> io::Result<Option<usize>> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "zcutils was built without libfabric headers",
@@ -12289,10 +12794,11 @@ fn zcofi_wal_peer_contract(
     extent_bytes: usize,
     ack_enabled: bool,
     ack_window: usize,
+    virtual_volume_count: usize,
 ) -> String {
     let message_bytes = zcofi_wal_message_bytes(provider, extent_bytes, ack_enabled);
     format!(
-        "zcofi-wal-v2;lanes={lane_count};extent={extent_bytes};message={message_bytes};ack={};ack_window={};compact={};sequence_header={}",
+        "zcofi-wal-v2;lanes={lane_count};extent={extent_bytes};message={message_bytes};ack={};ack_window={};compact={};sequence_header={};virtual_volumes={virtual_volume_count}",
         u8::from(ack_enabled),
         if ack_enabled { ack_window.max(1) } else { 0 },
         u8::from(zcofi_compact_4k_enabled(
@@ -12560,6 +13066,10 @@ impl ZcOfiMessageStream {
         self.endpoint.rma_register_read_buffer(target)
     }
 
+    fn register_rma_write_buffer(&mut self, source: &[u8]) -> io::Result<()> {
+        self.endpoint.rma_register_write_buffer(source)
+    }
+
     unsafe fn register_rma_read_buffer_raw(
         &mut self,
         target: *mut u8,
@@ -12671,6 +13181,10 @@ impl ZcOfiMessageStream {
         self.endpoint.rma_read(target, remote_addr, remote_key)
     }
 
+    fn rma_write(&mut self, source: &[u8], remote_addr: u64, remote_key: u64) -> io::Result<()> {
+        self.endpoint.rma_write(source, remote_addr, remote_key)
+    }
+
     fn refill(&mut self) -> io::Result<()> {
         let received = if self.receive_posted {
             let received = self.endpoint.recv_finish()?;
@@ -12688,6 +13202,41 @@ impl ZcOfiMessageStream {
         self.receive_start = 0;
         self.receive_end = received;
         Ok(())
+    }
+
+    fn try_read(&mut self, out: &mut [u8]) -> io::Result<Option<usize>> {
+        if out.is_empty() {
+            return Ok(Some(0));
+        }
+        if self.receive_start == self.receive_end {
+            if !self.receive_posted {
+                self.endpoint.recv_start(&mut self.receive)?;
+                self.receive_posted = true;
+            }
+            let Some(received) = self.endpoint.recv_try_finish()? else {
+                return Ok(None);
+            };
+            self.receive_posted = false;
+            if received == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "OFI WAL received an empty message",
+                ));
+            }
+            self.receive_start = 0;
+            self.receive_end = received;
+        }
+        let available = self.receive_end - self.receive_start;
+        let take = available.min(out.len());
+        out[..take].copy_from_slice(
+            &self.receive[self.receive_start..self.receive_start.saturating_add(take)],
+        );
+        self.receive_start += take;
+        if self.receive_start == self.receive_end {
+            self.endpoint.recv_start(&mut self.receive)?;
+            self.receive_posted = true;
+        }
+        Ok(Some(take))
     }
 
     fn refill_idle(&mut self) -> io::Result<()> {
@@ -14413,6 +14962,8 @@ fn zcofi_rma_target_worker(
             .saturating_sub(start_switches.migrations),
         ack_latency: LatencyHistogram::new(),
         uring_recv: UringRecvStats::default(),
+        virtual_volume_ops: Vec::new(),
+        virtual_volume_hwms: Vec::new(),
     })
 }
 
@@ -14885,6 +15436,8 @@ fn zcofi_rma_write_worker(
                 .saturating_sub(start_switches.migrations),
             ack_latency: LatencyHistogram::new(),
             uring_recv: UringRecvStats::default(),
+            virtual_volume_ops: Vec::new(),
+            virtual_volume_hwms: Vec::new(),
         },
         cq_poll_calls: lanes.iter().map(|lane| lane.cq_poll_calls).sum(),
         cq_batches: lanes.iter().map(|lane| lane.cq_batches).sum(),
@@ -15308,6 +15861,8 @@ fn zcofi_rma_read_worker(
                 .saturating_sub(start_switches.migrations),
             ack_latency: LatencyHistogram::new(),
             uring_recv: UringRecvStats::default(),
+            virtual_volume_ops: Vec::new(),
+            virtual_volume_hwms: Vec::new(),
         },
         cq_poll_calls: lanes.iter().map(|lane| lane.cq_poll_calls).sum(),
         cq_batches: lanes.iter().map(|lane| lane.cq_batches).sum(),
@@ -15866,7 +16421,107 @@ fn zcofi_rma_read(
     Ok(())
 }
 
-fn zcofi_wal_sender_worker(
+struct ZcOfiRebalanceGate {
+    workers: Barrier,
+    external_dir: Option<PathBuf>,
+    external_id: String,
+    external_parties: usize,
+    external_timeout: Duration,
+    error: Mutex<Option<String>>,
+}
+
+impl ZcOfiRebalanceGate {
+    fn wait(&self) -> io::Result<()> {
+        let leader = self.workers.wait().is_leader();
+        if leader {
+            let result = self.wait_external();
+            *self
+                .error
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()) =
+                result.err().map(|error| error.to_string());
+        }
+        self.workers.wait();
+        if let Some(error) = self
+            .error
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+        {
+            return Err(io::Error::other(error.clone()));
+        }
+        Ok(())
+    }
+
+    fn wait_external(&self) -> io::Result<()> {
+        let Some(dir) = self.external_dir.as_ref() else {
+            return Ok(());
+        };
+        fs::create_dir_all(dir)?;
+        let ready = dir.join(format!("ready-{}", self.external_id));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&ready)
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "cannot publish rebalance readiness {}: {error}",
+                        ready.display()
+                    ),
+                )
+            })?;
+        writeln!(
+            file,
+            "pid={} ready_ns={}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        )?;
+        let release = dir.join("release");
+        let started = Instant::now();
+        loop {
+            let ready_count = fs::read_dir(dir)?
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("ready-"))
+                .count();
+            if ready_count >= self.external_parties {
+                let _ = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(&release)?;
+            }
+            if release.exists() {
+                println!(
+                    "zcofi-wal-send-rebalance-external-gate: id={} parties={} wait_us={:.3} control_path={} hotpath=false",
+                    self.external_id,
+                    self.external_parties,
+                    started.elapsed().as_secs_f64() * 1_000_000.0,
+                    dir.display(),
+                );
+                return Ok(());
+            }
+            if started.elapsed() >= self.external_timeout {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "external rebalance gate timed out id={} parties={} path={}",
+                        self.external_id,
+                        self.external_parties,
+                        dir.display()
+                    ),
+                ));
+            }
+            thread::sleep(Duration::from_micros(50));
+        }
+    }
+}
+
+fn zcofi_wal_sender_worker<const VIRTUAL_VOLUMES: bool>(
     worker: usize,
     provider: Arc<String>,
     endpoint: Arc<String>,
@@ -15876,6 +16531,10 @@ fn zcofi_wal_sender_worker(
     bytes_per_lane: usize,
     extent_bytes: usize,
     ack_enabled: bool,
+    virtual_volume_count: usize,
+    rebalance_addr: Option<Arc<String>>,
+    rebalance_after_extents: usize,
+    rebalance_gate: Option<Arc<ZcOfiRebalanceGate>>,
 ) -> io::Result<ZcWalExtentStats> {
     let affinity = maybe_pin_current_thread("zcofi-wal-send-worker", worker);
     let tid = current_tid();
@@ -15893,6 +16552,7 @@ fn zcofi_wal_sender_worker(
         extent_bytes,
         ack_enabled,
         zcofi_ack_window(),
+        virtual_volume_count,
     );
     for spec in specs {
         let mut ep = ZcOfiEndpoint::open(
@@ -15916,7 +16576,38 @@ fn zcofi_wal_sender_worker(
             ep.max_msg_size(),
             ep.inject_size(),
         );
-        endpoints.push((spec, ep));
+        let replacement = if let Some(rebalance_addr) = rebalance_addr.as_ref() {
+            let mut replacement = ZcOfiEndpoint::open(
+                provider.as_str(),
+                endpoint.as_str(),
+                rebalance_addr.as_str(),
+                &spec.service,
+                false,
+            )?;
+            zcofi_wal_check_endpoint_shape(
+                &replacement,
+                message_bytes,
+                provider.as_str(),
+                spec.lane,
+            )?;
+            zcofi_client_exchange_peer(
+                rebalance_addr.as_str(),
+                control_port,
+                &mut replacement,
+                &contract,
+            )?;
+            println!(
+                "zcofi-wal-send-rebalance-prepared: worker={worker} lane={} from={} to={} service={} admission=preopened cutover=fenced-remote-application-hwm",
+                spec.lane,
+                addr.as_str(),
+                rebalance_addr.as_str(),
+                spec.service,
+            );
+            Some(replacement)
+        } else {
+            None
+        };
+        endpoints.push((spec, ep, replacement));
     }
 
     let mut message = vec![0u8; message_bytes];
@@ -15957,14 +16648,23 @@ fn zcofi_wal_sender_worker(
     } else {
         Vec::new()
     };
-    for (_, ep) in &mut endpoints {
+    for (_, ep, replacement) in &mut endpoints {
         if tx_window > 1 {
             ep.register_send_buffer(&batch_messages)?;
+            if let Some(replacement) = replacement {
+                replacement.register_send_buffer(&batch_messages)?;
+            }
         } else {
             ep.register_send_buffer(&message)?;
+            if let Some(replacement) = replacement {
+                replacement.register_send_buffer(&message)?;
+            }
         }
         if ack_enabled {
             ep.register_recv_buffer(&mut ack_buf)?;
+            if let Some(replacement) = replacement {
+                replacement.register_recv_buffer(&mut ack_buf)?;
+            }
         }
     }
 
@@ -15975,171 +16675,283 @@ fn zcofi_wal_sender_worker(
     let mut records = 0usize;
     let mut acks = 0usize;
     let mut ack_latency = LatencyHistogram::new();
+    let tracked_volume_count = if VIRTUAL_VOLUMES {
+        virtual_volume_count
+    } else {
+        0
+    };
+    let mut virtual_volume_ops = vec![0u64; tracked_volume_count];
+    let mut virtual_volume_hwms = vec![0u64; tracked_volume_count];
 
-    for (spec, mut ep) in endpoints {
-        let use_payload_inject = payload_inject && message.len() <= ep.inject_size();
-        if tx_window > 1 {
-            let mut issued_slots = vec![Instant::now(); tx_window];
-            let mut seq_base = 0usize;
-            while seq_base < extents_per_lane {
-                let batch = tx_window.min(extents_per_lane - seq_base);
-                for slot in 0..batch {
-                    let seq = seq_base + slot;
-                    let slot_start = slot * message_bytes;
-                    let slot_end = slot_start + message_bytes;
-                    let slot_message = &mut batch_messages[slot_start..slot_end];
-                    slot_message.copy_from_slice(&message);
-                    if !compact_4k {
-                        let base_logical_index = (seq * record_count as usize) as u64;
-                        let header = ZcWalExtentHeader {
-                            flags: 0,
-                            lane_id: spec.lane as u32,
-                            lane_count: lane_count as u32,
-                            shard_id: spec.lane as u32,
-                            record_size: ZC_WAL_RECORD_SIZE as u32,
-                            record_count,
-                            payload_len: extent_bytes as u32,
-                            table_len: 0,
-                            base_logical_index,
-                            extent_sequence: seq as u64,
-                            base_wal_offset: (seq * extent_bytes) as u64,
-                            wal_epoch: 0,
-                            descriptor_id: ((spec.lane as u64) << 32) | seq as u64,
-                            payload_crc32c: 0,
+    for (spec, mut ep, mut replacement) in endpoints {
+        let mut send_range = |ep: &mut ZcOfiEndpoint,
+                              range_start: usize,
+                              range_end: usize,
+                              first_post_at: &mut Option<Instant>|
+         -> io::Result<()> {
+            let use_payload_inject = payload_inject && message.len() <= ep.inject_size();
+            if tx_window > 1 {
+                let mut issued_slots = vec![Instant::now(); tx_window];
+                let mut seq_base = range_start;
+                while seq_base < range_end {
+                    let batch = tx_window.min(range_end - seq_base);
+                    for slot in 0..batch {
+                        let seq = seq_base + slot;
+                        let slot_start = slot * message_bytes;
+                        let slot_end = slot_start + message_bytes;
+                        let slot_message = &mut batch_messages[slot_start..slot_end];
+                        slot_message.copy_from_slice(&message);
+                        if !compact_4k {
+                            let base_logical_index = (seq * record_count as usize) as u64;
+                            let descriptor_id = if VIRTUAL_VOLUMES {
+                                zcofi_virtual_volume_descriptor(
+                                    spec.lane,
+                                    seq,
+                                    lane_count,
+                                    virtual_volume_count,
+                                )
+                                .expect("virtual-volume worker has a positive volume count")
+                                .1
+                            } else {
+                                ((spec.lane as u64) << 32) | seq as u64
+                            };
+                            let header = ZcWalExtentHeader {
+                                flags: 0,
+                                lane_id: spec.lane as u32,
+                                lane_count: lane_count as u32,
+                                shard_id: spec.lane as u32,
+                                record_size: ZC_WAL_RECORD_SIZE as u32,
+                                record_count,
+                                payload_len: extent_bytes as u32,
+                                table_len: 0,
+                                base_logical_index,
+                                extent_sequence: seq as u64,
+                                base_wal_offset: (seq * extent_bytes) as u64,
+                                wal_epoch: 0,
+                                descriptor_id,
+                                payload_crc32c: 0,
+                            };
+                            if VIRTUAL_VOLUMES {
+                                zcofi_virtual_volume_observe(
+                                    header,
+                                    lane_count,
+                                    &mut virtual_volume_ops,
+                                    &mut virtual_volume_hwms,
+                                )?;
+                            }
+                            let header = header.encode();
+                            slot_message[..ZC_WAL_EXTENT_HEADER_LEN].copy_from_slice(&header);
                         }
-                        .encode();
-                        slot_message[..ZC_WAL_EXTENT_HEADER_LEN].copy_from_slice(&header);
+                        issued_slots[slot] = Instant::now();
+                        payload_bytes += extent_bytes;
+                        wire_bytes += message_bytes;
+                        extents += 1;
+                        records += record_count as usize;
                     }
-                    issued_slots[slot] = Instant::now();
-                    payload_bytes += extent_bytes;
-                    wire_bytes += message_bytes;
-                    extents += 1;
-                    records += record_count as usize;
+                    if ack_enabled {
+                        ep.recv_start(&mut ack_buf)?;
+                    }
+                    if first_post_at.is_none() {
+                        *first_post_at = Some(Instant::now());
+                    }
+                    if use_payload_inject {
+                        for slot in 0..batch {
+                            let slot_start = slot * message_bytes;
+                            let slot_end = slot_start + message_bytes;
+                            ep.inject(&batch_messages[slot_start..slot_end])?;
+                        }
+                    } else {
+                        ep.send_many_fixed(
+                            &batch_messages[..batch * message_bytes],
+                            message_bytes,
+                            message_bytes,
+                            batch,
+                        )?;
+                    }
+                    if ack_enabled {
+                        let mut next_ack_seq = seq_base;
+                        while next_ack_seq < seq_base + batch {
+                            let got = ep.recv_finish()?;
+                            if got != ZC_WAL_ACK_HEADER_LEN {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "OFI WAL ack length mismatch lane={} seq={} got={} expected={}",
+                                        spec.lane, next_ack_seq, got, ZC_WAL_ACK_HEADER_LEN
+                                    ),
+                                ));
+                            }
+                            let ack = ZcWalAckHeader::decode(&ack_buf)?;
+                            let covered = zcofi_validate_ack_covering_seq(
+                                ack,
+                                spec.lane,
+                                next_ack_seq,
+                                seq_base + batch,
+                                record_count as usize,
+                                extent_bytes,
+                            )?;
+                            for covered_seq in next_ack_seq..next_ack_seq + covered {
+                                let slot = covered_seq - seq_base;
+                                ack_latency.record_duration(issued_slots[slot].elapsed());
+                            }
+                            acks += 1;
+                            next_ack_seq += covered;
+                            if next_ack_seq < seq_base + batch {
+                                ep.recv_start(&mut ack_buf)?;
+                            }
+                        }
+                    }
+                    seq_base += batch;
                 }
-                if ack_enabled {
+                return Ok(());
+            }
+            for seq in range_start..range_end {
+                let issued_at = ack_enabled.then(Instant::now);
+                let base_logical_index = (seq * record_count as usize) as u64;
+                let descriptor_id = if VIRTUAL_VOLUMES {
+                    zcofi_virtual_volume_descriptor(
+                        spec.lane,
+                        seq,
+                        lane_count,
+                        virtual_volume_count,
+                    )
+                    .expect("virtual-volume worker has a positive volume count")
+                    .1
+                } else {
+                    ((spec.lane as u64) << 32) | seq as u64
+                };
+                let header = ZcWalExtentHeader {
+                    flags: 0,
+                    lane_id: spec.lane as u32,
+                    lane_count: lane_count as u32,
+                    shard_id: spec.lane as u32,
+                    record_size: ZC_WAL_RECORD_SIZE as u32,
+                    record_count,
+                    payload_len: extent_bytes as u32,
+                    table_len: 0,
+                    base_logical_index,
+                    extent_sequence: seq as u64,
+                    base_wal_offset: (seq * extent_bytes) as u64,
+                    wal_epoch: 0,
+                    descriptor_id,
+                    payload_crc32c: 0,
+                };
+                if VIRTUAL_VOLUMES {
+                    zcofi_virtual_volume_observe(
+                        header,
+                        lane_count,
+                        &mut virtual_volume_ops,
+                        &mut virtual_volume_hwms,
+                    )?;
+                }
+                let header = header.encode();
+                if !compact_4k {
+                    message[..ZC_WAL_EXTENT_HEADER_LEN].copy_from_slice(&header);
+                }
+                if prepost_ack {
                     ep.recv_start(&mut ack_buf)?;
                 }
                 if use_payload_inject {
-                    for slot in 0..batch {
-                        let slot_start = slot * message_bytes;
-                        let slot_end = slot_start + message_bytes;
-                        ep.inject(&batch_messages[slot_start..slot_end])?;
+                    if first_post_at.is_none() {
+                        *first_post_at = Some(Instant::now());
                     }
+                    ep.inject(&message)?;
+                } else if tx_nowait {
+                    if first_post_at.is_none() {
+                        *first_post_at = Some(Instant::now());
+                    }
+                    ep.send_nowait(&message)?;
                 } else {
-                    ep.send_many_fixed(
-                        &batch_messages[..batch * message_bytes],
-                        message_bytes,
-                        message_bytes,
-                        batch,
-                    )?;
-                }
-                if ack_enabled {
-                    let mut next_ack_seq = seq_base;
-                    while next_ack_seq < seq_base + batch {
-                        let got = ep.recv_finish()?;
-                        if got != ZC_WAL_ACK_HEADER_LEN {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!(
-                                    "OFI WAL ack length mismatch lane={} seq={} got={} expected={}",
-                                    spec.lane, next_ack_seq, got, ZC_WAL_ACK_HEADER_LEN
-                                ),
-                            ));
-                        }
-                        let ack = ZcWalAckHeader::decode(&ack_buf)?;
-                        let covered = zcofi_validate_ack_covering_seq(
-                            ack,
-                            spec.lane,
-                            next_ack_seq,
-                            seq_base + batch,
-                            record_count as usize,
-                            extent_bytes,
-                        )?;
-                        for covered_seq in next_ack_seq..next_ack_seq + covered {
-                            let slot = covered_seq - seq_base;
-                            ack_latency.record_duration(issued_slots[slot].elapsed());
-                        }
-                        acks += 1;
-                        next_ack_seq += covered;
-                        if next_ack_seq < seq_base + batch {
-                            ep.recv_start(&mut ack_buf)?;
-                        }
+                    if first_post_at.is_none() {
+                        *first_post_at = Some(Instant::now());
                     }
+                    ep.send(&message)?;
                 }
-                seq_base += batch;
-            }
-            continue;
-        }
-        for seq in 0..extents_per_lane {
-            let issued_at = ack_enabled.then(Instant::now);
-            let base_logical_index = (seq * record_count as usize) as u64;
-            let header = ZcWalExtentHeader {
-                flags: 0,
-                lane_id: spec.lane as u32,
-                lane_count: lane_count as u32,
-                shard_id: spec.lane as u32,
-                record_size: ZC_WAL_RECORD_SIZE as u32,
-                record_count,
-                payload_len: extent_bytes as u32,
-                table_len: 0,
-                base_logical_index,
-                extent_sequence: seq as u64,
-                base_wal_offset: (seq * extent_bytes) as u64,
-                wal_epoch: 0,
-                descriptor_id: ((spec.lane as u64) << 32) | seq as u64,
-                payload_crc32c: 0,
-            }
-            .encode();
-            if !compact_4k {
-                message[..ZC_WAL_EXTENT_HEADER_LEN].copy_from_slice(&header);
-            }
-            if prepost_ack {
-                ep.recv_start(&mut ack_buf)?;
-            }
-            if use_payload_inject {
-                ep.inject(&message)?;
-            } else if tx_nowait {
-                ep.send_nowait(&message)?;
-            } else {
-                ep.send(&message)?;
-            }
-            payload_bytes += extent_bytes;
-            wire_bytes += message.len();
-            extents += 1;
-            records += record_count as usize;
+                payload_bytes += extent_bytes;
+                wire_bytes += message.len();
+                extents += 1;
+                records += record_count as usize;
 
-            if ack_enabled {
-                let got = if prepost_ack {
-                    ep.recv_finish()?
-                } else {
-                    ep.recv(&mut ack_buf)?
-                };
-                if got != ZC_WAL_ACK_HEADER_LEN {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "OFI WAL ack length mismatch lane={} seq={} got={} expected={}",
-                            spec.lane, seq, got, ZC_WAL_ACK_HEADER_LEN
-                        ),
-                    ));
-                }
-                let ack = ZcWalAckHeader::decode(&ack_buf)?;
-                zcofi_validate_ack_covering_seq(
-                    ack,
-                    spec.lane,
-                    seq,
-                    seq + 1,
-                    record_count as usize,
-                    extent_bytes,
-                )?;
-                acks += 1;
-                if let Some(issued_at) = issued_at {
-                    ack_latency.record_duration(issued_at.elapsed());
-                }
-                if tx_nowait && !use_payload_inject {
-                    ep.drain_send()?;
+                if ack_enabled {
+                    let got = if prepost_ack {
+                        ep.recv_finish()?
+                    } else {
+                        ep.recv(&mut ack_buf)?
+                    };
+                    if got != ZC_WAL_ACK_HEADER_LEN {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "OFI WAL ack length mismatch lane={} seq={} got={} expected={}",
+                                spec.lane, seq, got, ZC_WAL_ACK_HEADER_LEN
+                            ),
+                        ));
+                    }
+                    let ack = ZcWalAckHeader::decode(&ack_buf)?;
+                    zcofi_validate_ack_covering_seq(
+                        ack,
+                        spec.lane,
+                        seq,
+                        seq + 1,
+                        record_count as usize,
+                        extent_bytes,
+                    )?;
+                    acks += 1;
+                    if let Some(issued_at) = issued_at {
+                        ack_latency.record_duration(issued_at.elapsed());
+                    }
+                    if tx_nowait && !use_payload_inject {
+                        ep.drain_send()?;
+                    }
                 }
             }
+            Ok(())
+        };
+
+        if let Some(replacement) = replacement.as_mut() {
+            let mut primary_first_post = None;
+            let primary_started = Instant::now();
+            send_range(&mut ep, 0, rebalance_after_extents, &mut primary_first_post)?;
+            let primary_seconds = primary_started.elapsed().as_secs_f64();
+            let barrier_entered = Instant::now();
+            if let Some(rebalance_gate) = rebalance_gate.as_ref() {
+                rebalance_gate.wait()?;
+            }
+            let barrier_wait = barrier_entered.elapsed();
+            let transition_started = Instant::now();
+            let mut replacement_first_post = None;
+            let replacement_started = Instant::now();
+            send_range(
+                replacement,
+                rebalance_after_extents,
+                extents_per_lane,
+                &mut replacement_first_post,
+            )?;
+            let replacement_seconds = replacement_started.elapsed().as_secs_f64();
+            let handoff_gap = replacement_first_post
+                .ok_or_else(|| io::Error::other("replacement flow did not post data"))?
+                .saturating_duration_since(transition_started);
+            println!(
+                "zcofi-wal-send-rebalance: worker={worker} lane={} from={} to={} acknowledged_hwm={} client_process_restart=false endpoint_reconnect=false gang_fenced={} fence={} barrier_wait_us={:.3} handoff_gap_us={:.3} primary_seconds={primary_seconds:.6} replacement_seconds={replacement_seconds:.6}",
+                spec.lane,
+                addr.as_str(),
+                rebalance_addr
+                    .as_ref()
+                    .expect("replacement endpoint has an address")
+                    .as_str(),
+                rebalance_after_extents.saturating_sub(1),
+                yes(rebalance_gate.is_some()),
+                if rebalance_gate.is_some() {
+                    "gang-simultaneous"
+                } else {
+                    "lane-local-hwm-parallel"
+                },
+                barrier_wait.as_secs_f64() * 1_000_000.0,
+                handoff_gap.as_secs_f64() * 1_000_000.0,
+            );
+        } else {
+            let mut first_post_at = None;
+            send_range(&mut ep, 0, extents_per_lane, &mut first_post_at)?;
         }
     }
 
@@ -16171,6 +16983,8 @@ fn zcofi_wal_sender_worker(
             .saturating_sub(start_switches.migrations),
         ack_latency,
         uring_recv: UringRecvStats::default(),
+        virtual_volume_ops,
+        virtual_volume_hwms,
     })
 }
 
@@ -16211,7 +17025,7 @@ fn zcofi_wal_post_receive_batch(
     Ok(())
 }
 
-fn zcofi_wal_recv_worker(
+fn zcofi_wal_recv_worker<const VIRTUAL_VOLUMES: bool>(
     worker: usize,
     provider: Arc<String>,
     endpoint: Arc<String>,
@@ -16221,6 +17035,8 @@ fn zcofi_wal_recv_worker(
     bytes_per_lane: usize,
     extent_bytes: usize,
     ack_enabled: bool,
+    virtual_volume_count: usize,
+    sequence_base: usize,
 ) -> io::Result<ZcWalExtentStats> {
     let affinity = maybe_pin_current_thread("zcofi-wal-recv-worker", worker);
     let tid = current_tid();
@@ -16237,6 +17053,7 @@ fn zcofi_wal_recv_worker(
         extent_bytes,
         ack_enabled,
         zcofi_ack_window(),
+        virtual_volume_count,
     );
     for spec in specs {
         let mut ep = ZcOfiEndpoint::open(
@@ -16265,6 +17082,12 @@ fn zcofi_wal_recv_worker(
 
     let mut message = vec![0u8; message_bytes];
     let extents_per_lane = bytes_per_lane / extent_bytes;
+    let sequence_end = sequence_base.checked_add(extents_per_lane).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "OFI receive sequence range overflow",
+        )
+    })?;
     let ack_inject = ack_enabled && env_enabled_or("URING_PLAY_OFI_ACK_INJECT", false);
     let requested_ack_window = zcofi_ack_window();
     let ack_window = if ack_enabled { requested_ack_window } else { 1 };
@@ -16298,6 +17121,13 @@ fn zcofi_wal_recv_worker(
             ep.register_send_buffer(&ack_buf)?;
         }
     }
+    let tracked_volume_count = if VIRTUAL_VOLUMES {
+        virtual_volume_count
+    } else {
+        0
+    };
+    let mut virtual_volume_ops = vec![0u64; tracked_volume_count];
+    let mut virtual_volume_hwms = vec![0u64; tracked_volume_count];
     let mut payload_bytes = 0usize;
     let mut wire_bytes = 0usize;
     let mut extents = 0usize;
@@ -16306,8 +17136,13 @@ fn zcofi_wal_recv_worker(
     let started = Instant::now();
 
     for (spec, mut ep) in endpoints {
-        let mut expected_logical = 0u64;
-        let mut seq_base = 0usize;
+        let mut expected_logical = sequence_base
+            .checked_mul(extent_bytes / ZC_WAL_RECORD_SIZE)
+            .and_then(|value| u64::try_from(value).ok())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "OFI logical sequence overflow")
+            })?;
+        let mut seq_base = sequence_base;
         if queued_receive {
             let mut batch = ack_window.min(extents_per_lane);
             zcofi_wal_post_receive_batch(
@@ -16317,7 +17152,7 @@ fn zcofi_wal_recv_worker(
                 seq_base,
                 batch,
             )?;
-            while seq_base < extents_per_lane {
+            while seq_base < sequence_end {
                 let mut headers = vec![None; batch];
                 let mut completed = 0usize;
                 while completed < batch {
@@ -16408,6 +17243,14 @@ fn zcofi_wal_recv_worker(
                                 ),
                             ));
                         }
+                        if VIRTUAL_VOLUMES {
+                            zcofi_virtual_volume_observe(
+                                header,
+                                lane_count,
+                                &mut virtual_volume_ops,
+                                &mut virtual_volume_hwms,
+                            )?;
+                        }
                         let relative = sequence - seq_base;
                         if headers[relative].replace(header).is_some() {
                             return Err(io::Error::new(
@@ -16439,7 +17282,7 @@ fn zcofi_wal_recv_worker(
                     )
                 })?;
                 let next_seq_base = seq_base + batch;
-                let next_batch = ack_window.min(extents_per_lane - next_seq_base);
+                let next_batch = ack_window.min(sequence_end - next_seq_base);
                 if next_batch > 0 {
                     zcofi_wal_post_receive_batch(
                         &mut ep,
@@ -16465,8 +17308,8 @@ fn zcofi_wal_recv_worker(
             }
             continue;
         }
-        while seq_base < extents_per_lane {
-            let batch = ack_window.min(extents_per_lane - seq_base);
+        while seq_base < sequence_end {
+            let batch = ack_window.min(sequence_end - seq_base);
             let mut first_ack = None;
             let mut last_ack = None;
             for slot_idx in 0..batch {
@@ -16533,6 +17376,14 @@ fn zcofi_wal_recv_worker(
                     }
                     header
                 };
+                if VIRTUAL_VOLUMES {
+                    zcofi_virtual_volume_observe(
+                        header,
+                        lane_count,
+                        &mut virtual_volume_ops,
+                        &mut virtual_volume_hwms,
+                    )?;
+                }
                 payload_bytes += extent_bytes;
                 wire_bytes += message_bytes;
                 extents += 1;
@@ -16597,6 +17448,8 @@ fn zcofi_wal_recv_worker(
             .saturating_sub(start_switches.migrations),
         ack_latency: LatencyHistogram::new(),
         uring_recv: UringRecvStats::default(),
+        virtual_volume_ops,
+        virtual_volume_hwms,
     })
 }
 
@@ -16618,7 +17471,59 @@ fn zcofi_wal_send(
     let workers = tcp_bench_auto_workers(workers, lanes);
     let message_bytes = zcofi_wal_message_bytes(provider, extent_bytes, ack_enabled);
     let compact_4k = zcofi_compact_4k_enabled(provider, extent_bytes, ack_enabled);
+    let virtual_volume_count = zcofi_virtual_volume_count()?;
+    if virtual_volume_count != 0 && compact_4k {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "virtual-volume identity requires the WAL sequence header; disable compact 4K framing",
+        ));
+    }
     let requested_ack_window = zcofi_ack_window();
+    let rebalance_addr = env_first_nonempty(&["URING_PLAY_OFI_REBALANCE_ADDR"]);
+    let rebalance_after_extents = env_usize_or("URING_PLAY_OFI_REBALANCE_AFTER_EXTENTS", 0);
+    let rebalance_gate_dir =
+        env_first_nonempty(&["URING_PLAY_OFI_REBALANCE_GATE_DIR"]).map(PathBuf::from);
+    let rebalance_gate_id =
+        env::var("URING_PLAY_OFI_REBALANCE_GATE_ID").unwrap_or_else(|_| "local".to_string());
+    let rebalance_gate_parties = env_usize_or("URING_PLAY_OFI_REBALANCE_GATE_PARTIES", 1);
+    let rebalance_gang_fence = env_enabled_or("URING_PLAY_OFI_REBALANCE_GANG_FENCE", false);
+    let rebalance_gate_timeout = Duration::from_millis(env_usize_or(
+        "URING_PLAY_OFI_REBALANCE_GATE_TIMEOUT_MS",
+        60_000,
+    ) as u64);
+    if rebalance_addr.is_some() != (rebalance_after_extents != 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "URING_PLAY_OFI_REBALANCE_ADDR and URING_PLAY_OFI_REBALANCE_AFTER_EXTENTS must be set together",
+        ));
+    }
+    let extents_per_lane = bytes_per_lane / extent_bytes;
+    if rebalance_after_extents >= extents_per_lane && rebalance_addr.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "live rebalance cutover must leave at least one extent on each target",
+        ));
+    }
+    if rebalance_addr.is_some() && !ack_enabled {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "live rebalance requires remote application acknowledgements for its HWM fence",
+        ));
+    }
+    if rebalance_gate_dir.is_some()
+        && (rebalance_addr.is_none()
+            || !rebalance_gang_fence
+            || rebalance_gate_parties < 2
+            || rebalance_gate_id.is_empty()
+            || !rebalance_gate_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "external rebalance gate requires gang fencing, a live target, at least two parties, and an alphanumeric/dash/underscore gate ID",
+        ));
+    }
     let windowed_acks = ack_enabled && requested_ack_window > 1;
     let no_ack_tx_window = env_usize_or("URING_PLAY_OFI_TX_QUEUE_DEPTH", 64).max(1);
     let tx_nowait_requested = ack_enabled && env_enabled_or("URING_PLAY_OFI_TX_NOWAIT", false);
@@ -16659,7 +17564,7 @@ fn zcofi_wal_send(
          ack_enabled={} completion_semantic={} per_lane_qd={per_lane_qd} aggregate_outstanding={aggregate_outstanding} tx_nowait_requested={} tx_nowait_effective={} \
          prepost_ack_requested={} prepost_ack_effective={} compact_4k={} \
          wire_sequence_header={} payload_inject={} ack_window={} range_ack_receive=yes ofi_domain={} records_per_extent={} \
-         timeout_ms={} busy_poll_iters={} cq_sleep_ns={}",
+         timeout_ms={} busy_poll_iters={} cq_sleep_ns={} virtual_volumes={virtual_volume_count} virtual_volume_state=lane-local-hwm live_rebalance={} rebalance_target={} rebalance_after_extents={rebalance_after_extents} rebalance_fence={} rebalance_gate={} rebalance_gate_id={} rebalance_gate_parties={rebalance_gate_parties}",
         message_bytes,
         yes(ack_enabled),
         if ack_enabled {
@@ -16680,12 +17585,35 @@ fn zcofi_wal_send(
         zcofi_timeout_ms(),
         env_usize_or("URING_PLAY_OFI_BUSY_POLL_ITERS", 0),
         env_usize_or("URING_PLAY_OFI_CQ_SLEEP_NS", 50_000),
+        yes(rebalance_addr.is_some()),
+        rebalance_addr.as_deref().unwrap_or("none"),
+        if rebalance_gang_fence {
+            "gang-simultaneous"
+        } else {
+            "lane-local-hwm-parallel"
+        },
+        rebalance_gate_dir.as_deref().map_or_else(
+            || "process-local".to_string(),
+            |path| path.display().to_string()
+        ),
+        rebalance_gate_id,
     );
     let shards = zcofi_wal_partition_specs(specs, workers);
     let active_workers = shards.iter().filter(|shard| !shard.is_empty()).count();
     let provider = Arc::new(provider.to_string());
     let endpoint = Arc::new(endpoint.to_string());
     let addr = Arc::new(addr.to_string());
+    let rebalance_addr = rebalance_addr.map(Arc::new);
+    let rebalance_gate = (rebalance_addr.is_some() && rebalance_gang_fence).then(|| {
+        Arc::new(ZcOfiRebalanceGate {
+            workers: Barrier::new(active_workers),
+            external_dir: rebalance_gate_dir.clone(),
+            external_id: rebalance_gate_id.clone(),
+            external_parties: rebalance_gate_parties,
+            external_timeout: rebalance_gate_timeout,
+            error: Mutex::new(None),
+        })
+    });
     let mut handles = Vec::with_capacity(active_workers);
     for (worker, shard) in shards.into_iter().enumerate() {
         if shard.is_empty() {
@@ -16694,18 +17622,42 @@ fn zcofi_wal_send(
         let provider = Arc::clone(&provider);
         let endpoint = Arc::clone(&endpoint);
         let addr = Arc::clone(&addr);
+        let worker_rebalance_addr = rebalance_addr.as_ref().map(Arc::clone);
+        let worker_rebalance_gate = rebalance_gate.as_ref().map(Arc::clone);
         handles.push(thread::spawn(move || {
-            zcofi_wal_sender_worker(
-                worker,
-                provider,
-                endpoint,
-                addr,
-                shard,
-                lanes,
-                bytes_per_lane,
-                extent_bytes,
-                ack_enabled,
-            )
+            if virtual_volume_count == 0 {
+                zcofi_wal_sender_worker::<false>(
+                    worker,
+                    provider,
+                    endpoint,
+                    addr,
+                    shard,
+                    lanes,
+                    bytes_per_lane,
+                    extent_bytes,
+                    ack_enabled,
+                    0,
+                    worker_rebalance_addr,
+                    rebalance_after_extents,
+                    worker_rebalance_gate,
+                )
+            } else {
+                zcofi_wal_sender_worker::<true>(
+                    worker,
+                    provider,
+                    endpoint,
+                    addr,
+                    shard,
+                    lanes,
+                    bytes_per_lane,
+                    extent_bytes,
+                    ack_enabled,
+                    virtual_volume_count,
+                    worker_rebalance_addr,
+                    rebalance_after_extents,
+                    worker_rebalance_gate,
+                )
+            }
         }));
     }
     let mut results = Vec::with_capacity(handles.len());
@@ -16739,6 +17691,7 @@ fn zcofi_wal_send(
             zcwal_extent_latency_fields("ack", &total.ack_latency)
         );
     }
+    zcofi_print_virtual_volume_summary("zcofi-wal-send", &total)?;
     publish_transport_benchmark_result("zcwal-ofi-send", provider.as_str(), &total, secs, workers);
     Ok(())
 }
@@ -16761,7 +17714,15 @@ fn zcofi_wal_recv(
     let workers = tcp_bench_auto_workers(workers, lanes);
     let message_bytes = zcofi_wal_message_bytes(provider, extent_bytes, ack_enabled);
     let compact_4k = zcofi_compact_4k_enabled(provider, extent_bytes, ack_enabled);
+    let virtual_volume_count = zcofi_virtual_volume_count()?;
+    if virtual_volume_count != 0 && compact_4k {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "virtual-volume identity requires the WAL sequence header; disable compact 4K framing",
+        ));
+    }
     let per_lane_rx_qd = if ack_enabled { zcofi_ack_window() } else { 1 };
+    let sequence_base = env_usize_or("URING_PLAY_OFI_SEQUENCE_BASE", 0);
     zcofi_queue_depth_preflight("zcofi-wal-recv", 1, per_lane_rx_qd)?;
     zcofi_report_wire_profile("zcofi-wal-recv", provider, extent_bytes, ack_enabled);
     zcwal_extent_perf_warnings("zcofi-wal-recv", lanes, 1, workers)?;
@@ -16781,7 +17742,7 @@ fn zcofi_wal_recv(
         "zcofi-wal-recv: provider={provider} endpoint={endpoint} bind={bind} \
          base_service={base_service} lanes={lanes} bytes_per_lane={bytes_per_lane} \
          extent_bytes={extent_bytes} message_bytes={} workers={workers} \
-         ack_enabled={} completion_semantic={} per_lane_rx_qd={per_lane_rx_qd} aggregate_rx_outstanding={} ack_inject={} ack_window={} range_ack_send={} compact_4k={} wire_sequence_header={} ofi_domain={} records_per_extent={} timeout_ms={} busy_poll_iters={} cq_sleep_ns={}",
+         ack_enabled={} completion_semantic={} per_lane_rx_qd={per_lane_rx_qd} aggregate_rx_outstanding={} ack_inject={} ack_window={} range_ack_send={} compact_4k={} wire_sequence_header={} ofi_domain={} records_per_extent={} timeout_ms={} busy_poll_iters={} cq_sleep_ns={} virtual_volumes={virtual_volume_count} virtual_volume_state=lane-local-hwm sequence_base={sequence_base}",
         message_bytes,
         yes(ack_enabled),
         if ack_enabled {
@@ -16814,17 +17775,35 @@ fn zcofi_wal_recv(
         let endpoint = Arc::clone(&endpoint);
         let bind = Arc::clone(&bind);
         handles.push(thread::spawn(move || {
-            zcofi_wal_recv_worker(
-                worker,
-                provider,
-                endpoint,
-                bind,
-                shard,
-                lanes,
-                bytes_per_lane,
-                extent_bytes,
-                ack_enabled,
-            )
+            if virtual_volume_count == 0 {
+                zcofi_wal_recv_worker::<false>(
+                    worker,
+                    provider,
+                    endpoint,
+                    bind,
+                    shard,
+                    lanes,
+                    bytes_per_lane,
+                    extent_bytes,
+                    ack_enabled,
+                    0,
+                    sequence_base,
+                )
+            } else {
+                zcofi_wal_recv_worker::<true>(
+                    worker,
+                    provider,
+                    endpoint,
+                    bind,
+                    shard,
+                    lanes,
+                    bytes_per_lane,
+                    extent_bytes,
+                    ack_enabled,
+                    virtual_volume_count,
+                    sequence_base,
+                )
+            }
         }));
     }
     let mut results = Vec::with_capacity(handles.len());
@@ -16852,6 +17831,7 @@ fn zcofi_wal_recv(
         total.involuntary_switches,
         total.migrations
     );
+    zcofi_print_virtual_volume_summary("zcofi-wal-recv", &total)?;
     Ok(())
 }
 
@@ -17771,6 +18751,7 @@ fn zcofi_wal_relay_worker(
         extent_bytes,
         ack_enabled,
         relay_window,
+        0,
     );
     let mut relay_lanes = Vec::with_capacity(lanes.len());
     for spec in lanes {
@@ -18112,6 +19093,8 @@ fn zcofi_wal_relay_worker(
             .saturating_sub(start_switches.migrations),
         ack_latency,
         uring_recv: UringRecvStats::default(),
+        virtual_volume_ops: Vec::new(),
+        virtual_volume_hwms: Vec::new(),
     })
 }
 
@@ -19665,6 +20648,8 @@ fn zcraid_mirror_tcp_recv_worker(
             .saturating_sub(start_switches.migrations),
         ack_latency: LatencyHistogram::new(),
         uring_recv: UringRecvStats::default(),
+        virtual_volume_ops: Vec::new(),
+        virtual_volume_hwms: Vec::new(),
     })
 }
 
@@ -19870,6 +20855,8 @@ fn zcraid_mirror_tcp_send_worker(
             .saturating_sub(start_switches.migrations),
         ack_latency,
         uring_recv: UringRecvStats::default(),
+        virtual_volume_ops: Vec::new(),
+        virtual_volume_hwms: Vec::new(),
     })
 }
 
@@ -20170,6 +21157,8 @@ fn zcraid_mirror_rma_recv_worker(
             .saturating_sub(start_switches.migrations),
         ack_latency: LatencyHistogram::new(),
         uring_recv: UringRecvStats::default(),
+        virtual_volume_ops: Vec::new(),
+        virtual_volume_hwms: Vec::new(),
     })
 }
 
@@ -20450,6 +21439,8 @@ fn zcraid_mirror_rma_send_worker(
             .saturating_sub(start_switches.migrations),
         ack_latency,
         uring_recv: UringRecvStats::default(),
+        virtual_volume_ops: Vec::new(),
+        virtual_volume_hwms: Vec::new(),
     })
 }
 
@@ -20816,6 +21807,8 @@ fn zcraid_mirror_ofi_recv_worker(
             .saturating_sub(start_switches.migrations),
         ack_latency: LatencyHistogram::new(),
         uring_recv: UringRecvStats::default(),
+        virtual_volume_ops: Vec::new(),
+        virtual_volume_hwms: Vec::new(),
     })
 }
 
@@ -21356,6 +22349,8 @@ fn zcraid_mirror_ofi_send_worker(
             .saturating_sub(start_switches.migrations),
         ack_latency,
         uring_recv: UringRecvStats::default(),
+        virtual_volume_ops: Vec::new(),
+        virtual_volume_hwms: Vec::new(),
     })
 }
 
@@ -48101,10 +49096,10 @@ fn zcnblk_fan_wal_handler(
         )?;
     }
     let async_writeback = if async_writeback && !local_inline_writeback {
-        if write_ack_mode.enabled() {
+        if write_ack_mode.remote() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "fan WAL async writeback requires write ACKs disabled; use sync frames for durable boundaries",
+                "fan WAL async writeback supports disabled or admission ACKs; use sync frames for durable boundaries",
             ));
         }
         if !dirty_budget.config.enabled {
@@ -48651,6 +49646,20 @@ fn zcnblk_fan_wal_handler(
                         &mut phase,
                         &mut read_cache_stats,
                     )?;
+                    if write_ack_mode.admission() {
+                        // The dirty-budget lease and cache ownership transfer
+                        // have completed before submit_request_batch returns.
+                        // A standards-facing frontend (for example iSCSI)
+                        // needs this admission completion before it can issue
+                        // its later SYNC/FUA durability boundary.  Placement
+                        // and mirror writeback remain owned by this userspace
+                        // fan stage.
+                        zcnblk_fan_wal_send_request_batch_write_acks(
+                            &mut upstream,
+                            &submitted.requests,
+                            &mut response_bytes,
+                        )?;
+                    }
                     pipelined_request_batches =
                         pipelined_request_batches.checked_add(1).ok_or_else(|| {
                             io::Error::new(
@@ -50634,10 +51643,10 @@ fn zcnblk_fan_wal(
             ));
         }
     }
-    if async_writeback && write_ack_mode.enabled() {
+    if async_writeback && write_ack_mode.remote() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "zcnblk-fan WAL async writeback requires URING_PLAY_ZCNBLK_WAL_WRITE_ACK_MODE=disabled and URING_PLAY_ZCNBLK_WRITE_ACKS=0",
+            "zcnblk-fan WAL async writeback supports disabled or admission ACKs; remote ACK mode must use synchronous leaf completion",
         ));
     }
     if async_writeback && !dirty_budget_config.enabled {
@@ -55646,6 +56655,7 @@ fn zcnblk_wal_leaf_spin_policy_label() -> &'static str {
 fn zcnblk_wal_leaf_process_stream(
     worker: usize,
     stream_slot: usize,
+    affinity_index: usize,
     accepted: ZcnblkWalLeafAccepted,
     backend: Arc<ZcnblkWalLeafBackend>,
     pin_workers: bool,
@@ -55654,14 +56664,11 @@ fn zcnblk_wal_leaf_process_stream(
     ring_cq_entries: u32,
     allow_volatile_sync: bool,
 ) -> io::Result<ZcnblkWalLeafStreamStats> {
-    let affinity = pin_current_thread_if_requested(
-        "zcnblk-wal-leaf-stream",
-        worker.checked_add(stream_slot).unwrap_or(worker),
-        pin_workers,
-    );
+    let affinity =
+        pin_current_thread_if_requested("zcnblk-wal-leaf-stream", affinity_index, pin_workers);
     let meta = accepted.meta;
     println!(
-        "zcnblk-wal-leaf-stream: worker={worker} slot={stream_slot} peer={} lane={} port={} conn={} {}",
+        "zcnblk-wal-leaf-stream: worker={worker} slot={stream_slot} affinity_index={affinity_index} affinity_formula=connection*lanes+lane peer={} lane={} port={} conn={} {}",
         meta.peer_addr,
         meta.lane,
         meta.port,
@@ -55678,7 +56685,7 @@ fn zcnblk_wal_leaf_process_stream(
     let mut stream_plan = ZcPlanRuntime::default();
     let result_ranges_configured = zcnblk_fan_wal_result_ranges_enabled();
     let (leaf_preferred_cpu, leaf_numa_node) = zcnblk_fan_wal_local_topology_hints(affinity);
-    let ring_affinity_index = worker.checked_add(stream_slot).unwrap_or(worker);
+    let ring_affinity_index = affinity_index;
     let spin_reads = zcnblk_wal_leaf_spin_reads_enabled();
     let spin_budget = zcnblk_wal_leaf_spin_budget();
     let tid = current_tid();
@@ -56087,6 +57094,7 @@ fn zcnblk_wal_leaf_process_stream(
 fn zcnblk_wal_leaf_worker(
     worker: usize,
     streams: Vec<ZcnblkWalLeafAccepted>,
+    lanes: usize,
     backend: Arc<ZcnblkWalLeafBackend>,
     pin_workers: bool,
     io_mode: ZcnblkWalLeafIoMode,
@@ -56130,11 +57138,25 @@ fn zcnblk_wal_leaf_worker(
     let mut migrations = 0u64;
     let mut handles = Vec::with_capacity(stream_count);
     for (stream_slot, accepted) in streams.into_iter().enumerate() {
+        // Keep foreground, base-copy, and replay sessions in disjoint CPU
+        // bands. Placement remains wholly in this userspace leaf stage.
+        let affinity_index = accepted
+            .meta
+            .conn_index
+            .checked_mul(lanes)
+            .and_then(|base| base.checked_add(accepted.meta.lane))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "WAL leaf affinity index overflow",
+                )
+            })?;
         let backend = Arc::clone(&backend);
         handles.push(thread::spawn(move || {
             zcnblk_wal_leaf_process_stream(
                 worker,
                 stream_slot,
+                affinity_index,
                 accepted,
                 backend,
                 pin_workers,
@@ -56302,6 +57324,15 @@ fn zcnblk_wal_leaf(
         ));
     }
     let result_ranges_configured = zcnblk_fan_wal_result_ranges_enabled();
+    let dynamic_tcp_accept = env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_DYNAMIC_ACCEPT", false);
+    if dynamic_tcp_accept && transport == "tcp" && workers != total_connections {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "dynamic TCP WAL leaf accept uses one worker per independently arriving session: workers={workers} total_connections={total_connections}"
+            ),
+        ));
+    }
     let rma_writes_enabled =
         direct_ofi && env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES", false);
     if rma_writes_enabled {
@@ -56372,6 +57403,22 @@ fn zcnblk_wal_leaf(
             "zcnblk-wal-leaf",
             "workers are pinned with the implicit CPU map; set URING_PLAY_PIN_CPU_LIST or URING_PLAY_PIN_BASE_CPU/COUNT/STRIDE and state the lane-to-CPU mapping before trusting results",
         )?;
+    } else if let Ok(cpu_list) = env::var("URING_PLAY_PIN_CPU_LIST") {
+        let cpus = parse_cpu_list(&cpu_list).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid URING_PLAY_PIN_CPU_LIST={cpu_list:?}: {err}"),
+            )
+        })?;
+        if cpus.len() < total_connections {
+            zc_topology_issue(
+                "zcnblk-wal-leaf",
+                format!(
+                    "foreground/base-copy/replay isolation needs at least {total_connections} explicit affinity CPUs, but URING_PLAY_PIN_CPU_LIST contains {}; otherwise connection-role CPU bands wrap and collide",
+                    cpus.len()
+                ),
+            )?;
+        }
     }
     if leaf_spin_reads && (!pin_workers || !explicit_affinity_map_configured()) {
         zc_topology_issue(
@@ -56481,15 +57528,17 @@ fn zcnblk_wal_leaf(
         "zcnblk-wal-leaf: target={} transport={transport} bind={bind} base_port={base_port} ports={ports} \
          connections_per_port={connections_per_port} total_connections={total_connections} \
          chunk_bytes={chunk_bytes} workers={workers} pin_workers={pin_workers} \
+         stream_affinity_formula=connection*lanes+lane stream_affinity_slots={total_connections} affinity_map={} \
          submit_mode={} ring_entries={ring_entries} ring_cq_entries={ring_cq_entries} \
          cqe_hot_poll={} leaf_sqpoll={} leaf_spin_reads={} leaf_spin_policy={} \
          leaf_spin_budget={} leaf_adaptive_spin_min={} leaf_adaptive_spin_max={} \
          leaf_adaptive_wait_ns={} leaf_adaptive_hysteresis_ns={} \
          uninit_read_buffers={} zero_copy_strict={zero_copy_strict} \
-         result_ranges_configured={result_ranges_configured} device_bytes={} \
+         result_ranges_configured={result_ranges_configured} dynamic_tcp_accept={dynamic_tcp_accept} device_bytes={} \
          required_alignment={} durability={} sync_contract={} allow_volatile_sync={} memory_policy={} memory_hugetlb={} preferred_numa_node={} \
-         protocol=fan-wal-v{ZCNBLK_FAN_WAL_VERSION}",
+        protocol=fan-wal-v{ZCNBLK_FAN_WAL_VERSION}",
         backend.label(),
+        env::var("URING_PLAY_PIN_CPU_LIST").unwrap_or_else(|_| "implicit".to_string()),
         io_mode.label(),
         env_enabled_or("URING_PLAY_CQE_HOT_POLL", false),
         env_enabled_or("URING_PLAY_ZCNBLK_WAL_LEAF_SQPOLL", false),
@@ -56533,43 +57582,113 @@ fn zcnblk_wal_leaf(
     match transport.as_str() {
         "tcp" => {
             let listeners = tcp_bench_mux_bind_listeners(bind, base_port, ports)?;
-            let accepted =
-                tcp_bench_mux_accept_tagged_listeners(listeners, ports, connections_per_port)?;
-            let shards = zcnblk_partition_accepted_streams(
-                accepted,
-                workers,
-                TcpMuxShardPolicy::PortLane,
-                "zcnblk-wal-leaf",
-                pin_workers,
-            );
-            handles.reserve(shards.len());
-            for (worker, streams) in shards.into_iter().enumerate() {
-                let backend = Arc::clone(&backend);
-                let streams = streams
-                    .into_iter()
-                    .map(ZcnblkWalLeafAccepted::from)
-                    .collect();
-                handles.push(thread::spawn(move || {
-                    zcnblk_wal_leaf_worker(
-                        worker,
-                        streams,
-                        backend,
-                        pin_workers,
-                        io_mode,
-                        ring_entries,
-                        ring_cq_entries,
-                        allow_volatile_sync,
-                    )
-                }));
+            if dynamic_tcp_accept {
+                for (_, _, listener) in &listeners {
+                    listener.set_nonblocking(true)?;
+                }
+                let mut accepted_per_lane = vec![0usize; ports];
+                handles.reserve(total_connections);
+                while handles.len() < total_connections {
+                    let mut progressed = false;
+                    for (lane, port, listener) in &listeners {
+                        if accepted_per_lane[*lane] >= connections_per_port {
+                            continue;
+                        }
+                        match listener.accept() {
+                            Ok((stream, peer_addr)) => {
+                                let conn_index = accepted_per_lane[*lane];
+                                accepted_per_lane[*lane] += 1;
+                                let local_addr = stream.local_addr().ok();
+                                set_tcp_nodelay_from_env(&stream)?;
+                                set_tcp_bench_buffers(&stream);
+                                let locality = observe_socket_locality(&stream);
+                                zc_maybe_warn_route_alignment(
+                                    "zcnblk-wal-leaf-dynamic-accept",
+                                    peer_addr,
+                                    local_addr,
+                                )?;
+                                println!(
+                                    "zcnblk-wal-leaf-dynamic-accept: peer={peer_addr} lane={lane} port={port} conn={conn_index} {}",
+                                    socket_locality_label(locality),
+                                );
+                                let accepted = TcpBenchAcceptedStream {
+                                    lane: *lane,
+                                    port: *port,
+                                    conn_index,
+                                    peer_addr,
+                                    locality,
+                                    stream,
+                                };
+                                let worker = lane
+                                    .checked_mul(connections_per_port)
+                                    .and_then(|base| base.checked_add(conn_index))
+                                    .ok_or_else(|| {
+                                        io::Error::new(
+                                            io::ErrorKind::InvalidInput,
+                                            "dynamic WAL leaf worker index overflow",
+                                        )
+                                    })?;
+                                let backend = Arc::clone(&backend);
+                                handles.push(thread::spawn(move || {
+                                    zcnblk_wal_leaf_worker(
+                                        worker,
+                                        vec![ZcnblkWalLeafAccepted::from(accepted)],
+                                        ports,
+                                        backend,
+                                        pin_workers,
+                                        io_mode,
+                                        ring_entries,
+                                        ring_cq_entries,
+                                        allow_volatile_sync,
+                                    )
+                                }));
+                                progressed = true;
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                                progressed = true;
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    if !progressed {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
+            } else {
+                let accepted =
+                    tcp_bench_mux_accept_tagged_listeners(listeners, ports, connections_per_port)?;
+                let shards = zcnblk_partition_accepted_streams(
+                    accepted,
+                    workers,
+                    TcpMuxShardPolicy::PortLane,
+                    "zcnblk-wal-leaf",
+                    pin_workers,
+                );
+                handles.reserve(shards.len());
+                for (worker, streams) in shards.into_iter().enumerate() {
+                    let backend = Arc::clone(&backend);
+                    let streams = streams
+                        .into_iter()
+                        .map(ZcnblkWalLeafAccepted::from)
+                        .collect();
+                    handles.push(thread::spawn(move || {
+                        zcnblk_wal_leaf_worker(
+                            worker,
+                            streams,
+                            ports,
+                            backend,
+                            pin_workers,
+                            io_mode,
+                            ring_entries,
+                            ring_cq_entries,
+                            allow_volatile_sync,
+                        )
+                    }));
+                }
             }
         }
         "ofi" | "rdm" | "efa" => {
-            if connections_per_port != 1 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "direct OFI WAL leaf requires exactly one connection per lane",
-                ));
-            }
             if workers != ports {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -56583,14 +57702,14 @@ fn zcnblk_wal_leaf(
             let endpoint = env::var("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ENDPOINT")
                 .unwrap_or_else(|_| "rdm".to_string());
             println!(
-                "zcnblk-wal-leaf-ofi-topology: provider={provider} endpoint={endpoint} lanes={ports} workers={workers} lane_to_worker=identity lane_to_domain={} lane_to_bind={} service_range={}-{} affinity_map={} cq_sleep_ns={} message_bytes={} placement_owner=external-userspace-stage block_client_placement=no",
+                "zcnblk-wal-leaf-ofi-topology: provider={provider} endpoint={endpoint} lanes={ports} connections_per_lane={connections_per_port} workers={workers} stream_to_cpu=connection*lanes+lane lane_to_domain={} lane_to_bind={} service_layout=base+connection*lanes+lane service_range={}-{} affinity_map={} cq_sleep_ns={} message_bytes={} placement_owner=external-userspace-stage block_client_placement=no",
                 env::var("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_DOMAINS")
                     .or_else(|_| env::var("URING_PLAY_OFI_DOMAIN"))
                     .unwrap_or_else(|_| "implicit".to_string()),
                 env::var("URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ADDRS")
                     .unwrap_or_else(|_| bind.to_string()),
                 base_port,
-                tcp_bench_port(base_port, ports - 1)?,
+                tcp_bench_port(base_port, total_connections - 1)?,
                 env::var("URING_PLAY_PIN_CPU_LIST").unwrap_or_else(|_| "implicit".to_string()),
                 env::var("URING_PLAY_OFI_CQ_SLEEP_NS").unwrap_or_else(|_| "50000".to_string()),
                 env_usize_or("URING_PLAY_ZCNBLK_WAL_OFI_MESSAGE_BYTES", 1024 * 1024),
@@ -56613,31 +57732,62 @@ fn zcnblk_wal_leaf(
                         ),
                     )
                 })?;
-                let port = tcp_bench_port(base_port, lane)?;
                 let domain = zcnblk_wal_leaf_lane_domain(lane, ports)?;
                 handles.push(thread::spawn(move || {
-                    let stream = ZcOfiMessageStream::connect_on_domain(
-                        &provider,
-                        &endpoint,
-                        &bind,
-                        port,
-                        true,
-                        rma_reads_enabled || rma_writes_enabled,
-                        domain.as_deref(),
-                    )?;
-                    let accepted = ZcnblkWalLeafAccepted {
-                        meta: TcpBenchStreamMeta {
-                            lane,
-                            port,
-                            conn_index: 0,
-                            peer_addr: SocketAddr::new(bind_ip, port),
-                            locality: SocketLocality::default(),
-                        },
-                        stream: ZcnblkWalLeafStream::Ofi(stream),
-                    };
+                    // Open every declared session concurrently. Each OFI
+                    // endpoint has one peer, and higher-level placement
+                    // stages may reserve separate foreground, base-copy, and
+                    // replay sessions on one logical lane.
+                    let mut accepts = Vec::with_capacity(connections_per_port);
+                    for connection in 0..connections_per_port {
+                        let provider = provider.clone();
+                        let endpoint = endpoint.clone();
+                        let bind = bind.clone();
+                        let domain = domain.clone();
+                        let service_index = connection
+                            .checked_mul(ports)
+                            .and_then(|base| base.checked_add(lane))
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "OFI WAL leaf service index overflow",
+                                )
+                            })?;
+                        let port = tcp_bench_port(base_port, service_index)?;
+                        accepts.push(thread::spawn(move || -> io::Result<_> {
+                            let stream = ZcOfiMessageStream::connect_on_domain(
+                                &provider,
+                                &endpoint,
+                                &bind,
+                                port,
+                                true,
+                                rma_reads_enabled || rma_writes_enabled,
+                                domain.as_deref(),
+                            )?;
+                            Ok(ZcnblkWalLeafAccepted {
+                                meta: TcpBenchStreamMeta {
+                                    lane,
+                                    port,
+                                    conn_index: connection,
+                                    peer_addr: SocketAddr::new(bind_ip, port),
+                                    locality: SocketLocality::default(),
+                                },
+                                stream: ZcnblkWalLeafStream::Ofi(stream),
+                            })
+                        }));
+                    }
+                    let streams = accepts
+                        .into_iter()
+                        .map(|handle| {
+                            handle
+                                .join()
+                                .map_err(|_| io::Error::other("OFI WAL accept panicked"))?
+                        })
+                        .collect::<io::Result<Vec<_>>>()?;
                     zcnblk_wal_leaf_worker(
                         lane,
-                        vec![accepted],
+                        streams,
+                        ports,
                         backend,
                         pin_workers,
                         io_mode,
@@ -64665,6 +65815,38 @@ mod topology_tests {
     }
 
     #[test]
+    fn zcofi_rebalance_gate_releases_overlapping_flow_processes() {
+        let gate_dir = env::temp_dir().join(format!(
+            "zcutils-rebalance-gate-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let make_gate = |id: &str| {
+            Arc::new(ZcOfiRebalanceGate {
+                workers: Barrier::new(1),
+                external_dir: Some(gate_dir.clone()),
+                external_id: id.to_string(),
+                external_parties: 2,
+                external_timeout: Duration::from_secs(2),
+                error: Mutex::new(None),
+            })
+        };
+        let left = make_gate("card0");
+        let right = make_gate("card1");
+        let left_thread = thread::spawn(move || left.wait());
+        let right_thread = thread::spawn(move || right.wait());
+        left_thread.join().unwrap().unwrap();
+        right_thread.join().unwrap().unwrap();
+        assert!(gate_dir.join("ready-card0").exists());
+        assert!(gate_dir.join("ready-card1").exists());
+        assert!(gate_dir.join("release").exists());
+        fs::remove_dir_all(gate_dir).unwrap();
+    }
+
+    #[test]
     fn zcofi_relay_tail_specs_expand_single_base_across_addrs() {
         let specs = zcofi_relay_tail_specs("10.0.0.11,10.0.0.12", "30600").unwrap();
         assert_eq!(
@@ -71161,6 +72343,8 @@ struct BlockBenchConfig {
     sqpoll_idle_ms: u32,
     latency_sample_rate: usize,
     fua_writes: bool,
+    noatime: bool,
+    write_completion_semantics: Option<String>,
     app_arena_socket: Option<String>,
 }
 
@@ -71187,11 +72371,27 @@ impl Default for BlockBenchConfig {
             sqpoll_idle_ms: 1000,
             latency_sample_rate: env_usize_or("URING_PLAY_BLOCKBENCH_LATENCY_SAMPLE_RATE", 0),
             fua_writes: false,
+            noatime: env_enabled_or("URING_PLAY_BLOCKBENCH_NOATIME", false),
+            write_completion_semantics: env::var(
+                "URING_PLAY_BLOCKBENCH_WRITE_COMPLETION_SEMANTICS",
+            )
+            .ok()
+            .filter(|value| !value.trim().is_empty()),
             app_arena_socket: env::var("URING_PLAY_ZCNBLK_SHM_APP_ARENA_SOCKET")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
         }
     }
+}
+
+fn blockbench_write_completion_semantics(cfg: &BlockBenchConfig) -> &str {
+    cfg.write_completion_semantics
+        .as_deref()
+        .unwrap_or(if cfg.fua_writes {
+            "per-write-fua-dsync"
+        } else {
+            "ordinary-device-ack"
+        })
 }
 
 #[derive(Clone)]
@@ -71248,6 +72448,7 @@ fn zcblockbench_help() {
            [--cqe 16|32] [--iopoll off|classic|hybrid] [--registered-ring true|false]\n\
            [--sqpoll-cpus CPU-LIST]\n\
            [--fua|--fua-writes true|false]\n\
+           [--noatime true|false]\n\
            [--app-arena-socket PATH]\n\
            [--latency-sample-rate N|--latency]\n\
          \n\
@@ -71344,6 +72545,7 @@ fn parse_zcblockbench_args(args: impl Iterator<Item = String>) -> io::Result<Blo
             "--fua-writes" => {
                 cfg.fua_writes = parse_bool_arg(&next_flag_value(&mut args, &arg)?, &arg)?
             }
+            "--noatime" => cfg.noatime = parse_bool_arg(&next_flag_value(&mut args, &arg)?, &arg)?,
             "--app-arena-socket" => cfg.app_arena_socket = Some(next_flag_value(&mut args, &arg)?),
             "--suite" => cfg.engine = BlockBenchEngine::Suite,
             "--uring-plain" => cfg.engine = BlockBenchEngine::UringPlain,
@@ -71409,6 +72611,17 @@ fn blockbench_sqpoll_cpu_list(cfg: &BlockBenchConfig) -> io::Result<Option<Vec<u
 }
 
 fn zcblockbench_validate_config(cfg: &BlockBenchConfig) -> io::Result<()> {
+    if let Some(label) = &cfg.write_completion_semantics
+        && (label.len() > 96
+            || label
+                .bytes()
+                .any(|byte| !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "URING_PLAY_BLOCKBENCH_WRITE_COMPLETION_SEMANTICS must be a short lowercase metric label",
+        ));
+    }
     if cfg.workers == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -71532,6 +72745,7 @@ fn zcblockbench_open_files(
     mode: SlotRandMode,
     direct: bool,
     fua_writes: bool,
+    noatime: bool,
 ) -> io::Result<(Vec<fs::File>, u32, u32)> {
     match target {
         BlockBenchTarget::NullChar => {
@@ -71543,7 +72757,7 @@ fn zcblockbench_open_files(
                 files.push(
                     OpenOptions::new()
                         .read(true)
-                        .custom_flags(libc::O_CLOEXEC)
+                        .custom_flags(libc::O_CLOEXEC | if noatime { libc::O_NOATIME } else { 0 })
                         .open("/dev/zero")?,
                 );
             }
@@ -71552,7 +72766,11 @@ fn zcblockbench_open_files(
                 files.push(
                     OpenOptions::new()
                         .write(true)
-                        .custom_flags(libc::O_CLOEXEC | if fua_writes { libc::O_DSYNC } else { 0 })
+                        .custom_flags(
+                            libc::O_CLOEXEC
+                                | if fua_writes { libc::O_DSYNC } else { 0 }
+                                | if noatime { libc::O_NOATIME } else { 0 },
+                        )
                         .open("/dev/null")?,
                 );
             }
@@ -71567,7 +72785,7 @@ fn zcblockbench_open_files(
                 files.push(
                     OpenOptions::new()
                         .read(true)
-                        .custom_flags(libc::O_CLOEXEC)
+                        .custom_flags(libc::O_CLOEXEC | if noatime { libc::O_NOATIME } else { 0 })
                         .open("/dev/zero")?,
                 );
             }
@@ -71576,7 +72794,11 @@ fn zcblockbench_open_files(
                 files.push(
                     OpenOptions::new()
                         .write(true)
-                        .custom_flags(libc::O_CLOEXEC | if fua_writes { libc::O_DSYNC } else { 0 })
+                        .custom_flags(
+                            libc::O_CLOEXEC
+                                | if fua_writes { libc::O_DSYNC } else { 0 }
+                                | if noatime { libc::O_NOATIME } else { 0 },
+                        )
                         .open("/dev/zero")?,
                 );
             }
@@ -71587,7 +72809,8 @@ fn zcblockbench_open_files(
             open.read(true).write(mode.needs_write());
             let flags = libc::O_CLOEXEC
                 | if direct { libc::O_DIRECT } else { 0 }
-                | if fua_writes { libc::O_DSYNC } else { 0 };
+                | if fua_writes { libc::O_DSYNC } else { 0 }
+                | if noatime { libc::O_NOATIME } else { 0 };
             let file = open.custom_flags(flags).open(target.open_path())?;
             Ok((vec![file], 0, 0))
         }
@@ -71665,6 +72888,7 @@ fn zcblockbench_uring_fixed_worker(
     sqpoll_idle_ms: u32,
     registered_io: bool,
     fua_writes: bool,
+    noatime: bool,
     app_arena_socket: Option<String>,
     latency_sample_rate: usize,
     start_barrier: Arc<Barrier>,
@@ -71678,7 +72902,7 @@ fn zcblockbench_uring_fixed_worker(
         None
     };
     let (files, read_file_index, write_file_index) =
-        zcblockbench_open_files(&target, mode, true, fua_writes)?;
+        zcblockbench_open_files(&target, mode, true, fua_writes, noatime)?;
     let mut fds: Vec<i32> = files.iter().map(AsRawFd::as_raw_fd).collect();
     let mut arena_buffers = if let Some(socket) = app_arena_socket.as_ref() {
         let arena = crate::zcnblk_app_arena::ZcnblkAppArena::connect(socket)?;
@@ -71771,6 +72995,7 @@ fn zcblockbench_uring_fixed_worker(
             io_poll_mode,
             registered_ring_fd,
             sq_thread_idle_ms: sqpoll_idle_ms,
+            defer_taskrun: true,
         },
     )?;
     if registered_io {
@@ -72066,6 +73291,7 @@ fn zcblockbench_sync_worker(
     pin: bool,
     planned_cpu: Option<usize>,
     fua_writes: bool,
+    noatime: bool,
     latency_sample_rate: usize,
     start_barrier: Arc<Barrier>,
 ) -> io::Result<BlockBenchWorkerResult> {
@@ -72078,7 +73304,7 @@ fn zcblockbench_sync_worker(
         None
     };
     let (files, read_file_index, write_file_index) =
-        zcblockbench_open_files(&target, mode, true, fua_writes)?;
+        zcblockbench_open_files(&target, mode, true, fua_writes, noatime)?;
     let fds: Vec<i32> = files.iter().map(AsRawFd::as_raw_fd).collect();
     let buffers = buffer_mode.allocate_for_worker(pipeline, chunk_bytes, preferred_numa_node)?;
     if mode.needs_write() {
@@ -72213,6 +73439,7 @@ fn zcblockbench_aio_worker(
     pin: bool,
     planned_cpu: Option<usize>,
     fua_writes: bool,
+    noatime: bool,
     latency_sample_rate: usize,
     start_barrier: Arc<Barrier>,
 ) -> io::Result<BlockBenchWorkerResult> {
@@ -72225,7 +73452,7 @@ fn zcblockbench_aio_worker(
         None
     };
     let (files, read_file_index, write_file_index) =
-        zcblockbench_open_files(&target, mode, true, fua_writes)?;
+        zcblockbench_open_files(&target, mode, true, fua_writes, noatime)?;
     let buffers = buffer_mode.allocate_for_worker(pipeline, chunk_bytes, preferred_numa_node)?;
     if mode.needs_write() {
         fill_slot_wal_buffers(&buffers, chunk_bytes);
@@ -72502,7 +73729,7 @@ fn zcblockbench_print_results(
     );
     println!(
         "zcblockbench-result: target={} engine={} mode={} workers={} \
-         ops_per_worker={} total_ops={} reads={} writes={} read_percent={} fua_writes={} write_completion={} \
+         ops_per_worker={} total_ops={} reads={} writes={} read_percent={} fua_writes={} noatime={} write_completion={} \
          chunk_bytes={} region_bytes_per_worker={} pipeline_per_worker={} \
          total_pipeline={} wait_min_completions={} ring_entries={} ring_mode={} cqe={} iopoll={} registered_ring={} \
          buffers={} pin_workers={} \
@@ -72520,11 +73747,8 @@ fn zcblockbench_print_results(
         total_writes,
         cfg.read_percent,
         cfg.fua_writes,
-        if cfg.fua_writes {
-            "per-write-fua-dsync"
-        } else {
-            "ordinary-device-ack"
-        },
+        cfg.noatime,
+        blockbench_write_completion_semantics(cfg),
         cfg.chunk_bytes,
         cfg.region_bytes_per_worker,
         cfg.pipeline,
@@ -72896,6 +74120,7 @@ fn zcblockbench_run_direct_engine(
                         cfg.sqpoll_idle_ms,
                         worker_engine == BlockBenchEngine::UringFixed,
                         cfg.fua_writes,
+                        cfg.noatime,
                         cfg.app_arena_socket.clone(),
                         cfg.latency_sample_rate,
                         start_barrier,
@@ -72915,6 +74140,7 @@ fn zcblockbench_run_direct_engine(
                     cfg.pin_workers,
                     planned_cpu,
                     cfg.fua_writes,
+                    cfg.noatime,
                     cfg.latency_sample_rate,
                     start_barrier,
                 ),
@@ -72932,6 +74158,7 @@ fn zcblockbench_run_direct_engine(
                     cfg.pin_workers,
                     planned_cpu,
                     cfg.fua_writes,
+                    cfg.noatime,
                     cfg.latency_sample_rate,
                     start_barrier,
                 ),
@@ -73048,7 +74275,7 @@ fn zcblockbench(args: impl Iterator<Item = String>) -> io::Result<()> {
         "zcblockbench-plan: target={} engine={} mode={} workers={} ops_per_worker={} \
          chunk_bytes={} iodepth={} ring_entries={} read_percent={} region_bytes_per_worker={} \
          ring_mode={} cqe={} iopoll={} registered_ring={} sqpoll_idle_ms={} buffers={} pin_workers={} \
-         latency_sample_rate={} fua_writes={} write_completion={} target_kind={}",
+         latency_sample_rate={} fua_writes={} noatime={} write_completion={} target_kind={}",
         target.label(),
         cfg.engine.as_str(),
         cfg.mode.as_str(),
@@ -73072,11 +74299,8 @@ fn zcblockbench(args: impl Iterator<Item = String>) -> io::Result<()> {
         cfg.pin_workers,
         cfg.latency_sample_rate,
         cfg.fua_writes,
-        if cfg.fua_writes {
-            "per-write-fua-dsync"
-        } else {
-            "ordinary-device-ack"
-        },
+        cfg.noatime,
+        blockbench_write_completion_semantics(&cfg),
         match &target {
             BlockBenchTarget::Block(_) => "block",
             BlockBenchTarget::NullChar => "char-null",
@@ -73151,6 +74375,23 @@ mod zcblockbench_arg_tests {
         )
         .unwrap();
         assert!(zcblockbench_validate_config(&cfg).is_err());
+    }
+
+    #[test]
+    fn noatime_mode_is_explicitly_selectable() {
+        let cfg = parse_zcblockbench_args(
+            [
+                "/dev/zcnblk0",
+                "--engine",
+                "uring-fixed",
+                "--noatime",
+                "true",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .unwrap();
+        assert!(cfg.noatime);
     }
 }
 
@@ -98028,6 +99269,10 @@ fn zcplan_libfabric_probe(transport: ZcPlanTransport, domain: Option<&str>) -> (
         "-t".to_string(),
         transport.fi_endpoint().to_string(),
     ];
+    if matches!(transport, ZcPlanTransport::LibfabricEfaDirect) {
+        args.push("-f".to_string());
+        args.push("efa-direct".to_string());
+    }
     if let Some(domain) = domain.filter(|value| !value.is_empty() && *value != "auto") {
         args.push("-d".to_string());
         args.push(domain.to_string());
@@ -98491,6 +99736,7 @@ fn print_zcutils_help() {
         "zcutils commands:\n\
          \n\
          zcprobe                 inspect io_uring/ZCRX/send-zc capabilities\n\
+         rdma-preflight          require an active RDMA device and named libfabric provider\n\
          zcplan                  emit topology-aware descriptor capability and plan JSON\n\
          zcnc                    simple TCP listen/connect/probe frontend\n\
          zc-tcpmux-send          send stdin/file over AES-256-GCM TCP by default\n\
@@ -99673,6 +100919,11 @@ pub fn main_entry() -> io::Result<()> {
             Some("rdma-probe") => {
                 let netdev = args.next();
                 rdma_probe(netdev.as_deref())
+            }
+            Some("rdma-preflight") => {
+                let provider = args.next().unwrap_or_else(|| "efa".to_string());
+                let domain = args.next();
+                rdma_preflight(&provider, domain.as_deref())
             }
             Some("rdma-plan") => {
                 let fabric = args
@@ -101492,7 +102743,7 @@ pub fn main_entry() -> io::Result<()> {
             Some(other) => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "unknown command {other:?}; use probe, rdma-probe, rdma-plan, path-plan, \
+                    "unknown command {other:?}; use probe, rdma-probe, rdma-preflight, rdma-plan, path-plan, \
                  libfabric-plan, libfabric-smoke, rdma-rxe-add, rdma-rxe-del, \
                  rdma-rxe-smoke, register-ifq, stress-register-ifq, \
                  recv-zc-server, tcp-send, tcp-sink-server, tcp-bench-send, \

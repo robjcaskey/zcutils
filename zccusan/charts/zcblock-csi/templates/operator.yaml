@@ -34,6 +34,16 @@ spec:
               value: {{ .Values.image.pullPolicy | quote }}
             - name: ZCCUSAN_CSI_PROVISIONER
               value: {{ .Values.driverName | quote }}
+            - name: ZCCUSAN_RUNTIME_PERFORMANCE_ENABLED
+              value: {{ .Values.operator.runtimePerformance.enabled | quote }}
+            - name: ZCCUSAN_RUNTIME_LEAF_CPU_LIST
+              value: {{ .Values.operator.runtimePerformance.leafCpuList | quote }}
+            - name: ZCCUSAN_RUNTIME_FAN_CPU_LIST
+              value: {{ .Values.operator.runtimePerformance.fanCpuList | quote }}
+            - name: ZCCUSAN_RUNTIME_ONRAMP_CPU_LIST
+              value: {{ .Values.operator.runtimePerformance.onrampCpuList | quote }}
+            - name: ZCCUSAN_RUNTIME_OFI_CQ_SLEEP_NS
+              value: {{ .Values.operator.runtimePerformance.ofiCqSleepNs | quote }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}

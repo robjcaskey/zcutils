@@ -13,6 +13,12 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
+use zcutils::kernel_module_artifacts::{
+    ZccusanKernelModuleBundle, ZccusanKernelModuleBundleStatus, ZccusanKernelModuleCatalog,
+    ZccusanKernelModuleCatalogStatus, ZccusanKernelModuleSource, ZccusanKernelModuleSourceStatus,
+    validate_bundle_spec, validate_catalog_spec, validate_source_spec,
+};
 use zcutils::kubernetes_storage::{
     API_GROUP, API_VERSION, CROSS_REGION_FINALIZER, CROSS_REGION_LABEL, CrossRegionReplication,
     CrossRegionReplicationStatus, MANAGED_BY_LABEL, MediaGrant, MediaGrantStatus, MediaSet,
@@ -29,6 +35,7 @@ struct Context {
     image: String,
     image_pull_policy: String,
     csi_provisioner: String,
+    capacity_admission: Arc<Mutex<()>>,
 }
 
 #[derive(Debug)]
@@ -52,6 +59,19 @@ fn fail(message: impl Into<String>) -> OperatorError {
     OperatorError(message.into())
 }
 
+fn runtime_performance_enabled() -> bool {
+    env::var("ZCCUSAN_RUNTIME_PERFORMANCE_ENABLED")
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+}
+
+fn runtime_setting(name: &str) -> Option<String> {
+    runtime_performance_enabled()
+        .then(|| env::var(name).ok())
+        .flatten()
+        .filter(|value| !value.trim().is_empty())
+}
+
 #[derive(Clone)]
 enum CandidateSource {
     Memory,
@@ -65,6 +85,8 @@ struct Candidate {
     media_class: String,
     durability: String,
     source: CandidateSource,
+    total_capacity_bytes: Option<u64>,
+    total_provisioned_iops: Option<u64>,
 }
 
 impl Candidate {
@@ -177,6 +199,76 @@ fn validate_backplane_address(value: &str) -> Result<String, OperatorError> {
     Ok(address.to_string())
 }
 
+fn ofi_backplane(profile: &StorageProfile) -> bool {
+    profile.spec.transport.kind == "OfiRdm"
+}
+
+fn rdma_resource_name(profile: &StorageProfile) -> Result<Option<&str>, OperatorError> {
+    if !ofi_backplane(profile) {
+        return Ok(None);
+    }
+    let resource = profile
+        .spec
+        .transport
+        .device_resource_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            fail("transport.deviceResourceName is required for OfiRdm so RDMA ownership is admitted by a Kubernetes device plugin")
+        })?;
+    if !resource.contains('/') || resource.starts_with('/') || resource.ends_with('/') {
+        return Err(fail(format!(
+            "transport.deviceResourceName {resource:?} is not a Kubernetes extended resource name"
+        )));
+    }
+    Ok(Some(resource))
+}
+
+fn node_has_rdma_resource(node: &Node, profile: &StorageProfile) -> Result<bool, OperatorError> {
+    let Some(resource) = rdma_resource_name(profile)? else {
+        return Ok(true);
+    };
+    let Some(quantity) = node
+        .status
+        .as_ref()
+        .and_then(|status| status.allocatable.as_ref())
+        .and_then(|allocatable| allocatable.get(resource))
+    else {
+        return Ok(false);
+    };
+    quantity
+        .0
+        .parse::<u64>()
+        .map(|value| value != 0)
+        .map_err(|_| {
+            fail(format!(
+                "node {} reports non-integral RDMA resource {resource}={}",
+                node.name_any(),
+                quantity.0
+            ))
+        })
+}
+
+fn node_ofi_domains(node: &Node, profile: &StorageProfile) -> Option<String> {
+    node.metadata
+        .annotations
+        .as_ref()
+        .and_then(|annotations| annotations.get(&profile.spec.transport.ofi_domain_annotation))
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn rdma_resources(profile: &StorageProfile) -> Result<Value, OperatorError> {
+    let Some(resource) = rdma_resource_name(profile)? else {
+        return Ok(json!({}));
+    };
+    let mut limits = serde_json::Map::new();
+    limits.insert(resource.to_string(), Value::String("1".to_string()));
+    Ok(json!({"limits": Value::Object(limits)}))
+}
+
 fn parse_bytes(value: &str) -> Result<u64, OperatorError> {
     let value = value.trim();
     let digit_end = value
@@ -227,10 +319,27 @@ fn validate_profile(profile: &StorageProfile) -> Result<(), OperatorError> {
         return Err(fail("placement.mediaClass must not be empty"));
     }
     let transport = &profile.spec.transport;
-    if transport.kind != "TcpMux" {
-        return Err(fail(
-            "this first Kubernetes runtime reconciler supports transport.kind=TcpMux",
-        ));
+    if !matches!(transport.kind.as_str(), "TcpMux" | "OfiRdm") {
+        return Err(fail("transport.kind must be TcpMux or OfiRdm"));
+    }
+    if ofi_backplane(profile) {
+        rdma_resource_name(profile)?;
+        if transport.ofi_provider.trim().is_empty() {
+            return Err(fail("transport.ofiProvider must not be empty for OfiRdm"));
+        }
+        if transport.ofi_endpoint != "rdm" {
+            return Err(fail(
+                "transport.ofiEndpoint must be rdm for the bidirectional WAL protocol",
+            ));
+        }
+        if transport.ofi_domain_annotation.trim().is_empty() {
+            return Err(fail("transport.ofiDomainAnnotation must not be empty"));
+        }
+        if transport.require_one_sided_rma {
+            return Err(fail(
+                "transport.requireOneSidedRma=true is not yet safe for the operator mirror: the userspace fan must own and duplicate the registered payload window before it can be enabled",
+            ));
+        }
     }
     if !matches!(
         transport.address_source.as_str(),
@@ -390,6 +499,16 @@ fn candidates_are_distinct(
     })
 }
 
+fn dynamic_capacity_fits(
+    used: (u64, u64),
+    requested: (u64, u64),
+    total_bytes: Option<u64>,
+    total_iops: Option<u64>,
+) -> bool {
+    total_bytes.is_none_or(|total| used.0.saturating_add(requested.0) <= total)
+        && total_iops.is_none_or(|total| used.1.saturating_add(requested.1) <= total)
+}
+
 async fn used_partuuids(
     client: Client,
     current_namespace: &str,
@@ -484,6 +603,9 @@ async fn select_candidates(
     let nodes: Api<Node> = Api::all(ctx.client.clone());
     let grants = grants.list(&ListParams::default()).await?;
     let nodes = nodes.list(&ListParams::default()).await?;
+    let all_volumes = Api::<ZcVolume>::all(ctx.client.clone())
+        .list(&ListParams::default())
+        .await?;
     let node_map = nodes
         .into_iter()
         .map(|node| (node.name_any(), node))
@@ -492,7 +614,30 @@ async fn select_candidates(
         .namespace()
         .ok_or_else(|| fail("ZcVolume is missing namespace"))?;
     let used_partuuids = used_partuuids(ctx.client.clone(), &namespace, &volume.name_any()).await?;
+    let mut dynamic_usage = BTreeMap::<(String, String), (u64, u64)>::new();
+    for existing in all_volumes {
+        if existing.namespace().as_deref() == Some(namespace.as_str())
+            && existing.name_any() == volume.name_any()
+        {
+            continue;
+        }
+        let Some(runtime) = existing.status.and_then(|status| status.runtime) else {
+            continue;
+        };
+        for leaf in runtime
+            .leaves
+            .into_iter()
+            .filter(|leaf| leaf.source_kind == "MemoryArena")
+        {
+            let usage = dynamic_usage
+                .entry((leaf.node_name, leaf.media_class))
+                .or_default();
+            usage.0 = usage.0.saturating_add(existing.spec.capacity_bytes);
+            usage.1 = usage.1.saturating_add(existing.spec.provisioned_iops);
+        }
+    }
     let mut candidates = Vec::new();
+    let mut capacity_rejected = 0usize;
 
     for grant in grants {
         if !grant.spec.enabled {
@@ -512,14 +657,36 @@ async fn select_candidates(
                 if volume.spec.capacity_bytes > parse_bytes(&source.maximum_volume_size)? {
                     continue;
                 }
+                let total_capacity_bytes = source
+                    .total_capacity_per_node
+                    .as_deref()
+                    .map(parse_bytes)
+                    .transpose()?;
                 for node in node_map.values() {
-                    if selector_matches(node, &grant.spec.node_selector.match_labels) {
+                    if selector_matches(node, &grant.spec.node_selector.match_labels)
+                        && node_has_rdma_resource(node, profile)?
+                    {
+                        let used = dynamic_usage
+                            .get(&(node.name_any(), media_set.publish_as.media_class.clone()))
+                            .copied()
+                            .unwrap_or_default();
+                        if !dynamic_capacity_fits(
+                            used,
+                            (volume.spec.capacity_bytes, volume.spec.provisioned_iops),
+                            total_capacity_bytes,
+                            source.total_provisioned_iops_per_node,
+                        ) {
+                            capacity_rejected = capacity_rejected.saturating_add(1);
+                            continue;
+                        }
                         candidates.push(Candidate {
                             node: node.clone(),
                             address: node_address(node, profile)?,
                             media_class: media_set.publish_as.media_class.clone(),
                             durability: media_set.publish_as.durability.clone(),
                             source: CandidateSource::Memory,
+                            total_capacity_bytes,
+                            total_provisioned_iops: source.total_provisioned_iops_per_node,
                         });
                     }
                 }
@@ -541,13 +708,17 @@ async fn select_candidates(
                 let Some(node) = node_map.get(&source.node_name) else {
                     continue;
                 };
-                if selector_matches(node, &grant.spec.node_selector.match_labels) {
+                if selector_matches(node, &grant.spec.node_selector.match_labels)
+                    && node_has_rdma_resource(node, profile)?
+                {
                     candidates.push(Candidate {
                         node: node.clone(),
                         address: node_address(node, profile)?,
                         media_class: media_set.publish_as.media_class.clone(),
                         durability: media_set.publish_as.durability.clone(),
                         source: CandidateSource::Block(source.clone()),
+                        total_capacity_bytes: None,
+                        total_provisioned_iops: None,
                     });
                 }
             }
@@ -559,7 +730,12 @@ async fn select_candidates(
             CandidateSource::Memory => String::new(),
             CandidateSource::Block(source) => source.part_uuid.clone(),
         };
-        (candidate.node_name(), source)
+        (
+            candidate.node_name(),
+            source,
+            candidate.total_capacity_bytes,
+            candidate.total_provisioned_iops,
+        )
     });
     candidates.dedup_by(|left, right| left.node_name() == right.node_name());
 
@@ -583,7 +759,7 @@ async fn select_candidates(
     }
     if selected.len() != usize::from(profile.spec.placement.copies) {
         return Err(fail(format!(
-            "profile {} needs {} eligible leaves in distinct {:?} domains, found {}",
+            "profile {} needs {} eligible leaves in distinct {:?} domains, found {}; capacity-rejected candidates={capacity_rejected}",
             profile.name_any(),
             profile.spec.placement.copies,
             profile.spec.placement.distinct_topology_keys,
@@ -598,6 +774,62 @@ fn stable_port(name: &str, base: u16) -> u16 {
         hash.wrapping_mul(16_777_619) ^ u32::from(*byte)
     });
     base + u16::try_from(hash % 2000).expect("hash modulo fits u16")
+}
+
+fn desired_volume_runtime(
+    volume: &ZcVolume,
+    profile: &StorageProfile,
+    candidates: &[Candidate],
+    fan_address: &str,
+    fan_port: u16,
+    leaf_port: u16,
+    tiering: Option<&TieringPolicy>,
+) -> VolumeRuntimeStatus {
+    VolumeRuntimeStatus {
+        placement: "UserspaceMirror".to_string(),
+        fan_node: volume.spec.client_node.clone(),
+        fan_address: fan_address.to_string(),
+        fan_port,
+        transport: if ofi_backplane(profile) {
+            format!(
+                "OfiRdmDirectBackplane(provider={},endpoint={},oneSidedRma=false)",
+                profile.spec.transport.ofi_provider, profile.spec.transport.ofi_endpoint
+            )
+        } else {
+            "TcpMuxDirectBackplane".to_string()
+        },
+        leaves: candidates
+            .iter()
+            .map(|candidate| zcutils::kubernetes_storage::LeafRuntimeStatus {
+                node_name: candidate.node_name(),
+                address: candidate.address.clone(),
+                port: leaf_port,
+                media_class: candidate.media_class.clone(),
+                source_kind: match candidate.source {
+                    CandidateSource::Memory => "MemoryArena".to_string(),
+                    CandidateSource::Block(_) => "BlockDevice".to_string(),
+                },
+                part_uuid: match &candidate.source {
+                    CandidateSource::Memory => None,
+                    CandidateSource::Block(source) => Some(source.part_uuid.clone()),
+                },
+                tier: tiering.map(|policy| TierRuntimeStatus {
+                    policy_name: policy.name_any(),
+                    hot_kind: policy.spec.hot.kind.clone(),
+                    spill_kind: policy.spec.spill.kind.clone(),
+                    spill_path: format!(
+                        "{}/{}.spill",
+                        policy.spec.spill.root_path.trim_end_matches('/'),
+                        volume.name_any()
+                    ),
+                    backpressure_bytes: parse_bytes(&policy.spec.backpressure_bytes)
+                        .expect("validated tier backpressure"),
+                    acknowledgement: "hot-only; spill asynchronous and excluded from durable HWM"
+                        .to_string(),
+                }),
+            })
+            .collect(),
+    }
 }
 
 fn owner_reference(volume: &ZcVolume) -> Result<Value, OperatorError> {
@@ -744,12 +976,49 @@ async fn apply_leaf_pod(
         json!({"name": "URING_PLAY_ZCNBLK_WAL_RESULT_RANGES", "value": "1"}),
         json!({"name": "URING_PLAY_TOPOLOGY_STRICT", "value": "0"}),
     ]);
+    if ofi_backplane(profile) {
+        envs.extend([
+            json!({"name": "URING_PLAY_ZCNBLK_WAL_LEAF_TRANSPORT", "value": "ofi"}),
+            json!({"name": "URING_PLAY_ZCNBLK_WAL_LEAF_OFI_PROVIDER", "value": profile.spec.transport.ofi_provider}),
+            json!({"name": "URING_PLAY_ZCNBLK_WAL_LEAF_OFI_ENDPOINT", "value": profile.spec.transport.ofi_endpoint}),
+            json!({"name": "URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_WRITES", "value": "0"}),
+            json!({"name": "URING_PLAY_ZCNBLK_WAL_LEAF_OFI_RMA_READS", "value": "0"}),
+        ]);
+        if let Some(domains) = node_ofi_domains(&candidate.node, profile) {
+            envs.push(json!({
+                "name": "URING_PLAY_ZCNBLK_WAL_LEAF_OFI_DOMAINS",
+                "value": domains
+            }));
+        }
+    }
+    if runtime_performance_enabled() {
+        envs.push(json!({"name": "URING_PLAY_PIN_CPUS", "value": "1"}));
+        if let Some(cpu_list) = runtime_setting("ZCCUSAN_RUNTIME_LEAF_CPU_LIST") {
+            envs.push(json!({"name": "URING_PLAY_PIN_CPU_LIST", "value": cpu_list}));
+        }
+        if let Some(cq_sleep_ns) = runtime_setting("ZCCUSAN_RUNTIME_OFI_CQ_SLEEP_NS") {
+            envs.push(json!({"name": "URING_PLAY_OFI_CQ_SLEEP_NS", "value": cq_sleep_ns}));
+        }
+    }
     let workers = profile
         .spec
         .transport
         .lanes
         .saturating_mul(profile.spec.transport.connections_per_lane)
         .max(1);
+    let ports = if ofi_backplane(profile) {
+        Vec::<Value>::new()
+    } else {
+        vec![json!({"name": "wal", "containerPort": port, "hostPort": port, "protocol": "TCP"})]
+    };
+    let resources = rdma_resources(profile)?;
+    let capabilities = if privileged {
+        json!({})
+    } else if ofi_backplane(profile) {
+        json!({"add": ["IPC_LOCK"], "drop": ["ALL"]})
+    } else {
+        json!({"drop": ["ALL"]})
+    };
     let body = json!({
         "apiVersion": "v1",
         "kind": "Pod",
@@ -776,21 +1045,23 @@ async fn apply_leaf_pod(
                 "name": "leaf",
                 "image": ctx.image,
                 "imagePullPolicy": ctx.image_pull_policy,
+                "terminationMessagePolicy": "FallbackToLogsOnError",
                 "command": ["/usr/local/bin/zcnblk-wal-leaf"],
                 "args": [
                     target, candidate.address, port.to_string(),
                     profile.spec.transport.lanes.to_string(),
                     profile.spec.transport.connections_per_lane.to_string(),
                     profile.spec.transport.chunk_bytes.to_string(), workers.to_string(),
-                    "false", "blocking"
+                    if runtime_performance_enabled() { "true" } else { "false" }, "blocking"
                 ],
                 "env": envs,
-                "ports": [{"name": "wal", "containerPort": port, "hostPort": port, "protocol": "TCP"}],
+                "ports": ports,
+                "resources": resources,
                 "securityContext": {
                     "privileged": privileged,
                     "allowPrivilegeEscalation": privileged,
                     "readOnlyRootFilesystem": true,
-                    "capabilities": if privileged { json!({}) } else { json!({"drop": ["ALL"]}) }
+                    "capabilities": capabilities
                 },
                 "volumeMounts": mounts
             }],
@@ -809,6 +1080,7 @@ async fn apply_leaf_pod(
 async fn apply_fan_pod(
     ctx: &Context,
     volume: &ZcVolume,
+    client_node: &Node,
     candidates: &[Candidate],
     fan_address: &str,
     fan_port: u16,
@@ -826,6 +1098,44 @@ async fn apply_fan_pod(
         ));
     };
     let control_port = stable_port(&volume.name_any(), 31_000);
+    let mut envs = vec![
+        json!({"name": "ZCNBLK_WAL_FAILOVER_MODE", "value": "sync"}),
+        json!({"name": "ZCNBLK_WAL_FAILOVER_INGRESS_TRANSPORT", "value": "tcp"}),
+    ];
+    if ofi_backplane(profile) {
+        envs.extend([
+            json!({"name": "ZCNBLK_WAL_FAILOVER_LEAF_TRANSPORT", "value": "ofi"}),
+            json!({"name": "ZCNBLK_WAL_FAILOVER_LEAF_OFI_PROVIDER", "value": profile.spec.transport.ofi_provider}),
+            json!({"name": "ZCNBLK_WAL_FAILOVER_LEAF_OFI_ENDPOINT", "value": profile.spec.transport.ofi_endpoint}),
+            json!({"name": "ZCNBLK_WAL_FAILOVER_OFI_RMA_WRITES", "value": "0"}),
+        ]);
+        if let Some(domains) = node_ofi_domains(client_node, profile) {
+            envs.push(json!({
+                "name": "ZCNBLK_WAL_FAILOVER_LEAF_OFI_DOMAINS",
+                "value": domains
+            }));
+        }
+    } else {
+        envs.push(json!({
+            "name": "ZCNBLK_WAL_FAILOVER_LEAF_TRANSPORT",
+            "value": "tcp"
+        }));
+    }
+    if runtime_performance_enabled() {
+        envs.push(json!({"name": "URING_PLAY_PIN_CPUS", "value": "1"}));
+        if let Some(cpu_list) = runtime_setting("ZCCUSAN_RUNTIME_FAN_CPU_LIST") {
+            envs.push(json!({"name": "URING_PLAY_PIN_CPU_LIST", "value": cpu_list}));
+        }
+        if let Some(cq_sleep_ns) = runtime_setting("ZCCUSAN_RUNTIME_OFI_CQ_SLEEP_NS") {
+            envs.push(json!({"name": "URING_PLAY_OFI_CQ_SLEEP_NS", "value": cq_sleep_ns}));
+        }
+    }
+    let resources = rdma_resources(profile)?;
+    let capabilities = if ofi_backplane(profile) {
+        json!({"add": ["IPC_LOCK"], "drop": ["ALL"]})
+    } else {
+        json!({"drop": ["ALL"]})
+    };
     let body = json!({
         "apiVersion": "v1",
         "kind": "Pod",
@@ -834,9 +1144,11 @@ async fn apply_fan_pod(
             "namespace": namespace,
             "labels": runtime_labels(volume, "userspace-wal-mirror"),
             "annotations": {
-                "storage.zcutils.io/data-path": "direct-backplane-no-clusterip",
+                "storage.zcutils.io/data-path": if ofi_backplane(profile) { "local-tcp-ingress-to-ofi-rdm-backplane" } else { "direct-backplane-no-clusterip" },
                 "storage.zcutils.io/placement-owner": "userspace-wal-failover",
                 "storage.zcutils.io/write-policy": "synchronous-two-copy-mirror",
+                "storage.zcutils.io/backplane-transport": if ofi_backplane(profile) { "ofi-rdm" } else { "tcp" },
+                "storage.zcutils.io/one-sided-rma-payload": "disabled-fail-closed",
                 "storage.zcutils.io/native-transport-security": "plaintext-preview-requires-external-encrypted-network"
             },
             "ownerReferences": [owner_reference(volume)?]
@@ -851,6 +1163,7 @@ async fn apply_fan_pod(
                 "name": "mirror",
                 "image": ctx.image,
                 "imagePullPolicy": ctx.image_pull_policy,
+                "terminationMessagePolicy": "FallbackToLogsOnError",
                 "command": ["/usr/local/bin/zcnblk-wal-failover"],
                 "args": [
                     format!("{fan_address}:{fan_port}"),
@@ -859,7 +1172,8 @@ async fn apply_fan_pod(
                     format!("{fan_address}:{control_port}"),
                     profile.spec.transport.lanes.to_string()
                 ],
-                "env": [{"name": "ZCNBLK_WAL_FAILOVER_MODE", "value": "sync"}],
+                "env": envs,
+                "resources": resources,
                 "ports": [
                     {"name": "wal", "containerPort": fan_port, "hostPort": fan_port, "protocol": "TCP"},
                     {"name": "control", "containerPort": control_port, "hostPort": control_port, "protocol": "TCP"}
@@ -868,7 +1182,7 @@ async fn apply_fan_pod(
                     "privileged": false,
                     "allowPrivilegeEscalation": false,
                     "readOnlyRootFilesystem": true,
-                    "capabilities": {"drop": ["ALL"]}
+                    "capabilities": capabilities
                 }
             }]
         }
@@ -894,6 +1208,22 @@ async fn apply_onramp_pod(
         .ok_or_else(|| fail("ZcVolume is missing namespace"))?;
     let name = object_name(volume, "onramp");
     let pods: Api<Pod> = Api::namespaced(ctx.client.clone(), &namespace);
+    let mut onramp_envs = vec![
+        json!({"name": "URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT", "value": "tcp"}),
+        json!({"name": "URING_PLAY_ZCNBLK_SHM_LEAF_ADDR", "value": format!("{fan_address}:{fan_port}")}),
+        json!({"name": "URING_PLAY_ZCNBLK_SHM_WRITEBACK_BATCH", "value": "64"}),
+        json!({"name": "URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS", "value": profile.spec.transport.lanes.to_string()}),
+        json!({"name": "URING_PLAY_ZCNBLK_SHM_REMOTE_SEND_MODE", "value": "blocking"}),
+        json!({"name": "URING_PLAY_ZCNBLK_SHM_REMOTE_SEND_ZC_REQUIRED", "value": "0"}),
+        json!({"name": "URING_PLAY_ZCNBLK_SHM_REMOTE_CONNECT_RETRY_MS", "value": "60000"}),
+        json!({"name": "URING_PLAY_TOPOLOGY_STRICT", "value": "0"}),
+    ];
+    if let Some(cpu_list) = runtime_setting("ZCCUSAN_RUNTIME_ONRAMP_CPU_LIST") {
+        onramp_envs.push(json!({
+            "name": "URING_PLAY_ZCNBLK_SHM_TARGET_CPU_LIST",
+            "value": cpu_list
+        }));
+    }
     let body = json!({
         "apiVersion": "v1",
         "kind": "Pod",
@@ -917,18 +1247,10 @@ async fn apply_onramp_pod(
                 "name": "onramp",
                 "image": ctx.image,
                 "imagePullPolicy": ctx.image_pull_policy,
+                "terminationMessagePolicy": "FallbackToLogsOnError",
                 "command": ["/usr/local/bin/zcnblk-shm-target"],
                 "args": ["/dev/zcnblk-shmctl", "wal-tcp", "128"],
-                "env": [
-                    {"name": "URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT", "value": "tcp"},
-                    {"name": "URING_PLAY_ZCNBLK_SHM_LEAF_ADDR", "value": format!("{fan_address}:{fan_port}")},
-                    {"name": "URING_PLAY_ZCNBLK_SHM_WRITEBACK_BATCH", "value": "64"},
-                    {"name": "URING_PLAY_ZCNBLK_SHM_TRANSFER_SLOTS", "value": profile.spec.transport.lanes.to_string()},
-                    {"name": "URING_PLAY_ZCNBLK_SHM_REMOTE_SEND_MODE", "value": "blocking"},
-                    {"name": "URING_PLAY_ZCNBLK_SHM_REMOTE_SEND_ZC_REQUIRED", "value": "0"},
-                    {"name": "URING_PLAY_ZCNBLK_SHM_REMOTE_CONNECT_RETRY_MS", "value": "60000"},
-                    {"name": "URING_PLAY_TOPOLOGY_STRICT", "value": "0"}
-                ],
+                "env": onramp_envs,
                 "securityContext": {
                     "privileged": true,
                     "allowPrivilegeEscalation": true,
@@ -1102,11 +1424,59 @@ async fn reconcile_volume_inner(
     let tiering = resolve_tiering_policy(&ctx, &profile, Some(volume.spec.capacity_bytes)).await?;
     let nodes: Api<Node> = Api::all(ctx.client.clone());
     let client_node = nodes.get(&volume.spec.client_node).await?;
+    if !node_has_rdma_resource(&client_node, &profile)? {
+        return Err(fail(format!(
+            "client node {} does not advertise required RDMA resource {}",
+            client_node.name_any(),
+            rdma_resource_name(&profile)?.unwrap_or("none")
+        )));
+    }
     let fan_address = node_address(&client_node, &profile)?;
-    let candidates = select_candidates(&ctx, &volume, &profile).await?;
-    acquire_static_reservations(&ctx, &volume, &candidates).await?;
     let leaf_port = stable_port(&volume.name_any(), 26_000);
     let fan_port = stable_port(&volume.name_any(), 23_000);
+    // Capacity selection and publication are one operator-leader critical
+    // section. The status runtime is the durable reservation record used to
+    // rebuild accounting after restart; no I/O hot path takes this lock.
+    let capacity_guard = ctx.capacity_admission.lock().await;
+    let candidates = select_candidates(&ctx, &volume, &profile).await?;
+    acquire_static_reservations(&ctx, &volume, &candidates).await?;
+    let runtime = desired_volume_runtime(
+        &volume,
+        &profile,
+        &candidates,
+        &fan_address,
+        fan_port,
+        leaf_port,
+        tiering.as_ref(),
+    );
+    if volume
+        .status
+        .as_ref()
+        .and_then(|status| status.runtime.as_ref())
+        .is_none()
+    {
+        patch_volume_status(
+            &volumes,
+            &volume,
+            ZcVolumeStatus {
+                observed_generation: Some(generation(&*volume)),
+                phase: "CapacityReserved".to_string(),
+                message: Some(
+                    "byte and provisioned-IOPS capacity reserved on userspace leaf lanes"
+                        .to_string(),
+                ),
+                runtime: Some(runtime.clone()),
+                conditions: vec![condition(
+                    &volume,
+                    "False",
+                    "CapacityReserved",
+                    "capacity is reserved; runtime Pods have not all started",
+                )],
+            },
+        )
+        .await?;
+    }
+    drop(capacity_guard);
     let mut leaf_names = Vec::new();
     for (index, candidate) in candidates.iter().enumerate() {
         leaf_names.push(
@@ -1130,7 +1500,7 @@ async fn reconcile_volume_inner(
                 observed_generation: Some(generation(&*volume)),
                 phase: "ProvisioningLeaves".to_string(),
                 message: Some("waiting for operator-owned terminal leaf Pods".to_string()),
-                runtime: None,
+                runtime: Some(runtime.clone()),
                 conditions: vec![condition(
                     &volume,
                     "False",
@@ -1145,6 +1515,7 @@ async fn reconcile_volume_inner(
     let fan_name = apply_fan_pod(
         &ctx,
         &volume,
+        &client_node,
         &candidates,
         &fan_address,
         fan_port,
@@ -1171,44 +1542,6 @@ async fn reconcile_volume_inner(
     {
         return Ok(Action::requeue(Duration::from_secs(1)));
     }
-    let runtime = VolumeRuntimeStatus {
-        placement: "UserspaceMirror".to_string(),
-        fan_node: volume.spec.client_node.clone(),
-        fan_address: fan_address.clone(),
-        fan_port,
-        transport: "TcpMuxDirectBackplane".to_string(),
-        leaves: candidates
-            .iter()
-            .map(|candidate| zcutils::kubernetes_storage::LeafRuntimeStatus {
-                node_name: candidate.node_name(),
-                address: candidate.address.clone(),
-                port: leaf_port,
-                media_class: candidate.media_class.clone(),
-                source_kind: match candidate.source {
-                    CandidateSource::Memory => "MemoryArena".to_string(),
-                    CandidateSource::Block(_) => "BlockDevice".to_string(),
-                },
-                part_uuid: match &candidate.source {
-                    CandidateSource::Memory => None,
-                    CandidateSource::Block(source) => Some(source.part_uuid.clone()),
-                },
-                tier: tiering.as_ref().map(|policy| TierRuntimeStatus {
-                    policy_name: policy.name_any(),
-                    hot_kind: policy.spec.hot.kind.clone(),
-                    spill_kind: policy.spec.spill.kind.clone(),
-                    spill_path: format!(
-                        "{}/{}.spill",
-                        policy.spec.spill.root_path.trim_end_matches('/'),
-                        volume.name_any()
-                    ),
-                    backpressure_bytes: parse_bytes(&policy.spec.backpressure_bytes)
-                        .expect("validated tier backpressure"),
-                    acknowledgement: "hot-only; spill asynchronous and excluded from durable HWM"
-                        .to_string(),
-                }),
-            })
-            .collect(),
-    };
     patch_volume_status(
         &volumes,
         &volume,
@@ -1440,8 +1773,22 @@ async fn reconcile_media_grant(
                         source.kind
                     )));
                 }
-                if parse_bytes(&source.maximum_volume_size)? == 0 {
+                let maximum_volume_size = parse_bytes(&source.maximum_volume_size)?;
+                if maximum_volume_size == 0 {
                     return Err(fail("dynamic maximumVolumeSize must be greater than zero"));
+                }
+                if let Some(total) = source.total_capacity_per_node.as_deref() {
+                    let total = parse_bytes(total)?;
+                    if total == 0 || total < maximum_volume_size {
+                        return Err(fail(
+                            "dynamic totalCapacityPerNode must be nonzero and at least maximumVolumeSize",
+                        ));
+                    }
+                }
+                if source.total_provisioned_iops_per_node == Some(0) {
+                    return Err(fail(
+                        "dynamic totalProvisionedIopsPerNode must be greater than zero when declared",
+                    ));
                 }
                 if source.huge_page_size.is_some() || source.pinned {
                     return Err(fail(
@@ -2214,6 +2561,191 @@ async fn cross_region_controller(ctx: Arc<Context>) {
         .await;
 }
 
+async fn reconcile_kernel_module_bundle(
+    bundle: Arc<ZccusanKernelModuleBundle>,
+    ctx: Arc<Context>,
+) -> Result<Action, OperatorError> {
+    let api: Api<ZccusanKernelModuleBundle> = Api::all(ctx.client.clone());
+    let (phase, message, accepted_manifest_sha256) = match validate_bundle_spec(&bundle.spec) {
+        Ok(()) => (
+            "Accepted".to_string(),
+            Some(
+                "metadata accepted; nodes still verify detached signatures, inspect the module, and rely on kernel signature enforcement at load time"
+                    .to_string(),
+            ),
+            Some(bundle.spec.manifest.sha256.clone()),
+        ),
+        Err(error) => ("Rejected".to_string(), Some(error), None),
+    };
+    let status = ZccusanKernelModuleBundleStatus {
+        observed_generation: bundle.metadata.generation,
+        phase,
+        message,
+        accepted_manifest_sha256,
+    };
+    if bundle.status.as_ref() == Some(&status) {
+        return Ok(Action::await_change());
+    }
+    api.patch_status(
+        &bundle.name_any(),
+        &PatchParams::apply(FIELD_MANAGER),
+        &Patch::Merge(json!({"status": status})),
+    )
+    .await?;
+    Ok(Action::await_change())
+}
+
+fn error_policy_kernel_module_bundle(
+    bundle: Arc<ZccusanKernelModuleBundle>,
+    error: &OperatorError,
+    _ctx: Arc<Context>,
+) -> Action {
+    eprintln!(
+        "zccusan-operator ZccusanKernelModuleBundle {} reconcile error: {error}",
+        bundle.name_any()
+    );
+    Action::requeue(Duration::from_secs(15))
+}
+
+async fn reconcile_kernel_module_catalog(
+    catalog: Arc<ZccusanKernelModuleCatalog>,
+    ctx: Arc<Context>,
+) -> Result<Action, OperatorError> {
+    let api: Api<ZccusanKernelModuleCatalog> = Api::all(ctx.client.clone());
+    let (phase, message, accepted_catalog_sha256) = match validate_catalog_spec(&catalog.spec) {
+        Ok(()) => (
+            "Accepted".to_string(),
+            Some(
+                "metadata accepted; a consuming region must verify the signed catalog and bundle through one of its separately configured trusted sources"
+                    .to_string(),
+            ),
+            Some(catalog.spec.catalog.sha256.clone()),
+        ),
+        Err(error) => ("Rejected".to_string(), Some(error), None),
+    };
+    let status = ZccusanKernelModuleCatalogStatus {
+        observed_generation: catalog.metadata.generation,
+        phase,
+        message,
+        accepted_catalog_sha256,
+    };
+    if catalog.status.as_ref() == Some(&status) {
+        return Ok(Action::await_change());
+    }
+    api.patch_status(
+        &catalog.name_any(),
+        &PatchParams::apply(FIELD_MANAGER),
+        &Patch::Merge(json!({"status": status})),
+    )
+    .await?;
+    Ok(Action::await_change())
+}
+
+fn error_policy_kernel_module_catalog(
+    catalog: Arc<ZccusanKernelModuleCatalog>,
+    error: &OperatorError,
+    _ctx: Arc<Context>,
+) -> Action {
+    eprintln!(
+        "zccusan-operator ZccusanKernelModuleCatalog {} reconcile error: {error}",
+        catalog.name_any()
+    );
+    Action::requeue(Duration::from_secs(15))
+}
+
+async fn kernel_module_bundle_controller(ctx: Arc<Context>) {
+    let bundles: Api<ZccusanKernelModuleBundle> = Api::all(ctx.client.clone());
+    Controller::new(bundles, watcher::Config::default())
+        .run(
+            reconcile_kernel_module_bundle,
+            error_policy_kernel_module_bundle,
+            ctx,
+        )
+        .for_each(|result| async move {
+            if let Err(error) = result {
+                eprintln!("zccusan-operator kernel-module bundle stream error: {error}");
+            }
+        })
+        .await;
+}
+
+async fn reconcile_kernel_module_source(
+    source: Arc<ZccusanKernelModuleSource>,
+    ctx: Arc<Context>,
+) -> Result<Action, OperatorError> {
+    let api: Api<ZccusanKernelModuleSource> = Api::all(ctx.client.clone());
+    let (phase, message) = match validate_source_spec(&source.spec) {
+        Ok(()) if source.spec.enabled => (
+            "Accepted".to_string(),
+            Some(
+                "regional source policy accepted; endpoints and public keys remain selected by the node-scoped bootstrap path without an operator relay"
+                    .to_string(),
+            ),
+        ),
+        Ok(()) => ("Disabled".to_string(), Some("source is disabled".to_string())),
+        Err(error) => ("Rejected".to_string(), Some(error)),
+    };
+    let status = ZccusanKernelModuleSourceStatus {
+        observed_generation: source.metadata.generation,
+        phase,
+        message,
+    };
+    if source.status.as_ref() == Some(&status) {
+        return Ok(Action::await_change());
+    }
+    api.patch_status(
+        &source.name_any(),
+        &PatchParams::apply(FIELD_MANAGER),
+        &Patch::Merge(json!({"status": status})),
+    )
+    .await?;
+    Ok(Action::await_change())
+}
+
+fn error_policy_kernel_module_source(
+    source: Arc<ZccusanKernelModuleSource>,
+    error: &OperatorError,
+    _ctx: Arc<Context>,
+) -> Action {
+    eprintln!(
+        "zccusan-operator ZccusanKernelModuleSource {} reconcile error: {error}",
+        source.name_any()
+    );
+    Action::requeue(Duration::from_secs(15))
+}
+
+async fn kernel_module_source_controller(ctx: Arc<Context>) {
+    let sources: Api<ZccusanKernelModuleSource> = Api::all(ctx.client.clone());
+    Controller::new(sources, watcher::Config::default())
+        .run(
+            reconcile_kernel_module_source,
+            error_policy_kernel_module_source,
+            ctx,
+        )
+        .for_each(|result| async move {
+            if let Err(error) = result {
+                eprintln!("zccusan-operator kernel-module source stream error: {error}");
+            }
+        })
+        .await;
+}
+
+async fn kernel_module_catalog_controller(ctx: Arc<Context>) {
+    let catalogs: Api<ZccusanKernelModuleCatalog> = Api::all(ctx.client.clone());
+    Controller::new(catalogs, watcher::Config::default())
+        .run(
+            reconcile_kernel_module_catalog,
+            error_policy_kernel_module_catalog,
+            ctx,
+        )
+        .for_each(|result| async move {
+            if let Err(error) = result {
+                eprintln!("zccusan-operator kernel-module catalog stream error: {error}");
+            }
+        })
+        .await;
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let client = Client::try_default().await?;
@@ -2231,6 +2763,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         image: repository,
         image_pull_policy: pull_policy,
         csi_provisioner,
+        capacity_admission: Arc::new(Mutex::new(())),
     });
     eprintln!(
         "zccusan-operator starting image={} csi_provisioner={} data_path=direct-backplane services=none placement=userspace",
@@ -2240,7 +2773,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let profiles = tokio::spawn(profile_controller(ctx.clone()));
     let media_grants = tokio::spawn(media_grant_controller(ctx.clone()));
     let tiering_policies = tokio::spawn(tiering_policy_controller(ctx.clone()));
-    let cross_region = tokio::spawn(cross_region_controller(ctx));
+    let cross_region = tokio::spawn(cross_region_controller(ctx.clone()));
+    let kernel_module_sources = tokio::spawn(kernel_module_source_controller(ctx.clone()));
+    let kernel_module_bundles = tokio::spawn(kernel_module_bundle_controller(ctx.clone()));
+    let kernel_module_catalogs = tokio::spawn(kernel_module_catalog_controller(ctx));
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {},
         _ = volumes => {},
@@ -2248,6 +2784,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         _ = media_grants => {},
         _ = tiering_policies => {},
         _ = cross_region => {},
+        _ = kernel_module_sources => {},
+        _ = kernel_module_bundles => {},
+        _ = kernel_module_catalogs => {},
     }
     Ok(())
 }
@@ -2270,6 +2809,28 @@ mod tests {
             },
             ..Node::default()
         }
+    }
+
+    fn ofi_profile() -> StorageProfile {
+        serde_yaml::from_str(
+            r#"
+apiVersion: storage.zcutils.io/v1alpha1
+kind: StorageProfile
+metadata:
+  name: efa-mirror
+spec:
+  placement:
+    mediaClass: ram
+  transport:
+    kind: OfiRdm
+    lanes: 2
+    connectionsPerLane: 1
+    ofiProvider: efa
+    ofiEndpoint: rdm
+    deviceResourceName: vpc.amazonaws.com/efa
+"#,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -2299,6 +2860,8 @@ mod tests {
             media_class: "test".to_string(),
             durability: "Volatile".to_string(),
             source: CandidateSource::Memory,
+            total_capacity_bytes: Some(1024),
+            total_provisioned_iops: Some(100),
         }];
         let same_zone = Candidate {
             node: node("leaf-b", "zone-a"),
@@ -2306,6 +2869,8 @@ mod tests {
             media_class: "test".to_string(),
             durability: "Volatile".to_string(),
             source: CandidateSource::Memory,
+            total_capacity_bytes: Some(1024),
+            total_provisioned_iops: Some(100),
         };
         let other_zone = Candidate {
             node: node("leaf-c", "zone-b"),
@@ -2313,6 +2878,8 @@ mod tests {
             media_class: "test".to_string(),
             durability: "Volatile".to_string(),
             source: CandidateSource::Memory,
+            total_capacity_bytes: Some(1024),
+            total_provisioned_iops: Some(100),
         };
         let keys = vec![
             "kubernetes.io/hostname".to_string(),
@@ -2320,6 +2887,28 @@ mod tests {
         ];
         assert!(!candidates_are_distinct(&selected, &same_zone, &keys));
         assert!(candidates_are_distinct(&selected, &other_zone, &keys));
+    }
+
+    #[test]
+    fn dynamic_capacity_admission_is_exact_at_the_boundary_and_fails_closed() {
+        assert!(dynamic_capacity_fits(
+            (7 * 1024, 90),
+            (1024, 10),
+            Some(8 * 1024),
+            Some(100),
+        ));
+        assert!(!dynamic_capacity_fits(
+            (8 * 1024, 100),
+            (1, 0),
+            Some(8 * 1024),
+            Some(100),
+        ));
+        assert!(!dynamic_capacity_fits(
+            (8 * 1024, 100),
+            (0, 1),
+            Some(8 * 1024),
+            Some(100),
+        ));
     }
 
     #[test]
@@ -2356,5 +2945,31 @@ mod tests {
         cross.spec.automatic_failover = false;
         cross.spec.transport.kind = "PlaintextTcp".to_string();
         assert!(validate_cross_region(&cross).is_err());
+    }
+
+    #[test]
+    fn ofi_profile_requires_device_plugin_capacity_and_rejects_rma_bypass() {
+        let mut profile = ofi_profile();
+        validate_profile(&profile).unwrap();
+
+        let mut efa_node = node("efa-a", "zone-a");
+        efa_node.status = Some(
+            serde_json::from_value(json!({
+                "allocatable": {"vpc.amazonaws.com/efa": "1"}
+            }))
+            .unwrap(),
+        );
+        assert!(node_has_rdma_resource(&efa_node, &profile).unwrap());
+        assert!(!node_has_rdma_resource(&node("tcp-a", "zone-a"), &profile).unwrap());
+        assert_eq!(
+            rdma_resources(&profile).unwrap()["limits"]["vpc.amazonaws.com/efa"],
+            "1"
+        );
+
+        profile.spec.transport.require_one_sided_rma = true;
+        assert!(validate_profile(&profile).is_err());
+        profile.spec.transport.require_one_sided_rma = false;
+        profile.spec.transport.device_resource_name = None;
+        assert!(validate_profile(&profile).is_err());
     }
 }

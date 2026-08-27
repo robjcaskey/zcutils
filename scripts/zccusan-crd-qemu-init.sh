@@ -10,9 +10,11 @@ mount -t cgroup2 none /sys/fs/cgroup || true
 mount -t tmpfs tmpfs /run || true
 
 role=""
+lanes=1
 for argument in $(cat /proc/cmdline); do
 	case "$argument" in
 		zccrd.role=*) role="${argument#zccrd.role=}" ;;
+		zccrd.lanes=*) lanes="${argument#zccrd.lanes=}" ;;
 	esac
 done
 
@@ -41,6 +43,11 @@ fail()
 	poweroff -f
 }
 
+case "$lanes" in
+	''|*[!0-9]*) fail invalid-lane-count ;;
+esac
+[ "$lanes" -ge 1 ] && [ "$lanes" -le 64 ] || fail invalid-lane-count
+
 wait_path()
 {
 	path="$1"
@@ -50,6 +57,13 @@ wait_path()
 		count=$((count + 1))
 	done
 	[ -e "$path" ]
+}
+
+load_module()
+{
+	name="$1"
+	[ ! -e "/modules/$name.builtin" ] || return 0
+	insmod "/modules/$name.ko"
 }
 
 stop_pid()
@@ -67,11 +81,12 @@ stop_pid()
 }
 
 if [ ! -e /.zccrd-system-root ]; then
-	insmod /modules/virtio_blk.ko || fail pivot-virtio-blk
-	insmod /modules/crc16.ko || fail pivot-crc16
-	insmod /modules/mbcache.ko || fail pivot-mbcache
-	insmod /modules/jbd2.ko || fail pivot-jbd2
-	insmod /modules/ext4.ko || fail pivot-ext4
+	load_module virtio_blk || fail pivot-virtio-blk
+	load_module crc16 || fail pivot-crc16
+	load_module crc32c_generic || fail pivot-crc32c
+	load_module mbcache || fail pivot-mbcache
+	load_module jbd2 || fail pivot-jbd2
+	load_module ext4 || fail pivot-ext4
 	wait_path /dev/vda || fail pivot-system-device
 	mkdir -p /newroot
 	mount -t ext4 /dev/vda /newroot || fail pivot-system-mount
@@ -83,10 +98,10 @@ if [ ! -e /.zccrd-system-root ]; then
 	fail pivot-switch-root-returned
 fi
 
-insmod /modules/failover.ko || fail failover-module
-insmod /modules/net_failover.ko || fail net-failover-module
-insmod /modules/virtio_net.ko || fail virtio-net-module
-insmod /modules/aead.ko || fail aead-module
+load_module failover || fail failover-module
+load_module net_failover || fail net-failover-module
+load_module virtio_net || fail virtio-net-module
+load_module aead || fail aead-module
 
 case "$role" in
 	controller) address=10.46.0.1; machine_id=46aa0001000000000000000000000001 ;;
@@ -100,7 +115,7 @@ ip link set lo up || fail loopback
 ip link set eth0 up || fail link
 ip address add "$address/24" dev eth0 || fail address
 
-echo "ZCCUSAN_CRD_QEMU_TOPOLOGY role=$role transport=tcp-unicast encryption=aes-256-authenticated placement=userspace qemu_l2=tap-linux-bridge representative_benchmark=false"
+echo "ZCCUSAN_CRD_QEMU_TOPOLOGY role=$role transport=tcp-unicast encryption=aes-256-authenticated placement=userspace lanes=$lanes qemu_l2=tap-linux-bridge representative_benchmark=false"
 
 if [ "$role" = controller ]; then
 	/k3s server \
@@ -245,8 +260,8 @@ if [ "$role" = region-us ]; then
 fi
 
 insmod /modules/zcnblk_client_mod.ko \
-	transport=shm lanes=1 connections_per_lane=1 size_mib=16 \
-	queues=1 queue_depth=64 max_frame_bytes=4096 pipeline_depth=64 \
+	transport=shm lanes="$lanes" connections_per_lane=1 size_mib=16 \
+	queues="$lanes" queue_depth=64 max_frame_bytes=4096 pipeline_depth=64 \
 	shm_ring_entries=64 shm_payload_entries=256 shm_poll_us=50 \
 	hctx_affinity=1 pin_threads=1 pin_base_cpu=1 pin_cpu_count=1 pin_stride=1 \
 	shm_bio_arena_zero_copy=0 || fail zcnblk-module

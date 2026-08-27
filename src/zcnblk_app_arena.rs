@@ -13,7 +13,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::RawRing;
@@ -24,6 +24,9 @@ pub const ZCNBLK_APP_ARENA_F_EXTERNAL_HUGETLB: u32 = 1 << 0;
 pub const ZCNBLK_SHM_PAYLOAD_OWNER_APP_RESERVED: u64 = u64::MAX - 1;
 const ZCNBLK_SHM_CHANNEL_BYTES: usize = 320;
 const ZCNBLK_SHM_CHANNEL_PAYLOAD_FREE_SLOTS: usize = 256;
+const LOCAL_SLOT_FREE: u8 = 0;
+const LOCAL_SLOT_LIVE: u8 = 1;
+const LOCAL_SLOT_ORPHAN: u8 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -106,7 +109,17 @@ struct ArenaInner {
     ptr: *mut u8,
     len: usize,
     descriptor: ZcnblkAppArenaDescriptor,
-    local_slots: Vec<AtomicBool>,
+    // Process-local identity for a live application handle or a completed
+    // handed-off handle whose shared APP_RESERVED return is still pending.
+    // Keeping both states in one byte avoids a second locked atomic operation
+    // on every ordinary allocation.
+    local_slots: Vec<AtomicU8>,
+    // A write may complete at the block edge while a downstream WAL still
+    // owns its payload lease. Once the application handle is retired, record
+    // that process-local ownership here so a later target return to
+    // APP_RESERVED can be adopted safely. This is deliberately separate from
+    // the shared owner token: APP_RESERVED does not identify one of several
+    // possible arena-importing processes.
     _fd: OwnedFd,
 }
 
@@ -115,6 +128,7 @@ unsafe impl Sync for ArenaInner {}
 
 impl Drop for ArenaInner {
     fn drop(&mut self) {
+        self.release_returned_orphans();
         unsafe { libc::munmap(self.ptr.cast(), self.len) };
     }
 }
@@ -138,11 +152,49 @@ impl ArenaInner {
 
     fn reserve(&self, lane: u32, slot: u32) -> bool {
         let global = self.global_slot(lane, slot);
-        if self.local_slots[global]
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            return false;
+        let local = &self.local_slots[global];
+        match local.compare_exchange(
+            LOCAL_SLOT_FREE,
+            LOCAL_SLOT_LIVE,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => {}
+            Err(LOCAL_SLOT_ORPHAN) => {
+                let owner = self.owner(global).load(Ordering::Acquire);
+                if owner == ZCNBLK_SHM_PAYLOAD_OWNER_APP_RESERVED {
+                    if local
+                        .compare_exchange(
+                            LOCAL_SLOT_ORPHAN,
+                            LOCAL_SLOT_LIVE,
+                            Ordering::Acquire,
+                            Ordering::Relaxed,
+                        )
+                        .is_ok()
+                    {
+                        // This process paid the free-slot debit before the
+                        // handoff. Adopt the returned token without changing
+                        // the shared count a second time.
+                        return true;
+                    }
+                    return false;
+                }
+                if owner != 0
+                    || local
+                        .compare_exchange(
+                            LOCAL_SLOT_ORPHAN,
+                            LOCAL_SLOT_LIVE,
+                            Ordering::Acquire,
+                            Ordering::Relaxed,
+                        )
+                        .is_err()
+                {
+                    return false;
+                }
+                // A target may release an abandoned token all the way to
+                // zero. Treat it as a fresh reservation with a fresh debit.
+            }
+            Err(_) => return false,
         }
         if self
             .owner(global)
@@ -154,14 +206,17 @@ impl ArenaInner {
             )
             .is_err()
         {
-            self.local_slots[global].store(false, Ordering::Release);
+            // If an orphan was released to zero, its former process-local
+            // claim is no longer exclusive. A competing importer may have
+            // won the shared owner CAS, so discard this local claim.
+            local.store(LOCAL_SLOT_FREE, Ordering::Release);
             return false;
         }
         let prior = self.free_slots(lane).fetch_sub(1, Ordering::AcqRel);
         if prior == 0 {
             self.free_slots(lane).fetch_add(1, Ordering::Release);
             self.owner(global).store(0, Ordering::Release);
-            self.local_slots[global].store(false, Ordering::Release);
+            local.store(LOCAL_SLOT_FREE, Ordering::Release);
             return false;
         }
         true
@@ -188,8 +243,14 @@ impl ArenaInner {
 
     fn reacquire_existing(&self, lane: u32, slot: u32) -> bool {
         let global = self.global_slot(lane, slot);
-        if self
-            .owner(global)
+        let owner = self.owner(global);
+        // Avoid issuing a locked RMW while the kernel or target visibly owns
+        // the slot. The release producer needs this cacheline; fighting it
+        // with guaranteed-to-fail CAS operations only delays the handoff.
+        if owner.load(Ordering::Acquire) != 0 {
+            return false;
+        }
+        if owner
             .compare_exchange(
                 0,
                 ZCNBLK_SHM_PAYLOAD_OWNER_APP_RESERVED,
@@ -213,6 +274,38 @@ impl ArenaInner {
         self.owner(self.global_slot(lane, slot))
             .load(Ordering::Acquire)
             == ZCNBLK_SHM_PAYLOAD_OWNER_APP_RESERVED
+    }
+
+    /// Cold importer-disconnect cleanup. A clean guest shutdown may flush a
+    /// target-retained write after its application handle was retired, with no
+    /// later allocation to adopt and release the returned token. Reclaim only
+    /// slots marked as this process's orphans and already returned by the
+    /// target; a downstream-owned lease is deliberately left untouched.
+    fn release_returned_orphans(&self) -> u64 {
+        let mut released = 0u64;
+        for lane in 0..self.descriptor.channels {
+            for slot in 0..self.descriptor.payload_entries {
+                let global = self.global_slot(lane, slot);
+                if self.local_slots[global].load(Ordering::Acquire) != LOCAL_SLOT_ORPHAN {
+                    continue;
+                }
+                if self
+                    .owner(global)
+                    .compare_exchange(
+                        ZCNBLK_SHM_PAYLOAD_OWNER_APP_RESERVED,
+                        0,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    self.free_slots(lane).fetch_add(1, Ordering::Release);
+                    self.local_slots[global].store(LOCAL_SLOT_FREE, Ordering::Release);
+                    released += 1;
+                }
+            }
+        }
+        released
     }
 }
 
@@ -252,7 +345,9 @@ impl ZcnblkAppArena {
                 ptr: ptr.cast(),
                 len,
                 descriptor,
-                local_slots: (0..slot_count).map(|_| AtomicBool::new(false)).collect(),
+                local_slots: (0..slot_count)
+                    .map(|_| AtomicU8::new(LOCAL_SLOT_FREE))
+                    .collect(),
                 _fd: fd,
             }),
         })
@@ -266,15 +361,35 @@ impl ZcnblkAppArena {
         self.inner.descriptor.slot_bytes as usize
     }
 
+    pub fn slots_per_lane(&self) -> u32 {
+        self.inner.descriptor.payload_entries
+    }
+
     /// Reserves any free payload buffer belonging to `lane`.
     pub fn allocate(&self, lane: u32) -> io::Result<ZcnblkAppArenaBuffer> {
+        self.allocate_from(lane, 0)
+    }
+
+    /// Reserves a lane-local payload buffer, beginning at `start_slot` and
+    /// wrapping once. A lane-confined caller can carry the returned slot + 1
+    /// as a plain cursor, avoiding repeated probes of its own live buffers
+    /// without adding a shared atomic increment to the hot path.
+    pub fn allocate_from(&self, lane: u32, start_slot: u32) -> io::Result<ZcnblkAppArenaBuffer> {
         if lane >= self.channels() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "lane out of range",
             ));
         }
-        for slot in 0..self.inner.descriptor.payload_entries {
+        let entries = self.inner.descriptor.payload_entries;
+        let start_slot = start_slot % entries;
+        for displacement in 0..entries {
+            let candidate = u64::from(start_slot) + u64::from(displacement);
+            let slot = if candidate >= u64::from(entries) {
+                (candidate - u64::from(entries)) as u32
+            } else {
+                candidate as u32
+            };
             if self.inner.reserve(lane, slot) {
                 return Ok(ZcnblkAppArenaBuffer {
                     inner: Arc::clone(&self.inner),
@@ -306,6 +421,17 @@ impl ZcnblkAppArenaBuffer {
 
     pub fn slot(&self) -> u32 {
         self.slot
+    }
+
+    /// Reports whether this handle has already reacquired the application
+    /// token and can be retained for lane-local reuse without releasing and
+    /// reserving the shared slot again.
+    ///
+    /// This is a process-local state query. It becomes true only after the
+    /// shared owner token was observed or reacquired by the methods on this
+    /// handle, and `handoff_to_kernel` clears it before submission.
+    pub fn is_application_owned(&self) -> bool {
+        self.app_owned
     }
 
     fn bytes_ptr(&self) -> *mut u8 {
@@ -382,6 +508,24 @@ impl ZcnblkAppArenaBuffer {
         }
     }
 
+    /// Retires an application handle after its asynchronous block I/O CQE.
+    ///
+    /// A target that no longer needs the payload returns the shared owner to
+    /// `APP_RESERVED`; this method reacquires it so ordinary `Drop` releases
+    /// the slot. If a writeback target still owns the lease, `Drop` records the
+    /// completed handle as a process-local orphan which `allocate` can adopt
+    /// after a later sync. Call this only after the submitted I/O has produced
+    /// its CQE.
+    pub fn retire_completed_handoff(&mut self) -> io::Result<()> {
+        if self.app_owned {
+            return Ok(());
+        }
+        if self.inner.returned_to_app(self.lane, self.slot) {
+            self.app_owned = true;
+        }
+        Ok(())
+    }
+
     /// Submit one slot-sized O_DIRECT write. Call `wait_reacquire` before reuse.
     pub fn write_at(&mut self, file: &File, offset: u64) -> io::Result<()> {
         self.submit_at(file, offset, true)
@@ -423,17 +567,36 @@ impl ZcnblkAppArenaBuffer {
         if self.app_owned {
             return Ok(());
         }
+        // The target publishes its payload-owner return before the block CQE,
+        // so this is the overwhelmingly common path. Do not read the clock or
+        // enter the scheduler for an ownership token that is already ours.
+        if self.inner.returned_to_app(self.lane, self.slot) {
+            self.app_owned = true;
+            return Ok(());
+        }
+        if self.inner.reacquire_existing(self.lane, self.slot) {
+            self.app_owned = true;
+            return Ok(());
+        }
         let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            if self.inner.returned_to_app(self.lane, self.slot) {
-                self.app_owned = true;
-                return Ok(());
+        loop {
+            // A completion can become visible a few cacheline round trips
+            // after its CQE. Keep that transient race out of the scheduler and
+            // amortize timeout clock reads across a bounded spin window.
+            for _ in 0..64 {
+                if self.inner.returned_to_app(self.lane, self.slot) {
+                    self.app_owned = true;
+                    return Ok(());
+                }
+                if self.inner.reacquire_existing(self.lane, self.slot) {
+                    self.app_owned = true;
+                    return Ok(());
+                }
+                std::hint::spin_loop();
             }
-            if self.inner.reacquire_existing(self.lane, self.slot) {
-                self.app_owned = true;
-                return Ok(());
+            if Instant::now() >= deadline {
+                break;
             }
-            std::hint::spin_loop();
             std::thread::yield_now();
         }
         Err(io::Error::new(
@@ -458,11 +621,18 @@ impl ZcnblkAppArenaBuffer {
 
 impl Drop for ZcnblkAppArenaBuffer {
     fn drop(&mut self) {
-        if self.app_owned {
-            self.inner.release_app_reservation(self.lane, self.slot);
-        }
-        self.inner.local_slots[self.inner.global_slot(self.lane, self.slot)]
-            .store(false, Ordering::Release);
+        let global = self.inner.global_slot(self.lane, self.slot);
+        let next_local_state =
+            if self.app_owned && self.inner.release_app_reservation(self.lane, self.slot) {
+                LOCAL_SLOT_FREE
+            } else {
+                // Synchronous fallback callers may drop immediately after pwrite
+                // without a separate retirement call. Preserve their ownership
+                // claim too; otherwise a target return to APP_RESERVED becomes an
+                // unidentifiable, permanently stranded slot.
+                LOCAL_SLOT_ORPHAN
+            };
+        self.inner.local_slots[global].store(next_local_state, Ordering::Release);
     }
 }
 
@@ -474,7 +644,14 @@ pub struct ZcnblkAppArenaIoRing {
     ring: RawRing,
 }
 
-#[derive(Clone, Copy, Debug)]
+// RawRing owns its fd and mmap pointers. Moving exclusive ownership does not
+// invalidate either mapping, and ZcnblkAppArenaIoRing never exposes shared
+// access, so this permits transfer without claiming Sync or concurrent ring
+// use. Callers using IORING_SETUP_SINGLE_ISSUER must still construct and submit
+// the live ring on the same worker; the vhost frontend does that lazily.
+unsafe impl Send for ZcnblkAppArenaIoRing {}
+
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ZcnblkAppArenaIoCompletion {
     pub user_data: u64,
     pub result: i32,
@@ -490,6 +667,20 @@ impl ZcnblkAppArenaIoRing {
         }
         Ok(Self {
             ring: RawRing::new(entries, entries.saturating_mul(2))?,
+        })
+    }
+
+    /// Build a ring whose completion eventfd can wake an otherwise idle
+    /// single-issuer worker without relying on another submission or enter.
+    pub fn new_event_driven(entries: u32) -> io::Result<Self> {
+        if entries == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zcnblk arena io_uring needs at least one entry",
+            ));
+        }
+        Ok(Self {
+            ring: RawRing::new_event_driven(entries, entries.saturating_mul(2))?,
         })
     }
 
@@ -547,6 +738,26 @@ impl ZcnblkAppArenaIoRing {
         self.ring.submit_pending()
     }
 
+    /// Notify `eventfd` whenever this lane's io_uring publishes completions.
+    ///
+    /// The caller owns the descriptor and must keep it open until this ring is
+    /// dropped. Registration is performed by the eventual SINGLE_ISSUER lane
+    /// worker, alongside ring construction, rather than by a setup thread.
+    pub fn register_completion_eventfd(&self, eventfd: RawFd) -> io::Result<()> {
+        self.ring.register_eventfd(eventfd)
+    }
+
+    pub fn set_completion_eventfd_enabled(&self, enabled: bool) {
+        self.ring.set_eventfd_enabled(enabled);
+    }
+
+    /// Run deferred io_uring task work without waiting for a completion.
+    /// Event-driven consumers call this after an eventfd wake and once more
+    /// while arming the idle edge, closing the task-work-before-CQE race.
+    pub fn run_task_work(&mut self) -> io::Result<()> {
+        self.ring.run_task_work()
+    }
+
     pub fn try_completion(&mut self) -> Option<ZcnblkAppArenaIoCompletion> {
         self.ring
             .try_pop_cqe()
@@ -556,12 +767,55 @@ impl ZcnblkAppArenaIoRing {
             })
     }
 
+    /// Copy a contiguous ready-CQ batch into caller-owned lane-local storage.
+    /// This does not submit or wait and allocates no memory.
+    pub fn try_completions(&mut self, completions: &mut [ZcnblkAppArenaIoCompletion]) -> usize {
+        let mut next = 0usize;
+        self.ring.drain_cqes(completions.len(), |completion| {
+            completions[next] = ZcnblkAppArenaIoCompletion {
+                user_data: completion.user_data,
+                result: completion.res,
+            };
+            next += 1;
+        });
+        next
+    }
+
     pub fn wait_completion(&mut self) -> io::Result<ZcnblkAppArenaIoCompletion> {
         let completion = self.ring.wait_cqe()?;
         Ok(ZcnblkAppArenaIoCompletion {
             user_data: completion.user_data,
             result: completion.res,
         })
+    }
+
+    /// Wait until at least `minimum` completions are ready, then copy as many
+    /// as fit into caller-owned lane-local storage. This allocates no memory
+    /// and lets high-QD frontends amortize both the wait syscall and their
+    /// completion notification without changing low-QD behavior.
+    pub fn wait_completions(
+        &mut self,
+        minimum: usize,
+        completions: &mut [ZcnblkAppArenaIoCompletion],
+    ) -> io::Result<usize> {
+        if completions.is_empty() {
+            return Ok(0);
+        }
+        let minimum = minimum.clamp(1, completions.len());
+        let first = self.ring.wait_cqe_min(minimum as u32)?;
+        completions[0] = ZcnblkAppArenaIoCompletion {
+            user_data: first.user_data,
+            result: first.res,
+        };
+        let mut next = 1usize;
+        self.ring.drain_cqes(completions.len() - 1, |completion| {
+            completions[next] = ZcnblkAppArenaIoCompletion {
+                user_data: completion.user_data,
+                result: completion.res,
+            };
+            next += 1;
+        });
+        Ok(next)
     }
 }
 
@@ -686,6 +940,7 @@ fn receive_descriptor(stream: &mut UnixStream) -> io::Result<(ZcnblkAppArenaDesc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vmm_sys_util::eventfd::EventFd;
 
     #[test]
     fn descriptor_layout_is_stable() {
@@ -764,6 +1019,242 @@ mod tests {
         }
         assert_eq!(free_count(&arena), 1);
         Ok(())
+    }
+
+    #[test]
+    fn async_ring_round_trips_one_block_on_lane_thread() -> io::Result<()> {
+        let (arena, file) = ring_test_arena(2)?;
+        let worker = std::thread::spawn(move || -> io::Result<()> {
+            let mut ring = ZcnblkAppArenaIoRing::new(2)?;
+            let mut buffer = arena.allocate(0)?;
+            buffer.as_mut_slice()?.fill(0x6d);
+            ring.queue_write(&file, &mut buffer, 0, 11)?;
+            ring.submit()?;
+            let completion = ring.wait_completion()?;
+            assert_eq!(completion.user_data, 11);
+            assert_eq!(completion.result, 4096);
+            buffer.wait_reacquire(Duration::from_secs(1))?;
+
+            buffer.as_mut_slice()?.fill(0);
+            ring.queue_read(&file, &mut buffer, 0, 12)?;
+            ring.submit()?;
+            let completion = ring.wait_completion()?;
+            assert_eq!(completion.user_data, 12);
+            assert_eq!(completion.result, 4096);
+            buffer.wait_reacquire(Duration::from_secs(1))?;
+            assert!(buffer.as_slice()?.iter().all(|byte| *byte == 0x6d));
+            Ok(())
+        });
+        worker.join().expect("lane worker panicked")
+    }
+
+    #[test]
+    fn async_ring_reaps_ready_completions_as_one_batch() -> io::Result<()> {
+        let (arena, file) = ring_test_arena(4)?;
+        let worker = std::thread::spawn(move || -> io::Result<()> {
+            let mut ring = ZcnblkAppArenaIoRing::new(4)?;
+            let mut buffers = (0..4)
+                .map(|_| arena.allocate(0))
+                .collect::<io::Result<Vec<_>>>()?;
+            for (index, buffer) in buffers.iter_mut().enumerate() {
+                buffer.as_mut_slice()?.fill(index as u8 + 1);
+                ring.queue_write(&file, buffer, 0, 100 + index as u64)?;
+            }
+            ring.submit()?;
+
+            let mut ready = [ZcnblkAppArenaIoCompletion::default(); 4];
+            let count = ring.wait_completions(4, &mut ready)?;
+            assert_eq!(count, 4);
+            let mut seen = ready
+                .iter()
+                .map(|completion| completion.user_data)
+                .collect::<Vec<_>>();
+            seen.sort_unstable();
+            assert_eq!(seen, vec![100, 101, 102, 103]);
+            for buffer in &mut buffers {
+                buffer.wait_reacquire(Duration::from_secs(1))?;
+            }
+            Ok(())
+        });
+        worker.join().expect("lane worker panicked")
+    }
+
+    #[test]
+    fn async_ring_completion_eventfd_wakes_the_lane() -> io::Result<()> {
+        let (arena, file) = ring_test_arena(1)?;
+        let worker = std::thread::spawn(move || -> io::Result<()> {
+            let event = EventFd::new(libc::EFD_CLOEXEC | libc::EFD_NONBLOCK)?;
+            let mut ring = ZcnblkAppArenaIoRing::new_event_driven(1)?;
+            // Eventfd is the idle worker's only wake source in this mode. A
+            // deferred-taskrun ring would wait for that worker to enter while
+            // the worker simultaneously waits for the CQE eventfd signal.
+            assert!(!ring.ring.defer_taskrun);
+            ring.register_completion_eventfd(event.as_raw_fd())?;
+            let mut buffer = arena.allocate(0)?;
+            buffer.as_mut_slice()?.fill(0x4e);
+            ring.queue_write(&file, &mut buffer, 0, 77)?;
+            ring.submit()?;
+
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let notification_count = loop {
+                match event.read() {
+                    Ok(count) => break count,
+                    Err(error)
+                        if error.kind() == io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::yield_now();
+                    }
+                    Err(error) => return Err(error),
+                }
+            };
+            assert!(notification_count >= 1);
+            let completion = ring.wait_completion()?;
+            assert_eq!(completion.user_data, 77);
+            assert_eq!(completion.result, 4096);
+            buffer.wait_reacquire(Duration::from_secs(1))?;
+            Ok(())
+        });
+        worker.join().expect("lane worker panicked")
+    }
+
+    #[test]
+    fn lane_cursor_starts_at_hint_and_wraps_once() -> io::Result<()> {
+        let (arena, _file) = ring_test_arena(2)?;
+        let second = arena.allocate_from(0, 1)?;
+        assert_eq!(second.slot(), 1);
+        let first = arena.allocate_from(0, 1)?;
+        assert_eq!(first.slot(), 0);
+        drop((first, second));
+        assert_eq!(free_count(&arena), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn completed_write_alias_is_released_or_reclaimed_after_late_return() -> io::Result<()> {
+        let (arena, _file) = ring_test_arena(1)?;
+        let owner = arena.inner.owner(0);
+
+        // Immediate target return: retirement reacquires APP_RESERVED and
+        // ordinary Drop balances the original free-slot debit.
+        {
+            let mut buffer = arena.allocate(0)?;
+            buffer.handoff_to_kernel()?;
+            buffer.retire_completed_handoff()?;
+        }
+        assert_eq!(owner.load(Ordering::Acquire), 0);
+        assert_eq!(free_count(&arena), 1);
+
+        // A synchronous fallback may return from pwrite and drop its handle
+        // without calling the asynchronous CQE retirement helper. Drop must
+        // retain enough process-local identity for graceful disconnect cleanup
+        // to release an already returned APP_RESERVED token.
+        {
+            let mut buffer = arena.allocate(0)?;
+            buffer.handoff_to_kernel()?;
+            drop(buffer);
+        }
+        assert_eq!(arena.inner.release_returned_orphans(), 1);
+        assert_eq!(owner.load(Ordering::Acquire), 0);
+        assert_eq!(free_count(&arena), 1);
+
+        // Delayed writeback return: the completed handle is gone while the
+        // target still owns its sequence token. Allocation must fail until the
+        // target returns APP_RESERVED, then adopt exactly this process's
+        // orphan without double-debiting the shared free count.
+        {
+            let mut buffer = arena.allocate(0)?;
+            buffer.handoff_to_kernel()?;
+            owner.store(41, Ordering::Release);
+            buffer.retire_completed_handoff()?;
+        }
+        assert_eq!(free_count(&arena), 0);
+        match arena.allocate(0) {
+            Err(error) => assert_eq!(error.kind(), io::ErrorKind::WouldBlock),
+            Ok(_) => panic!("target-retained orphan was allocated before return"),
+        }
+        owner.store(ZCNBLK_SHM_PAYLOAD_OWNER_APP_RESERVED, Ordering::Release);
+        {
+            let buffer = arena.allocate(0)?;
+            assert_eq!(free_count(&arena), 0);
+            drop(buffer);
+        }
+        assert_eq!(owner.load(Ordering::Acquire), 0);
+        assert_eq!(free_count(&arena), 1);
+        Ok(())
+    }
+
+    fn ring_test_arena(entries: u32) -> io::Result<(ZcnblkAppArena, File)> {
+        let raw_fd = unsafe {
+            libc::memfd_create(
+                b"zcnblk-app-arena-ring-test\0".as_ptr().cast(),
+                libc::MFD_CLOEXEC,
+            )
+        };
+        if raw_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+        let payload_offset = 8192usize;
+        let region_bytes = payload_offset + entries as usize * 4096;
+        if unsafe { libc::ftruncate(fd.as_raw_fd(), region_bytes as libc::off_t) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let descriptor = ZcnblkAppArenaDescriptor {
+            magic: ZCNBLK_APP_ARENA_MAGIC,
+            version: ZCNBLK_APP_ARENA_VERSION,
+            descriptor_bytes: size_of::<ZcnblkAppArenaDescriptor>() as u32,
+            flags: ZCNBLK_APP_ARENA_F_EXTERNAL_HUGETLB,
+            channels: 1,
+            payload_entries: entries,
+            slot_bytes: 4096,
+            channel_bytes: ZCNBLK_SHM_CHANNEL_BYTES as u32,
+            payload_free_slots_offset: ZCNBLK_SHM_CHANNEL_PAYLOAD_FREE_SLOTS as u32,
+            reserved: 0,
+            reserved2: 0,
+            channel_offset: 512,
+            payload_owner_offset: 4096,
+            payload_offset: payload_offset as u64,
+            region_bytes: region_bytes as u64,
+        };
+        let init = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                region_bytes,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd.as_raw_fd(),
+                0,
+            )
+        };
+        if init == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        let free = unsafe {
+            &*init
+                .cast::<u8>()
+                .add(512 + ZCNBLK_SHM_CHANNEL_PAYLOAD_FREE_SLOTS)
+                .cast::<AtomicU64>()
+        };
+        free.store(u64::from(entries), Ordering::Release);
+        unsafe { libc::munmap(init, region_bytes) };
+
+        let file_fd = unsafe {
+            libc::memfd_create(
+                b"zcnblk-app-arena-io-test\0".as_ptr().cast(),
+                libc::MFD_CLOEXEC,
+            )
+        };
+        if file_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::ftruncate(file_fd, 4096) } != 0 {
+            unsafe { libc::close(file_fd) };
+            return Err(io::Error::last_os_error());
+        }
+        let file = unsafe { File::from_raw_fd(file_fd) };
+        let arena = ZcnblkAppArena::from_descriptor(descriptor.validate()?, fd)?;
+        Ok((arena, file))
     }
 
     fn free_count(arena: &ZcnblkAppArena) -> u64 {
