@@ -1,4 +1,5 @@
-# Replace LEAF_A_NODE, LEAF_A_PARTUUID, LEAF_B_NODE, and LEAF_B_PARTUUID
+# Replace EXAMPLE_SERVER_A_NODE, EXAMPLE_SERVER_A_PARTUUID,
+# EXAMPLE_SERVER_B_NODE, and EXAMPLE_SERVER_B_PARTUUID
 # before applying this file. Each PARTUUID must identify a dedicated, empty
 # partition on its named node. allowRawWrites is intentionally never defaulted
 # to true.
@@ -9,18 +10,18 @@ metadata:
 spec:
   nodeSelector:
     matchLabels:
-      storage.zcutils.io/getting-started-leaf: "true"
+      storage.zcutils.io/example-server: "true"
   mediaSets:
     - name: explicit-partitions
       staticSources:
         - kind: BlockDevice
-          nodeName: LEAF_A_NODE
-          partUuid: LEAF_A_PARTUUID
+          nodeName: EXAMPLE_SERVER_A_NODE
+          partUuid: EXAMPLE_SERVER_A_PARTUUID
           destructivePreparation:
             allowRawWrites: true
         - kind: BlockDevice
-          nodeName: LEAF_B_NODE
-          partUuid: LEAF_B_PARTUUID
+          nodeName: EXAMPLE_SERVER_B_NODE
+          partUuid: EXAMPLE_SERVER_B_PARTUUID
           destructivePreparation:
             allowRawWrites: true
       publishAs:
@@ -41,7 +42,7 @@ spec:
     execution: Userspace
     copies: 2
     mediaClass: getting-started-block
-    excludeClientNode: true
+    excludeClientNode: false
     distinctTopologyKeys:
       - kubernetes.io/hostname
   transport:

@@ -18,6 +18,10 @@ Rust binary names, Cargo targets, container entrypoints, or in-cluster paths.
 
 ## Documentation
 
+- `docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md`: narrated,
+  volatile-RAM Kubernetes happy path.
+- `docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES_DETAILED.md`: the complete
+  second-step install, configuration, validation, and troubleshooting guide.
 - `docs/zccusan.md`: canonical zccusan layering and the rule that `zccsi` is a
   convenience adapter above `zcsan`, not the storage authority.
 - `docs/streaming-replication-shaping.md`: replication stream control,

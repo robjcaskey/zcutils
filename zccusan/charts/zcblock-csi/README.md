@@ -93,17 +93,22 @@ shutdown waiting to 1.5 seconds.
 
 ## Install
 
+For a disposable, volatile-RAM smoke test, start with the
+[narrated Kubernetes happy path](../../docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md).
+The [explained installation](../../docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES_DETAILED.md)
+covers unsupported kernels, real media, RDMA, topology checks, and cleanup.
+
 ```sh
 helm repo add zcutils https://robjcaskey.github.io/zcutils
 helm repo update
 helm install zcblock-csi zcutils/zcblock-csi \
-  --version 0.1.0-nightly.20260819.1 \
+  --version 0.1.4 \
   --namespace zcblock-csi \
   --create-namespace
 ```
 
-The chart defaults to `docker.io/robjcaskey/zcblock-csi:nightly`. Pin the image
-and chart to dated versions for a reproducible deployment.
+Each published chart defaults to the matching version of
+`docker.io/robjcaskey/zcblock-csi`.
 
 The one multi-architecture `zcblock-csi` image is also the node-setup image.
 Each architecture manifest contains the Rust loader and only that
@@ -113,8 +118,8 @@ second zccusan kernel-module repository:
 
 ```sh
 skopeo copy --all \
-  docker://docker.io/robjcaskey/zcblock-csi:nightly \
-  docker://registry.internal.example/zcblock-csi:nightly
+  docker://docker.io/robjcaskey/zcblock-csi:0.1.4 \
+  docker://registry.internal.example/zcblock-csi:0.1.4
 ```
 
 ## Automatic node setup
@@ -250,12 +255,12 @@ and verbs support on both supported CPU architectures.
 This selection does not change `zcnblk_client_mod`: its only permitted Helm
 configuration is `transport=shm`. TCP/RDMA selection, lane ownership, mirror
 placement, and backpressure remain in the separate userspace stage after the
-block edge. The declarative two-leaf mirror reconciler accepts either `TcpMux`
+block edge. The declarative two-copy mirror reconciler accepts either `TcpMux`
 or `OfiRdm`. The RDMA gate qualifies the node image; the profile still has to
 request RDMA explicitly because the operator never silently rewrites a TCP
 volume. `OfiRdm` requires the extended resource exported by the cluster's RDMA
-device plugin, and the operator checks that the client and both selected leaf
-nodes advertise it before creating data-plane Pods:
+device plugin, and the operator checks that the client and both selected
+storage nodes advertise it before creating data-plane Pods:
 
 ```yaml
 transport:
@@ -269,11 +274,11 @@ transport:
 ```
 
 The local `/dev/zcnblk0` edge still enters the separate userspace mirror over a
-node-local TCP session. Only the mirror-to-leaf backplane uses OFI/RDM. WAL
+node-local TCP session. Only the mirror-to-storage-copy backplane uses OFI/RDM. WAL
 writes, reads, sync/FUA results, and the mirrored HWM remain part of the same
 bidirectional libfabric protocol. The optional one-sided RMA payload window is
 not synonymous with RDMA transport: this release rejects
-`requireOneSidedRma=true` so an initiator cannot write through one leaf's
+`requireOneSidedRma=true` so an initiator cannot write through one copy's
 registered window and bypass the other mirror leg. See
 `zccusan/deploy/zcblock-csi/getting-started/mirror-rdma.template.yaml`.
 
@@ -387,7 +392,7 @@ userspace stage owns those decisions. A manually managed fabric can be
 topology-free only when the administrator has connected every eligible node
 edge to the same logical volume. A fabric StorageClass generated from a
 `StorageProfile` advertises the operator-reconciled client node until fenced
-client handoff is implemented; its terminal leaves are still remote and may be
+client handoff is implemented; its terminal storage copies are still remote and may be
 placed on other nodes.
 
 ### Direct userspace filesystem volumes (no local block edge)

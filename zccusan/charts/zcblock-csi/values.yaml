@@ -9,7 +9,9 @@ driverName: io.zcutils.zcblock
 
 image:
   repository: docker.io/robjcaskey/zcblock-csi
-  tag: nightly
+  # Empty means this chart's appVersion, so a versioned chart selects the
+  # matching versioned image unless the installer explicitly overrides it.
+  tag: ""
   # When set, this takes precedence over tag for every first-party DaemonSet
   # container, including the node-setup init container.
   digest: ""

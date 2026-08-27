@@ -1,0 +1,17 @@
+apiVersion: storage.zcutils.io/v1alpha1
+kind: MediaGrant
+metadata:
+  name: getting-started-ram
+spec:
+  nodeSelector:
+    matchLabels:
+      storage.zcutils.io/example-server: "true"
+  mediaSets:
+    - name: userspace-memory
+      dynamicSources:
+        - kind: MemoryArena
+          maximumVolumeSize: 1Gi
+      publishAs:
+        mediaClass: getting-started-ram
+        durability: Volatile
+        mayContributeToDurableAcknowledgement: false

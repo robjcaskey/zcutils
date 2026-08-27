@@ -1,136 +1,279 @@
-# Getting started with zccusan on Kubernetes
+# Getting started 1: Kubernetes happy path
 
-## Twenty-sentence quickstart
+This deliberately assumes everything goes right: run it from a zcutils checkout with Helm 3, `kubectl`, three Kubernetes nodes, a kernel included in the [module matrix](../../docs/kernel-module-build-matrix.md), and permission to run privileged CSI Pods. Replace the three example node names.
 
-1. **Experimental:** zccusan is an early-stage project whose installation, kernel module, networking, CPU placement, huge-page allocation, memlock, and storage topology still require careful configuration.
+Create `namespace.yaml` with the following contents to hold the zccusan services and this example workload.
 
-2. Expect to use a capable automation agent to inspect your nodes, adapt these examples, and tune the installation before evaluating performance or safety.
+<!-- BEGIN FILE: zccusan/deploy/zcblock-csi/getting-started/namespace.yaml -->
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zccusan
+```
+<!-- END FILE: zccusan/deploy/zcblock-csi/getting-started/namespace.yaml -->
 
-3. In one [recorded reference](../../bench-results/zc-current-dualefa-block-20260823T234720Z/client-pull/current-record-12m-gated/summary.log)—not a promise—a Linux-block `/dev/zcnblk0` client averaged 12.32 million 4 KiB remote-read IOPS across three runs on a tuned two-node `c8gn.48xlarge` configuration with 64 pinned lanes, QD64 per worker, 4,096 aggregate outstanding operations, two EFA devices, EFA-direct RMA, volatile remote memory, and initiator-local CQ data-visible completion.
+Apply it with `kubectl apply -f namespace.yaml`.
 
-4. In a separate [recorded reference](../../bench-results/zc-zcnblk-c8in96w2c-tcp-arena-write-kickfix-alias-qd128-long-20260822T1900Z/summary.log)—not directly comparable—the same block frontend averaged 1.68 million 4 KiB early-local-ack write IOPS across three runs on a tuned two-node `c8in.metal-96xl` configuration with 32 pinned lanes, QD128 per worker, 4,096 aggregate outstanding operations, two TCP rails, huge-page-backed shared arenas, and volatile remote memory, while remote sync and FUA were outside the timed workload.
+Get a list of nodes and, to demonstrate the CSI network path, label two as example servers and a different one as the example client.
 
-5. Those results demonstrate multi-million-IOPS potential but do not predict this one-lane mirrored PVC tutorial, durable media, mixed workloads, fsync latency, smaller machines, different kernels, or an untuned cluster.
+```bash
+kubectl get nodes
+kubectl label node some-node-a storage.zcutils.io/example-server=true
+kubectl label node some-node-b storage.zcutils.io/example-server=true
+kubectl label node some-node-c storage.zcutils.io/example-client=true
+```
 
-6. You need Helm 3, `kubectl`, three distinct Ready Linux workers, an encrypted pod or physical backplane, and permission to run the chart's privileged node setup and CSI containers.
+Install the CSI.
 
-7. The normal multi-architecture DaemonSet image contains the Rust node loader and the [current audited module matrix](../../docs/kernel-module-build-matrix.md); it selects only an exact architecture and full `uname -r` match and fails closed before CSI startup on an unsupported kernel.
+```bash
+helm repo add zcutils https://robjcaskey.github.io/zcutils
+helm repo update
+helm upgrade --install zccusan zcutils/zcblock-csi --version 0.1.4 --namespace zccusan --wait --timeout 120s
+# If your nodes use EFA-direct, add --set backplane.rdma.enabled=true --set backplane.rdma.provider=efa-direct to this command.
+```
 
-8. Select two storage workers and leave at least one other worker available for the client workload.
+Create `media-grant.yaml` with the following contents to tell zccusan that the example servers can provide fast, volatile RAM storage. It is lost on restart, but it is useful for end-to-end performance testing.
 
-   ```bash
-   export LEAF_A=worker-a
-   export LEAF_B=worker-b
-   test "$LEAF_A" != "$LEAF_B"
-   kubectl label node "$LEAF_A" \
-     storage.zcutils.io/getting-started-leaf=true --overwrite
-   kubectl label node "$LEAF_B" \
-     storage.zcutils.io/getting-started-leaf=true --overwrite
-   kubectl get nodes -L storage.zcutils.io/getting-started-leaf
-   kubectl get nodes -l '!storage.zcutils.io/getting-started-leaf'
-   ```
+<!-- BEGIN FILE: zccusan/deploy/zcblock-csi/getting-started/media-grant.yaml -->
+```yaml
+apiVersion: storage.zcutils.io/v1alpha1
+kind: MediaGrant
+metadata:
+  name: getting-started-ram
+spec:
+  nodeSelector:
+    matchLabels:
+      storage.zcutils.io/example-server: "true"
+  mediaSets:
+    - name: userspace-memory
+      dynamicSources:
+        - kind: MemoryArena
+          maximumVolumeSize: 1Gi
+      publishAs:
+        mediaClass: getting-started-ram
+        durability: Volatile
+        mayContributeToDurableAcknowledgement: false
+```
+<!-- END FILE: zccusan/deploy/zcblock-csi/getting-started/media-grant.yaml -->
 
-9. If `InternalIP` is not the dedicated storage address, annotate each eligible leaf and client node with `storage.zcutils.io/backplane-address`.
+Apply it with `kubectl apply -f media-grant.yaml`.
 
-   ```bash
-   kubectl annotate node "$LEAF_A" \
-     storage.zcutils.io/backplane-address=10.20.0.11 --overwrite
-   kubectl annotate node "$LEAF_B" \
-     storage.zcutils.io/backplane-address=10.20.0.12 --overwrite
-   ```
+Create `storage-profile.yaml` with the following contents to define a StorageClass named `zc-mirror-ram` that keeps two copies of each volume's data, one copy on each example server.
 
-10. Leave `HELM_ARGS` empty for TCP, or add the strict RDMA capability gate and your provider only when every selected node exposes the required device and libfabric provider.
+<!-- BEGIN FILE: zccusan/deploy/zcblock-csi/getting-started/storage-profile.yaml -->
+```yaml
+apiVersion: storage.zcutils.io/v1alpha1
+kind: StorageProfile
+metadata:
+  name: getting-started-mirror-ram
+spec:
+  storageClass:
+    name: zc-mirror-ram
+  frontend: LinuxBlock
+  placement:
+    primitive: Mirror
+    execution: Userspace
+    copies: 2
+    mediaClass: getting-started-ram
+    excludeClientNode: false
+    distinctTopologyKeys:
+      - kubernetes.io/hostname
+  transport:
+    # For EFA-direct, change TcpMux to OfiRdm and uncomment the next three fields.
+    kind: TcpMux
+    # ofiProvider: efa-direct
+    # ofiEndpoint: rdm
+    # deviceResourceName: vpc.amazonaws.com/efa
+    addressSource: NodeAnnotationThenInternalIP
+    nodeAddressAnnotation: storage.zcutils.io/backplane-address
+    lanes: 1
+    connectionsPerLane: 1
+    chunkBytes: 4096
+```
+<!-- END FILE: zccusan/deploy/zcblock-csi/getting-started/storage-profile.yaml -->
 
-   ```bash
-   HELM_ARGS=()
+Apply it with `kubectl apply -f storage-profile.yaml`.
 
-   # EFA example
-   # HELM_ARGS+=(--set backplane.rdma.enabled=true)
-   # HELM_ARGS+=(--set backplane.rdma.provider=efa)
+Create `mirror-pvc.yaml` with the following contents to request one mirrored volume.
 
-   # A custom unsupported kernel can use reviewed host or HTTP module-source
-   # values, or a custom full DaemonSet image; the matrix needs no extra values.
-   ```
+<!-- BEGIN FILE: zccusan/deploy/zcblock-csi/getting-started/mirror-pvc.yaml -->
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zc-mirror
+  namespace: zccusan
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: zc-mirror-ram
+  resources:
+    requests:
+      storage: 512Mi
+```
+<!-- END FILE: zccusan/deploy/zcblock-csi/getting-started/mirror-pvc.yaml -->
 
-11. Install the CRDs, operator, CSI driver, and Rust node bootstrap in one Helm step; pin `image.digest` for a reproducible deployment, and provide custom module-source values only when your exact kernel is outside the bundled matrix.
+Apply it with `kubectl apply -f mirror-pvc.yaml`.
 
-   ```bash
-   helm upgrade --install zccusan \
-     ./zccusan/charts/zcblock-csi \
-     --namespace zccusan \
-     --create-namespace \
-     "${HELM_ARGS[@]}" \
-     --wait \
-     --timeout 10m
-   ```
+Create `mirror-fio.yaml` with the following contents to start a small 4 KiB fio smoke test on the example client. This uses the zccusan-owned `zccusan-storage-test` image rather than installing fio from a third-party image at Pod startup.
 
-12. Wait for the operator and node DaemonSet, then inspect setup logs if `/dev/zcnblk0` and `/dev/zcnblk-shmctl` do not appear on eligible client nodes.
+<!-- BEGIN FILE: zccusan/deploy/zcblock-csi/getting-started/mirror-fio.yaml -->
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: zc-mirror-fio
+  namespace: zccusan
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: storage.zcutils.io/example-client
+                operator: In
+                values:
+                  - "true"
+  containers:
+    - name: fio
+      image: docker.io/robjcaskey/zccusan-storage-test:0.1.4
+      imagePullPolicy: IfNotPresent
+      command: [fio]
+      args:
+        - --name=zc-mirror-randrw
+        - --filename=/data/fio.bin
+        - --size=96Mi
+        - --rw=randrw
+        - --rwmixread=70
+        - --bs=4k
+        - --ioengine=libaio
+        - --iodepth=16
+        - --direct=1
+        - --runtime=30
+        - --time_based=1
+        - --group_reporting=1
+        - --unlink=1
+        - --output-format=json
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: zc-mirror
+```
+<!-- END FILE: zccusan/deploy/zcblock-csi/getting-started/mirror-fio.yaml -->
 
-   ```bash
-   kubectl -n zccusan rollout status \
-     deployment/zccusan-zcblock-csi-operator --timeout=10m
-   kubectl -n zccusan rollout status \
-     daemonset/zccusan-zcblock-csi-node --timeout=10m
-   kubectl -n zccusan get pods -o wide
-   ```
+Apply it with `kubectl apply -f mirror-fio.yaml`, then follow fio live until it finishes.
 
-13. For the safest first run, create a two-copy userspace mirror over volatile RAM, or inspect and render `mirror-block.template.yaml` if you intentionally dedicate two empty real partitions and approve destructive raw writes.
+```bash
+kubectl -n zccusan logs --follow --pod-running-timeout=120s zc-mirror-fio
+```
 
-   ```bash
-   kubectl apply -f \
-     zccusan/deploy/zcblock-csi/getting-started/mirror-ram.yaml
-   kubectl get storageprofile getting-started-mirror-ram
-   kubectl get storageclass zc-mirror-ram
-   ```
+Now that fio has finished, delete its Pod so it releases the volume.
 
-14. For a qualified RDMA cluster, review `mirror-rdma.template.yaml`, set its device-plugin resource and provider for your environment, apply it, and use `zc-mirror-rdma-ram` instead of `zc-mirror-ram` below without expecting silent TCP fallback.
+```bash
+kubectl delete -f mirror-fio.yaml
+```
 
-   ```bash
-   less zccusan/deploy/zcblock-csi/getting-started/mirror-rdma.template.yaml
-   kubectl apply -f \
-     zccusan/deploy/zcblock-csi/getting-started/mirror-rdma.template.yaml
-   ```
+Create `mirror-pgbench.yaml` with the following contents to use the same PVC for a real PostgreSQL data directory and run pgbench. The database listens only on the Pod's Unix socket, and the Pod stops PostgreSQL after the benchmark.
 
-15. Create the TCP PVC and fio pod as checked in, or substitute the reviewed RDMA StorageClass before applying the same workload.
+<!-- BEGIN FILE: zccusan/deploy/zcblock-csi/getting-started/mirror-pgbench.yaml -->
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: zc-mirror-pgbench
+  namespace: zccusan
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: storage.zcutils.io/example-client
+                operator: In
+                values:
+                  - "true"
+  containers:
+    - name: pgbench
+      image: docker.io/robjcaskey/zccusan-storage-test:0.1.4
+      imagePullPolicy: IfNotPresent
+      command: [/bin/bash, -ec]
+      args:
+        - |
+          export PGDATA=/data/postgres
+          export PGHOST=/tmp
+          mkdir -p "${PGDATA}"
+          if [ ! -s "${PGDATA}/PG_VERSION" ]; then
+            initdb --auth=trust --encoding=UTF8 --no-locale
+          fi
+          pg_ctl -w start -o "-c listen_addresses= -c unix_socket_directories=/tmp -c min_wal_size=32MB -c max_wal_size=128MB"
+          trap 'pg_ctl -m fast -w stop' EXIT
+          if ! psql --dbname=postgres --tuples-only --command \
+            "SELECT 1 FROM pg_database WHERE datname = 'pgbench'" | grep -q 1
+          then
+            createdb pgbench
+            pgbench --initialize --scale=1 pgbench
+          fi
+          pgbench --client=8 --jobs=4 --time=30 --progress=5 pgbench
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: zc-mirror
+    - name: tmp
+      emptyDir:
+        sizeLimit: 64Mi
+```
+<!-- END FILE: zccusan/deploy/zcblock-csi/getting-started/mirror-pgbench.yaml -->
 
-   ```bash
-   kubectl -n zccusan apply -f \
-     zccusan/deploy/zcblock-csi/getting-started/mirror-fio.yaml
+Apply it with `kubectl apply -f mirror-pgbench.yaml`, then follow pgbench live until it finishes.
 
-   # RDMA alternative
-   # sed 's/zc-mirror-ram/zc-mirror-rdma-ram/' \
-   #   zccusan/deploy/zcblock-csi/getting-started/mirror-fio.yaml | \
-   #   kubectl -n zccusan apply -f -
-   ```
+```bash
+kubectl -n zccusan logs --follow --pod-running-timeout=120s zc-mirror-pgbench
+```
 
-16. Read fio's JSON after the functional 4 KiB `randrw` run succeeds, remembering that this QD16 pod is deliberately not the tuned record configuration described above.
+That exercised one mirrored RAM copy on each example server through fio and PostgreSQL from the separate example client. The RAM copies are intentionally **volatile**. Delete the pgbench Pod, then delete the PVC; the generated ZcVolume finalizer deletes its userspace storage Pods and releases both RAM arenas. Delete the StorageProfile so the operator removes its generated `zc-mirror-ram` StorageClass, and finally remove the MediaGrant that offered the RAM capacity. Leave the CSI installed for the next tutorial.
 
-   ```bash
-   kubectl -n zccusan wait pod/zc-mirror-fio \
-     --for=jsonpath='{.status.phase}'=Succeeded \
-     --timeout=15m
-   kubectl -n zccusan logs zc-mirror-fio
-   ```
+```bash
+kubectl delete -f mirror-pgbench.yaml
+kubectl delete -f mirror-pvc.yaml
+kubectl delete -f storage-profile.yaml
+kubectl delete -f media-grant.yaml
+```
 
-17. Verify that the operator placed both terminal leaves away from the fio node and that `/dev/zcnblk0` remains only the client edge while the userspace mirror owns placement.
-
-   ```bash
-   export ZCV="$(kubectl -n zccusan get zcvolumes \
-     -o jsonpath='{.items[0].metadata.name}')"
-   kubectl -n zccusan get zcvolume "$ZCV" -o yaml
-   kubectl -n zccusan get pods \
-     -l "storage.zcutils.io/volume=$ZCV" -o wide
-   kubectl -n zccusan get pod zc-mirror-fio \
-     -o jsonpath='{.spec.nodeName}{"\n"}'
-   ```
-
-18. Treat RAM media as explicitly volatile, provide transport encryption outside these preview data paths, and create any `VolumeSnapshotClass` separately because the chart does not create one.
-
-19. Remove the test pod and PVC when finished so CSI can delete the `ZcVolume` after the operator tears down its userspace runtime.
-
-   ```bash
-   kubectl -n zccusan delete pod zc-mirror-fio
-   kubectl -n zccusan delete pvc zc-mirror
-   ```
-
-20. Continue with [tiering](GETTING_STARTED_WITH_TIERING_ON_KUBERNETES.md), then [cross-region replication](GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md), and consult the detailed performance documentation before publishing representative claims.
+If any command fails—or before using real disks, RDMA, or performance tuning—continue with [getting started 2](GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES_DETAILED.md), then try [tiering](GETTING_STARTED_WITH_TIERING_ON_KUBERNETES.md) and [cross-region replication](GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md).

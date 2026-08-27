@@ -114,7 +114,7 @@ jobs:
             -type f -name zcnblk_client_mod.ko -print -quit)"
           test -n "$artifact"
           artifact_dir="$(dirname "$artifact")"
-          sha256sum -c "$artifact_dir/zcnblk_client_mod.ko.sha256"
+          (cd "$artifact_dir" && sha256sum -c zcnblk_client_mod.ko.sha256)
           sha256sum -c "$artifact_dir/source-files.sha256"
           test -s "$artifact_dir/vermagic.txt"
           test -s "$artifact_dir/metadata.env"

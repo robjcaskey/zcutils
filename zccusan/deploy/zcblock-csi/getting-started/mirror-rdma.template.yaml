@@ -5,7 +5,7 @@ metadata:
 spec:
   nodeSelector:
     matchLabels:
-      storage.zcutils.io/getting-started-leaf: "true"
+      storage.zcutils.io/example-server: "true"
   mediaSets:
     - name: userspace-memory
       dynamicSources:
@@ -29,7 +29,7 @@ spec:
     execution: Userspace
     copies: 2
     mediaClass: getting-started-rdma-ram
-    excludeClientNode: true
+    excludeClientNode: false
     distinctTopologyKeys:
       - kubernetes.io/hostname
   transport:
@@ -46,5 +46,5 @@ spec:
     deviceResourceName: vpc.amazonaws.com/efa
     # This release mirrors complete WAL messages over libfabric RDM. It will
     # reject true until the fan owns a registered arena and can duplicate a
-    # one-sided payload onto both leaves.
+    # one-sided payload onto both mirror copies.
     requireOneSidedRma: false

@@ -1,0 +1,28 @@
+name: zccusan getting-started examples
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/zccusan-getting-started.yml'
+      - 'scripts/check-zccusan-getting-started-sync.sh'
+      - 'zccusan/deploy/zcblock-csi/getting-started/**'
+      - 'zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/zccusan-getting-started.yml'
+      - 'scripts/check-zccusan-getting-started-sync.sh'
+      - 'zccusan/deploy/zcblock-csi/getting-started/**'
+      - 'zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check embedded manifests against their standalone files
+        run: bash scripts/check-zccusan-getting-started-sync.sh

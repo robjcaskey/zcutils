@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zc-mirror
+  namespace: zccusan
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: zc-mirror-ram
+  resources:
+    requests:
+      storage: 512Mi

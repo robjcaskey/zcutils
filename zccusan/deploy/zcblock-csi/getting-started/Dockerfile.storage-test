@@ -1,0 +1,13 @@
+FROM docker.io/library/postgres:18.6-bookworm@sha256:1c59e2c3c818eaa0f0628f695b36e7c9e362d6b219b36a54a32df645cbd7e1af
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fio \
+    && rm -rf /var/lib/apt/lists/*
+
+LABEL org.opencontainers.image.title="zccusan-storage-test" \
+      org.opencontainers.image.description="First-party fio and pgbench tools for zccusan storage smoke tests" \
+      org.opencontainers.image.source="https://github.com/robjcaskey/zcutils"
+
+USER 999:999
+ENTRYPOINT []
+CMD ["pgbench", "--version"]

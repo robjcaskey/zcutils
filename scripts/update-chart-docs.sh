@@ -20,7 +20,9 @@ text = path.read_text()
 
 replacements = [
     (re.compile(r'(?m)^(\s*--version\s+")\d+\.\d+\.\d+(")'), rf'\g<1>{version}\g<2>'),
+    (re.compile(r'(?m)^(\s*--version\s+)\d+\.\d+\.\d+(\s*(?:\\)?$)'), rf'\g<1>{version}\g<2>'),
     (re.compile(r'(?m)^(\s*--set(?:-string)? image\.tag=")\d+\.\d+\.\d+(")'), rf'\g<1>{version}\g<2>'),
+    (re.compile(r'(docker\.io/robjcaskey/zccusan-storage-test:)\d+\.\d+\.\d+'), rf'\g<1>{version}'),
     (re.compile(r'chart-v\d+\.\d+\.\d+'), f'chart-v{version}'),
     (re.compile(r'(?m)(-f chart_version=")\d+\.\d+\.\d+(")'), rf'\g<1>{version}\g<2>'),
     (re.compile(r'(?m)(-f app_image_tag=")\d+\.\d+\.\d+(")'), rf'\g<1>{version}\g<2>'),

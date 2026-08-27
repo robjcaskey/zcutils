@@ -13,9 +13,11 @@ need()
 }
 
 need helm
-need rg
+need grep
 
 helm lint "$chart"
+chart_app_version="$(awk -F: '$1 == "appVersion" {gsub(/[ \"\047]/, "", $2); print $2}' "$chart/Chart.yaml")"
+[ -n "$chart_app_version" ]
 
 for architecture in amd64 arm64; do
 	for transport in tcp rdma; do
@@ -33,26 +35,26 @@ for architecture in amd64 arm64; do
 		fi
 		helm "${arguments[@]}" >"$rendered"
 
-		rg -q "kubernetes.io/arch: $architecture" "$rendered"
-		rg -q '^    transport=shm$' "$rendered"
-		rg -q '^          image: "docker.io/robjcaskey/zcblock-csi:nightly"$' "$rendered"
-		rg -q '^          command: \[/usr/local/bin/zcblock-node-setup\]$' "$rendered"
-		if rg -q '/bin/bash|setup\.sh|fetch\.sh' "$rendered"; then
+		grep -Eq "kubernetes.io/arch: $architecture" "$rendered"
+		grep -Eq '^    transport=shm$' "$rendered"
+		grep -Eq "^          image: \"docker.io/robjcaskey/zcblock-csi:${chart_app_version}\"$" "$rendered"
+		grep -Eq '^          command: \[/usr/local/bin/zcblock-node-setup\]$' "$rendered"
+		if grep -Eq '/bin/bash|setup\.sh|fetch\.sh' "$rendered"; then
 			echo "rendered node setup unexpectedly depends on a shell script" >&2
 			exit 1
 		fi
 		if [ "$transport" = rdma ]; then
-			rg -q '^        - name: rdma-preflight$' "$rendered"
-			rg -q '^            - rdma-preflight$' "$rendered"
-			rg -q '^            - "efa"$' "$rendered"
-			rg -q '^      hostNetwork: true$' "$rendered"
-			rg -q '^      dnsPolicy: ClusterFirstWithHostNet$' "$rendered"
+			grep -Eq '^        - name: rdma-preflight$' "$rendered"
+			grep -Eq '^            - rdma-preflight$' "$rendered"
+			grep -Eq '^            - "efa"$' "$rendered"
+			grep -Eq '^      hostNetwork: true$' "$rendered"
+			grep -Eq '^      dnsPolicy: ClusterFirstWithHostNet$' "$rendered"
 		else
-			if rg -q 'name: rdma-preflight' "$rendered"; then
+			if grep -Eq 'name: rdma-preflight' "$rendered"; then
 				echo "TCP render unexpectedly contains the RDMA preflight" >&2
 				exit 1
 			fi
-			if rg -q '^      hostNetwork: true$' "$rendered"; then
+			if grep -Eq '^      hostNetwork: true$' "$rendered"; then
 				echo "TCP render unexpectedly enables host networking" >&2
 				exit 1
 			fi
@@ -80,8 +82,8 @@ helm template image-module "$chart" \
 	--set-string "image.digest=$artifact_digest" \
 	--set-string "nodeSetup.moduleSource.sha256=$module_digest" \
 	>"$image_render"
-rg -q "registry.example.invalid/zcblock-csi@$artifact_digest" "$image_render"
-if rg -q 'name: image-module-zcblock-csi-zcnblk-source' "$image_render"; then
+grep -Eq "registry.example.invalid/zcblock-csi@$artifact_digest" "$image_render"
+if grep -Eq 'name: image-module-zcblock-csi-zcnblk-source' "$image_render"; then
 	echo "production image mode unexpectedly rendered kernel source" >&2
 	exit 1
 fi
@@ -94,9 +96,9 @@ helm template http-cache "$chart" \
 	--set-string "nodeSetup.moduleSource.http.urlTemplate=$http_url" \
 	--set-string "nodeSetup.moduleSource.http.sha256=$module_digest" \
 	>"$http_render"
-rg -q '^  name: http-cache-zcblock-csi-module-cache$' "$http_render"
-rg -q '^      hostNetwork: false$' "$http_render"
-rg -q '^      automountServiceAccountToken: false$' "$http_render"
+grep -Eq '^  name: http-cache-zcblock-csi-module-cache$' "$http_render"
+grep -Eq '^      hostNetwork: false$' "$http_render"
+grep -Eq '^      automountServiceAccountToken: false$' "$http_render"
 echo "ZCCUSAN_HELM_MODULE_HTTP_CACHE_PASS rendered=$http_render"
 
 http_direct_render="$(mktemp /tmp/zccusan-helm-kmod-http-direct.XXXXXX.yaml)"
@@ -106,7 +108,7 @@ helm template http-direct "$chart" \
 	--set-string "nodeSetup.moduleSource.http.urlTemplate=$http_url" \
 	--set-string "nodeSetup.moduleSource.http.sha256=$module_digest" \
 	>"$http_direct_render"
-if rg -q 'zcblock-csi-module-cache' "$http_direct_render"; then
+if grep -Eq 'zcblock-csi-module-cache' "$http_direct_render"; then
 	echo "direct HTTP mode unexpectedly rendered the artifact-cache DaemonSet" >&2
 	exit 1
 fi
@@ -117,7 +119,7 @@ helm template development-build "$chart" \
 	--set nodeSetup.moduleSource.type=build \
 	--set nodeSetup.developmentBuild.enabled=true \
 	>"$build_render"
-rg -q '^  name: development-build-zcblock-csi-zcnblk-source$' "$build_render"
+grep -Eq '^  name: development-build-zcblock-csi-zcnblk-source$' "$build_render"
 if helm template invalid-build "$chart" \
 	--set nodeSetup.moduleSource.type=build >/dev/null 2>&1; then
 	echo "Helm accepted development build mode without its explicit enable gate" >&2

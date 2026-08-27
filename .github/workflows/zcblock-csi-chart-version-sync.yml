@@ -46,22 +46,31 @@ jobs:
 
       - name: Update getting-started docs
         run: |
-          bash scripts/update-chart-docs.sh \
+          for doc in \
             zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md \
-            "${{ steps.chart_version.outputs.version }}"
+            zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES_DETAILED.md
+          do
+            bash scripts/update-chart-docs.sh \
+              "${doc}" \
+              "${{ steps.chart_version.outputs.version }}"
+          done
 
       - name: Commit and push docs update
         env:
           BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          if git diff --quiet -- zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md; then
+          DOCS=(
+            zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md
+            zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES_DETAILED.md
+          )
+          if git diff --quiet -- "${DOCS[@]}"; then
             echo "No documentation updates needed."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md
+          git add "${DOCS[@]}"
           git commit -m "docs: sync getting-started versions to chart v${{ steps.chart_version.outputs.version }}"
           git push origin "HEAD:${BRANCH}"

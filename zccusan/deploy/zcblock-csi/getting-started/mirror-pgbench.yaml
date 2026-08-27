@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: zc-mirror-fio
+  name: zc-mirror-pgbench
   namespace: zccusan
 spec:
   restartPolicy: Never
@@ -23,25 +23,27 @@ spec:
                 values:
                   - "true"
   containers:
-    - name: fio
+    - name: pgbench
       image: docker.io/robjcaskey/zccusan-storage-test:0.1.4
       imagePullPolicy: IfNotPresent
-      command: [fio]
+      command: [/bin/bash, -ec]
       args:
-        - --name=zc-mirror-randrw
-        - --filename=/data/fio.bin
-        - --size=96Mi
-        - --rw=randrw
-        - --rwmixread=70
-        - --bs=4k
-        - --ioengine=libaio
-        - --iodepth=16
-        - --direct=1
-        - --runtime=30
-        - --time_based=1
-        - --group_reporting=1
-        - --unlink=1
-        - --output-format=json
+        - |
+          export PGDATA=/data/postgres
+          export PGHOST=/tmp
+          mkdir -p "${PGDATA}"
+          if [ ! -s "${PGDATA}/PG_VERSION" ]; then
+            initdb --auth=trust --encoding=UTF8 --no-locale
+          fi
+          pg_ctl -w start -o "-c listen_addresses= -c unix_socket_directories=/tmp -c min_wal_size=32MB -c max_wal_size=128MB"
+          trap 'pg_ctl -m fast -w stop' EXIT
+          if ! psql --dbname=postgres --tuples-only --command \
+            "SELECT 1 FROM pg_database WHERE datname = 'pgbench'" | grep -q 1
+          then
+            createdb pgbench
+            pgbench --initialize --scale=1 pgbench
+          fi
+          pgbench --client=8 --jobs=4 --time=30 --progress=5 pgbench
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
@@ -50,7 +52,12 @@ spec:
       volumeMounts:
         - name: data
           mountPath: /data
+        - name: tmp
+          mountPath: /tmp
   volumes:
     - name: data
       persistentVolumeClaim:
         claimName: zc-mirror
+    - name: tmp
+      emptyDir:
+        sizeLimit: 64Mi
