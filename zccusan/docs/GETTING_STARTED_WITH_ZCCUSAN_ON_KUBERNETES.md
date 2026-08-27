@@ -146,7 +146,7 @@ spec:
                   - "true"
   containers:
     - name: fio
-      image: docker.io/robjcaskey/zccusan-storage-test:0.1.5
+      image: docker.io/robjcaskey/zccusan-storage-test:0.1.6
       imagePullPolicy: IfNotPresent
       command: [fio]
       args:
@@ -221,7 +221,7 @@ spec:
                   - "true"
   containers:
     - name: pgbench
-      image: docker.io/robjcaskey/zccusan-storage-test:0.1.5
+      image: docker.io/robjcaskey/zccusan-storage-test:0.1.6
       imagePullPolicy: IfNotPresent
       command: [/bin/bash, -ec]
       args:
