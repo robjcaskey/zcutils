@@ -4,15 +4,17 @@ use reqwest::redirect::Policy;
 use sha2::{Digest, Sha256};
 use std::env;
 use std::error::Error;
-use std::ffi::{CStr, OsString};
+use std::ffi::{CStr, CString, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::thread;
 use std::time::Duration;
+use zcutils::kernel_module_artifacts::inspect_kernel_module;
 
 type AnyError = Box<dyn Error + Send + Sync>;
 type Result<T> = std::result::Result<T, AnyError>;
@@ -427,6 +429,77 @@ fn parse_module_parameters(path: &Path) -> Result<Vec<OsString>> {
     Ok(parameters)
 }
 
+fn oci_architecture(machine: &str) -> Result<&'static str> {
+    match machine {
+        "x86_64" => Ok("amd64"),
+        "aarch64" => Ok("arm64"),
+        "riscv64" => Ok("riscv64"),
+        "ppc64le" => Ok("ppc64le"),
+        _ => Err(format!("unsupported host architecture {machine:?}").into()),
+    }
+}
+
+fn verify_module_compatibility(module: &Path, identity: &NodeIdentity) -> Result<()> {
+    let observed = inspect_kernel_module(module)
+        .map_err(|error| format!("inspect kernel module {}: {error}", module.display()))?;
+    if observed.module_name != MODULE_NAME {
+        return Err(format!(
+            "module name is {:?}, expected {MODULE_NAME}",
+            observed.module_name
+        )
+        .into());
+    }
+    let expected_architecture = oci_architecture(&identity.architecture)?;
+    if observed.architecture != expected_architecture {
+        return Err(format!(
+            "module architecture is {:?}, expected {:?} for host {:?}",
+            observed.architecture, expected_architecture, identity.architecture
+        )
+        .into());
+    }
+    if observed.kernel_release != identity.kernel {
+        return Err(format!(
+            "module vermagic {:?} does not match running kernel {:?}",
+            observed.vermagic, identity.kernel
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn module_parameter_string(parameters: &[OsString]) -> Result<CString> {
+    let mut value = String::new();
+    for parameter in parameters {
+        let parameter = parameter
+            .to_str()
+            .ok_or("module parameter is not valid UTF-8")?;
+        if !value.is_empty() {
+            value.push(' ');
+        }
+        value.push_str(parameter);
+    }
+    Ok(CString::new(value)?)
+}
+
+fn finit_module_direct(module: &Path, parameters: &[OsString]) -> Result<()> {
+    let module = File::open(module)?;
+    let parameters = module_parameter_string(parameters)?;
+    // SAFETY: the file descriptor remains open for the syscall, `parameters`
+    // is NUL terminated, and flags=0 requests the kernel's normal validation.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_finit_module,
+            module.as_raw_fd(),
+            parameters.as_ptr(),
+            0,
+        )
+    };
+    if result != 0 {
+        return Err(format!("finit_module failed: {}", io::Error::last_os_error()).into());
+    }
+    Ok(())
+}
+
 fn wait_for_edge(identity: &NodeIdentity, source: &str, already_loaded: bool) -> Result<()> {
     for _ in 0..100 {
         let block = fs::metadata("/host/dev/zcnblk0")
@@ -789,58 +862,13 @@ fn run_setup() -> Result<()> {
         }
     }
 
+    let module_host_path = host_path(&module_path)?;
+    verify_module_compatibility(&module_host_path, &identity)?;
+
     let mut insmod = host_command("insmod");
-    let mut modinfo = host_command("modinfo");
-    if insmod.is_none() || modinfo.is_none() {
-        if !env_bool("ZCNBLK_INSTALL_MODULE_TOOLS", false)? {
-            return Err("insmod/modinfo are absent and nodeSetup.installModuleTools=false".into());
-        }
+    if insmod.is_none() && env_bool("ZCNBLK_INSTALL_MODULE_TOOLS", false)? {
         install_module_tools()?;
         insmod = host_command("insmod");
-        modinfo = host_command("modinfo");
-    }
-    let insmod = insmod.ok_or("host package installation did not provide insmod")?;
-    let modinfo = modinfo.ok_or("host package installation did not provide modinfo")?;
-    let module_arg = module_path.as_os_str().to_owned();
-    let name_output = host_output(
-        &modinfo,
-        &[
-            OsString::from("-F"),
-            OsString::from("name"),
-            module_arg.clone(),
-        ],
-    )?;
-    if !name_output.status.success() {
-        return Err(format!("modinfo name query failed with {}", name_output.status).into());
-    }
-    let name = String::from_utf8(name_output.stdout)?.trim().to_string();
-    if name != MODULE_NAME {
-        return Err(format!("module name is {name:?}, expected {MODULE_NAME}").into());
-    }
-    let vermagic_output = host_output(
-        &modinfo,
-        &[
-            OsString::from("-F"),
-            OsString::from("vermagic"),
-            module_arg.clone(),
-        ],
-    )?;
-    if !vermagic_output.status.success() {
-        return Err(format!(
-            "modinfo vermagic query failed with {}",
-            vermagic_output.status
-        )
-        .into());
-    }
-    let vermagic = String::from_utf8(vermagic_output.stdout)?
-        .trim()
-        .to_string();
-    if vermagic != identity.kernel && !vermagic.starts_with(&format!("{} ", identity.kernel)) {
-        return Err(format!(
-            "module vermagic {vermagic:?} does not match running kernel {:?}",
-            identity.kernel
-        )
-        .into());
     }
     if let Some(modprobe) = host_command("modprobe") {
         for dependency in ["authenc", "gcm", "sha256_generic"] {
@@ -848,9 +876,17 @@ fn run_setup() -> Result<()> {
         }
     }
 
-    let mut arguments = vec![module_arg];
-    arguments.extend(parse_module_parameters(&parameters_file)?);
-    host_success(&insmod, &arguments)?;
+    let parameters = parse_module_parameters(&parameters_file)?;
+    if let Some(insmod) = insmod {
+        let mut arguments = vec![module_path.as_os_str().to_owned()];
+        arguments.extend(parameters);
+        host_success(&insmod, &arguments)?;
+    } else {
+        println!(
+            "zcnblk-node-setup: host insmod is absent; loading verified module with finit_module"
+        );
+        finit_module_direct(&module_host_path, &parameters)?;
+    }
     drop(cleanup);
     wait_for_edge(&identity, &source_text, false)
 }
@@ -949,6 +985,20 @@ mod tests {
         fs::write(&invalid, "transport=tcp\n").unwrap();
         assert!(parse_module_parameters(&invalid).is_err());
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn maps_uname_architectures_to_oci_architectures() {
+        assert_eq!(oci_architecture("x86_64").unwrap(), "amd64");
+        assert_eq!(oci_architecture("aarch64").unwrap(), "arm64");
+        assert!(oci_architecture("mystery64").is_err());
+    }
+
+    #[test]
+    fn finit_module_parameters_are_space_delimited_and_nul_terminated() {
+        let parameters = vec![OsString::from("transport=shm"), OsString::from("lanes=4")];
+        let encoded = module_parameter_string(&parameters).unwrap();
+        assert_eq!(encoded.to_bytes_with_nul(), b"transport=shm lanes=4\0");
     }
 
     #[test]

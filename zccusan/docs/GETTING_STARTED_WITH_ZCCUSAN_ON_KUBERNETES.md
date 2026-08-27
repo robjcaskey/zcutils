@@ -1,6 +1,6 @@
 # Getting started 1: Kubernetes happy path
 
-This deliberately assumes everything goes right: run it from a zcutils checkout with Helm 3, `kubectl`, three Kubernetes nodes, a kernel included in the [module matrix](../../docs/kernel-module-build-matrix.md), and permission to run privileged CSI Pods. Replace the three example node names.
+This deliberately assumes everything goes right: run it from a zcutils checkout with Helm 3, `kubectl`, three Kubernetes nodes, a kernel included in the [module matrix](../../docs/kernel-module-build-matrix.md) (otherwise follow the [custom-kernel build guide](BUILD_KERNEL_MODULE.md)), and permission to run privileged CSI Pods. Replace the three example node names.
 
 Create `namespace.yaml` with the following contents to hold the zccusan services and this example workload.
 
