@@ -9,11 +9,47 @@ class FakeDsqlStore:
     def __init__(self):
         self.statements = []
         self.batches = []
+        self.benchmark_rails = {}
 
     def execute(self, sql, parameters=None):
         self.statements.append({"sql": sql, "parameters": parameters or []})
+        if "INSERT INTO community_benchmark_rails" in sql:
+            values = self._values(parameters)
+            key = (values["public_id"], values["run_id"], values["rail_index"])
+            self.benchmark_rails[key] = {
+                "rail_index": values["rail_index"],
+                "expected_rail_count": values["rail_count"],
+                "logical_operations": values["operations"],
+                "measurement_duration_ns": values["duration_ns"],
+                "reported_iops": values["reported_iops"],
+                **{
+                    name: values.get(name)
+                    for name in (
+                        "size_bytes", "latency_sample_count", "latency_p50_ns",
+                        "latency_p99_ns", "latency_p995_ns", "latency_p999_ns",
+                        "latency_jitter_p995_ns",
+                    )
+                },
+            }
 
-    def query(self, _sql, _parameters=None):
+    @staticmethod
+    def _values(parameters):
+        values = {}
+        for parameter in parameters or []:
+            encoded = parameter["value"]
+            values[parameter["name"]] = (
+                None if encoded.get("isNull") else next(iter(encoded.values()))
+            )
+        return values
+
+    def query(self, sql, parameters=None):
+        if "FROM community_benchmark_rails" in sql:
+            values = self._values(parameters)
+            rows = [
+                row for (environment_id, run_id, _), row in self.benchmark_rails.items()
+                if environment_id == values["public_id"] and run_id == values["run_id"]
+            ]
+            return sorted(rows, key=lambda row: row["rail_index"])
         return [{
             "public_environment_id": "env-0123456789ab",
             "first_seen_ms": 1,
@@ -42,6 +78,17 @@ class FakeDsqlStore:
             "latency_p995_ns": 2500,
             "latency_p999_ns": 3000,
             "latency_jitter_p995_ns": 1500,
+            "recent_iops": 17_935_873,
+            "benchmark_run_id": "run-0123456789abcdef",
+            "benchmark_status": "complete",
+            "benchmark_expected_rails": 2,
+            "benchmark_completed_rails": 2,
+            "benchmark_logical_operations": 83_886_080,
+            "benchmark_duration_ns": 4_677_000_000,
+            "benchmark_rails": [
+                {"rail_index": 0, "logical_iops": 8_969_696},
+                {"rail_index": 1, "logical_iops": 8_967_936},
+            ],
             "active": True,
         }]
 
@@ -92,6 +139,10 @@ class SurveyLambdaTests(unittest.TestCase):
         self.assertEqual(body["environments"][0]["frontend"], "linux-block")
         self.assertEqual(body["environments"][0]["io_size_bytes"], 4096)
         self.assertEqual(body["environments"][0]["transport_paths"], {"efa-direct": 2})
+        benchmark = body["environments"][0]["recent_benchmark"]
+        self.assertEqual(benchmark["logical_iops"], 17_935_873)
+        self.assertEqual(benchmark["expected_rail_count"], 2)
+        self.assertEqual(len(benchmark["rails"]), 2)
         self.assertNotIn("payload", body["environments"][0])
 
     def test_ingest_persists_only_validated_non_identifying_telemetry(self):
@@ -194,6 +245,77 @@ class SurveyLambdaTests(unittest.TestCase):
             if parameter["name"] == "active_volumes"
         )
         self.assertEqual(active_volumes["value"]["longValue"], 0)
+
+    def test_sender_rails_form_one_exact_logical_benchmark(self):
+        common = {
+            "telemetry_schema_version": 2,
+            "anonymization_schema_version": 2,
+            "event_type": "transport_benchmark_result",
+            "anonymous_installation_id": "anon-" + "c" * 64,
+            "anonymous_benchmark_run_id": "anonrun-" + "d" * 64,
+            "benchmark_result_scope": "rail",
+            "benchmark_rail_count": 2,
+            "logical_operations": 41_943_040,
+            "active_volume_count": 0,
+            "io_size_bytes": 4096,
+            "latency_scope": "remote-application-ack",
+        }
+        rail0 = {
+            **common,
+            "benchmark_rail_index": 0,
+            "measurement_duration_ns": 4_676_083_000,
+        }
+        rail1 = {
+            **common,
+            "benchmark_rail_index": 1,
+            "measurement_duration_ns": 4_677_000_000,
+        }
+        for rail in (rail0, rail1):
+            rail["total_iops"] = (
+                rail["logical_operations"] * 1_000_000_000
+                + rail["measurement_duration_ns"] // 2
+            ) // rail["measurement_duration_ns"]
+
+        response = self.app.handler({
+            "body": json.dumps([rail0, rail1]),
+            "requestContext": {"http": {"method": "POST", "path": "/survey"}},
+        }, None)
+
+        self.assertEqual(response["statusCode"], 200)
+        self.assertEqual(len(self.store.benchmark_rails), 2)
+        projection = self.store.statements[-1]
+        values = self.store._values(projection["parameters"])
+        self.assertEqual(values["recent_iops"], 17_935_873)
+        self.assertEqual(values["benchmark_expected_rails"], 2)
+        self.assertEqual(values["benchmark_completed_rails"], 2)
+        self.assertEqual(values["benchmark_logical_operations"], 83_886_080)
+        self.assertEqual(values["benchmark_duration_ns"], 4_677_000_000)
+        rails = json.loads(values["benchmark_rails"])
+        self.assertEqual([rail["rail_index"] for rail in rails], [0, 1])
+
+    def test_sender_rail_with_rounded_iops_not_matching_counts_is_rejected(self):
+        event = {
+            "telemetry_schema_version": 2,
+            "anonymization_schema_version": 2,
+            "event_type": "transport_benchmark_result",
+            "anonymous_installation_id": "anon-" + "e" * 64,
+            "anonymous_benchmark_run_id": "anonrun-" + "f" * 64,
+            "benchmark_result_scope": "rail",
+            "benchmark_rail_index": 0,
+            "benchmark_rail_count": 2,
+            "logical_operations": 100,
+            "measurement_duration_ns": 1_000_000_000,
+            "total_iops": 999,
+        }
+        response = self.app.handler({
+            "body": json.dumps(event),
+            "requestContext": {"http": {"method": "POST", "path": "/survey"}},
+        }, None)
+        body = json.loads(response["body"])
+        self.assertEqual(response["statusCode"], 400)
+        self.assertEqual(
+            body["invalid_events"][0]["error"], "inconsistent_benchmark_iops"
+        )
 
 
 if __name__ == "__main__":

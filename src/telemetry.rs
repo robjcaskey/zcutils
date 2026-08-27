@@ -1,8 +1,8 @@
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-pub const CURRENT_TELEMETRY_SCHEMA_VERSION: u64 = 1;
-pub const CURRENT_ANONYMIZATION_SCHEMA_VERSION: u64 = 1;
+pub const CURRENT_TELEMETRY_SCHEMA_VERSION: u64 = 2;
+pub const CURRENT_ANONYMIZATION_SCHEMA_VERSION: u64 = 2;
 
 const SAFE_STRING_FIELDS: &[&str] = &[
     "event_type",
@@ -44,6 +44,10 @@ const SAFE_INTEGER_FIELDS: &[&str] = &[
     "worker_count",
     "numa_node_count",
     "nic_count",
+    "benchmark_rail_index",
+    "benchmark_rail_count",
+    "logical_operations",
+    "measurement_duration_ns",
 ];
 const SAFE_BOOLEAN_FIELDS: &[&str] = &[
     "ok",
@@ -58,6 +62,7 @@ const SOURCE_ID_FIELDS: &[&str] = &[
     "environment_id",
     "anonymous_installation_id",
 ];
+const SOURCE_BENCHMARK_RUN_ID_FIELDS: &[&str] = &["benchmark_run_id", "anonymous_benchmark_run_id"];
 
 /// A telemetry record received from a local process or a mixed-version client.
 ///
@@ -231,6 +236,12 @@ impl NonIdentifyingTelemetry {
         ) {
             output.insert("frontend".to_string(), Value::String(value));
         }
+        if let Some(value) = approved_literal(
+            source.get("benchmark_result_scope"),
+            &["rail", "standalone"],
+        ) {
+            output.insert("benchmark_result_scope".to_string(), Value::String(value));
+        }
         if let Some(value) = safe_transport_map(source.get("transport_paths")) {
             output.insert("transport_paths".to_string(), Value::Object(value));
         }
@@ -245,6 +256,15 @@ impl NonIdentifyingTelemetry {
             output.insert(
                 "anonymous_installation_id".to_string(),
                 Value::String(anonymous_installation_id(&source_id)),
+            );
+        }
+        if let Some(source_id) = SOURCE_BENCHMARK_RUN_ID_FIELDS
+            .iter()
+            .find_map(|name| bounded_string(source.get(*name), 256))
+        {
+            output.insert(
+                "anonymous_benchmark_run_id".to_string(),
+                Value::String(anonymous_benchmark_run_id(&source_id)),
             );
         }
 
@@ -461,6 +481,13 @@ fn anonymous_installation_id(source_id: &str) -> String {
     format!("anon-{:x}", digest.finalize())
 }
 
+fn anonymous_benchmark_run_id(source_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"zccusan-community-benchmark-run-v1\0");
+    digest.update(source_id.as_bytes());
+    format!("anonrun-{:x}", digest.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,5 +600,37 @@ mod tests {
         // A single unknown key rejects the transport map instead of leaking a
         // caller-defined label that might contain an identifier.
         assert!(output.get("transport_paths").is_none());
+    }
+
+    #[test]
+    fn benchmark_rails_keep_only_anonymous_relationship_and_exact_counts() {
+        let record = TelemetryRecord::from_value(json!({
+            "telemetry_schema_version": 2,
+            "benchmark_run_id": "private-run-name-with-a-hostname",
+            "benchmark_result_scope": "rail",
+            "benchmark_rail_index": 1,
+            "benchmark_rail_count": 2,
+            "logical_operations": 41_943_040,
+            "measurement_duration_ns": 4_677_000_000_u64,
+            "total_iops": 8_967_937,
+        }))
+        .expect("benchmark rail");
+
+        let output = record.anonymize();
+        assert_eq!(output.as_value()["benchmark_result_scope"], "rail");
+        assert_eq!(output.as_value()["benchmark_rail_index"], 1);
+        assert_eq!(output.as_value()["benchmark_rail_count"], 2);
+        assert_eq!(output.as_value()["logical_operations"], 41_943_040);
+        assert_eq!(
+            output.as_value()["measurement_duration_ns"],
+            4_677_000_000_u64
+        );
+        let run_id = output.as_value()["anonymous_benchmark_run_id"]
+            .as_str()
+            .expect("anonymous run id");
+        assert!(run_id.starts_with("anonrun-"));
+        let serialized = String::from_utf8(output.to_json_bytes()).expect("JSON UTF-8");
+        assert!(!serialized.contains("private-run-name"));
+        assert!(!serialized.contains("hostname"));
     }
 }

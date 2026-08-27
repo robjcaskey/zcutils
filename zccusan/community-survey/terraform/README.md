@@ -87,7 +87,7 @@ Then post survey payloads:
 ```bash
 curl -s -X POST "$survey_post_url" \
   -H 'content-type: application/json' \
-  -d '{"telemetry_schema_version":1,"anonymization_schema_version":1,"event_type":"csi_hourly_stats","cloud_provider":"aws","cloud_region":"us-east-1","anonymous_installation_id":"anon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active_volume_count":2,"total_iops":1200}'
+  -d '{"telemetry_schema_version":2,"anonymization_schema_version":2,"event_type":"csi_hourly_stats","cloud_provider":"aws","cloud_region":"us-east-1","anonymous_installation_id":"anon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active_volume_count":2,"total_iops":1200}'
 ```
 
 Stream multiple events in a single POST using any of these formats:
@@ -97,8 +97,8 @@ Stream multiple events in a single POST using any of these formats:
 curl -s -X POST "$survey_post_url" \
   -H 'content-type: application/json' \
   -d '[
-    {"telemetry_schema_version":1,"anonymization_schema_version":1,"event_type":"csi_hourly_stats","cloud_provider":"aws","cloud_region":"us-east-1","anonymous_installation_id":"anon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active_volume_count":2,"total_iops":1200},
-    {"telemetry_schema_version":1,"anonymization_schema_version":1,"event_type":"csi_hourly_stats","cloud_provider":"azure","cloud_region":"eastus","anonymous_installation_id":"anon-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","active_volume_count":1,"total_iops":400}
+    {"telemetry_schema_version":2,"anonymization_schema_version":2,"event_type":"csi_hourly_stats","cloud_provider":"aws","cloud_region":"us-east-1","anonymous_installation_id":"anon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active_volume_count":2,"total_iops":1200},
+    {"telemetry_schema_version":2,"anonymization_schema_version":2,"event_type":"csi_hourly_stats","cloud_provider":"azure","cloud_region":"eastus","anonymous_installation_id":"anon-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","active_volume_count":1,"total_iops":400}
   ]'
 ```
 
@@ -107,7 +107,7 @@ curl -s -X POST "$survey_post_url" \
 curl -s -X POST "$survey_post_url" \
   -H 'content-type: application/json' \
   -d '{"events":[
-    {"telemetry_schema_version":1,"anonymization_schema_version":1,"event_type":"csi_hourly_stats","cloud_provider":"aws","cloud_region":"us-east-1","anonymous_installation_id":"anon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active_volume_count":2,"total_iops":1200}
+    {"telemetry_schema_version":2,"anonymization_schema_version":2,"event_type":"csi_hourly_stats","cloud_provider":"aws","cloud_region":"us-east-1","anonymous_installation_id":"anon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active_volume_count":2,"total_iops":1200}
   ]}'
 ```
 
@@ -126,7 +126,13 @@ Success response:
 ## Notes
 
 - Lambda connects to DSQL's PostgreSQL-compatible endpoint over TLS and uses
-  `dsql:DbConnectAdmin` solely to bootstrap and access the two application tables.
+  `dsql:DbConnectAdmin` solely to bootstrap and access the event, environment,
+  and benchmark-rail application tables.
+- Schema-v2 benchmark publishers associate every sender rail with an anonymous
+  run ID and include the exact logical-operation count and measured duration.
+  Pulse publishes a parent logical IOPS result only after every declared rail
+  arrives, using `sum(logical operations) / max(rail duration)`, and exposes the
+  contributing rail measurements next to the aggregate.
 - Keep `terraform` and AWS credentials scoped to least privilege when running this in CI/CD.
 - `survey_post_url` is the endpoint for `ZCCUSAN_COMMUNITY_SURVEY_API_ENDPOINT`.
 - Telemetry is transformed into `NonIdentifyingTelemetry` before it leaves an

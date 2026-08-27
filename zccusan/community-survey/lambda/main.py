@@ -17,6 +17,9 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 DATABASE_NAME = os.environ.get("SURVEY_DB_NAME", "postgres")
 TABLE_NAME = os.environ.get("SURVEY_DB_TABLE", "survey_events")
 ENVIRONMENTS_TABLE = os.environ.get("SURVEY_ENVIRONMENTS_TABLE", "community_environments")
+BENCHMARK_RAILS_TABLE = os.environ.get(
+    "SURVEY_BENCHMARK_RAILS_TABLE", "community_benchmark_rails"
+)
 ACTIVE_WINDOW_HOURS = int(os.environ.get("SURVEY_ACTIVE_WINDOW_HOURS", "2"))
 MAX_EVENT_BYTES = 4 * 1024
 INSERT_BATCH_SIZE = 64
@@ -39,6 +42,8 @@ _SAFE_INTEGER_FIELDS = (
     "latency_p95_ns", "latency_p99_ns", "latency_p995_ns", "latency_p999_ns",
     "latency_jitter_p995_ns",
     "lane_count", "worker_count", "numa_node_count", "nic_count",
+    "benchmark_rail_index", "benchmark_rail_count", "logical_operations",
+    "measurement_duration_ns",
 )
 _SAFE_BOOLEAN_FIELDS = (
     "ok", "evicted_events_were_logged_to_stdout",
@@ -51,7 +56,11 @@ _TOPOLOGY_STRING_FIELDS = (
     "virtualization_family", "lane_mapping",
 )
 _COMMUNITY_ALLOWED_FIELDS = frozenset(
-    ("telemetry_schema_version", "anonymization_schema_version", "anonymous_installation_id")
+    (
+        "telemetry_schema_version", "anonymization_schema_version",
+        "anonymous_installation_id", "anonymous_benchmark_run_id",
+        "benchmark_result_scope",
+    )
     + _SAFE_STRING_FIELDS
     + _SAFE_INTEGER_FIELDS
     + _SAFE_BOOLEAN_FIELDS
@@ -60,6 +69,7 @@ _COMMUNITY_ALLOWED_FIELDS = frozenset(
     + ("transport_paths", "topology_hops")
 )
 _ANONYMOUS_INSTALLATION_ID = re.compile(r"^anon-[0-9a-f]{64}$")
+_ANONYMOUS_BENCHMARK_RUN_ID = re.compile(r"^anonrun-[0-9a-f]{64}$")
 _APPROVED_KERNEL = re.compile(
     r"^linux-(?:custom|\d+(?:\.\d+){1,3}|\d+(?:\.\d+){1,3}(?:-\d+)+-(?:aws|generic|azure|gcp))$"
 )
@@ -88,6 +98,7 @@ _VIRTUALIZATION_FAMILIES = frozenset((
 _LANE_MAPPINGS = frozenset((
     "one-lane-per-worker", "shared-workers", "dedicated-with-spares", "unknown",
 ))
+_BENCHMARK_RESULT_SCOPES = frozenset(("rail", "standalone"))
 
 
 def _response(status: int, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -322,7 +333,34 @@ def _ensure_schema() -> None:
       numa_node_count BIGINT,
       lane_mapping TEXT,
       cpu_pinned BOOLEAN,
-      numa_local BOOLEAN
+      numa_local BOOLEAN,
+      benchmark_run_id TEXT,
+      benchmark_status TEXT,
+      benchmark_expected_rails BIGINT,
+      benchmark_completed_rails BIGINT,
+      benchmark_logical_operations BIGINT,
+      benchmark_duration_ns BIGINT,
+      benchmark_rails JSONB
+    );
+    """)
+    _execute_sql(f"""
+    CREATE TABLE IF NOT EXISTS {BENCHMARK_RAILS_TABLE} (
+      public_environment_id TEXT NOT NULL,
+      benchmark_run_id TEXT NOT NULL,
+      rail_index BIGINT NOT NULL,
+      expected_rail_count BIGINT NOT NULL,
+      logical_operations BIGINT NOT NULL,
+      measurement_duration_ns BIGINT NOT NULL,
+      reported_iops BIGINT NOT NULL,
+      size_bytes BIGINT,
+      latency_sample_count BIGINT,
+      latency_p50_ns BIGINT,
+      latency_p99_ns BIGINT,
+      latency_p995_ns BIGINT,
+      latency_p999_ns BIGINT,
+      latency_jitter_p995_ns BIGINT,
+      received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (public_environment_id, benchmark_run_id, rail_index)
     );
     """)
     _execute_sql(f"""
@@ -355,6 +393,13 @@ def _ensure_schema() -> None:
         ("lane_mapping", "TEXT"),
         ("cpu_pinned", "BOOLEAN"),
         ("numa_local", "BOOLEAN"),
+        ("benchmark_run_id", "TEXT"),
+        ("benchmark_status", "TEXT"),
+        ("benchmark_expected_rails", "BIGINT"),
+        ("benchmark_completed_rails", "BIGINT"),
+        ("benchmark_logical_operations", "BIGINT"),
+        ("benchmark_duration_ns", "BIGINT"),
+        ("benchmark_rails", "JSONB"),
     ):
         _execute_sql(f"""
         ALTER TABLE {ENVIRONMENTS_TABLE}
@@ -399,7 +444,7 @@ def _bounded_string(value: Any, maximum: int = 128):
 
 def _validate_non_identifying_telemetry(event: Dict[str, Any]):
     """Reject anything outside the versioned community-safe wire schema."""
-    if event.get("anonymization_schema_version") != 1:
+    if event.get("anonymization_schema_version") not in (1, 2):
         return "unsupported_anonymization_schema_version"
     telemetry_schema_version = event.get("telemetry_schema_version")
     if (
@@ -420,6 +465,12 @@ def _validate_non_identifying_telemetry(event: Dict[str, Any]):
         or not _ANONYMOUS_INSTALLATION_ID.fullmatch(anonymous_id)
     ):
         return "invalid_anonymous_installation_id"
+    anonymous_run_id = event.get("anonymous_benchmark_run_id")
+    if anonymous_run_id is not None and (
+        not isinstance(anonymous_run_id, str)
+        or not _ANONYMOUS_BENCHMARK_RUN_ID.fullmatch(anonymous_run_id)
+    ):
+        return "invalid_anonymous_benchmark_run_id"
     for name in _SAFE_STRING_FIELDS:
         value = event.get(name)
         if value is not None and (
@@ -473,6 +524,31 @@ def _validate_non_identifying_telemetry(event: Dict[str, Any]):
     lane_mapping = event.get("lane_mapping")
     if lane_mapping is not None and lane_mapping not in _LANE_MAPPINGS:
         return "invalid_lane_mapping"
+    benchmark_scope = event.get("benchmark_result_scope")
+    if benchmark_scope is not None and benchmark_scope not in _BENCHMARK_RESULT_SCOPES:
+        return "invalid_benchmark_result_scope"
+    rail_index = event.get("benchmark_rail_index")
+    rail_count = event.get("benchmark_rail_count")
+    rail_relationship = (anonymous_run_id, rail_index, rail_count)
+    if any(value is not None for value in rail_relationship):
+        if anonymous_id is None:
+            return "benchmark_rail_requires_installation"
+        if any(value is None for value in rail_relationship):
+            return "incomplete_benchmark_rail_relationship"
+        if event.get("event_type") != "transport_benchmark_result" or benchmark_scope != "rail":
+            return "invalid_benchmark_rail_context"
+        if not 1 <= rail_count <= 256 or not 0 <= rail_index < rail_count:
+            return "invalid_benchmark_rail_ordinal"
+        operations = event.get("logical_operations")
+        duration_ns = event.get("measurement_duration_ns")
+        reported_iops = event.get("total_iops")
+        if not operations or not duration_ns or reported_iops is None:
+            return "incomplete_benchmark_measurement"
+        calculated_iops = (operations * 1_000_000_000 + duration_ns // 2) // duration_ns
+        if abs(reported_iops - calculated_iops) > 1:
+            return "inconsistent_benchmark_iops"
+    elif benchmark_scope == "rail":
+        return "incomplete_benchmark_rail_relationship"
     transport_paths = event.get("transport_paths")
     if transport_paths is not None and (
         not isinstance(transport_paths, dict)
@@ -622,22 +698,169 @@ def _safe_nonnegative_int(value: Any):
         return None
 
 
+def _public_environment_id(anonymous_installation_id: str) -> str:
+    return "env-" + _hash_value(anonymous_installation_id.strip())[:12]
+
+
+def _record_benchmark_rail(payload_event: Dict[str, Any]):
+    """Persist one rail and derive the parent run from exact integer evidence."""
+    if payload_event.get("benchmark_result_scope") != "rail":
+        return None
+    anonymous_installation_id = payload_event.get("anonymous_installation_id")
+    anonymous_run_id = payload_event.get("anonymous_benchmark_run_id")
+    if not isinstance(anonymous_installation_id, str) or not isinstance(anonymous_run_id, str):
+        return None
+
+    public_id = _public_environment_id(anonymous_installation_id)
+    public_run_id = "run-" + _hash_value(anonymous_run_id)[:16]
+    rail_index = int(payload_event["benchmark_rail_index"])
+    rail_count = int(payload_event["benchmark_rail_count"])
+    operations = int(payload_event["logical_operations"])
+    duration_ns = int(payload_event["measurement_duration_ns"])
+    reported_iops = int(payload_event["total_iops"])
+
+    nullable_integers = {
+        "size_bytes": _safe_nonnegative_int(payload_event.get("size_bytes")),
+        "latency_sample_count": _safe_nonnegative_int(payload_event.get("latency_sample_count")),
+        "latency_p50_ns": _safe_nonnegative_int(payload_event.get("latency_p50_ns")),
+        "latency_p99_ns": _safe_nonnegative_int(payload_event.get("latency_p99_ns")),
+        "latency_p995_ns": _safe_nonnegative_int(payload_event.get("latency_p995_ns")),
+        "latency_p999_ns": _safe_nonnegative_int(payload_event.get("latency_p999_ns")),
+        "latency_jitter_p995_ns": _safe_nonnegative_int(payload_event.get("latency_jitter_p995_ns")),
+    }
+    parameters = [
+        {"name": "public_id", "value": {"stringValue": public_id}},
+        {"name": "run_id", "value": {"stringValue": public_run_id}},
+        {"name": "rail_index", "value": {"longValue": rail_index}},
+        {"name": "rail_count", "value": {"longValue": rail_count}},
+        {"name": "operations", "value": {"longValue": operations}},
+        {"name": "duration_ns", "value": {"longValue": duration_ns}},
+        {"name": "reported_iops", "value": {"longValue": reported_iops}},
+    ]
+    parameters.extend(
+        {
+            "name": name,
+            "value": {"longValue": value} if value is not None else {"isNull": True},
+        }
+        for name, value in nullable_integers.items()
+    )
+    _execute_sql(
+        f"""
+        INSERT INTO {BENCHMARK_RAILS_TABLE} (
+          public_environment_id, benchmark_run_id, rail_index, expected_rail_count,
+          logical_operations, measurement_duration_ns, reported_iops, size_bytes,
+          latency_sample_count, latency_p50_ns, latency_p99_ns, latency_p995_ns,
+          latency_p999_ns, latency_jitter_p995_ns, received_at
+        ) VALUES (
+          :public_id, :run_id, :rail_index, :rail_count, :operations, :duration_ns,
+          :reported_iops, :size_bytes, :latency_sample_count, :latency_p50_ns,
+          :latency_p99_ns, :latency_p995_ns, :latency_p999_ns,
+          :latency_jitter_p995_ns, now()
+        )
+        ON CONFLICT (public_environment_id, benchmark_run_id, rail_index) DO UPDATE SET
+          expected_rail_count = EXCLUDED.expected_rail_count,
+          logical_operations = EXCLUDED.logical_operations,
+          measurement_duration_ns = EXCLUDED.measurement_duration_ns,
+          reported_iops = EXCLUDED.reported_iops,
+          size_bytes = EXCLUDED.size_bytes,
+          latency_sample_count = EXCLUDED.latency_sample_count,
+          latency_p50_ns = EXCLUDED.latency_p50_ns,
+          latency_p99_ns = EXCLUDED.latency_p99_ns,
+          latency_p995_ns = EXCLUDED.latency_p995_ns,
+          latency_p999_ns = EXCLUDED.latency_p999_ns,
+          latency_jitter_p995_ns = EXCLUDED.latency_jitter_p995_ns,
+          received_at = now()
+        """,
+        parameters,
+    )
+    rows = _query_sql(
+        f"""
+        SELECT rail_index, expected_rail_count, logical_operations,
+               measurement_duration_ns, reported_iops, size_bytes,
+               latency_sample_count, latency_p50_ns, latency_p99_ns,
+               latency_p995_ns, latency_p999_ns, latency_jitter_p995_ns
+          FROM {BENCHMARK_RAILS_TABLE}
+         WHERE public_environment_id = :public_id
+           AND benchmark_run_id = :run_id
+         ORDER BY rail_index
+        """,
+        [
+            {"name": "public_id", "value": {"stringValue": public_id}},
+            {"name": "run_id", "value": {"stringValue": public_run_id}},
+        ],
+    )
+    usable_rows = [
+        row for row in rows
+        if _safe_nonnegative_int(row.get("expected_rail_count")) == rail_count
+        and _safe_nonnegative_int(row.get("rail_index")) is not None
+        and _safe_nonnegative_int(row.get("logical_operations")) is not None
+        and (_safe_nonnegative_int(row.get("measurement_duration_ns")) or 0) > 0
+    ]
+    ordinals = {_safe_nonnegative_int(row.get("rail_index")) for row in usable_rows}
+    complete = ordinals == set(range(rail_count))
+    rails = []
+    for row in usable_rows:
+        rail_operations = int(row["logical_operations"])
+        rail_duration = int(row["measurement_duration_ns"])
+        rail = {
+            "rail_index": int(row["rail_index"]),
+            "logical_operations": rail_operations,
+            "duration_ns": rail_duration,
+            "logical_iops": (rail_operations * 1_000_000_000 + rail_duration // 2) // rail_duration,
+        }
+        for name in (
+            "size_bytes", "latency_sample_count", "latency_p50_ns", "latency_p99_ns",
+            "latency_p995_ns", "latency_p999_ns", "latency_jitter_p995_ns",
+        ):
+            value = _safe_nonnegative_int(row.get(name))
+            if value is not None:
+                rail[name] = value
+        rails.append(rail)
+    rails.sort(key=lambda rail: rail["rail_index"])
+    state = {
+        "run_id": public_run_id,
+        "status": "complete" if complete else "collecting",
+        "expected_rails": rail_count,
+        "completed_rails": len(ordinals),
+        "rails": rails,
+        "logical_operations": None,
+        "duration_ns": None,
+        "logical_iops": None,
+    }
+    if complete:
+        aggregate_operations = sum(rail["logical_operations"] for rail in rails)
+        aggregate_duration_ns = max(rail["duration_ns"] for rail in rails)
+        state.update({
+            "logical_operations": aggregate_operations,
+            "duration_ns": aggregate_duration_ns,
+            "logical_iops": (
+                aggregate_operations * 1_000_000_000 + aggregate_duration_ns // 2
+            ) // aggregate_duration_ns,
+        })
+    return state
+
+
 def _upsert_environment(
     payload_event: Dict[str, Any],
     event_type: str,
     region: str,
     event_increment: int,
+    benchmark_state=None,
 ) -> None:
     anonymous_installation_id = payload_event.get("anonymous_installation_id")
     if not isinstance(anonymous_installation_id, str) or not anonymous_installation_id.strip():
         return
 
-    public_id = "env-" + _hash_value(anonymous_installation_id.strip())[:12]
+    public_id = _public_environment_id(anonymous_installation_id)
     cloud_provider = _bounded_string(payload_event.get("cloud_provider"), 32)
     version = payload_event.get("version")
     version = version[:64] if isinstance(version, str) and version else None
     active_volumes = _safe_nonnegative_int(payload_event.get("active_volume_count"))
     recent_iops = _safe_nonnegative_int(payload_event.get("total_iops"))
+    if payload_event.get("benchmark_result_scope") == "rail":
+        # A rail is not the benchmark. Publish only the exact parent aggregate,
+        # and leave an earlier complete headline untouched while collecting.
+        recent_iops = benchmark_state.get("logical_iops") if benchmark_state else None
     io_size_bytes = _safe_nonnegative_int(payload_event.get("io_size_bytes"))
     kernel_family = _bounded_string(payload_event.get("kernel_family"), 96)
     topology_class = _bounded_string(payload_event.get("topology_class"), 32)
@@ -661,6 +884,16 @@ def _upsert_environment(
     latency_jitter_p995_ns = _safe_nonnegative_int(payload_event.get("latency_jitter_p995_ns"))
     cpu_pinned = payload_event.get("cpu_pinned") if isinstance(payload_event.get("cpu_pinned"), bool) else None
     numa_local = payload_event.get("numa_local") if isinstance(payload_event.get("numa_local"), bool) else None
+    benchmark_run_id = benchmark_state.get("run_id") if benchmark_state else None
+    benchmark_status = benchmark_state.get("status") if benchmark_state else None
+    benchmark_expected_rails = benchmark_state.get("expected_rails") if benchmark_state else None
+    benchmark_completed_rails = benchmark_state.get("completed_rails") if benchmark_state else None
+    benchmark_logical_operations = benchmark_state.get("logical_operations") if benchmark_state else None
+    benchmark_duration_ns = benchmark_state.get("duration_ns") if benchmark_state else None
+    benchmark_rails_json = (
+        json.dumps(benchmark_state.get("rails"), separators=(",", ":"))
+        if benchmark_state else None
+    )
     _execute_sql(
         f"""
         INSERT INTO {ENVIRONMENTS_TABLE} (
@@ -669,7 +902,10 @@ def _upsert_environment(
           kernel_family, topology_class, placement_scope, transport_paths, topology_hops,
           latency_sample_count, latency_p50_ns, latency_p99_ns, latency_p995_ns,
           latency_p999_ns, latency_jitter_p995_ns, frontend, virtualization_family,
-          lane_count, worker_count, nic_count, numa_node_count, lane_mapping, cpu_pinned, numa_local
+          lane_count, worker_count, nic_count, numa_node_count, lane_mapping, cpu_pinned, numa_local,
+          benchmark_run_id, benchmark_status, benchmark_expected_rails,
+          benchmark_completed_rails, benchmark_logical_operations,
+          benchmark_duration_ns, benchmark_rails
         ) VALUES (
           :public_id, now(), now(), :event_increment, :cloud_provider, :region, :version, :event_type,
           :active_volumes,
@@ -678,7 +914,10 @@ def _upsert_environment(
           :transport_paths::jsonb, :topology_hops::jsonb, :latency_sample_count,
           :latency_p50_ns, :latency_p99_ns, :latency_p995_ns, :latency_p999_ns,
           :latency_jitter_p995_ns, :frontend, :virtualization_family, :lane_count,
-          :worker_count, :nic_count, :numa_node_count, :lane_mapping, :cpu_pinned, :numa_local
+          :worker_count, :nic_count, :numa_node_count, :lane_mapping, :cpu_pinned, :numa_local,
+          :benchmark_run_id, :benchmark_status, :benchmark_expected_rails,
+          :benchmark_completed_rails, :benchmark_logical_operations,
+          :benchmark_duration_ns, :benchmark_rails::jsonb
         )
         ON CONFLICT (public_environment_id) DO UPDATE SET
           last_seen = now(),
@@ -689,7 +928,15 @@ def _upsert_environment(
           last_event_type = EXCLUDED.last_event_type,
           active_volume_count = COALESCE(EXCLUDED.active_volume_count, {ENVIRONMENTS_TABLE}.active_volume_count),
           lifecycle_active = COALESCE(EXCLUDED.lifecycle_active, {ENVIRONMENTS_TABLE}.lifecycle_active),
-          recent_iops = COALESCE(EXCLUDED.recent_iops, {ENVIRONMENTS_TABLE}.recent_iops),
+          recent_iops = CASE
+            WHEN :benchmark_present
+             AND {ENVIRONMENTS_TABLE}.benchmark_run_id = EXCLUDED.benchmark_run_id
+             AND {ENVIRONMENTS_TABLE}.benchmark_status = 'complete'
+             AND EXCLUDED.benchmark_status = 'collecting'
+              THEN {ENVIRONMENTS_TABLE}.recent_iops
+            WHEN :benchmark_present THEN EXCLUDED.recent_iops
+            ELSE COALESCE(EXCLUDED.recent_iops, {ENVIRONMENTS_TABLE}.recent_iops)
+          END,
           io_size_bytes = COALESCE(EXCLUDED.io_size_bytes, {ENVIRONMENTS_TABLE}.io_size_bytes),
           kernel_family = COALESCE(EXCLUDED.kernel_family, {ENVIRONMENTS_TABLE}.kernel_family),
           topology_class = COALESCE(EXCLUDED.topology_class, {ENVIRONMENTS_TABLE}.topology_class),
@@ -710,7 +957,52 @@ def _upsert_environment(
           numa_node_count = COALESCE(EXCLUDED.numa_node_count, {ENVIRONMENTS_TABLE}.numa_node_count),
           lane_mapping = COALESCE(EXCLUDED.lane_mapping, {ENVIRONMENTS_TABLE}.lane_mapping),
           cpu_pinned = COALESCE(EXCLUDED.cpu_pinned, {ENVIRONMENTS_TABLE}.cpu_pinned),
-          numa_local = COALESCE(EXCLUDED.numa_local, {ENVIRONMENTS_TABLE}.numa_local)
+          numa_local = COALESCE(EXCLUDED.numa_local, {ENVIRONMENTS_TABLE}.numa_local),
+          benchmark_run_id = CASE WHEN :benchmark_present THEN EXCLUDED.benchmark_run_id ELSE {ENVIRONMENTS_TABLE}.benchmark_run_id END,
+          benchmark_status = CASE
+            WHEN :benchmark_present
+             AND {ENVIRONMENTS_TABLE}.benchmark_run_id = EXCLUDED.benchmark_run_id
+             AND {ENVIRONMENTS_TABLE}.benchmark_status = 'complete'
+             AND EXCLUDED.benchmark_status = 'collecting'
+              THEN {ENVIRONMENTS_TABLE}.benchmark_status
+            WHEN :benchmark_present THEN EXCLUDED.benchmark_status
+            ELSE {ENVIRONMENTS_TABLE}.benchmark_status
+          END,
+          benchmark_expected_rails = CASE WHEN :benchmark_present THEN EXCLUDED.benchmark_expected_rails ELSE {ENVIRONMENTS_TABLE}.benchmark_expected_rails END,
+          benchmark_completed_rails = CASE
+            WHEN :benchmark_present
+             AND {ENVIRONMENTS_TABLE}.benchmark_run_id = EXCLUDED.benchmark_run_id
+              THEN GREATEST({ENVIRONMENTS_TABLE}.benchmark_completed_rails, EXCLUDED.benchmark_completed_rails)
+            WHEN :benchmark_present THEN EXCLUDED.benchmark_completed_rails
+            ELSE {ENVIRONMENTS_TABLE}.benchmark_completed_rails
+          END,
+          benchmark_logical_operations = CASE
+            WHEN :benchmark_present
+             AND {ENVIRONMENTS_TABLE}.benchmark_run_id = EXCLUDED.benchmark_run_id
+             AND {ENVIRONMENTS_TABLE}.benchmark_status = 'complete'
+             AND EXCLUDED.benchmark_status = 'collecting'
+              THEN {ENVIRONMENTS_TABLE}.benchmark_logical_operations
+            WHEN :benchmark_present THEN EXCLUDED.benchmark_logical_operations
+            ELSE {ENVIRONMENTS_TABLE}.benchmark_logical_operations
+          END,
+          benchmark_duration_ns = CASE
+            WHEN :benchmark_present
+             AND {ENVIRONMENTS_TABLE}.benchmark_run_id = EXCLUDED.benchmark_run_id
+             AND {ENVIRONMENTS_TABLE}.benchmark_status = 'complete'
+             AND EXCLUDED.benchmark_status = 'collecting'
+              THEN {ENVIRONMENTS_TABLE}.benchmark_duration_ns
+            WHEN :benchmark_present THEN EXCLUDED.benchmark_duration_ns
+            ELSE {ENVIRONMENTS_TABLE}.benchmark_duration_ns
+          END,
+          benchmark_rails = CASE
+            WHEN :benchmark_present
+             AND {ENVIRONMENTS_TABLE}.benchmark_run_id = EXCLUDED.benchmark_run_id
+             AND {ENVIRONMENTS_TABLE}.benchmark_status = 'complete'
+             AND EXCLUDED.benchmark_status = 'collecting'
+              THEN {ENVIRONMENTS_TABLE}.benchmark_rails
+            WHEN :benchmark_present THEN EXCLUDED.benchmark_rails
+            ELSE {ENVIRONMENTS_TABLE}.benchmark_rails
+          END
         """,
         parameters=[
             {"name": "public_id", "value": {"stringValue": public_id}},
@@ -742,6 +1034,14 @@ def _upsert_environment(
             {"name": "lane_mapping", "value": {"stringValue": lane_mapping} if lane_mapping else {"isNull": True}},
             {"name": "cpu_pinned", "value": {"booleanValue": cpu_pinned} if cpu_pinned is not None else {"isNull": True}},
             {"name": "numa_local", "value": {"booleanValue": numa_local} if numa_local is not None else {"isNull": True}},
+            {"name": "benchmark_run_id", "value": {"stringValue": benchmark_run_id} if benchmark_run_id else {"isNull": True}},
+            {"name": "benchmark_status", "value": {"stringValue": benchmark_status} if benchmark_status else {"isNull": True}},
+            {"name": "benchmark_expected_rails", "value": {"longValue": benchmark_expected_rails} if benchmark_expected_rails is not None else {"isNull": True}},
+            {"name": "benchmark_completed_rails", "value": {"longValue": benchmark_completed_rails} if benchmark_completed_rails is not None else {"isNull": True}},
+            {"name": "benchmark_logical_operations", "value": {"longValue": benchmark_logical_operations} if benchmark_logical_operations is not None else {"isNull": True}},
+            {"name": "benchmark_duration_ns", "value": {"longValue": benchmark_duration_ns} if benchmark_duration_ns is not None else {"isNull": True}},
+            {"name": "benchmark_rails", "value": {"stringValue": benchmark_rails_json} if benchmark_rails_json else {"isNull": True}},
+            {"name": "benchmark_present", "value": {"booleanValue": benchmark_state is not None}},
         ],
     )
 
@@ -781,6 +1081,13 @@ def _community_environments() -> Dict[str, Any]:
           lane_mapping,
           cpu_pinned,
           numa_local,
+          benchmark_run_id,
+          benchmark_status,
+          benchmark_expected_rails,
+          benchmark_completed_rails,
+          benchmark_logical_operations,
+          benchmark_duration_ns,
+          benchmark_rails,
           (COALESCE(lifecycle_active, TRUE)
             AND last_seen >= now() - (:active_hours * interval '1 hour')) AS active
         FROM {ENVIRONMENTS_TABLE}
@@ -789,6 +1096,28 @@ def _community_environments() -> Dict[str, Any]:
         """,
         [{"name": "active_hours", "value": {"longValue": ACTIVE_WINDOW_HOURS}}],
     )
+    for row in rows:
+        run_id = row.pop("benchmark_run_id", None)
+        status = row.pop("benchmark_status", None)
+        expected_rails = row.pop("benchmark_expected_rails", None)
+        completed_rails = row.pop("benchmark_completed_rails", None)
+        operations = row.pop("benchmark_logical_operations", None)
+        duration_ns = row.pop("benchmark_duration_ns", None)
+        rails = row.pop("benchmark_rails", None)
+        if run_id:
+            row["recent_benchmark"] = {
+                "run_id": run_id,
+                "status": status,
+                "result_scope": "aggregate" if status == "complete" else "rail-set",
+                "logical_iops": row.get("recent_iops") if status == "complete" else None,
+                "logical_operations": operations,
+                "synchronized_duration_ns": duration_ns,
+                "expected_rail_count": expected_rails,
+                "received_rail_count": completed_rails,
+                "aggregation": "sum-logical-operations-over-max-rail-duration",
+                "completion_semantics": "remote-application-ack",
+                "rails": rails or [],
+            }
     active_count = sum(1 for row in rows if row.get("active"))
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -886,9 +1215,24 @@ def handler(event, context):
                 )
             event_ids.append(event_id)
         _insert_events(parameter_sets)
+        benchmark_updates = {}
+        for payload_event in body_json:
+            anonymous_installation_id = payload_event.get("anonymous_installation_id")
+            if not isinstance(anonymous_installation_id, str) or not anonymous_installation_id.strip():
+                continue
+            benchmark_state = _record_benchmark_rail(payload_event)
+            if benchmark_state is not None:
+                benchmark_updates[anonymous_installation_id.strip()] = benchmark_state
         for payload_event, event_type, region, event_increment in environment_updates.values():
             try:
-                _upsert_environment(payload_event, event_type, region, event_increment)
+                anonymous_installation_id = payload_event.get("anonymous_installation_id", "").strip()
+                _upsert_environment(
+                    payload_event,
+                    event_type,
+                    region,
+                    event_increment,
+                    benchmark_updates.get(anonymous_installation_id),
+                )
             except Exception as projection_exc:
                 print(json.dumps({
                     "level": "error",

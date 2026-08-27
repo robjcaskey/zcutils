@@ -123,6 +123,7 @@ for ((rep = 1; rep <= repeats; rep++)); do
 	service0=$((service_base + rep * 50))
 	service1=$((service_base + 10000 + rep * 50))
 	tag="dual-efa-lanes${lanes}x2-qd${qd}-${payload}-rep${rep}"
+	benchmark_env="ZCCUSAN_BENCHMARK_RUN_ID=$tag ZCCUSAN_BENCHMARK_RAIL_COUNT=2 ZCCUSAN_TOPOLOGY_PATH_COUNT=2 ZCCUSAN_TOPOLOGY_CLASS=direct ZCCUSAN_PLACEMENT_SCOPE=same-placement-group ZCCUSAN_TOPOLOGY_NUMA_NODE_COUNT=2 ZCCUSAN_TOPOLOGY_NUMA_LOCAL=1"
 	remote_dir="$remote_root/bench-results/$(basename "$out")/$tag"
 	env0="$virtual_volume_env URING_PLAY_TOPOLOGY_STRICT=1 URING_PLAY_TOPOLOGY_FATAL=1 URING_PLAY_OFI_DOMAIN=$domain0 FI_EFA_IFACE=$iface0 FI_EFA_USE_DEVICE_RDMA=1 FI_EFA_USE_HUGE_PAGE=1 URING_PLAY_OFI_TIMEOUT_MS=60000 URING_PLAY_OFI_BUSY_POLL_ITERS=100000 URING_PLAY_OFI_CQ_SLEEP_NS=0 URING_PLAY_OFI_ACK_WINDOW=$qd URING_PLAY_OFI_TX_QUEUE_DEPTH=$qd URING_PLAY_OFI_RX_QUEUE_DEPTH=$qd"
 	env1="$virtual_volume_env URING_PLAY_TOPOLOGY_STRICT=1 URING_PLAY_TOPOLOGY_FATAL=1 URING_PLAY_OFI_DOMAIN=$domain1 FI_EFA_IFACE=$iface1 FI_EFA_USE_DEVICE_RDMA=1 FI_EFA_USE_HUGE_PAGE=1 URING_PLAY_OFI_TIMEOUT_MS=60000 URING_PLAY_OFI_BUSY_POLL_ITERS=100000 URING_PLAY_OFI_CQ_SLEEP_NS=0 URING_PLAY_OFI_ACK_WINDOW=$qd URING_PLAY_OFI_TX_QUEUE_DEPTH=$qd URING_PLAY_OFI_RX_QUEUE_DEPTH=$qd"
@@ -162,9 +163,9 @@ for ((rep = 1; rep <= repeats; rep++)); do
 		done
 	} >"$out/$tag-topology.log"
 
-	"${ssh[@]}" "$client" "env $env0 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST='$client_cpus0' '$remote_bin' zcwal-ofi-send efa-direct rdm '$target_ip0' '$service0' '$lanes' '$payload' 4K '$lanes' true" >"$out/$tag-client0.log" 2>&1 &
+	"${ssh[@]}" "$client" "env $env0 $benchmark_env ZCCUSAN_BENCHMARK_RAIL_INDEX=0 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST='$client_cpus0' '$remote_bin' zcwal-ofi-send efa-direct rdm '$target_ip0' '$service0' '$lanes' '$payload' 4K '$lanes' true" >"$out/$tag-client0.log" 2>&1 &
 	client_pid0=$!
-	"${ssh[@]}" "$client" "env $env1 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST='$client_cpus1' '$remote_bin' zcwal-ofi-send efa-direct rdm '$target_ip1' '$service1' '$lanes' '$payload' 4K '$lanes' true" >"$out/$tag-client1.log" 2>&1 &
+	"${ssh[@]}" "$client" "env $env1 $benchmark_env ZCCUSAN_BENCHMARK_RAIL_INDEX=1 URING_PLAY_PIN_CPUS=1 URING_PLAY_PIN_CPU_LIST='$client_cpus1' '$remote_bin' zcwal-ofi-send efa-direct rdm '$target_ip1' '$service1' '$lanes' '$payload' 4K '$lanes' true" >"$out/$tag-client1.log" 2>&1 &
 	client_pid1=$!
 	client_pids=("$client_pid0" "$client_pid1")
 	client_status0=0

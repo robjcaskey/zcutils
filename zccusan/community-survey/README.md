@@ -14,8 +14,8 @@ The API endpoint is exposed as `survey_post_url` for `POST` payloads at `/survey
 curl -X POST "$SURVEY_POST_URL" \
   -H 'content-type: application/json' \
   -d '{"events":[
-    {"telemetry_schema_version":1,"anonymization_schema_version":1,"event_type":"csi_hourly_stats","cloud_provider":"aws","cloud_region":"us-east-1","anonymous_installation_id":"anon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active_volume_count":2,"total_iops":1200},
-    {"telemetry_schema_version":1,"anonymization_schema_version":1,"event_type":"csi_hourly_stats","cloud_provider":"gcp","cloud_region":"us-central1","anonymous_installation_id":"anon-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","active_volume_count":1,"total_iops":400}
+    {"telemetry_schema_version":2,"anonymization_schema_version":2,"event_type":"csi_hourly_stats","cloud_provider":"aws","cloud_region":"us-east-1","anonymous_installation_id":"anon-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active_volume_count":2,"total_iops":1200},
+    {"telemetry_schema_version":2,"anonymization_schema_version":2,"event_type":"csi_hourly_stats","cloud_provider":"gcp","cloud_region":"us-central1","anonymous_installation_id":"anon-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","active_volume_count":1,"total_iops":400}
   ]}'
 ```
 

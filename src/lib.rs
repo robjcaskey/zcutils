@@ -10258,6 +10258,17 @@ fn publish_transport_benchmark_result(
     if !telemetry.is_enabled() {
         return;
     }
+    let measurement_duration_ns = if seconds.is_finite() && seconds > 0.0 {
+        (seconds * 1_000_000_000.0)
+            .round()
+            .clamp(1.0, u64::MAX as f64) as u64
+    } else {
+        1
+    };
+    let logical_iops = ((total.records as u128 * 1_000_000_000_u128
+        + measurement_duration_ns as u128 / 2)
+        / measurement_duration_ns as u128)
+        .min(u64::MAX as u128) as u64;
     let mut payload = serde_json::Map::new();
     payload.insert(
         "component".to_string(),
@@ -10273,12 +10284,73 @@ fn publish_transport_benchmark_result(
     );
     payload.insert(
         "total_iops".to_string(),
-        serde_json::Value::from((total.records as f64 / seconds).round() as u64),
+        serde_json::Value::from(logical_iops),
+    );
+    payload.insert(
+        "logical_operations".to_string(),
+        serde_json::Value::from(total.records),
+    );
+    payload.insert(
+        "measurement_duration_ns".to_string(),
+        serde_json::Value::from(measurement_duration_ns),
     );
     payload.insert(
         "size_bytes".to_string(),
         serde_json::Value::from(total.payload_bytes as u64),
     );
+    if total.records > 0 {
+        payload.insert(
+            "io_size_bytes".to_string(),
+            serde_json::Value::from(total.payload_bytes / total.records),
+        );
+    }
+    let benchmark_run_id = env::var("ZCCUSAN_BENCHMARK_RUN_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let benchmark_rail_index = env::var("ZCCUSAN_BENCHMARK_RAIL_INDEX")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
+    let benchmark_rail_count = env::var("ZCCUSAN_BENCHMARK_RAIL_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
+    match (benchmark_run_id, benchmark_rail_index, benchmark_rail_count) {
+        (Some(run_id), Some(rail_index), Some(rail_count))
+            if (1..=256).contains(&rail_count) && rail_index < rail_count =>
+        {
+            payload.insert(
+                "benchmark_run_id".to_string(),
+                serde_json::Value::String(run_id),
+            );
+            payload.insert(
+                "benchmark_result_scope".to_string(),
+                serde_json::Value::String("rail".to_string()),
+            );
+            payload.insert(
+                "benchmark_rail_index".to_string(),
+                serde_json::Value::from(rail_index),
+            );
+            payload.insert(
+                "benchmark_rail_count".to_string(),
+                serde_json::Value::from(rail_count),
+            );
+        }
+        (None, None, None) => {
+            payload.insert(
+                "benchmark_result_scope".to_string(),
+                serde_json::Value::String("standalone".to_string()),
+            );
+        }
+        _ => {
+            eprintln!(
+                "zc-benchmark-telemetry-warning: incomplete or invalid benchmark rail identity; publishing a standalone result"
+            );
+            payload.insert(
+                "benchmark_result_scope".to_string(),
+                serde_json::Value::String("standalone".to_string()),
+            );
+        }
+    }
     let p50_ns = total.ack_latency.percentile_ns(50, 100);
     let p995_ns = total.ack_latency.percentile_ns(995, 1000);
     let latency_fields = [
