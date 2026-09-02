@@ -41,8 +41,8 @@ wait_path()
 }
 
 if [ ! -e /.zccusan-chaos-system-root ]; then
-	modprobe virtio_blk || fail pivot-virtio-blk
-	modprobe ext4 || fail pivot-ext4
+	/sbin/modprobe virtio_blk || fail pivot-virtio-blk
+	/sbin/modprobe ext4 || fail pivot-ext4
 	wait_path /dev/vda || fail pivot-system-device
 	mkdir -p /newroot
 	mount -t ext4 /dev/vda /newroot || fail pivot-system-mount
@@ -58,7 +58,7 @@ fi
 
 mount --make-rshared / || fail shared-root
 for module in virtio_net failover net_failover bridge br_netfilter overlay nf_tables; do
-	modprobe "$module" || fail "module-$module"
+	/sbin/modprobe "$module" || fail "module-$module"
 done
 echo 1 >/proc/sys/net/ipv4/ip_forward
 [ ! -e /proc/sys/net/bridge/bridge-nf-call-iptables ] || \
