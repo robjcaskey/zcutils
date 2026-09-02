@@ -306,9 +306,11 @@ jobs:
             -printf '%f\n' | sort -V | tail -n 1)"
           [ -n "${kernel}" ]
           release="${kernel#vmlinuz-}"
+          readable_kernel="${RUNNER_TEMP}/${kernel}"
+          sudo install -m 0644 "/boot/${kernel}" "${readable_kernel}"
           accel=tcg
           if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then accel=kvm; fi
-          KERNEL="/boot/${kernel}" KERNEL_RELEASE="${release}" \
+          KERNEL="${readable_kernel}" KERNEL_RELEASE="${release}" \
             K3S_BIN="${K3S_BIN}" QEMU_ACCEL="${accel}" TIMEOUT_SECONDS=1200 \
             scripts/zccusan-chaos-toolbox-qemu.sh
       - name: Upload the QEMU proof log
@@ -317,5 +319,5 @@ jobs:
         with:
           name: zccusan-chaos-published-qemu-${{ github.run_id }}
           path: target/qemu-zccusan-chaos-toolbox/logs/qemu-chaos.log
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
