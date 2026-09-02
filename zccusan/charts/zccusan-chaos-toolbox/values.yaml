@@ -1,0 +1,43 @@
+image:
+  repository: docker.io/robjcaskey/zccusan-chaos-toolbox
+  # Empty selects this chart's appVersion.
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+# Nothing is scheduled until a node has this explicit opt-in label. Set
+# scheduling.allowAllNodes only in an isolated, disposable test cluster.
+nodeSelector:
+  chaos.zcutils.io/allowed: "true"
+scheduling:
+  allowAllNodes: false
+
+tolerations: []
+affinity: {}
+priorityClassName: ""
+podAnnotations: {}
+resources: {}
+
+faults:
+  process:
+    enabled: true
+  network:
+    enabled: true
+  nodePoweroff:
+    enabled: false
+    # This second switch prevents an accidental `--set ...enabled=true` from
+    # granting CAP_SYS_BOOT. Enabling it can turn off a Kubernetes node.
+    acknowledgeRisk: false
+
+security:
+  readOnlyRootFilesystem: true
+  seccompProfile: RuntimeDefault
+
+terminationGracePeriodSeconds: 2

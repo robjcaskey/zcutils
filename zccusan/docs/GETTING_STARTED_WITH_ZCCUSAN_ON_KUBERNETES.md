@@ -276,13 +276,23 @@ Apply it with `kubectl apply -f mirror-pgbench.yaml`, then follow pgbench live u
 kubectl -n zccusan logs --follow --pod-running-timeout=120s zc-mirror-pgbench
 ```
 
-That exercised one mirrored RAM copy on each example server through fio and PostgreSQL from the separate example client. The RAM copies are intentionally **volatile**. Delete the pgbench Pod, then delete the PVC; the generated ZcVolume finalizer deletes its userspace storage Pods and releases both RAM arenas. Delete the StorageProfile so the operator removes its generated `zc-mirror-ram` StorageClass, and finally remove the MediaGrant that offered the RAM capacity. Leave the CSI installed for the next tutorial.
+That exercised one mirrored RAM copy on each example server through fio and PostgreSQL from the separate example client. The RAM copies are intentionally **volatile**.
+
+## Optional: validate the single-region HA boundary
+
+Before tearing the example down, you can continue with [the optional single-region reliability validation](VALIDATING_SINGLE_REGION_HA_ON_KUBERNETES.md). It installs a separate chaos toolbox and runs one simple, graded check while the mirrored volume stays under a continuously synchronized canary workload.
+
+## Tear down
+
+If you skipped the optional validation, delete the finished pgbench Pod. Then delete the PVC; the generated ZcVolume finalizer deletes its userspace storage Pods and releases both RAM arenas. Delete the StorageProfile so the operator removes its generated `zc-mirror-ram` StorageClass, and finally remove the MediaGrant that offered the RAM capacity. Leave the CSI installed for the next tutorial.
 
 ```bash
-kubectl delete -f mirror-pgbench.yaml
+kubectl delete -f mirror-pgbench.yaml --ignore-not-found
+kubectl delete -f single-region-ha-canary.yaml --ignore-not-found
+kubectl delete -f single-region-ha-hostpath-comparator.yaml --ignore-not-found
 kubectl delete -f mirror-pvc.yaml
 kubectl delete -f storage-profile.yaml
 kubectl delete -f media-grant.yaml
 ```
 
-If any command fails—or before using real disks, RDMA, or performance tuning—continue with [getting started 2](GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES_DETAILED.md), then try [tiering](GETTING_STARTED_WITH_TIERING_ON_KUBERNETES.md) and [cross-region replication](GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md).
+If any command fails—or before using real disks, RDMA, or performance tuning—continue with [getting started 2](GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES_DETAILED.md), then try [tiering](GETTING_STARTED_WITH_TIERING_ON_KUBERNETES.md) and review the [cross-region replication](GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md) guide's distinction between the current checkpoint compatibility test and the intended continuous-WAL path.

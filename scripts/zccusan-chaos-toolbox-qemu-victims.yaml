@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hostpath-comparator
+  namespace: zccusan-chaos
+  labels:
+    app.kubernetes.io/name: hostpath-comparator
+spec:
+  nodeName: qemu-chaos
+  restartPolicy: Always
+  containers:
+    - name: writer
+      image: docker.io/library/alpine:3.22
+      imagePullPolicy: IfNotPresent
+      command: [/bin/sh, -ec]
+      args:
+        - |
+          sequence="$(cat /data/sequence 2>/dev/null || echo 0)"
+          case "${sequence}" in ''|*[!0-9]*) exit 1;; esac
+          while true; do
+            sequence=$((sequence + 1))
+            printf '%s\n' "${sequence}" > /data/sequence.next
+            mv /data/sequence.next /data/sequence
+            sleep 0.1
+          done
+      readinessProbe:
+        exec:
+          command: [/bin/sh, -ec, test -s /data/sequence]
+        periodSeconds: 1
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      hostPath:
+        path: /var/lib/zccusan-chaos-comparator
+        type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: network-victim
+  namespace: zccusan-chaos
+  labels:
+    app.kubernetes.io/name: network-victim
+spec:
+  nodeName: qemu-chaos
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  restartPolicy: Always
+  containers:
+    - name: http
+      image: docker.io/library/alpine:3.22
+      imagePullPolicy: IfNotPresent
+      command: [/bin/busybox, nc, -lk, -p, "29000", -e, /bin/cat]
+      readinessProbe:
+        tcpSocket:
+          host: 127.0.0.1
+          port: 29000
+        periodSeconds: 1
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]

@@ -1,0 +1,321 @@
+name: zccusan chaos toolbox
+
+on:
+  pull_request:
+    paths:
+      - '.dockerignore'
+      - '.github/workflows/zccusan-chaos-toolbox.yml'
+      - 'scripts/zccusan-chaos-toolbox-qemu*'
+      - 'zccusan/chaos-toolbox/**'
+      - 'zccusan/charts/zccusan-chaos-toolbox/**'
+      - 'zccusan/deploy/chaos-toolbox/**'
+  push:
+    branches: [main]
+    tags: ['chaos-v*']
+    paths:
+      - '.dockerignore'
+      - '.github/workflows/zccusan-chaos-toolbox.yml'
+      - 'scripts/zccusan-chaos-toolbox-qemu*'
+      - 'zccusan/chaos-toolbox/**'
+      - 'zccusan/charts/zccusan-chaos-toolbox/**'
+      - 'zccusan/deploy/chaos-toolbox/**'
+  schedule:
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git ref to build
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      image_tags: ${{ steps.metadata.outputs.image_tags }}
+      image_primary: ${{ steps.metadata.outputs.image_primary }}
+      chart_version: ${{ steps.metadata.outputs.chart_version }}
+      source_sha: ${{ steps.metadata.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - id: metadata
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          RUN_NUMBER: ${{ github.run_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          short_sha="${source_sha::7}"
+          chart_base="$(sed -n 's/^version: //p' zccusan/charts/zccusan-chaos-toolbox/Chart.yaml)"
+          app_version="$(sed -n 's/^appVersion: "\{0,1\}\([^"[:space:]]*\)"\{0,1\}$/\1/p' zccusan/charts/zccusan-chaos-toolbox/Chart.yaml)"
+          [[ "${chart_base}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "${app_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+
+          image_primary="sha-${short_sha}"
+          image_tags="${image_primary}"
+          chart_version="${chart_base}-dev.${RUN_NUMBER}"
+          if [ "${REF_TYPE}" = tag ]; then
+            [ "${REF_NAME}" = "chaos-v${chart_base}" ] || {
+              echo "::error::release tag must be chaos-v${chart_base}"
+              exit 1
+            }
+            chart_version="${chart_base}"
+            image_primary="${app_version}"
+            image_tags="sha-${short_sha},${app_version}"
+          elif [ "${EVENT_NAME}" = schedule ]; then
+            image_tags="${image_tags},nightly,nightly-$(date -u +%Y%m%d)"
+          elif [ "${REF_NAME}" = main ]; then
+            image_tags="${image_tags},main,latest"
+          fi
+
+          {
+            echo "source_sha=${source_sha}"
+            echo "image_primary=${image_primary}"
+            echo "image_tags=${image_tags}"
+            echo "chart_version=${chart_version}"
+          } >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build and smoke (${{ matrix.arch }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: amd64, platform: linux/amd64, runner: ubuntu-24.04}
+          - {arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Log in to Docker Hub with bounded retries
+        if: github.event_name != 'pull_request'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME || 'robjcaskey' }}
+          DOCKERHUB_TOKEN: ${{ secrets.ZCCUSAN_DOCKERHUB_PAT || secrets.DOCKERHUB_PAT || secrets.DOCKERHUB_TOKEN }}
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          : "${DOCKERHUB_USERNAME:?Docker Hub username is required}"
+          : "${DOCKERHUB_TOKEN:?Docker Hub token is required}"
+          echo "::add-mask::${DOCKERHUB_TOKEN}"
+          delay=5
+          for attempt in 1 2 3 4 5; do
+            if printf '%s' "${DOCKERHUB_TOKEN}" | timeout 30s docker login docker.io \
+              --username "${DOCKERHUB_USERNAME}" --password-stdin; then
+              exit 0
+            fi
+            [ "${attempt}" -lt 5 ] || exit 1
+            sleep "${delay}"
+            delay=$((delay * 2))
+          done
+      - name: Compute architecture tags
+        id: tags
+        env:
+          TAGS: ${{ needs.prepare.outputs.image_tags }}
+          ARCH: ${{ matrix.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          output=()
+          IFS=',' read -r -a tags <<< "${TAGS}"
+          for tag in "${tags[@]}"; do
+            output+=("docker.io/robjcaskey/zccusan-chaos-toolbox:${tag}-${ARCH}")
+          done
+          echo "tags=$(IFS=,; echo "${output[*]}")" >> "${GITHUB_OUTPUT}"
+      - name: Build architecture image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: zccusan/deploy/chaos-toolbox/Dockerfile
+          platforms: ${{ matrix.platform }}
+          load: ${{ github.event_name == 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=zccusan-chaos-toolbox
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.source_sha }}
+          provenance: false
+          sbom: false
+      - name: Exercise image safety gates
+        env:
+          IMAGE_TAGS: ${{ steps.tags.outputs.tags }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_TAGS%%,*}"
+          if [ "${{ github.event_name }}" != pull_request ]; then docker pull "${image}"; fi
+          docker run --rm "${image}" version | grep -Eq '^0[.]1[.]'
+          docker run --rm "${image}" preflight | grep -q '"nft_available":true'
+          if docker run --rm "${image}" process-kill --pid 2 --dry-run; then
+            echo 'fault unexpectedly bypassed ZCCUSAN_CHAOS_ALLOWED' >&2
+            exit 1
+          fi
+          docker run --rm -e ZCCUSAN_CHAOS_ALLOWED=1 "${image}" \
+            process-kill --pid 2 --dry-run | grep -q 'process_kill_planned'
+          docker run --rm -e ZCCUSAN_CHAOS_ALLOWED=1 "${image}" \
+            network-blackhole --experiment ci-dry-run --port 29000 \
+            --duration-seconds 1 --dry-run | grep -q 'network_blackhole_planned'
+      - name: Log out of Docker Hub
+        if: always() && github.event_name != 'pull_request'
+        run: docker logout docker.io || true
+
+  chart-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/setup-helm@v4
+      - name: Lint, render, and exercise destructive guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          chart=zccusan/charts/zccusan-chaos-toolbox
+          crate_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' \
+            zccusan/chaos-toolbox/Cargo.toml | head -n 1)"
+          app_version="$(sed -n 's/^appVersion: "\([^"]*\)"/\1/p' "${chart}/Chart.yaml")"
+          [ "${crate_version}" = "${app_version}" ]
+          helm lint "${chart}"
+          helm template zccusan-chaos "${chart}" --namespace zccusan-chaos \
+            > /tmp/chaos.yaml
+          grep -q 'automountServiceAccountToken: false' /tmp/chaos.yaml
+          grep -q 'readOnlyRootFilesystem: true' /tmp/chaos.yaml
+          if helm template unsafe "${chart}" --set nodeSelector=null >/dev/null 2>&1; then
+            echo 'empty node selector unexpectedly rendered' >&2
+            exit 1
+          fi
+          if helm template unsafe "${chart}" \
+            --set faults.nodePoweroff.enabled=true >/dev/null 2>&1; then
+            echo 'node poweroff unexpectedly rendered without risk acknowledgment' >&2
+            exit 1
+          fi
+          helm template poweroff "${chart}" \
+            --set faults.nodePoweroff.enabled=true \
+            --set faults.nodePoweroff.acknowledgeRisk=true \
+            | grep -q -- '- SYS_BOOT'
+
+  publish:
+    name: Publish image manifest and OCI chart
+    if: github.event_name != 'pull_request'
+    needs: [prepare, build, chart-check]
+    runs-on: ubuntu-24.04
+    outputs:
+      chart_version: ${{ needs.prepare.outputs.chart_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: azure/setup-helm@v4
+      - name: Log in to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME || 'robjcaskey' }}
+          password: ${{ secrets.ZCCUSAN_DOCKERHUB_PAT || secrets.DOCKERHUB_PAT || secrets.DOCKERHUB_TOKEN }}
+      - name: Publish multi-architecture image manifests
+        env:
+          TAGS: ${{ needs.prepare.outputs.image_tags }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -r -a tags <<< "${TAGS}"
+          for tag in "${tags[@]}"; do
+            image="docker.io/robjcaskey/zccusan-chaos-toolbox:${tag}"
+            docker buildx imagetools create --tag "${image}" \
+              "${image}-amd64" "${image}-arm64"
+            docker buildx imagetools inspect "${image}"
+          done
+      - name: Package and publish the OCI chart
+        env:
+          CHART_VERSION: ${{ needs.prepare.outputs.chart_version }}
+          APP_VERSION: ${{ needs.prepare.outputs.image_primary }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME || 'robjcaskey' }}
+          DOCKERHUB_TOKEN: ${{ secrets.ZCCUSAN_DOCKERHUB_PAT || secrets.DOCKERHUB_PAT || secrets.DOCKERHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${DOCKERHUB_TOKEN}"
+          printf '%s' "${DOCKERHUB_TOKEN}" | helm registry login registry-1.docker.io \
+            --username "${DOCKERHUB_USERNAME}" --password-stdin
+          package_output="$(helm package zccusan/charts/zccusan-chaos-toolbox \
+            --destination /tmp --version "${CHART_VERSION}" --app-version "${APP_VERSION}")"
+          package="${package_output##*: }"
+          [[ -s "${package}" ]]
+          helm push "${package}" oci://registry-1.docker.io/robjcaskey
+          helm show chart \
+            oci://registry-1.docker.io/robjcaskey/zccusan-chaos-toolbox \
+            --version "${CHART_VERSION}"
+          helm registry logout registry-1.docker.io
+
+  published-qemu:
+    name: Boot QEMU and test the published chart
+    if: github.event_name != 'pull_request'
+    needs: [prepare, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - uses: azure/setup-helm@v4
+      - name: Install QEMU test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            busybox-static cpio e2fsprogs linux-image-generic podman \
+            qemu-system-x86 qemu-utils xz-utils
+      - name: Download and verify pinned k3s
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='v1.36.1+k3s1'
+          output="${RUNNER_TEMP}/k3s-${version}"
+          curl --fail --silent --show-error --location \
+            "https://github.com/k3s-io/k3s/releases/download/${version}/k3s" \
+            --output "${output}"
+          curl --fail --silent --show-error --location \
+            "https://github.com/k3s-io/k3s/releases/download/${version}/sha256sum-amd64.txt" \
+            --output "${output}.sha256sums"
+          expected="$(awk '$2 == "k3s" {print $1; exit}' "${output}.sha256sums")"
+          actual="$(sha256sum "${output}" | awk '{print $1}')"
+          [ -n "${expected}" ] && [ "${actual}" = "${expected}" ]
+          chmod +x "${output}"
+          echo "K3S_BIN=${output}" >> "${GITHUB_ENV}"
+      - name: Exercise process, link, comparator, and node faults in QEMU
+        env:
+          CHAOS_CHART_REF: oci://registry-1.docker.io/robjcaskey/zccusan-chaos-toolbox
+          CHAOS_CHART_VERSION: ${{ needs.publish.outputs.chart_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$(find /boot -maxdepth 1 -type f -name 'vmlinuz-*-generic' \
+            -printf '%f\n' | sort -V | tail -n 1)"
+          [ -n "${kernel}" ]
+          release="${kernel#vmlinuz-}"
+          accel=tcg
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then accel=kvm; fi
+          KERNEL="/boot/${kernel}" KERNEL_RELEASE="${release}" \
+            K3S_BIN="${K3S_BIN}" QEMU_ACCEL="${accel}" TIMEOUT_SECONDS=1200 \
+            scripts/zccusan-chaos-toolbox-qemu.sh
+      - name: Upload the QEMU proof log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zccusan-chaos-published-qemu-${{ github.run_id }}
+          path: target/qemu-zccusan-chaos-toolbox/logs/qemu-chaos.log
+          if-no-files-found: error
+          retention-days: 14

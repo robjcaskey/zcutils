@@ -1,0 +1,99 @@
+{{- if and (empty .Values.nodeSelector) (not .Values.scheduling.allowAllNodes) -}}
+{{- fail "nodeSelector must explicitly opt nodes into chaos, or scheduling.allowAllNodes must be true" -}}
+{{- end -}}
+{{- if and .Values.faults.nodePoweroff.enabled (not .Values.faults.nodePoweroff.acknowledgeRisk) -}}
+{{- fail "faults.nodePoweroff.acknowledgeRisk must be true before CAP_SYS_BOOT is granted" -}}
+{{- end -}}
+{{- if not (or .Values.faults.process.enabled .Values.faults.network.enabled .Values.faults.nodePoweroff.enabled) -}}
+{{- fail "enable at least one fault type" -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "zccusan-chaos-toolbox.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zccusan-chaos-toolbox.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "zccusan-chaos-toolbox.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "zccusan-chaos-toolbox.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "zccusan-chaos-toolbox.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      hostPID: {{ or .Values.faults.process.enabled .Values.faults.nodePoweroff.enabled }}
+      hostNetwork: {{ .Values.faults.network.enabled }}
+      {{- if .Values.faults.network.enabled }}
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: toolbox
+          image: {{ include "zccusan-chaos-toolbox.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [agent]
+          env:
+            - name: ZCCUSAN_CHAOS_ALLOWED
+              value: "1"
+            - name: ZCCUSAN_CHAOS_ALLOW_NODE_POWEROFF
+              value: {{ ternary "1" "0" .Values.faults.nodePoweroff.enabled | quote }}
+            - name: ZCCUSAN_CHAOS_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          readinessProbe:
+            exec:
+              command:
+                - /usr/local/bin/zccusan-chaos-toolbox
+                {{- if .Values.faults.network.enabled }}
+                - preflight
+                {{- else }}
+                - version
+                {{- end }}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}
+            capabilities:
+              drop: [ALL]
+              add:
+                {{- if .Values.faults.process.enabled }}
+                - KILL
+                {{- end }}
+                {{- if .Values.faults.network.enabled }}
+                - NET_ADMIN
+                {{- end }}
+                {{- if .Values.faults.nodePoweroff.enabled }}
+                - SYS_BOOT
+                {{- end }}
+            seccompProfile:
+              type: {{ ternary "Unconfined" .Values.security.seccompProfile .Values.faults.nodePoweroff.enabled }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

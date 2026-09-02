@@ -1,0 +1,7 @@
+The chaos toolbox is separate from the zccusan CSI and has no Kubernetes API credentials.
+
+It is running only on nodes labeled:
+{{ toYaml .Values.nodeSelector | indent 2 }}
+
+See the single-region reliability guide before injecting a fault:
+https://github.com/robjcaskey/zcutils/blob/main/zccusan/docs/VALIDATING_SINGLE_REGION_HA_ON_KUBERNETES.md

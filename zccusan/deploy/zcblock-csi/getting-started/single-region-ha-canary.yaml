@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: zc-single-region-ha-canary
+  namespace: zccusan
+  labels:
+    app.kubernetes.io/name: zc-single-region-ha-canary
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: storage.zcutils.io/example-client
+                operator: In
+                values:
+                  - "true"
+  containers:
+    - name: canary
+      image: docker.io/robjcaskey/zccusan-storage-test:0.1.6
+      imagePullPolicy: IfNotPresent
+      command: [/bin/bash, -ec]
+      args:
+        - |
+          set -euo pipefail
+          state_dir=/data/single-region-ha-canary
+          committed="${state_dir}/committed-sequence"
+          pending="${state_dir}/pending-sequence"
+          mkdir -p "${state_dir}"
+          sequence=0
+          if [[ -s "${committed}" ]]; then
+            read -r sequence < "${committed}"
+            [[ "${sequence}" =~ ^[0-9]+$ ]]
+          fi
+          while true; do
+            next=$((sequence + 1))
+            started_ns="$(date +%s%N)"
+            printf '%020d\n' "${next}" > "${pending}"
+            sync -f "${pending}"
+            mv "${pending}" "${committed}"
+            sync -f "${committed}"
+            read -r observed < "${committed}"
+            observed=$((10#${observed}))
+            [[ "${observed}" -eq "${next}" ]]
+            completed_ns="$(date +%s%N)"
+            latency_ms=$(((completed_ns - started_ns) / 1000000))
+            printf '{"event":"canary_commit","sequence":%d,"latency_ms":%d,"completed_unix_ns":%s}\n' \
+              "${next}" "${latency_ms}" "${completed_ns}"
+            sequence="${next}"
+            sleep 0.25
+          done
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: zc-mirror

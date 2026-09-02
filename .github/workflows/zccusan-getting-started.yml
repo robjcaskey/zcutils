@@ -5,15 +5,19 @@ on:
     paths:
       - '.github/workflows/zccusan-getting-started.yml'
       - 'scripts/check-zccusan-getting-started-sync.sh'
+      - 'scripts/zccusan-validate-single-region-ha.sh'
       - 'zccusan/deploy/zcblock-csi/getting-started/**'
       - 'zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md'
+      - 'zccusan/docs/VALIDATING_SINGLE_REGION_HA_ON_KUBERNETES.md'
   push:
     branches: [main]
     paths:
       - '.github/workflows/zccusan-getting-started.yml'
       - 'scripts/check-zccusan-getting-started-sync.sh'
+      - 'scripts/zccusan-validate-single-region-ha.sh'
       - 'zccusan/deploy/zcblock-csi/getting-started/**'
       - 'zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md'
+      - 'zccusan/docs/VALIDATING_SINGLE_REGION_HA_ON_KUBERNETES.md'
   workflow_dispatch:
 
 permissions:

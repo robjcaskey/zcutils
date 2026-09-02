@@ -22,6 +22,8 @@ Rust binary names, Cargo targets, container entrypoints, or in-cluster paths.
   volatile-RAM Kubernetes happy path.
 - `docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES_DETAILED.md`: the complete
   second-step install, configuration, validation, and troubleshooting guide.
+- `docs/VALIDATING_SINGLE_REGION_HA_ON_KUBERNETES.md`: approachable, graded
+  single-region fault check using the separately installed chaos toolbox.
 - `docs/zccusan.md`: canonical zccusan layering and the rule that `zccsi` is a
   convenience adapter above `zcsan`, not the storage authority.
 - `docs/streaming-replication-shaping.md`: replication stream control,
@@ -38,4 +40,5 @@ Rust binary names, Cargo targets, container entrypoints, or in-cluster paths.
 - `deploy/zcblock-csi/` contains raw Kubernetes manifests and install/test
   scripts.
 - `charts/zcblock-csi/` contains the no-hooks Helm chart.
+- `charts/zccusan-chaos-toolbox/` contains the separate, opt-in fault toolbox.
 - `docs/` contains zccusan architecture and replication/shaping docs.
