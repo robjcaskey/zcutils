@@ -276,7 +276,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            busybox-static cpio e2fsprogs linux-image-generic podman \
+            busybox-static cpio e2fsprogs linux-image-virtual podman \
             qemu-system-x86 qemu-utils xz-utils
       - name: Download and verify pinned k3s
         shell: bash
