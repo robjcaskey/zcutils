@@ -43,6 +43,7 @@ for command in cpio find helm ldd podman qemu-system-x86_64 sha256sum tar timeou
 done
 [[ -r "$KERNEL" ]] || { printf 'kernel not readable: %s\n' "$KERNEL" >&2; exit 1; }
 [[ -x "$K3S_BIN" ]] || { printf 'verified k3s binary missing: %s\n' "$K3S_BIN" >&2; exit 1; }
+[[ -x /bin/kmod ]] || { printf 'the standard kmod loader is required at /bin/kmod\n' >&2; exit 1; }
 [[ -x /usr/sbin/mkfs.ext4 ]] || { printf 'mkfs.ext4 is required\n' >&2; exit 1; }
 [[ -r "/lib/modules/$KERNEL_RELEASE/modules.dep" ]] || {
 	printf 'kernel module tree is incomplete for %s\n' "$KERNEL_RELEASE" >&2
@@ -104,7 +105,8 @@ for applet in awk cat chmod cp cut date dd dmesg echo find grep head hostname in
 	touch tr umount uname wc; do
 	ln -s busybox "$ROOTFS/bin/$applet"
 done
-ln -s ../bin/busybox "$ROOTFS/sbin/modprobe"
+cp /bin/kmod "$ROOTFS/bin/kmod"
+ln -s ../bin/kmod "$ROOTFS/sbin/modprobe"
 cp "$K3S_BIN" "$ROOTFS/k3s"
 cp -a "/lib/modules/$KERNEL_RELEASE" "$ROOTFS/lib/modules/"
 cp "$ROOT/scripts/zccusan-chaos-toolbox-qemu-init.sh" "$ROOTFS/init"
@@ -124,7 +126,7 @@ while IFS= read -r library; do
 	mkdir -p "$ROOTFS$(dirname "$library")"
 	cp -L "$library" "$ROOTFS$library"
 done < <(
-	ldd /usr/bin/busybox \
+	{ ldd /usr/bin/busybox 2>/dev/null || true; ldd /bin/kmod; } \
 		| awk '/=> \// { print $3; next } /^[[:space:]]*\/lib/ { print $1; next }' | sort -u
 )
 
@@ -132,7 +134,8 @@ cp /usr/bin/busybox "$BOOTFS/bin/busybox"
 for applet in cat dmesg echo grep insmod kill ln mkdir modprobe mount poweroff sh sleep switch_root tail test; do
 	ln -s busybox "$BOOTFS/bin/$applet"
 done
-ln -s ../bin/busybox "$BOOTFS/sbin/modprobe"
+cp /bin/kmod "$BOOTFS/bin/kmod"
+ln -s ../bin/kmod "$BOOTFS/sbin/modprobe"
 cp "$ROOT/scripts/zccusan-chaos-toolbox-qemu-init.sh" "$BOOTFS/init"
 chmod +x "$BOOTFS/init"
 cp -a "/lib/modules/$KERNEL_RELEASE" "$BOOTFS/lib/modules/"
@@ -140,7 +143,10 @@ while IFS= read -r library; do
 	[[ -n "$library" ]] || continue
 	mkdir -p "$BOOTFS$(dirname "$library")"
 	cp -L "$library" "$BOOTFS$library"
-done < <(ldd /usr/bin/busybox | awk '/=> \// { print $3; next } /^[[:space:]]*\/lib/ { print $1; next }' | sort -u)
+done < <(
+	{ ldd /usr/bin/busybox 2>/dev/null || true; ldd /bin/kmod; } \
+		| awk '/=> \// { print $3; next } /^[[:space:]]*\/lib/ { print $1; next }' | sort -u
+)
 
 (
 	cd "$BOOTFS"
