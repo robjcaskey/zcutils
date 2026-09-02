@@ -106,6 +106,8 @@ for applet in awk cat chmod cp cut date dd dmesg echo find grep head hostname in
 	ln -s busybox "$ROOTFS/bin/$applet"
 done
 cp /bin/kmod "$ROOTFS/bin/kmod"
+rm "$ROOTFS/bin/modprobe"
+ln -s kmod "$ROOTFS/bin/modprobe"
 ln -s ../bin/kmod "$ROOTFS/sbin/modprobe"
 cp "$K3S_BIN" "$ROOTFS/k3s"
 cp -a "/lib/modules/$KERNEL_RELEASE" "$ROOTFS/lib/modules/"
@@ -135,6 +137,8 @@ for applet in cat dmesg echo grep insmod kill ln mkdir modprobe mount poweroff s
 	ln -s busybox "$BOOTFS/bin/$applet"
 done
 cp /bin/kmod "$BOOTFS/bin/kmod"
+rm "$BOOTFS/bin/modprobe"
+ln -s kmod "$BOOTFS/bin/modprobe"
 ln -s ../bin/kmod "$BOOTFS/sbin/modprobe"
 cp "$ROOT/scripts/zccusan-chaos-toolbox-qemu-init.sh" "$BOOTFS/init"
 chmod +x "$BOOTFS/init"
