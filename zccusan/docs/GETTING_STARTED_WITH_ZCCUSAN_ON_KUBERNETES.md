@@ -2,18 +2,11 @@
 
 This deliberately assumes everything goes right: run it from a zcutils checkout with Helm 3, `kubectl`, three Kubernetes nodes, a kernel included in the [module matrix](../../docs/kernel-module-build-matrix.md) (otherwise follow the [custom-kernel build guide](BUILD_KERNEL_MODULE.md)), and permission to run privileged CSI Pods. Replace the three example node names.
 
-Create `namespace.yaml` with the following contents to hold the zccusan services and this example workload.
+Create a namespace to hold the zccusan services and this example workload.
 
-<!-- BEGIN FILE: zccusan/deploy/zcblock-csi/getting-started/namespace.yaml -->
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: zccusan
+```bash
+kubectl create ns zccusan
 ```
-<!-- END FILE: zccusan/deploy/zcblock-csi/getting-started/namespace.yaml -->
-
-Apply it with `kubectl apply -f namespace.yaml`.
 
 Get a list of nodes and, to demonstrate the CSI network path, label two as example servers and a different one as the example client.
 

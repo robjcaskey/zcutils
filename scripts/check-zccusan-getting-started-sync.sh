@@ -4,7 +4,6 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 doc="${repo_root}/zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md"
 sources=(
-  zccusan/deploy/zcblock-csi/getting-started/namespace.yaml
   zccusan/deploy/zcblock-csi/getting-started/media-grant.yaml
   zccusan/deploy/zcblock-csi/getting-started/storage-profile.yaml
   zccusan/deploy/zcblock-csi/getting-started/mirror-pvc.yaml
