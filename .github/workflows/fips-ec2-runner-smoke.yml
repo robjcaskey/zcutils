@@ -67,7 +67,7 @@ jobs:
   hello:
     name: Produce hello world on EC2
     needs: launch
-    runs-on: [self-hosted, Linux, X64, '${{ needs.launch.outputs.runner_label }}']
+    runs-on: ${{ needs.launch.outputs.runner_label }}
     timeout-minutes: 4
     steps:
       - name: Produce the artifact and identify its EC2 worker

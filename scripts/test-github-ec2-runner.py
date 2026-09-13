@@ -52,14 +52,15 @@ def main():
         # Only the one-job JIT configuration is stored temporarily in Actions.
         response = api(endpoint + "/runners/generate-jitconfig", "POST", {
             "name": label, "runner_group_id": 1,
-            "labels": ["self-hosted", "Linux", "X64", label], "work_folder": "_work",
+            "labels": [label], "work_folder": "_work",
         })
         runner_id = response["runner"]["id"]
         report["runner_id"] = runner_id
         # The REST runner summary omits ephemeral; inspect the actual settings.
         files = json.loads(base64.b64decode(response["encoded_jit_config"], validate=True))
         settings = json.loads(base64.b64decode(files[".runner"], validate=True))
-        if settings.get("ephemeral") is not True or settings.get("agentName") != label:
+        settings = {key.casefold(): value for key, value in settings.items()}
+        if str(settings.get("ephemeral")).lower() != "true" or settings.get("agentname") != label:
             raise ValueError("GitHub did not issue the expected one-job runner configuration")
         gh(["secret", "set", secret, "--repo", args.repo], response["encoded_jit_config"])
         del response

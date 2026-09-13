@@ -41,7 +41,8 @@ def boot_script(jit_config, label):
     assert re.fullmatch(r"zc-fips-smoke-[0-9a-f]{12}", label)
     files = json.loads(base64.b64decode(jit_config, validate=True))
     settings = json.loads(base64.b64decode(files[".runner"], validate=True))
-    if settings.get("ephemeral") is not True or settings.get("agentName") != label:
+    settings = {key.casefold(): value for key, value in settings.items()}
+    if str(settings.get("ephemeral")).lower() != "true" or settings.get("agentname") != label:
         raise ValueError("JIT configuration must name this runner and set ephemeral=true")
     script = r'''#!/bin/bash
 set -euo pipefail

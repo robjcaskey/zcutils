@@ -20,7 +20,7 @@ CONFIG = {
 }
 LABEL = "zc-fips-smoke-0123456789ab"
 JIT = base64.b64encode(json.dumps({
-    ".runner": base64.b64encode(json.dumps({"agentName": LABEL, "ephemeral": True}).encode()).decode(),
+    ".runner": base64.b64encode(json.dumps({"AgentName": LABEL, "Ephemeral": "True"}).encode()).decode(),
 }).encode()).decode()
 
 
@@ -33,6 +33,13 @@ class RunnerSmokeTests(unittest.TestCase):
         self.assertEqual(smoke.console_text(base64.b64encode(marker.encode()).decode()), marker)
         with self.assertRaises(AssertionError):
             smoke.boot_script("eA==", "$(unexpected-command)")
+
+    def test_reusable_runner_configuration_is_rejected(self):
+        encoded = base64.b64encode(json.dumps({
+            ".runner": base64.b64encode(json.dumps({"AgentName": LABEL, "Ephemeral": "False"}).encode()).decode(),
+        }).encode()).decode()
+        with self.assertRaisesRegex(ValueError, "ephemeral=true"):
+            smoke.boot_script(encoded, LABEL)
 
     def test_success_requires_tags_schedule_and_ready_marker(self):
         created = {}
