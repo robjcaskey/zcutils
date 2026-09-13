@@ -38,8 +38,11 @@ def aws(config, service, operation, *, user_data=None, **parameters):
 
 
 def boot_script(jit_config, label):
-    base64.b64decode(jit_config, validate=True)
     assert re.fullmatch(r"zc-fips-smoke-[0-9a-f]{12}", label)
+    files = json.loads(base64.b64decode(jit_config, validate=True))
+    settings = json.loads(base64.b64decode(files[".runner"], validate=True))
+    if settings.get("ephemeral") is not True or settings.get("agentName") != label:
+        raise ValueError("JIT configuration must name this runner and set ephemeral=true")
     script = r'''#!/bin/bash
 set -euo pipefail
 umask 077

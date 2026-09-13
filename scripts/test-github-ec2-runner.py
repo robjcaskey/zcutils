@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Mint a one-job runner config, dispatch the smoke workflow, and download its artifacts."""
 import argparse
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -55,7 +56,11 @@ def main():
         })
         runner_id = response["runner"]["id"]
         report["runner_id"] = runner_id
-        assert response["runner"]["ephemeral"] is True
+        # The REST runner summary omits ephemeral; inspect the actual settings.
+        files = json.loads(base64.b64decode(response["encoded_jit_config"], validate=True))
+        settings = json.loads(base64.b64decode(files[".runner"], validate=True))
+        if settings.get("ephemeral") is not True or settings.get("agentName") != label:
+            raise ValueError("GitHub did not issue the expected one-job runner configuration")
         gh(["secret", "set", secret, "--repo", args.repo], response["encoded_jit_config"])
         del response
         save()

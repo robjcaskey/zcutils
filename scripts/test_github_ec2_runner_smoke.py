@@ -1,5 +1,6 @@
 import base64
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -18,11 +19,14 @@ CONFIG = {
     "schedule_group_name": "group", "termination_target_arn": "target", "termination_role_arn": "role",
 }
 LABEL = "zc-fips-smoke-0123456789ab"
+JIT = base64.b64encode(json.dumps({
+    ".runner": base64.b64encode(json.dumps({"agentName": LABEL, "ephemeral": True}).encode()).decode(),
+}).encode()).decode()
 
 
 class RunnerSmokeTests(unittest.TestCase):
     def test_boot_script_and_console_formats(self):
-        script = smoke.boot_script(base64.b64encode(b"dummy config").decode(), LABEL)
+        script = smoke.boot_script(JIT, LABEL)
         subprocess.run(["bash", "-n"], input=script, text=True, check=True)
         marker = f"ZC_RUNNER_READY={LABEL}\n"
         self.assertEqual(smoke.console_text(marker), marker)
@@ -52,7 +56,7 @@ class RunnerSmokeTests(unittest.TestCase):
             raise AssertionError(operation)
 
         with tempfile.NamedTemporaryFile() as output, patch.dict(os.environ, {
-            "RUNNER_LABEL": LABEL, "RUNNER_JIT_CONFIG": "eA==", "GITHUB_OUTPUT": output.name,
+            "RUNNER_LABEL": LABEL, "RUNNER_JIT_CONFIG": JIT, "GITHUB_OUTPUT": output.name,
         }), patch.object(smoke, "aws", side_effect=aws), patch.object(smoke, "save"), patch.object(smoke, "cleanup") as cleanup:
             smoke.launch(CONFIG, "pool-test", {"Arn": "controller"})
             cleanup.assert_not_called()
@@ -66,7 +70,7 @@ class RunnerSmokeTests(unittest.TestCase):
             raise AssertionError(operation)
 
         with tempfile.NamedTemporaryFile() as output, patch.dict(os.environ, {
-            "RUNNER_LABEL": LABEL, "RUNNER_JIT_CONFIG": "eA==", "GITHUB_OUTPUT": output.name,
+            "RUNNER_LABEL": LABEL, "RUNNER_JIT_CONFIG": JIT, "GITHUB_OUTPUT": output.name,
         }), patch.object(smoke, "aws", side_effect=aws), patch.object(smoke, "save"), patch.object(smoke, "cleanup") as cleanup:
             with self.assertRaisesRegex(RuntimeError, "scheduler unavailable"):
                 smoke.launch(CONFIG, "pool-test", {})
