@@ -2,7 +2,6 @@
 """GitHub controller for a single, 15-minute EC2 runner smoke test."""
 import argparse
 import base64
-import binascii
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 import json
@@ -106,7 +105,7 @@ def console_text(value):
     # AWS clients differ in whether they decode EC2's base64 console output.
     try:
         return base64.b64decode(value, validate=True).decode(errors="replace")
-    except binascii.Error:
+    except ValueError:
         return value
 
 

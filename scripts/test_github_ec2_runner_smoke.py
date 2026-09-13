@@ -30,6 +30,7 @@ class RunnerSmokeTests(unittest.TestCase):
         subprocess.run(["bash", "-n"], input=script, text=True, check=True)
         marker = f"ZC_RUNNER_READY={LABEL}\n"
         self.assertEqual(smoke.console_text(marker), marker)
+        self.assertEqual(smoke.console_text("Booting…\n" + marker), "Booting…\n" + marker)
         self.assertEqual(smoke.console_text(base64.b64encode(marker.encode()).decode()), marker)
         with self.assertRaises(AssertionError):
             smoke.boot_script("eA==", "$(unexpected-command)")
