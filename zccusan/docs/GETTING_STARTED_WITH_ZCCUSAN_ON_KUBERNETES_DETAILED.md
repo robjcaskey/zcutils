@@ -149,7 +149,9 @@ test.
 
 19. Treat RAM media as explicitly volatile, provide transport encryption outside these preview data paths, and create any `VolumeSnapshotClass` separately because the chart does not create one.
 
-20. Remove the test pod and PVC when finished so CSI can delete the `ZcVolume` after the operator tears down its userspace runtime.
+20. Before cleanup, optionally run the [single-region HA boundary validation](VALIDATING_SINGLE_REGION_HA_ON_KUBERNETES.md). It keeps a synchronized canary on the volume while you restart components, transfer custody at the userspace mirror's replicated HWM, and cause storage-copy failures. The exercise uses the continuous raw WAL path rather than moving a one-time snapshot and identifies the automatic failover and repair behavior that the current preview does not yet implement.
+
+21. Remove the test pod and PVC when finished so CSI can delete the `ZcVolume` after the operator tears down its userspace runtime.
 
    ```bash
    kubectl delete -f \
@@ -158,4 +160,4 @@ test.
      zccusan/deploy/zcblock-csi/getting-started/mirror-pvc.yaml
    ```
 
-21. Continue with [tiering](GETTING_STARTED_WITH_TIERING_ON_KUBERNETES.md), then [cross-region replication](GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md), and consult the detailed performance documentation before publishing representative claims.
+22. Continue with [tiering](GETTING_STARTED_WITH_TIERING_ON_KUBERNETES.md), then begin the three-part [cross-region replication and recovery series](GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md). Consult the detailed performance documentation before publishing representative claims.

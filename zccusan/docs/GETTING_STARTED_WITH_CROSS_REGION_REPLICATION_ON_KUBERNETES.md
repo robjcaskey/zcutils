@@ -1,251 +1,261 @@
-# Getting started with cross-region replication on Kubernetes
+# Cross-region getting started 1: replication and recovery estimates
 
-This guide builds a disposable three-region laboratory in one Kubernetes
-cluster. Regions `a`, `b`, and `c` each receive an independent CSI identity,
-namespace, state directory, kubelet plugin path, StorageClass, and volume. The
-three installations may run different releases, which makes the laboratory
-useful for rehearsing region-by-region stair-step upgrades.
+> **Target-state design preview:** this tutorial defines the operator experience
+> we will implement next. The current `CrossRegionReplication` object performs
+> bounded checkpoint transfer; it does not yet provide the continuous-WAL,
+> recovery-preview, or promotion behavior shown here.
 
-One cluster does **not** provide real regional fault isolation. It is the
-smallest faithful control and data-path test environment; production regions
-normally use separate clusters and trust boundaries.
+This is the first of three progressively deeper tutorials:
 
-## 1. Check the cluster
+1. Replicate a volume and inspect estimated RPO and RTO in a three-region lab.
+2. [Exercise automatic failover and failback while preserving performance
+   guarantees](GETTING_STARTED_WITH_CROSS_REGION_FAILOVER_ON_KUBERNETES.md).
+3. [Schedule several recovery classes and optionally require an HTTPS approval
+   before switching ownership](GETTING_STARTED_WITH_CROSS_REGION_POLICY_ON_KUBERNETES.md).
 
-Start with a Kubernetes cluster containing at least one Ready Linux node. The
-snapshot API must be installable, privileged CSI node Pods must be permitted,
-and each node that may host a volume needs the normal zccusan CSI prerequisites.
+Two follow-on peer-federation tutorials cover [offering bounded ciphertext
+custody to an untrusted friend](GETTING_STARTED_WITH_UNTRUSTED_FEDERATION_HOSTING_ON_KUBERNETES.md)
+and [placing your own encrypted files in that friend's
+region](GETTING_STARTED_WITH_UNTRUSTED_FEDERATION_STORAGE_ON_KUBERNETES.md).
+A sibling guide shows how that friend can [operate the receiving region on a
+Mac without Kubernetes](GETTING_STARTED_WITH_A_MACOS_FEDERATED_REGION.md).
 
-```bash
-kubectl get nodes
-kubectl auth can-i create csidrivers.storage.k8s.io
-kubectl auth can-i create daemonsets.apps --namespace default
+This first exercise represents regions `a`, `b`, and `c` with three isolated
+zccusan installations in one Kubernetes cluster. It is inexpensive and easy to
+inspect, but it does not create independent regional power, network,
+administrative, or Kubernetes failure domains.
+
+You may reuse the cluster and nodes from [getting started with zccusan on
+Kubernetes](GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md). Leave that CSI
+installation in place; this tutorial uses separate namespaces and CSI
+identities.
+
+## What you will build
+
+```text
+region A: writable regional volume
+  ├─ continuous encrypted WAL → region B: durable replica + read point
+  └─ continuous encrypted WAL → region C: read-through cache
+                                      (not a durability copy)
 ```
 
-The ordinary [Kubernetes getting-started guide](GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md)
-explains those prerequisites and the production Helm installation.
+B retains a complete checkpoint and hole-free WAL suffix. C can serve recent
+cached extents and fetch misses from an authoritative read view, but its
+contents remain evictable. C therefore contributes nothing to durability even
+if it happens to have cached every byte.
 
-## 2. Create the three regional namespaces
+At the end you will preview node loss, loss of A, loss of A and B together, and
+loss of A while B is lagging. Estimates come from observed high-water marks,
+reserved lanes, replay rate, materialization time, and attachment time; they
+are not static labels.
 
-Install the cluster-wide snapshot API once, then create and label each simulated
-region explicitly. The labels are descriptive; namespace isolation and the
-different CSI identities are what allow the three installations to coexist.
+## 1. Create three simulated regions
 
-```bash
-zccusan/deploy/zcblock-csi/install-snapshot-api.sh
-
-kubectl create namespace zcblock-csi-a
-kubectl label namespace zcblock-csi-a zcutils.io/local-region=a
-
-kubectl create namespace zcblock-csi-b
-kubectl label namespace zcblock-csi-b zcutils.io/local-region=b
-
-kubectl create namespace zcblock-csi-c
-kubectl label namespace zcblock-csi-c zcutils.io/local-region=c
-```
-
-Add the published chart repository before installing the three releases:
+Set `ZCCUSAN_VERSION` to the release that declares support for this target-state
+tutorial. Unique driver names and host paths let the installations share one
+API server and the same nodes.
 
 ```bash
+kubectl create namespace zccusan-region-a
+kubectl create namespace zccusan-region-b
+kubectl create namespace zccusan-region-c
+
 helm repo add zcutils https://robjcaskey.github.io/zcutils
 helm repo update zcutils
 ```
 
-## 3. Install the old CSI version into region A
-
-Install the old `0.1.4` CSI chart and image into namespace `zcblock-csi-a`.
-This release gets its own CSI driver identity, host state directory, kubelet
-plugin socket, and file-backed StorageClass.
+Install A:
 
 ```bash
-helm install zcblock-csi-a zcutils/zcblock-csi \
-  --version 0.1.4 \
-  --namespace zcblock-csi-a \
-  --set fullnameOverride=zcblock-csi-a \
-  --set driverName=io.zcutils.zcblock.a \
-  --set image.tag=0.1.4 \
-  --set stateDir=/var/lib/zcblock-csi-a \
-  --set nodeSetup.enabled=false \
-  --set operator.enabled=false \
-  --set storageClasses.zcbrd.enabled=false \
-  --set storageClasses.zcfile.name=zcfile-a \
+helm upgrade --install zccusan-region-a zcutils/zcblock-csi \
+  --version "$ZCCUSAN_VERSION" \
+  --namespace zccusan-region-a \
+  --set fullnameOverride=zccusan-region-a \
+  --set driverName=io.zcutils.zcblock.region-a \
+  --set stateDir=/var/lib/zccusan-region-a \
+  --set region.id=region-a \
+  --set federation.simulatedFailureDomain=true \
   --wait --timeout 120s
-
-kubectl -n zcblock-csi-a rollout status daemonset/zcblock-csi-a-node
 ```
 
-This installation owns driver `io.zcutils.zcblock.a`, state directory
-`/var/lib/zcblock-csi-a`, kubelet plugin directory
-`/var/lib/kubelet/plugins/io.zcutils.zcblock.a`, and StorageClass `zcfile-a`.
-
-## 4. Install the newer CSI version into region B
-
-After A is Ready, install the newer `0.1.5` CSI chart and image into namespace
-`zcblock-csi-b`. The explicit `b` values prevent it from sharing A's CSI or
-host-visible identities.
+Install B:
 
 ```bash
-helm install zcblock-csi-b zcutils/zcblock-csi \
-  --version 0.1.5 \
-  --namespace zcblock-csi-b \
-  --set fullnameOverride=zcblock-csi-b \
-  --set driverName=io.zcutils.zcblock.b \
-  --set image.tag=0.1.5 \
-  --set stateDir=/var/lib/zcblock-csi-b \
-  --set nodeSetup.enabled=false \
-  --set operator.enabled=false \
-  --set storageClasses.zcbrd.enabled=false \
-  --set storageClasses.zcfile.name=zcfile-b \
+helm upgrade --install zccusan-region-b zcutils/zcblock-csi \
+  --version "$ZCCUSAN_VERSION" \
+  --namespace zccusan-region-b \
+  --set fullnameOverride=zccusan-region-b \
+  --set driverName=io.zcutils.zcblock.region-b \
+  --set stateDir=/var/lib/zccusan-region-b \
+  --set region.id=region-b \
+  --set federation.simulatedFailureDomain=true \
   --wait --timeout 120s
-
-kubectl -n zcblock-csi-b rollout status daemonset/zcblock-csi-b-node
 ```
 
-B owns driver `io.zcutils.zcblock.b`, state directory
-`/var/lib/zcblock-csi-b`, kubelet plugin directory
-`/var/lib/kubelet/plugins/io.zcutils.zcblock.b`, and StorageClass `zcfile-b`.
-
-## 5. Install the newest CSI version into region C
-
-After B is Ready, install the newest `0.1.6` CSI chart and image into namespace
-`zcblock-csi-c`. Installing and verifying one release at a time is the same
-ordering used for a regional stair-step upgrade.
+Install C:
 
 ```bash
-helm install zcblock-csi-c zcutils/zcblock-csi \
-  --version 0.1.6 \
-  --namespace zcblock-csi-c \
-  --set fullnameOverride=zcblock-csi-c \
-  --set driverName=io.zcutils.zcblock.c \
-  --set image.tag=0.1.6 \
-  --set stateDir=/var/lib/zcblock-csi-c \
-  --set nodeSetup.enabled=false \
-  --set operator.enabled=false \
-  --set storageClasses.zcbrd.enabled=false \
-  --set storageClasses.zcfile.name=zcfile-c \
+helm upgrade --install zccusan-region-c zcutils/zcblock-csi \
+  --version "$ZCCUSAN_VERSION" \
+  --namespace zccusan-region-c \
+  --set fullnameOverride=zccusan-region-c \
+  --set driverName=io.zcutils.zcblock.region-c \
+  --set stateDir=/var/lib/zccusan-region-c \
+  --set region.id=region-c \
+  --set federation.simulatedFailureDomain=true \
   --wait --timeout 120s
-
-kubectl -n zcblock-csi-c rollout status daemonset/zcblock-csi-c-node
 ```
 
-C owns driver `io.zcutils.zcblock.c`, state directory
-`/var/lib/zcblock-csi-c`, kubelet plugin directory
-`/var/lib/kubelet/plugins/io.zcutils.zcblock.c`, and StorageClass `zcfile-c`.
-
-Now verify all three identities together. Do not continue if a driver,
-StorageClass, image, or namespace has accidentally been shared.
+The simulation marker remains visible in status and prevents this laboratory
+from being reported as real regional compliance.
 
 ```bash
-kubectl get namespace -l zcutils.io/local-region
-kubectl get csidriver io.zcutils.zcblock.a io.zcutils.zcblock.b io.zcutils.zcblock.c
-kubectl get storageclass zcfile-a zcfile-b zcfile-c
-kubectl get daemonset -A -l app.kubernetes.io/name=zcblock-csi \
-  -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image
+kubectl get csidriver \
+  io.zcutils.zcblock.region-a \
+  io.zcutils.zcblock.region-b \
+  io.zcutils.zcblock.region-c
+kubectl get pods -A -l app.kubernetes.io/name=zcblock-csi -o wide
 ```
 
-This laboratory disables node setup because it uses file-backed terminal
-volumes and assumes the ordinary Kubernetes getting-started installation has
-already prepared the nodes. It disables the three chart-local operators because
-the direct CSI/control test below owns this laboratory's replication sequence;
-the production checkpoint section installs the declarative operator contract.
+## 2. Link the simulated regions
 
-This suffixing is only necessary when several simulated regions share one
-Kubernetes API server. Separate production clusters may each use the default
-`io.zcutils.zcblock` driver identity.
-
-## 6. Establish the test trust graph and exercise failover
-
-With all three regional installations Ready, the test establishes the complete
-planned-failover graph: A→B, A→C, and B→C. Each edge receives its own
-transfer-scoped `zct1` credential from the target. Credentials are random,
-bounded-lifetime, accepted only for new authentication before expiry, and never
-printed by the test. This is deliberately narrower than giving one simulated
-region a reusable credential for every other region.
-
-Run the executable acceptance test:
+Create the federation, then add each directional relationship explicitly. The
+next tutorial replaces this local shortcut with independently authenticated
+cluster invitations.
 
 ```bash
-zccusan/deploy/zcblock-csi/test-local-regions-failover.sh
+zcctl federation create tutorial-global \
+  --region region-a --namespace zccusan-region-a
+zcctl federation link tutorial-global \
+  --from region-a --to region-b --namespace zccusan-region-b
+zcctl federation link tutorial-global \
+  --from region-b --to region-a --namespace zccusan-region-a
+zcctl federation link tutorial-global \
+  --from region-a --to region-c --namespace zccusan-region-c
+zcctl federation link tutorial-global \
+  --from region-c --to region-a --namespace zccusan-region-a
+zcctl federation link tutorial-global \
+  --from region-b --to region-c --namespace zccusan-region-c
+zcctl federation link tutorial-global \
+  --from region-c --to region-b --namespace zccusan-region-b
+zcctl federation status tutorial-global --watch
 ```
 
-The test performs the following observable sequence:
+Every link treats its network segment as untrusted. User payloads use native
+authenticated encryption by default. TLS is an optional outer compliance
+layer, but it is not enabled for published performance figures.
 
-1. It provisions three distinct PVCs through `zcfile-a`, `zcfile-b`, and
-   `zcfile-c`, then writes unique state to the A volume.
-2. It deletes every Pod mounting those volumes, establishing an explicit writer
-   fence and application-consistent cut before any data moves.
-3. The userspace replication stage transfers A to B and A to C over
-   authenticated AES-256 encrypted TCP. Block devices are terminal media only;
-   no block device performs mirroring, striping, placement, or failover.
-4. It mounts B, validates the transferred state, writes a B promotion record,
-   and unmounts B.
-5. It transfers B to C, mounts C, and proves that both the original state and
-   the B promotion record survived the stair-step failover.
-6. It verifies that no source-volume writer is still running.
+## 3. Declare global volume behavior
 
-A successful run ends with a machine-readable line similar to:
+Create `cross-region-volume.yaml`. The tutorial profiles make A writable, B a
+retained durable destination, and C an evictable read-through destination.
 
-```text
-ZCCUSAN_LOCAL_REGIONS_FAILOVER_PASS namespaces=zcblock-csi-a,zcblock-csi-b,zcblock-csi-c volumes=3 volume_handles_distinct=true source_writer_fenced=true first_promotion=b second_promotion=c replication=aes-256-authenticated-tcp placement=userspace block_raid=false
+```yaml
+apiVersion: storage.zcutils.io/v1alpha1
+kind: GlobalVolumePolicy
+metadata:
+  name: cross-region-getting-started
+  namespace: zccusan-region-a
+spec:
+  federationRef: tutorial-global
+  volumeSelector:
+    matchNames: [zc-mirror]
+  preferredWriteRegion: region-a
+  placements:
+    - region: region-a
+      profileRef: tutorial-regional
+      custody: Durable
+      access: ReadWrite
+    - region: region-b
+      profileRef: tutorial-durable-replica
+      custody: Durable
+      access: ReadThrough
+      replication:
+        mode: ContinuousWal
+        targetLag: 5s
+        maximumLag: 30s
+    - region: region-c
+      profileRef: tutorial-read-cache
+      custody: CacheOnly
+      access: ReadThrough
+      replication:
+        mode: ContinuousWal
+        targetLag: 1s
+        maximumLag: 10s
+  recoveryObjectives:
+    - failureSet: [RegionNode]
+      rpo: 0s
+      rto: 10s
+    - failureSet: [region-a]
+      rpo: 5s
+      rto: 2m
+    - failureSet: [region-a, region-b]
+      action: HoldDurably
 ```
 
-This is a **planned, fenced, asynchronous checkpoint failover**. It proves
-interoperability across the selected releases and exact data continuity at the
-declared cut. It does not claim zero-RPO failover, a writer lease, or automatic
-promotion after an ambiguous partition.
-
-To retain the test namespace for inspection, run:
+Apply it once through A. The adapter commits it to the global state log; do not
+create competing copies independently in all three regions.
 
 ```bash
-CLEANUP=0 zccusan/deploy/zcblock-csi/test-local-regions-failover.sh
-kubectl -n zcblock-local-regions-failover get pvc,pod -o wide
+kubectl apply -f cross-region-volume.yaml
+kubectl -n zccusan-region-a get globalvolumepolicy \
+  cross-region-getting-started --watch
 ```
 
-## 7. Reproduce the isolated QEMU proof
+The policy becomes `Ready` only after B has a complete checkpoint plus a
+hole-free live WAL suffix and C has joined the live feed. A snapshot may seed a
+destination, but routine replication remains an attached WAL stream.
 
-The repository also contains a self-contained QEMU acceptance test. It boots a
-real K3s API server, imports the three pinned release images, installs all three
-CSI identities, provisions three volumes, and runs the same A-to-B-to-C
-failover. KVM, QEMU, Podman, and the pinned K3s binary are required.
+## 4. Exercise the global read points
 
 ```bash
-WORK_DIR=/mnt/bulk_data/zccusan-local-regions-qemu \
-  scripts/zccusan-local-regions-qemu.sh
+zcctl volume write zc-mirror --region region-a --text tutorial-record
+zcctl volume read zc-mirror --region region-b --consistency read-your-writes
+zcctl volume read zc-mirror --region region-c --consistency read-your-writes
+zcctl volume read zc-mirror --region region-c --consistency read-your-writes
+zcctl volume status zc-mirror --show-regions --show-high-water-marks
 ```
 
-Its final proof marker includes `instances=3`, the exact three image versions,
-`cross_region_replication=pass`, and `planned_failover=a-to-b-to-c`.
+B can satisfy the read from its durable projection. C's first read may fetch a
+missing extent; the second should be a local hit. Both carry a minimum HWM, so
+the cache never mistakes an old extent for a current value. B publishes a
+durable HWM; C publishes coverage, a closed/readable HWM, and
+`durabilityContribution: false`.
 
-## Production checkpoint CRD boundary
-
-`CrossRegionReplication` is the declarative asynchronous-checkpoint contract
-for separate production clusters. It creates one short-lived sender Pod and
-one receiver Pod and transfers directly between configured node backplane
-addresses. It creates no Service and requires no multicast.
-
-Create a manifest from the template, then edit the node names, paths, byte
-count, and Secret reference:
+## 5. Preview recovery without causing a failure
 
 ```bash
-cp zccusan/deploy/zcblock-csi/getting-started/cross-region-checkpoint.template.yaml \
-  /tmp/cross-region-checkpoint.yaml
-$EDITOR /tmp/cross-region-checkpoint.yaml
-kubectl apply -f /tmp/cross-region-checkpoint.yaml
-kubectl get crossregionreplication example-us-to-uk-checkpoint -w
+zcctl recovery preview zc-mirror --unavailable region-a
+zcctl recovery preview zc-mirror --unavailable region-a,region-b
+zcctl recovery preview zc-mirror \
+  --unavailable region-a --assume-lag region-b=20s
 ```
 
-Generate a bounded-lifetime `zct1` credential with `zcrepl token`, store it in
-the referenced Secret, and rotate it before expiry. The operator does not copy
-the Secret into the CRD, command arguments, logs, or status. The phases advance
-through `StartingReceiver`, `Replicating`, and `Ready`; `Ready` is published
-only after the receiver has synchronized the target and the accepted, durable,
-and applied high-water marks equal the declared byte count.
+Every report includes:
 
-The native payload framing is authenticated and encrypted with AES-256. It is
-not TLS; deployments that require check-the-box TLS must enable the separate
-TLS transport option. Neither this CRD nor the local test grants a writer lease.
-Promotion remains a separate quorum-fenced operation.
+- the newest qualifying durable cut and estimated data-loss window;
+- target selection or an explicit `HoldDurably` result;
+- provisioning, queue, replay, materialization, and attachment time;
+- estimated RPO and RTO with the observations used to calculate them;
+- whether each declared objective is met; and
+- missing durability, trust, key, capacity, or performance prerequisites.
 
-Continue with [global transport security](../../docs/GLOBAL_TRANSPORT_SECURITY.md),
-[global volume failover](../../docs/global-volume-failover.md), and the
-[CRD stair-step upgrade contract](../deploy/zcblock-csi/CRD-UPGRADES.md).
+The A+B-loss preview must not count C as durable. Promotion requires complete
+durable coverage, a hole-free WAL suffix, independent retention, and a
+committed topology epoch; it is never a label-only change.
+
+## Keep the lab or clean it up
+
+Keep the installations to run tutorial two in simulation mode. Otherwise:
+
+```bash
+zcctl federation delete tutorial-global --wait
+helm uninstall zccusan-region-c --namespace zccusan-region-c
+helm uninstall zccusan-region-b --namespace zccusan-region-b
+helm uninstall zccusan-region-a --namespace zccusan-region-a
+kubectl delete namespace \
+  zccusan-region-c zccusan-region-b zccusan-region-a
+```
+
+Continue with [automatic cross-region failover and
+failback](GETTING_STARTED_WITH_CROSS_REGION_FAILOVER_ON_KUBERNETES.md).

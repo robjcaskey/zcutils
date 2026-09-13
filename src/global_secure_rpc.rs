@@ -6,16 +6,23 @@
 
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+#[cfg(not(feature = "fips"))]
 use sha2::{Digest, Sha256};
 use std::env;
-use std::fs::{self, File};
+use std::fs;
+#[cfg(not(feature = "fips"))]
+use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-const FRAME_MAGIC: &[u8; 8] = b"ZCGRPC01";
+const FRAME_MAGIC: &[u8; 8] = if cfg!(feature = "fips") {
+    b"ZCGRPC02"
+} else {
+    b"ZCGRPC01"
+};
 const FRAME_HEADER_BYTES: usize = 28;
 const FRAME_TAG_BYTES: usize = 16;
 const FRAME_FLAG_NONE: u8 = 0;
@@ -90,6 +97,7 @@ impl TlsIdentityFiles {
     /// Build for every new connection. Atomic file replacement therefore
     /// rotates certificates/keys and overlapping CA bundles without restart.
     pub fn client_stream(&self, socket: TcpStream) -> io::Result<GlobalRpcIo> {
+        crate::crypto_policy::initialize()?;
         let roots = self.load_roots()?;
         let certificate_chain = load_certificates(&self.certificate_file)?;
         let private_key = load_private_key(&self.private_key_file)?;
@@ -100,6 +108,10 @@ impl TlsIdentityFiles {
                 .map_err(|error| {
                     invalid(format!("build global RPC TLS client identity: {error}"))
                 })?;
+        #[cfg(feature = "fips")]
+        if !config.fips() {
+            return Err(invalid("global RPC TLS configuration is not FIPS enabled"));
+        }
         config.alpn_protocols = vec![TLS_ALPN.to_vec()];
         let server_name = ServerName::try_from(self.server_name.clone())
             .map_err(|_| invalid("ZCGLOBAL_TLS_SERVER_NAME is not a valid DNS name or IP"))?;
@@ -111,6 +123,7 @@ impl TlsIdentityFiles {
     }
 
     pub fn server_stream(&self, socket: TcpStream) -> io::Result<GlobalRpcIo> {
+        crate::crypto_policy::initialize()?;
         let roots = self.load_roots()?;
         let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
             .build()
@@ -124,6 +137,10 @@ impl TlsIdentityFiles {
                 .map_err(|error| {
                     invalid(format!("build global RPC TLS server identity: {error}"))
                 })?;
+        #[cfg(feature = "fips")]
+        if !config.fips() {
+            return Err(invalid("global RPC TLS configuration is not FIPS enabled"));
+        }
         config.alpn_protocols = vec![TLS_ALPN.to_vec()];
         let connection = rustls::ServerConnection::new(Arc::new(config))
             .map_err(|error| invalid(format!("create global RPC TLS server: {error}")))?;
@@ -183,6 +200,7 @@ impl Write for GlobalRpcIo {
     }
 }
 
+#[cfg(not(feature = "fips"))]
 pub fn write_encrypted_frame(
     stream: &mut impl Write,
     secret: &str,
@@ -211,6 +229,7 @@ pub fn write_encrypted_frame(
     stream.flush()
 }
 
+#[cfg(not(feature = "fips"))]
 pub fn read_encrypted_frame(
     stream: &mut impl Read,
     secrets: &[String],
@@ -256,6 +275,7 @@ pub fn read_encrypted_frame(
     ))
 }
 
+#[cfg(not(feature = "fips"))]
 fn frame_cipher(
     secret: &str,
     direction: FrameDirection,
@@ -392,4 +412,81 @@ mod tests {
             .is_err()
         );
     }
+}
+
+#[cfg(feature = "fips")]
+pub(crate) fn frame_cipher(
+    secret: &str,
+    direction: FrameDirection,
+) -> io::Result<crate::approved_crypto::Cipher> {
+    crate::approved_crypto::derive(secret, b"zcglobal rpc v2", &[direction as u8])
+}
+
+// AAD has the IV field zeroed: GCM authenticates the actual IV itself. This
+// lets AWS-LC choose the IV internally without a circular dependency on AAD.
+#[cfg(feature = "fips")]
+pub(crate) fn encrypt_payload(
+    cipher: &crate::approved_crypto::Cipher,
+    direction: FrameDirection,
+    plaintext: &[u8],
+) -> io::Result<([u8; FRAME_HEADER_BYTES], Vec<u8>)> {
+    let length = plaintext
+        .len()
+        .checked_add(FRAME_TAG_BYTES)
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or_else(|| invalid("RPC frame exceeds u32"))?;
+    let mut header = frame_header(direction, [0; 12], length);
+    let wire = crate::approved_crypto::seal(cipher, b"", &header, plaintext.to_vec())?;
+    header[12..24].copy_from_slice(&wire[..12]);
+    Ok((header, wire[12..].to_vec()))
+}
+#[cfg(feature = "fips")]
+pub fn write_encrypted_frame(
+    stream: &mut impl Write,
+    secret: &str,
+    direction: FrameDirection,
+    plaintext: &[u8],
+) -> io::Result<()> {
+    let cipher = frame_cipher(secret, direction)?;
+    let (header, ciphertext) = encrypt_payload(&cipher, direction, plaintext)?;
+    stream.write_all(&header)?;
+    stream.write_all(&ciphertext)?;
+    stream.flush()
+}
+#[cfg(feature = "fips")]
+pub fn read_encrypted_frame(
+    stream: &mut impl Read,
+    secrets: &[String],
+    direction: FrameDirection,
+    maximum_plaintext_bytes: usize,
+) -> io::Result<(Vec<u8>, String)> {
+    if secrets.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "no currently valid global RPC credential",
+        ));
+    }
+    let mut header = [0u8; FRAME_HEADER_BYTES];
+    stream.read_exact(&mut header)?;
+    let (nonce, length) = validate_header(&header, direction)?;
+    let maximum = maximum_plaintext_bytes
+        .checked_add(FRAME_TAG_BYTES)
+        .ok_or_else(|| invalid("RPC frame limit overflow"))?;
+    if (length as usize) < FRAME_TAG_BYTES || length as usize > maximum {
+        return Err(invalid("RPC ciphertext exceeds structural limit"));
+    }
+    let mut wire = vec![0u8; 12 + length as usize];
+    wire[..12].copy_from_slice(&nonce);
+    stream.read_exact(&mut wire[12..])?;
+    header[12..24].fill(0);
+    for secret in secrets {
+        let cipher = frame_cipher(secret, direction)?;
+        if let Ok(plaintext) = crate::approved_crypto::open(&cipher, b"", &header, &wire) {
+            return Ok((plaintext, secret.clone()));
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "global RPC authenticated decryption failed",
+    ))
 }

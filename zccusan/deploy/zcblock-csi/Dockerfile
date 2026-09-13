@@ -1,23 +1,27 @@
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 # Keep the builder distro aligned with runtime-tools: the libfabric headers,
 # link-time library, and shipped provider must come from the same Debian ABI.
 FROM docker.io/library/rust:1.97-trixie AS builder
 
 WORKDIR /work
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,id=zcutils-nonfips-builder-apt-lists,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,id=zcutils-nonfips-builder-apt-cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     libfabric-dev \
     perl \
     pkg-config \
-    protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/*
+    protobuf-compiler
 
 COPY Cargo.toml Cargo.lock ./
 COPY build.rs ./
 COPY src ./src
 
-RUN RUST_MIN_STACK=33554432 cargo build --release --jobs 16 \
+RUN --mount=type=cache,id=zcutils-nonfips-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=zcutils-nonfips-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    RUST_MIN_STACK=33554432 cargo build --locked --release --jobs 16 \
     --bin zcutils \
     --bin zcblock-csi \
     --bin zcblock-node-setup \
@@ -36,14 +40,15 @@ RUN RUST_MIN_STACK=33554432 cargo build --release --jobs 16 \
 
 FROM docker.io/library/debian:trixie-slim AS runtime-tools
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,id=zcutils-nonfips-runtime-apt-lists,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,id=zcutils-nonfips-runtime-apt-cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     e2fsprogs \
     ibverbs-providers \
     libfabric-bin \
     libfabric1 \
     util-linux \
-    xfsprogs \
-    && rm -rf /var/lib/apt/lists/*
+    xfsprogs
 
 COPY --from=builder /work/target/release/zcblock-csi /runtime-root/usr/local/bin/zcblock-csi
 COPY --from=builder /work/target/release/zcblock-node-setup /runtime-root/usr/local/bin/zcblock-node-setup

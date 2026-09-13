@@ -29,7 +29,13 @@ trap 'rm -f "$ARCHIVE"' EXIT
 
 cd "$ROOT"
 
-podman build -t "$IMAGE" -f "$DOCKERFILE" .
+if [[ "$IMAGE_VARIANT" == fips-aspiring && "$DOCKERFILE" == zccusan/deploy/zcblock-csi/Dockerfile.fips ]]; then
+  podman build --build-arg "FIPS_DISTRO=${FIPS_DISTRO:-amzn2023}" \
+    --build-arg "FIPS_PROVIDER_ROOT=${FIPS_PROVIDER_ROOT:-zccusan/deploy/zcblock-csi/fips/provider}" \
+    -t "$IMAGE" -f "$DOCKERFILE" .
+else
+  podman build -t "$IMAGE" -f "$DOCKERFILE" .
+fi
 podman save "$IMAGE" -o "$ARCHIVE"
 
 if [ "$(id -u)" -eq 0 ]; then
@@ -42,7 +48,17 @@ if [ "${INSTALL_SNAPSHOT_API:-1}" = "1" ]; then
   zccusan/deploy/zcblock-csi/install-snapshot-api.sh
 fi
 
-kubectl apply -f zccusan/deploy/zcblock-csi/zcblock-csi.yaml
+# Render the selected image before applying; the source manifest defaults to non-FIPS.
+python3 - "$IMAGE" <<'PY' | kubectl apply -f -
+import json
+from pathlib import Path
+import sys
+manifest = Path("zccusan/deploy/zcblock-csi/zcblock-csi.yaml").read_text()
+placeholder = "image: localhost/zcblock-csi:dev"
+if manifest.count(placeholder) != 2:
+    raise SystemExit("expected two first-party image placeholders in CSI manifest")
+print(manifest.replace(placeholder, "image: " + json.dumps(sys.argv[1])))
+PY
 kubectl apply -f zccusan/deploy/zcblock-csi/snapshot-class.yaml
 kubectl -n zcblock-csi rollout restart daemonset/zcblock-csi-node
 kubectl -n zcblock-csi rollout status daemonset/zcblock-csi-node --timeout=180s

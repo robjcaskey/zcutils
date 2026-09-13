@@ -694,12 +694,14 @@ struct PendingRemoteRead {
 enum RemoteWalStream {
     Tcp(TcpStream),
     Ofi(ZcOfiMessageStream),
+    Custody(Box<crate::wal_custody::LocalEndpoint>),
 }
 
 // SharedTarget is borrowed by its scoped lane workers only after every
 // RemoteWalLeaf has been moved out into its owning lane.  Its remaining shared
 // stream methods inspect metadata or a TCP fd and never call the OFI endpoint;
-// all OFI I/O still requires exclusive `&mut RemoteWalStream` access.
+// all OFI I/O and co-located custody calls still require exclusive
+// `&mut RemoteWalStream` access. Custody has no shared data-path methods.
 unsafe impl Sync for RemoteWalStream {}
 
 impl RemoteWalStream {
@@ -707,6 +709,7 @@ impl RemoteWalStream {
         match self {
             Self::Tcp(_) => "tcp",
             Self::Ofi(_) => "ofi",
+            Self::Custody(_) => "shared-arena-custody",
         }
     }
 }
@@ -715,7 +718,7 @@ impl RemoteWalStream {
     fn tcp(&self) -> Option<&TcpStream> {
         match self {
             Self::Tcp(stream) => Some(stream),
-            Self::Ofi(_) => None,
+            Self::Ofi(_) | Self::Custody(_) => None,
         }
     }
 
@@ -727,13 +730,14 @@ impl RemoteWalStream {
         match self {
             Self::Tcp(stream) => wait.recv_exact(stream, out),
             Self::Ofi(stream) => stream.read_exact(out),
+            Self::Custody(stage) => stage.read_exact(out),
         }
     }
 
     fn set_quickack(&self) -> io::Result<()> {
         match self {
             Self::Tcp(stream) => set_tcp_quickack(stream),
-            Self::Ofi(_) => Ok(()),
+            Self::Ofi(_) | Self::Custody(_) => Ok(()),
         }
     }
 
@@ -744,7 +748,7 @@ impl RemoteWalStream {
     fn register_rma_read_buffer(&mut self, target: &mut [u8]) -> io::Result<()> {
         match self {
             Self::Ofi(stream) => stream.register_rma_read_buffer(target),
-            Self::Tcp(_) => Err(io::Error::new(
+            Self::Tcp(_) | Self::Custody(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "OFI RMA read-buffer registration requested for TCP",
             )),
@@ -758,7 +762,7 @@ impl RemoteWalStream {
     ) -> io::Result<()> {
         match self {
             Self::Ofi(stream) => unsafe { stream.register_rma_read_buffer_raw(target, len) },
-            Self::Tcp(_) => Err(io::Error::new(
+            Self::Tcp(_) | Self::Custody(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "OFI RMA read-buffer registration requested for TCP",
             )),
@@ -768,7 +772,7 @@ impl RemoteWalStream {
     fn configure_rma_read_queue(&mut self, depth: usize) -> io::Result<()> {
         match self {
             Self::Ofi(stream) => stream.configure_rma_read_queue(depth),
-            Self::Tcp(_) => Err(io::Error::new(
+            Self::Tcp(_) | Self::Custody(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "OFI RMA read queue requested for TCP",
             )),
@@ -782,7 +786,7 @@ impl RemoteWalStream {
     ) -> io::Result<()> {
         match self {
             Self::Ofi(stream) => unsafe { stream.register_rma_write_buffer_raw(source, len) },
-            Self::Tcp(_) => Err(io::Error::new(
+            Self::Tcp(_) | Self::Custody(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "OFI RMA write-buffer registration requested for TCP",
             )),
@@ -792,7 +796,7 @@ impl RemoteWalStream {
     fn configure_rma_write_queue(&mut self, depth: usize) -> io::Result<()> {
         match self {
             Self::Ofi(stream) => stream.configure_rma_write_queue(depth),
-            Self::Tcp(_) => Err(io::Error::new(
+            Self::Tcp(_) | Self::Custody(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "OFI RMA write queue requested for TCP",
             )),
@@ -823,7 +827,7 @@ impl RemoteWalStream {
                     more,
                 )
             },
-            Self::Tcp(_) => Err(io::Error::new(
+            Self::Tcp(_) | Self::Custody(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "OFI RMA write post requested for TCP",
             )),
@@ -838,7 +842,7 @@ impl RemoteWalStream {
     ) -> io::Result<usize> {
         match self {
             Self::Ofi(stream) => stream.poll_rma_writes(out_slots, out_user_data, wait),
-            Self::Tcp(_) => Err(io::Error::new(
+            Self::Tcp(_) | Self::Custody(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "OFI RMA write poll requested for TCP",
             )),
@@ -868,7 +872,7 @@ impl RemoteWalStream {
                     force_completion,
                 )
             },
-            Self::Tcp(_) => Err(io::Error::new(
+            Self::Tcp(_) | Self::Custody(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "OFI RMA read post requested for TCP",
             )),
@@ -883,7 +887,7 @@ impl RemoteWalStream {
     ) -> io::Result<usize> {
         match self {
             Self::Ofi(stream) => stream.poll_rma_reads(out_slots, out_user_data, wait),
-            Self::Tcp(_) => Err(io::Error::new(
+            Self::Tcp(_) | Self::Custody(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "OFI RMA read poll requested for TCP",
             )),
@@ -893,7 +897,7 @@ impl RemoteWalStream {
     fn rma_read(&mut self, target: &mut [u8], remote_addr: u64, remote_key: u64) -> io::Result<()> {
         match self {
             Self::Ofi(stream) => stream.rma_read(target, remote_addr, remote_key),
-            Self::Tcp(_) => Err(io::Error::new(
+            Self::Tcp(_) | Self::Custody(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "OFI RMA read requested for TCP",
             )),
@@ -906,6 +910,7 @@ impl Read for RemoteWalStream {
         match self {
             Self::Tcp(stream) => stream.read(out),
             Self::Ofi(stream) => stream.read(out),
+            Self::Custody(stage) => stage.read(out),
         }
     }
 }
@@ -915,6 +920,7 @@ impl Write for RemoteWalStream {
         match self {
             Self::Tcp(stream) => stream.write(input),
             Self::Ofi(stream) => stream.write(input),
+            Self::Custody(stage) => stage.write(input),
         }
     }
 
@@ -922,6 +928,7 @@ impl Write for RemoteWalStream {
         match self {
             Self::Tcp(stream) => stream.write_vectored(inputs),
             Self::Ofi(stream) => stream.write_vectored(inputs),
+            Self::Custody(stage) => stage.write_vectored(inputs),
         }
     }
 
@@ -929,6 +936,7 @@ impl Write for RemoteWalStream {
         match self {
             Self::Tcp(stream) => stream.flush(),
             Self::Ofi(stream) => stream.flush(),
+            Self::Custody(stage) => stage.flush(),
         }
     }
 }
@@ -2602,6 +2610,27 @@ impl RemoteWalLeaf {
         let rma_reads_enabled = env_enabled_or("URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS", false);
         let rma_writes_enabled = env_enabled_or("URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES", false);
         let (mut stream, address, tcp_nodelay, quickack) = match transport.as_str() {
+            "custody-tcp" => {
+                if lane_count != 1 || lane_id != 0 || rma_reads_enabled || rma_writes_enabled
+                    || source_ip.is_some()
+                    || env_enabled_or("URING_PLAY_ZCNBLK_SHM_OFI_RMA_READS_REQUIRED", false)
+                    || env_enabled_or("URING_PLAY_ZCNBLK_SHM_OFI_RMA_WRITES_REQUIRED", false)
+                    || env_enabled_or("URING_PLAY_ZCNBLK_SHM_REMOTE_SEND_ZC_REQUIRED", false)
+                {
+                    return Err(io::Error::other(
+                        "client WAL custody requires one TCP lane without RMA, forced socket zero-copy or a source-IP override",
+                    ));
+                }
+                let path = env::var("URING_PLAY_ZCNBLK_SHM_CLIENT_WAL_CONFIG")
+                    .map_err(|_| io::Error::other("custody-tcp requires URING_PLAY_ZCNBLK_SHM_CLIENT_WAL_CONFIG"))?;
+                let stage = crate::wal_custody::LocalEndpoint::open(&path)?;
+                (
+                    RemoteWalStream::Custody(Box::new(stage)),
+                    "shared-arena->userspace-custody->tcp".to_string(),
+                    false,
+                    false,
+                )
+            }
             "tcp" => {
                 let tcp = connect_remote_wal_tcp(socket_address, source_ip)?;
                 set_tcp_bench_buffers(&tcp);
@@ -2654,7 +2683,7 @@ impl RemoteWalLeaf {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
-                        "URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT must be tcp or ofi, got {other:?}"
+                        "URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT must be tcp, ofi or custody-tcp, got {other:?}"
                     ),
                 ));
             }
@@ -2780,10 +2809,12 @@ impl RemoteWalLeaf {
         };
         let recv_wait = RemoteWalRecvWait::from_env(recv_spin_budget)?;
         let send_mode = RemoteWalSendMode::from_env()?;
-        if matches!(stream, RemoteWalStream::Ofi(_)) && send_mode != RemoteWalSendMode::Blocking {
+        if matches!(stream, RemoteWalStream::Ofi(_) | RemoteWalStream::Custody(_))
+            && send_mode != RemoteWalSendMode::Blocking
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "direct OFI WAL transport requires blocking send mode; io_uring send-zc is TCP-only",
+                "direct OFI/shared-arena WAL stages require blocking send mode; io_uring send-zc is socket-only",
             ));
         }
         let rma_read_qd = env::var("URING_PLAY_ZCNBLK_SHM_OFI_RMA_READ_QD")
@@ -3418,6 +3449,27 @@ impl RemoteWalLeaf {
         if writes.is_empty() {
             return Ok(());
         }
+        if matches!(self.stream, RemoteWalStream::Custody(_)) {
+            let mut bytes = 0;
+            for write in writes {
+                let frame = self.request_frame(write, ZCNBLK_FAN_WAL_OP_WRITE_DESC, true)?;
+                if let RemoteWalStream::Custody(stage) = &mut self.stream {
+                    stage.execute(
+                        frame,
+                        mapping.slice(write.payload_offset, write.len)?,
+                        &mut [],
+                    )?;
+                }
+                bytes += write.len as u64;
+            }
+            self.write_batches += 1;
+            self.write_records += writes.len() as u64;
+            self.write_bytes += bytes;
+            self.note_remote_completion(
+                writes.iter().map(|write| write.submit_sequence).max().unwrap(),
+            );
+            return Ok(());
+        }
         let descriptor_len = writes
             .len()
             .checked_mul(ZCNBLK_FAN_WAL_HEADER_LEN)
@@ -3518,6 +3570,13 @@ impl RemoteWalLeaf {
             payload_offset: 0,
         };
         let frame = self.request_frame(&pending, ZCNBLK_FAN_WAL_OP_READ_DESC, false)?;
+        if let RemoteWalStream::Custody(stage) = &mut self.stream {
+            stage.execute(frame, &[], out)?;
+            self.read_records += 1;
+            self.read_bytes += out.len() as u64;
+            self.note_remote_completion(request.submit_sequence);
+            return Ok(());
+        }
         zcnblk_fan_wal_write_frame(&mut self.stream, frame, &[])?;
         let result = self.read_result_frame()?;
         if result.op != ZCNBLK_FAN_WAL_OP_RESULT
@@ -3725,6 +3784,52 @@ impl RemoteWalLeaf {
         if requests.is_empty() {
             return Ok(false);
         }
+        if matches!(self.stream, RemoteWalStream::Custody(_)) {
+            for request in requests {
+                let op = match request.request.op {
+                    ZCNBLK_SHM_OP_WRITE => ZCNBLK_FAN_WAL_OP_WRITE_DESC,
+                    ZCNBLK_SHM_OP_READ => ZCNBLK_FAN_WAL_OP_READ_DESC,
+                    _ => return Err(io::Error::other("unsupported shared-arena custody request")),
+                };
+                let pending = PendingWalWrite {
+                    request: request.request,
+                    io_contract: request.io_contract,
+                    request_sequence: request.request_sequence,
+                    submit_sequence: request.request.submit_sequence,
+                    offset: request.request.offset,
+                    len: request.request.len as usize,
+                    payload_offset: request.payload_offset,
+                };
+                let frame = self.request_frame(&pending, op, true)?;
+                if let RemoteWalStream::Custody(stage) = &mut self.stream {
+                    if op == ZCNBLK_FAN_WAL_OP_WRITE_DESC {
+                        // The edge owns this registered lease through result
+                        // retirement. The userspace stage borrows it for both
+                        // journal pwritev and remote TX; it never re-buffers it.
+                        stage.execute(
+                            frame,
+                            mapping.slice(pending.payload_offset, pending.len)?,
+                            &mut [],
+                        )?;
+                    } else {
+                        mapping.slice(pending.payload_offset, pending.len)?;
+                        // Same exclusive slot ownership as the socket RX path.
+                        // No alias survives this synchronous call; the kernel
+                        // cannot consume/reuse the page before its completion.
+                        let out = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                mapping.ptr.add(pending.payload_offset), pending.len,
+                            )
+                        };
+                        stage.execute(frame, &[], out)?;
+                    }
+                }
+            }
+            if let RemoteWalStream::Custody(stage) = &mut self.stream {
+                stage.completed_batch(Self::custody_batch_key(requests))?;
+            }
+            return Ok(false);
+        }
         if self.compact_writes
             && requests
                 .iter()
@@ -3863,6 +3968,25 @@ impl RemoteWalLeaf {
         requests: &[PendingRemoteRead],
     ) -> io::Result<()> {
         if requests.is_empty() {
+            return Ok(());
+        }
+        if let RemoteWalStream::Custody(stage) = &mut self.stream {
+            stage.consume_batch(Self::custody_batch_key(requests))?;
+            let (_, reads, writes) = Self::request_batch_lengths(requests)?;
+            let read_count = requests.iter()
+                .filter(|request| request.request.op == ZCNBLK_SHM_OP_READ)
+                .count() as u64;
+            let write_count = requests.len() as u64 - read_count;
+            self.read_batches += u64::from(read_count != 0);
+            self.read_records += read_count;
+            self.read_bytes += reads as u64;
+            self.write_batches += u64::from(write_count != 0);
+            self.write_records += write_count;
+            self.write_bytes += writes as u64;
+            self.finish_request_batch_tracking()?;
+            self.note_remote_completion(
+                requests.iter().map(|request| request.request.submit_sequence).max().unwrap(),
+            );
             return Ok(());
         }
         let (descriptor_len, read_payload_len, write_payload_len) =
@@ -4058,6 +4182,15 @@ impl RemoteWalLeaf {
             self.note_remote_completion(hwm);
         }
         Ok(())
+    }
+
+    fn custody_batch_key(requests: &[PendingRemoteRead]) -> (u64, u64, u64, usize) {
+        (
+            requests[0].request.request_id,
+            requests[0].request.submit_sequence,
+            requests[requests.len() - 1].request.submit_sequence,
+            requests.len(),
+        )
     }
 
     fn sync(&mut self, submit_sequence: u64) -> io::Result<()> {
@@ -14753,12 +14886,12 @@ pub fn cli(mut args: impl Iterator<Item = String>) -> io::Result<()> {
     let direct_ofi = backend == BackendMode::WalTcp
         && matches!(remote_transport.as_str(), "ofi" | "rdm" | "efa");
     if backend == BackendMode::WalTcp
-        && !matches!(remote_transport.as_str(), "tcp" | "ofi" | "rdm" | "efa")
+        && !matches!(remote_transport.as_str(), "tcp" | "ofi" | "rdm" | "efa" | "custody-tcp")
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT must be tcp or ofi, got {remote_transport:?}"
+                "URING_PLAY_ZCNBLK_SHM_REMOTE_TRANSPORT must be tcp, ofi or custody-tcp, got {remote_transport:?}"
             ),
         ));
     }

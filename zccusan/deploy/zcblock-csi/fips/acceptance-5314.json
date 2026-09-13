@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "certificate_number": 5314,
+  "module_name": "AWS-LC 3 Cryptographic Module (static)",
+  "module_version_string": "AWS-LC FIPS 3.1.0",
+  "certificate_url": "https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5314",
+  "security_policy_url": "https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp5314.pdf",
+  "source_archive_url": "https://github.com/aws/aws-lc/archive/refs/tags/AWS-LC-FIPS-3.1.0.zip",
+  "source_archive_sha256": "fe408fa438850786396faf79eba9ea4116c3802e60f3a95865f0dd2adb64c9f1",
+  "sunset_date": "2031-06-04",
+  "sunset_display": "6/4/2031",
+  "os_id": "amzn",
+  "os_version": "2023",
+  "require_host_fips": true,
+  "platforms": [
+    {"architecture": "x86_64", "product_name": "c6i.metal"},
+    {"architecture": "aarch64", "product_name": "r8g.metal-24xl"}
+  ],
+  "binaries": [
+    "zc-fips-check", "zcutils", "zcblock-csi", "zcblock-node-setup", "zcblock-control",
+    "zcblock-freeze", "zccusan-telemetry-server", "zccusan-operator", "zcrepl", "zcpit",
+    "zctier", "zcnblk-fan", "zcnblk-shm-target", "zcnblk-wal-failover", "zcnblk-wal-leaf",
+    "zcnblk-order-smoke"
+  ],
+  "scope": "Candidate acceptance target only. Current UBI/RHEL builds do not meet this profile. No vendor-affirmed ports are silently accepted. Kernel FIPS mode is an additional project requirement."
+}

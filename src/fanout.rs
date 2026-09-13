@@ -528,7 +528,9 @@ fn fanout_send_lane(
             io::Error::new(io::ErrorKind::InvalidData, "fanout lane offset overflow")
         })?;
     }
-    crate::zc_tcpmux_parallel_write_eof(&mut stream)?;
+    crate::zc_tcpmux_parallel_write_eof(
+        &mut stream, cipher.as_ref(), &nonce_base, topology.lane_id, sequence,
+    )?;
     let seconds = started.elapsed().as_secs_f64();
     Ok(ZcFanoutSendLaneResult {
         global_lane: lane.global_lane,

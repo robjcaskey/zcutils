@@ -1,3 +1,4 @@
+#[cfg(not(feature = "fips"))]
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -24,6 +25,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub mod block;
 pub mod change_log;
+pub mod client_wal_commitment;
+pub mod client_wal_journal;
+mod client_wal_repair;
+mod wal_custody;
+mod wal_custody_peer;
+pub mod crypto_policy;
+pub mod fips_application_checks;
 pub mod cloud_topology;
 pub mod dirty_pool;
 pub mod enterprise_workload;
@@ -44,6 +52,9 @@ pub mod migration_cache;
 pub mod ofi_pipe;
 pub mod persistent_wal;
 pub mod racing_mirror;
+mod raid_mirror_client_wal;
+mod raid_mirror_serial;
+mod rdma_custody;
 pub mod readcache_bench;
 pub mod regional_htb;
 pub mod secret_lifecycle;
@@ -78,6 +89,11 @@ use crate::wal_contract::{
     ZcnblkWalIoOperation, zcnblk_wal_validate_features,
 };
 
+#[cfg(feature = "fips")]
+mod approved_crypto;
+#[cfg(feature = "fips")]
+type ZcAes256Cipher = approved_crypto::Cipher;
+#[cfg(not(feature = "fips"))]
 type ZcAes256Cipher = aws_lc_rs::aead::LessSafeKey;
 const ZC_FICLONE: libc::c_ulong = 0x40049409;
 
@@ -182,11 +198,15 @@ const IORING_MAX_REG_BUFFERS: usize = 1 << 14;
 const BLKGETSIZE64: libc::c_ulong = 0x80081272;
 const BY_PARTUUID_DIR: &str = "/dev/disk/by-partuuid";
 const RAW_PARTITION_ALLOWLIST: &str = "allowed-raw-partitions.txt";
+#[cfg(feature = "fips")]
+const ZC_AES256_FRAME_MAGIC: &[u8] = b"ZC_AES256_GCM_FRAME_V2";
+#[cfg(not(feature = "fips"))]
 const ZC_AES256_FRAME_MAGIC: &[u8] = b"ZC_AES256_GCM_FRAME_V1";
-const ZC_AES256_TAG_BYTES: usize = 16;
+// Ciphertext overhead includes the internally generated IV in FIPS v2.
+const ZC_AES256_TAG_BYTES: usize = if cfg!(feature = "fips") { 28 } else { 16 };
 const ZC_TCPMUX_PARALLEL_MAGIC_V1: &[u8] = b"ZCTCPMUX_PARALLEL_V1";
 const ZC_TCPMUX_PARALLEL_MAGIC_V2: &[u8] = b"ZCTCPMUX_PARALLEL_V2";
-const ZC_TCPMUX_PARALLEL_MAGIC: &[u8] = ZC_TCPMUX_PARALLEL_MAGIC_V2;
+const ZC_TCPMUX_PARALLEL_MAGIC: &[u8] = if cfg!(feature = "fips") { b"ZCTCPMUX_PARALLEL_V3" } else { ZC_TCPMUX_PARALLEL_MAGIC_V2 };
 const ZC_TCPMUX_TOPOLOGY_DESC_VERSION: u16 = 2;
 const ZC_TCPMUX_TOPOLOGY_DESC_BODY_LEN: u16 = 44;
 const ZC_TCPMUX_TOPOLOGY_DESC_EXTENDED_BODY_LEN: u16 = 60;
@@ -19595,6 +19615,15 @@ struct ZcRaidMirrorTerminal {
 }
 
 impl ZcRaidMirrorTerminal {
+    fn validate_persistent_receipts(&self) -> io::Result<()> {
+        match self.backend.as_ref() {
+            ZcnblkWalLeafBackend::PersistentJournal { store, .. } => store.validate_persistent_backings(),
+            ZcnblkWalLeafBackend::Block { durability: ZcnblkWalLeafDurability::Persistent, .. } => Ok(()),
+            _ => Err(io::Error::new(io::ErrorKind::Unsupported,
+                "durable custody receipts require persistent terminal media, not volatile-sync emulation")),
+        }
+    }
+
     fn open(target: &str, extent_bytes: usize, required_bytes: u64) -> io::Result<Self> {
         let backend = Arc::new(zcnblk_wal_leaf_open_backend(target, extent_bytes, None)?);
         if backend.device_bytes() < required_bytes {
@@ -20403,12 +20432,15 @@ fn zcraid_mirror_topology_warnings(
             )?;
         }
         println!(
-            "{label}-branch-topology: branch={} domain={} lanes={} leader_cpus={} workers={} block_device_raid_primitive=false placement_owner=userspace-raid ack_policy=all-branches",
+            "{label}-branch-topology: branch={} domain={} lanes={} leader_cpus={} workers={} block_device_raid_primitive=false placement_owner=userspace-raid ack_policy={}",
             branch.branch,
             branch.fabric_domain.as_deref().unwrap_or("none"),
             format_cpu_list(&branch.lanes),
             format_cpu_list(&branch.leader_cpus),
             format_cpu_list(&branch.workers),
+            if label.contains("send") && env::var_os(raid_mirror_client_wal::CONFIG_ENV).is_some() {
+                "client-local-persistent-plus-one-remote-or-both-remotes"
+            } else { "all-branches" },
         );
         if efa_transport {
             for &lane in lanes {
@@ -20508,10 +20540,15 @@ fn zcraid_mirror_print_summary(
     stats: &ZcWalExtentStats,
 ) {
     let secs = stats.wall.as_secs_f64().max(f64::MIN_POSITIVE);
+    let client_local = label.contains("send") && env::var_os(raid_mirror_client_wal::CONFIG_ENV).is_some();
     println!(
         "{label}-summary: transport={} branches={branch_count} lanes={lane_count} workers={workers} extent_bytes={extent_bytes} logical_record_bytes={ZC_WAL_RECORD_SIZE} ack_policy={} ack_window={ack_window} zlane_coord={} zlane_lock_shards={coord_lock_count} logical_payload_bytes={} branch_wire_bytes={} extents={} logical_records={} committed_acks={} seconds={secs:.6} logical_payload_Gbitps={:.3} branch_wire_Gbitps={:.3} logical_iops={:.0} voluntary_ctxt_switches={} involuntary_ctxt_switches={} migrations={}",
-        transport.label(),
-        ack_policy.label(),
+        if transport == ZcRaidMirrorTransport::Tcp && env::var_os("URING_PLAY_RAID_MIRROR_RDMA_CONFIG").is_some() {
+            "fi-rma-write-payload/tcp-control"
+        } else if transport == ZcRaidMirrorTransport::Rma && client_local {
+            "fi-rma-write-payload/tcp-control"
+        } else { transport.label() },
+        if client_local { "client-local-persistent-plus-one-remote" } else { ack_policy.label() },
         coord_mode.label(),
         stats.payload_bytes,
         stats.wire_bytes,
@@ -20528,8 +20565,13 @@ fn zcraid_mirror_print_summary(
     if stats.ack_latency.count != 0 {
         println!(
             "{label}-latency-summary: {}",
-            zcwal_extent_latency_fields(ack_policy.latency_label(), &stats.ack_latency)
+            zcwal_extent_latency_fields(if client_local { "custody-window-commit-latency" } else { ack_policy.latency_label() }, &stats.ack_latency)
         );
+    }
+    if client_local {
+        println!("{label}-depth-contract: per_worker_qd={ack_window} workers={workers} lanes={lane_count} aggregate_logical_outstanding_depth={} independent_latency_samples=windows latency_measurement=window-start-to-all-window-committed raw_transport_rtt=separate-required-test network_rtt_only_ceiling=not-applicable-to-persistent-local-plus-remote-drains", lane_count.saturating_mul(ack_window));
+        println!("{label}-commit-contract: placement_owner=userspace-raid block_device_raid_primitive=false ack_policy=client-local-plus-one-remote-or-both-remotes durability=persistent-terminal-drains reclamation=both-remotes-durable final-redundancy-drain=reported-separately local-wal-io=included-in-early-ack-time tcp-kernel-copy=not-eliminated");
+        return;
     }
     match ack_policy {
         ZcRaidMirrorAckPolicy::Remote => {
@@ -20603,6 +20645,28 @@ fn zcraid_mirror_tcp_recv_worker(
     recv_spin_budget: Option<usize>,
     terminal: Option<ZcRaidMirrorTerminal>,
 ) -> io::Result<ZcWalExtentStats> {
+    zcraid_mirror_tcp_recv_worker_with_payload(worker, branch_id, lanes, lane_count,
+        extents_per_lane, extent_bytes, ack_enabled, ack_window, coord_mode,
+        recv_spin_budget, terminal, rdma_custody::Config::from_env()?,
+        env_enabled_or("URING_PLAY_RAID_MIRROR_TERMINAL_BATCH", false))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zcraid_mirror_tcp_recv_worker_with_payload(
+    worker: usize,
+    branch_id: usize,
+    lanes: Vec<ZcRaidMirrorTcpLane>,
+    lane_count: usize,
+    extents_per_lane: usize,
+    extent_bytes: usize,
+    ack_enabled: bool,
+    ack_window: usize,
+    coord_mode: ZcRaidZlaneCoordMode,
+    recv_spin_budget: Option<usize>,
+    terminal: Option<ZcRaidMirrorTerminal>,
+    rdma_config: Option<rdma_custody::Config>,
+    batch_terminal: bool,
+) -> io::Result<ZcWalExtentStats> {
     let affinity = maybe_pin_current_thread("zcraid-mirror-tcp-recv-worker", worker);
     let tid = current_tid();
     let start_thread_cpu = thread_cpu_time().unwrap_or_default();
@@ -20625,11 +20689,78 @@ fn zcraid_mirror_tcp_recv_worker(
         .flatten();
     let started = Instant::now();
     for mut lane_stream in lanes {
+        let idle_ms = env_usize_or("URING_PLAY_RAID_MIRROR_IDLE_TIMEOUT_MS", 0);
+        if idle_ms != 0 {
+            lane_stream.stream.set_read_timeout(Some(Duration::from_millis(idle_ms as u64)))?;
+            lane_stream.stream.set_write_timeout(Some(Duration::from_millis(idle_ms as u64)))?;
+        }
+        let rdma = rdma_config.as_ref().map(|config| rdma_custody::Receiver::accept(
+            &mut lane_stream.stream, config, lane_stream.lane,
+            rdma_custody::Pool::new(1, ack_window.max(1).min(extents_per_lane.max(1)), extent_bytes)?
+        )).transpose()?;
         println!(
             "zcraid-mirror-tcp-recv-lane: worker={worker} branch={branch_id} lane={} port={} peer={}",
             lane_stream.lane, lane_stream.port, lane_stream.peer_addr
         );
         let mut pending_acks = Vec::with_capacity(ack_window.max(1));
+        let persistent_receipts = terminal.as_ref()
+            .is_some_and(|terminal| terminal.validate_persistent_receipts().is_ok());
+        if batch_terminal {
+            let terminal = terminal.as_ref().filter(|_| persistent_receipts)
+                .ok_or_else(|| io::Error::other("batched custody requires a persistent terminal"))?;
+            let window = ack_window.max(1).min(extents_per_lane.max(1));
+            let bytes = window.checked_mul(extent_bytes)
+                .filter(|bytes| *bytes <= 1024 * 1024 * 1024)
+                .ok_or_else(|| io::Error::other("batched custody arena exceeds 1GiB"))?;
+            let arena = rdma.is_none().then(|| FixedSendBuffers::new(1, bytes)).transpose()?;
+            let mut ack_bytes = Vec::with_capacity(window * ZC_WAL_ACK_HEADER_LEN);
+            for first in (0..extents_per_lane).step_by(window) {
+                let count = window.min(extents_per_lane - first);
+                let headers = if let Some(arena) = &arena {
+                    let received = unsafe { slice::from_raw_parts_mut(arena.ptr(0), count * extent_bytes) };
+                    raid_mirror_serial::read_window(&mut lane_stream.stream, received, count, extent_bytes)?
+                } else {
+                    let mut wire = vec![0u8; count * ZC_WAL_EXTENT_HEADER_LEN];
+                    lane_stream.stream.read_exact(&mut wire)?;
+                    wire.chunks_exact(ZC_WAL_EXTENT_HEADER_LEN)
+                        .map(|bytes| ZcWalExtentHeader::decode(bytes.try_into().unwrap()))
+                        .collect::<io::Result<Vec<_>>>()?
+                };
+                for (index, header) in headers.iter().enumerate() {
+                    if header.flags & raid_mirror_client_wal::REQUIRE_DURABLE == 0 {
+                        return Err(io::Error::other("batched custody requires the explicit durable-window contract"));
+                    }
+                    zcraid_mirror_verify_extent_header(*header, lane_stream.lane, lane_count,
+                        branch_id, first + index, extent_bytes, coord_mode)?;
+                }
+                let received = if let Some(rdma) = &rdma {
+                    unsafe { rdma.pool.received(first, count) }
+                } else {
+                    unsafe { slice::from_raw_parts(arena.as_ref().unwrap().ptr(0), count * extent_bytes) }
+                };
+                // Same received payload allocation, scatter-page WAL metadata;
+                // no application copy or per-record terminal write/ACK syscall.
+                raid_mirror_serial::append_window(terminal, &mut terminal_ring,
+                    &headers, received, extent_bytes)?;
+                terminal_writes += count;
+                terminal_syncs += 1;
+                if ack_enabled {
+                    ack_bytes.clear();
+                    for header in &headers {
+                        ack_bytes.extend_from_slice(&raid_mirror_client_wal::encode_durable_ack(*header)?);
+                    }
+                    lane_stream.stream.write_all(&ack_bytes)?;
+                    acks += count;
+                }
+                payload_bytes += count * extent_bytes;
+                wire_bytes += count * (ZC_WAL_EXTENT_HEADER_LEN + extent_bytes);
+                extents += count;
+                records += headers.iter().map(|header| header.record_count as usize).sum::<usize>();
+            }
+            println!("zcraid-mirror-terminal-batch: worker={worker} lane={} window={window} payload_copy_bytes=0 receipt_syscalls=per-window placement_owner=userspace-raid", lane_stream.lane);
+            let _ = lane_stream.stream.shutdown(Shutdown::Both);
+            continue;
+        }
         for seq in 0..extents_per_lane {
             zcraid_mirror_tcp_recv_exact(
                 &mut lane_stream.stream,
@@ -20638,6 +20769,10 @@ fn zcraid_mirror_tcp_recv_worker(
                 "zcraid mirror TCP header",
             )?;
             let header = ZcWalExtentHeader::decode(&header_buf)?;
+            if header.flags & raid_mirror_client_wal::REQUIRE_DURABLE != 0 && !persistent_receipts {
+                return Err(io::Error::new(io::ErrorKind::Unsupported,
+                    "client requires durable custody; this terminal cannot attest persistence"));
+            }
             zcraid_mirror_verify_extent_header(
                 header,
                 lane_stream.lane,
@@ -20647,14 +20782,19 @@ fn zcraid_mirror_tcp_recv_worker(
                 extent_bytes,
                 coord_mode,
             )?;
-            zcraid_mirror_tcp_recv_exact(
-                &mut lane_stream.stream,
-                &mut payload,
-                recv_spin_budget,
-                "zcraid mirror TCP payload",
-            )?;
+            if rdma.is_none() {
+                zcraid_mirror_tcp_recv_exact(
+                    &mut lane_stream.stream, &mut payload, recv_spin_budget,
+                    "zcraid mirror TCP payload",
+                )?;
+            }
+            let data = if let Some(rdma) = &rdma {
+                let slot = seq % rdma.pool.window;
+                let received = unsafe { rdma.pool.received(seq - slot, rdma.pool.window) };
+                &received[slot * extent_bytes..(slot + 1) * extent_bytes]
+            } else { &payload };
             if let Some(terminal) = terminal.as_ref() {
-                terminal.write(&mut terminal_ring, header, &payload)?;
+                terminal.write(&mut terminal_ring, header, data)?;
                 terminal_writes = terminal_writes.saturating_add(1);
                 pending_acks.push(header);
                 let barrier =
@@ -20666,7 +20806,7 @@ fn zcraid_mirror_tcp_recv_worker(
                         for durable in pending_acks.drain(..) {
                             lane_stream
                                 .stream
-                                .write_all(&zcraid_mirror_ack_for_header(durable)?.encode())?;
+                                .write_all(&raid_mirror_client_wal::encode_durable_ack(durable)?)?;
                             acks += 1;
                         }
                     } else {
@@ -20736,6 +20876,16 @@ fn zcraid_mirror_tcp_send_worker(
     ack_policy: ZcRaidMirrorAckPolicy,
     ack_window: usize,
 ) -> io::Result<ZcWalExtentStats> {
+    if let Some(config) = raid_mirror_client_wal::Config::from_env()? {
+        if ack_policy != ZcRaidMirrorAckPolicy::Remote
+            || coordinator.mode() != ZcRaidZlaneCoordMode::LaneOwner
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "client-local WAL commitment requires remote ACKs and lane-owned disjoint ranges"));
+        }
+        return raid_mirror_client_wal::tcp_send(worker, lanes, branches, lane_count,
+            extents_per_lane, extent_bytes, ack_window, config);
+    }
     let affinity = maybe_pin_current_thread("zcraid-mirror-tcp-send-worker", worker);
     let tid = current_tid();
     let start_thread_cpu = thread_cpu_time().unwrap_or_default();
@@ -22722,6 +22872,15 @@ fn zcraid_mirror_send(
     endpoint: &str,
     ack_enabled: bool,
 ) -> io::Result<()> {
+    let client_custody = raid_mirror_client_wal::Config::from_env()?;
+    if let Some(config) = &client_custody {
+        let valid = matches!(transport, ZcRaidMirrorTransport::Tcp) && config.rdma.is_none()
+            || matches!(transport, ZcRaidMirrorTransport::Rma) && config.rdma.is_some();
+        if !valid {
+            return Err(io::Error::new(io::ErrorKind::Unsupported,
+                "client custody transport/config mismatch; no silent payload fallback"));
+        }
+    }
     let plan = zcraid_mirror_load_plan(plan_path, 1, base_ports.len())?;
     let lanes = zcraid_mirror_plan_lanes(&plan)?;
     let extents_per_lane =
@@ -22764,6 +22923,17 @@ fn zcraid_mirror_send(
     let branch_count = plan.branches.len();
     let ack_window = zcraid_mirror_ack_window(transport);
     let requested_ack_policy = ZcRaidMirrorAckPolicy::from_env(ack_enabled)?;
+    if let Some(config) = &client_custody {
+        if let Some(rdma) = &config.rdma {
+            if rdma.provider != provider {
+                return Err(io::Error::other("client custody provider differs from the declared benchmark provider"));
+            }
+        }
+        let arena_bytes = record_bytes.checked_mul(ack_window.max(1))
+            .and_then(|v| v.checked_mul(workers))
+            .ok_or_else(|| io::Error::other("client custody arena estimate overflow"))?;
+        raid_mirror_client_wal::topology_preflight("zcraid-client-custody", lanes.len(), workers, arena_bytes)?;
+    }
     let ack_policy = requested_ack_policy;
     if transport == ZcRaidMirrorTransport::Rma && !ack_policy.waits_for_acks() {
         return Err(io::Error::new(
@@ -22977,7 +23147,16 @@ fn zcraid_mirror_send(
                 let endpoint = Arc::clone(&endpoint);
                 let branches = Arc::clone(&branches);
                 let coordinator = Arc::clone(&coordinator);
+                let custody = client_custody.clone();
                 handles.push(thread::spawn(move || {
+                    if let Some(config) = custody {
+                        if ack_policy != ZcRaidMirrorAckPolicy::Remote
+                            || coordinator.mode() != ZcRaidZlaneCoordMode::LaneOwner {
+                            return Err(io::Error::other("RDMA custody requires remote persistent ACKs and lane ownership"));
+                        }
+                        return raid_mirror_client_wal::tcp_send(worker, shard, branches,
+                            lane_count, extents_per_lane, record_bytes, ack_window, config);
+                    }
                     zcraid_mirror_rma_send_worker(
                         worker,
                         provider,
@@ -26307,7 +26486,7 @@ fn tcp_wal_worker(
     })
 }
 
-const ZCNBLK_AES256_MAGIC: &[u8; 8] = b"ZCNBAE01";
+const ZCNBLK_AES256_MAGIC: &[u8; 8] = if cfg!(feature = "fips") { b"ZCNBAE02" } else { b"ZCNBAE01" };
 const ZCNBLK_AES256_NONCE_BYTES: usize = 12;
 const ZCNBLK_AES256_HANDSHAKE_LEN: usize =
     ZCNBLK_AES256_MAGIC.len() + ZCNBLK_AES256_NONCE_BYTES * 2;
@@ -26519,6 +26698,8 @@ impl ZcnblkTransport {
         conn_id: u32,
         config: &ZcnblkCryptoConfig,
     ) -> io::Result<Self> {
+        #[cfg(feature = "fips")]
+        let _ = conn_id;
         if config.mode == ZcnblkEncryptionMode::None {
             return Ok(Self::plaintext(stream));
         }
@@ -26531,6 +26712,9 @@ impl ZcnblkTransport {
         let lane_id = u32::try_from(lane)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "zcnblk lane exceeds u32"))?;
         if config.wire == ZcnblkCryptoWire::Payload {
+            #[cfg(feature = "fips")]
+            return Err(io::Error::other("legacy payload encryption has no FIPS wire version; use AES stream mode"));
+            #[cfg(not(feature = "fips"))]
             return Ok(Self {
                 stream,
                 crypto: None,
@@ -26575,6 +26759,8 @@ impl ZcnblkTransport {
         conn_id: u32,
         config: &ZcnblkCryptoConfig,
     ) -> io::Result<Self> {
+        #[cfg(feature = "fips")]
+        let _ = conn_id;
         if config.mode == ZcnblkEncryptionMode::None {
             return Ok(Self::plaintext(accepted.stream));
         }
@@ -26587,6 +26773,9 @@ impl ZcnblkTransport {
         let lane_id = u32::try_from(accepted.lane)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "zcnblk lane exceeds u32"))?;
         if config.wire == ZcnblkCryptoWire::Payload {
+            #[cfg(feature = "fips")]
+            return Err(io::Error::other("legacy payload encryption has no FIPS wire version; use AES stream mode"));
+            #[cfg(not(feature = "fips"))]
             return Ok(Self {
                 stream: accepted.stream,
                 crypto: None,
@@ -26915,6 +27104,7 @@ fn zcnblk_transport_conn_id(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "zcnblk conn id overflow"))
 }
 
+#[cfg(not(feature = "fips"))]
 fn zcnblk_aes256_lane_cipher(
     token: &str,
     lane_id: u32,
@@ -26932,6 +27122,7 @@ fn zcnblk_aes256_lane_cipher(
     zc_aes256_cipher_from_key(&key)
 }
 
+#[cfg(not(feature = "fips"))]
 fn zcnblk_payload_aes256_cipher(token: &str) -> io::Result<ZcAes256Cipher> {
     zc_tcpmux_validate_token(token)?;
     let mut hasher = Sha256::new();
@@ -66332,7 +66523,7 @@ EXTENT_REF tenant_id=t policy_id=p volume_id=v epoch_id=1 group_id=g fan_in_grou
         let config = ZcnblkCryptoConfig {
             mode: ZcnblkEncryptionMode::Aes256,
             wire: ZcnblkCryptoWire::Stream,
-            token: Some(Arc::new("zcnblk-test-token".to_string())),
+            token: Some(Arc::new("12".repeat(32))),
             max_frame_bytes: 17,
         };
         let target_config = config.clone();
@@ -93761,14 +93952,7 @@ fn zc_tcpmux_generate_token() -> io::Result<String> {
         )
     })?;
     let mut bytes = [0u8; 32];
-    fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut bytes))
-        .map_err(|err| {
-            io::Error::new(
-                err.kind(),
-                format!("generate token from /dev/urandom: {err}"),
-            )
-        })?;
+    zc_random_bytes(&mut bytes)?;
     let mut random = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         use std::fmt::Write as _;
@@ -93959,6 +94143,7 @@ impl ZcTcpmuxEncryption {
     }
 }
 
+#[cfg(not(feature = "fips"))]
 fn zc_random_bytes(bytes: &mut [u8]) -> io::Result<()> {
     fs::File::open("/dev/urandom")
         .and_then(|mut file| file.read_exact(bytes))
@@ -93970,6 +94155,7 @@ fn zc_random_bytes(bytes: &mut [u8]) -> io::Result<()> {
         })
 }
 
+#[cfg(not(feature = "fips"))]
 fn zc_aes256_cipher_from_key(key: &[u8]) -> io::Result<ZcAes256Cipher> {
     let unbound =
         aws_lc_rs::aead::UnboundKey::new(&aws_lc_rs::aead::AES_256_GCM, key).map_err(|_| {
@@ -93981,6 +94167,7 @@ fn zc_aes256_cipher_from_key(key: &[u8]) -> io::Result<ZcAes256Cipher> {
     Ok(aws_lc_rs::aead::LessSafeKey::new(unbound))
 }
 
+#[cfg(not(feature = "fips"))]
 fn zc_aes256_cipher(token: &str) -> io::Result<ZcAes256Cipher> {
     zc_tcpmux_validate_token(token)?;
     let mut hasher = Sha256::new();
@@ -93990,6 +94177,7 @@ fn zc_aes256_cipher(token: &str) -> io::Result<ZcAes256Cipher> {
     zc_aes256_cipher_from_key(&key)
 }
 
+#[cfg(not(feature = "fips"))]
 fn zc_aes256_lane_cipher(token: &str, lane_id: u32) -> io::Result<ZcAes256Cipher> {
     zc_tcpmux_validate_token(token)?;
     let mut hasher = Sha256::new();
@@ -94025,6 +94213,7 @@ fn zc_aes256_lane_aad(lane_id: u32, sequence: u64, offset: u64, plaintext_len: u
     aad
 }
 
+#[cfg(not(feature = "fips"))]
 fn zc_aes256_encrypt_frame(
     cipher: &ZcAes256Cipher,
     nonce: [u8; 12],
@@ -94039,6 +94228,7 @@ fn zc_aes256_encrypt_frame(
     Ok(plaintext)
 }
 
+#[cfg(not(feature = "fips"))]
 fn zc_aes256_decrypt_frame(
     cipher: &ZcAes256Cipher,
     nonce: [u8; 12],
@@ -94095,6 +94285,8 @@ fn zc_encrypt_aes256_stream<R: Read, W: Write>(
         let n = reader.read(&mut plaintext)?;
         if n == 0 {
             writer.write_all(&0u32.to_be_bytes())?;
+            #[cfg(feature = "fips")]
+            writer.write_all(&zc_aes256_encrypt_frame(&cipher, zc_aes256_nonce(&nonce_base, sequence), &zc_aes256_aad(sequence, 0), Vec::new(), || "encrypt EOF".into())?)?;
             break;
         }
         let frame_len = u32::try_from(n).map_err(|_| {
@@ -94214,6 +94406,12 @@ fn zc_decrypt_aes256_stream<R: Read, W: Write>(
         reader.read_exact(&mut len_buf)?;
         let plaintext_len = u32::from_be_bytes(len_buf);
         if plaintext_len == 0 {
+            #[cfg(feature = "fips")]
+            {
+                let mut eof = vec![0u8; ZC_AES256_TAG_BYTES];
+                reader.read_exact(&mut eof)?;
+                zc_aes256_decrypt_frame(&cipher, zc_aes256_nonce(&nonce_base, sequence), &zc_aes256_aad(sequence, 0), eof, || "authenticate EOF".into())?;
+            }
             break;
         }
         let encrypted_len = plaintext_len as usize + ZC_AES256_TAG_BYTES;
@@ -94824,7 +95022,7 @@ fn zc_tcpmux_read_parallel_header<R: Read>(
 ) -> io::Result<(ZcTcpmuxTopologyHint, [u8; 12])> {
     let mut magic = vec![0u8; ZC_TCPMUX_PARALLEL_MAGIC.len()];
     reader.read_exact(&mut magic)?;
-    if magic == ZC_TCPMUX_PARALLEL_MAGIC_V1 {
+    if !cfg!(feature = "fips") && magic == ZC_TCPMUX_PARALLEL_MAGIC_V1 {
         let mut lane = [0u8; 4];
         reader.read_exact(&mut lane)?;
         let mut nonce_base = [0u8; 12];
@@ -94834,7 +95032,7 @@ fn zc_tcpmux_read_parallel_header<R: Read>(
             nonce_base,
         ));
     }
-    if magic != ZC_TCPMUX_PARALLEL_MAGIC_V2 {
+    if magic != ZC_TCPMUX_PARALLEL_MAGIC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "missing zc-tcpmux parallel lane header",
@@ -95000,10 +95198,17 @@ fn zc_tcpmux_parallel_write_data_frame(
     Ok((plaintext_len, end))
 }
 
-fn zc_tcpmux_parallel_write_eof(stream: &mut TcpStream) -> io::Result<()> {
+fn zc_tcpmux_parallel_write_eof(stream: &mut TcpStream, cipher: Option<&ZcAes256Cipher>, nonce_base: &[u8;12], lane_id: u32, sequence: u64) -> io::Result<()> {
+    #[cfg(not(feature = "fips"))]
+    let _ = (cipher, nonce_base, lane_id, sequence);
     stream.write_all(&0u64.to_be_bytes())?;
     stream.write_all(&ZC_TCPMUX_PARALLEL_EOF.to_be_bytes())?;
     stream.write_all(&ZC_TCPMUX_PARALLEL_EOF.to_be_bytes())?;
+    #[cfg(feature = "fips")]
+    if let Some(cipher) = cipher {
+        let aad = zc_aes256_lane_aad(lane_id, sequence, 0, ZC_TCPMUX_PARALLEL_EOF);
+        stream.write_all(&zc_aes256_encrypt_frame(cipher, zc_aes256_nonce(nonce_base, sequence), &aad, Vec::new(), || "authenticate parallel EOF".into())?)?;
+    }
     stream.shutdown(Shutdown::Write)?;
     Ok(())
 }
@@ -95071,7 +95276,7 @@ fn zc_tcpmux_parallel_send_worker(
             )
         })?;
     }
-    zc_tcpmux_parallel_write_eof(&mut stream)?;
+    zc_tcpmux_parallel_write_eof(&mut stream, cipher.as_ref(), &nonce_base, topology.lane_id, sequence)?;
     Ok(stats)
 }
 
@@ -95315,7 +95520,7 @@ fn zc_tcpmux_parallel_send_file_worker(
             io::Error::new(io::ErrorKind::InvalidData, "parallel file offset overflow")
         })?;
     }
-    zc_tcpmux_parallel_write_eof(&mut stream)?;
+    zc_tcpmux_parallel_write_eof(&mut stream, cipher.as_ref(), &nonce_base, topology.lane_id, sequence)?;
     Ok(stats)
 }
 
@@ -95494,6 +95699,13 @@ fn zc_tcpmux_parallel_receive_worker(
         let plaintext_len = u32::from_be_bytes(plain_len_buf);
         let payload_len = u32::from_be_bytes(payload_len_buf);
         if plaintext_len == ZC_TCPMUX_PARALLEL_EOF && payload_len == ZC_TCPMUX_PARALLEL_EOF {
+            #[cfg(feature = "fips")]
+            if let Some(cipher) = &cipher {
+                let mut eof = vec![0; ZC_AES256_TAG_BYTES];
+                reader.read_exact(&mut eof)?;
+                let aad = zc_aes256_lane_aad(topology.lane_id, sequence, offset, plaintext_len);
+                zc_aes256_decrypt_frame(cipher, zc_aes256_nonce(&nonce_base, sequence), &aad, eof, || "authenticate parallel EOF".into())?;
+            }
             break;
         }
         let payload_len_usize = payload_len as usize;
@@ -99924,6 +100136,8 @@ fn zc_argv0_command(argv0: &str) -> Option<&'static str> {
         "zcwal-ofi-rma-read" | "zcofi-rma-read" => Some("zcwal-ofi-rma-read"),
         "zcraid-mirror-send" | "zcraid1-send" => Some("zcraid-mirror-send"),
         "zcraid-mirror-recv" | "zcraid1-recv" => Some("zcraid-mirror-recv"),
+        "zcraid-mirror-hop" => Some("zcraid-mirror-hop"),
+        "zcraid-repair-terminal" => Some("zcraid-repair-terminal"),
         _ => None,
     }
 }
@@ -100872,6 +101086,9 @@ pub fn main_entry() -> io::Result<()> {
                     workers,
                 )
             }
+            Some("zcraid-mirror-hop") => raid_mirror_serial::cli(args),
+            Some("zcnblk-wal-custody") => wal_custody::cli(args),
+            Some("zcraid-repair-terminal") => client_wal_repair::cli(args),
             Some("zcraid-mirror-send") => {
                 let usage = "usage: zcraid-mirror-send <tcp|ofi-msg|rdma> <addr> <branch-base-ports-csv> [bytes-per-lane] [extent-bytes] [workers] [plan-json|-] [provider] [endpoint] [ack]";
                 let transport_arg = args
@@ -102856,3 +103073,64 @@ pub fn main_entry() -> io::Result<()> {
 
     command_result
 }
+
+#[cfg(feature = "fips")]
+fn zc_random_bytes(bytes: &mut [u8]) -> io::Result<()> {
+    approved_crypto::random(bytes)
+}
+#[cfg(feature = "fips")]
+fn zc_aes256_cipher_from_key(key: &[u8]) -> io::Result<ZcAes256Cipher> {
+    approved_crypto::from_key(key)
+}
+#[cfg(feature = "fips")]
+fn zc_aes256_cipher(token: &str) -> io::Result<ZcAes256Cipher> {
+    zc_tcpmux_validate_token(token)?;
+    approved_crypto::derive(token, b"zc stream v2", b"")
+}
+#[cfg(feature = "fips")]
+fn zc_aes256_lane_cipher(token: &str, lane_id: u32) -> io::Result<ZcAes256Cipher> {
+    zc_tcpmux_validate_token(token)?;
+    approved_crypto::derive(token, b"zc parallel v3", &lane_id.to_be_bytes())
+}
+#[cfg(feature = "fips")]
+fn zcnblk_aes256_lane_cipher(
+    token: &str,
+    lane_id: u32,
+    direction: &[u8],
+) -> io::Result<ZcAes256Cipher> {
+    zc_tcpmux_validate_token(token)?;
+    let mut context = lane_id.to_be_bytes().to_vec();
+    context.extend_from_slice(direction);
+    approved_crypto::derive(token, b"zcnblk stream v2", &context)
+}
+#[cfg(feature = "fips")]
+fn zcnblk_payload_aes256_cipher(_token: &str) -> io::Result<ZcAes256Cipher> {
+    Err(io::Error::other(
+        "legacy payload encryption is unavailable in FIPS builds",
+    ))
+}
+#[cfg(feature = "fips")]
+fn zc_aes256_encrypt_frame(
+    cipher: &ZcAes256Cipher,
+    binding: [u8; 12],
+    aad: &[u8],
+    plaintext: Vec<u8>,
+    context: impl FnOnce() -> String,
+) -> io::Result<Vec<u8>> {
+    approved_crypto::seal(cipher, &binding, aad, plaintext)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}: {e}", context())))
+}
+#[cfg(feature = "fips")]
+fn zc_aes256_decrypt_frame(
+    cipher: &ZcAes256Cipher,
+    binding: [u8; 12],
+    aad: &[u8],
+    ciphertext: Vec<u8>,
+    context: impl FnOnce() -> String,
+) -> io::Result<Vec<u8>> {
+    approved_crypto::open(cipher, &binding, aad, &ciphertext)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}: {e}", context())))
+}
+
+#[cfg(test)]
+mod crypto_protocol_tests;

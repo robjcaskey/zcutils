@@ -1,86 +1,135 @@
-FROM docker.io/library/rust:1.97-bookworm AS builder
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+# FIPS-enabled application lab images, not a CMVP validation claim.
+# Keep userspace libraries within one distribution; never overlay Debian libc
+# onto UBI. UBI is a container base, not a bootable guest operating system.
+ARG FIPS_DISTRO=amzn2023
+ARG FIPS_BUILD_DISTRO=${FIPS_DISTRO}
+ARG UBI_IMAGE=registry.access.redhat.com/ubi9/ubi@sha256:dec374e05cc13ebbc0975c9f521f3db6942d27f8ccdf06b180160490eef8bdbc
+ARG RHEL_IMAGE=registry.access.redhat.com/ubi9/ubi@sha256:dec374e05cc13ebbc0975c9f521f3db6942d27f8ccdf06b180160490eef8bdbc
+ARG UBUNTU_IMAGE=docker.io/library/ubuntu@sha256:829f6df217bcbae2b371026e81711d1a787c61b2967ad09d015063663ebafbf7
+ARG RUST_IMAGE=docker.io/library/rust@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97
+ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux@sha256:a0646b8bd35abf5ca3ab94d8cdb5691b9024e19c357531eeefd0ac4762836438
+FROM ${RUST_IMAGE} AS rust-toolchain
 
+FROM ${UBI_IMAGE} AS runtime-ubi9
+# Public UBI lacks e2fsprogs, xfsprogs and libfabric. This lab variant
+# supports provider checks and TCP/block paths, not filesystem provisioning/RDMA.
+RUN dnf --disablerepo='*' --enablerepo=ubi-9-baseos-rpms --enablerepo=ubi-9-appstream-rpms \
+    --setopt=install_weak_deps=False install -y ca-certificates util-linux && dnf clean all
+LABEL io.zcutils.storage.capabilities="lab-tcp-block-only" io.zcutils.image.runtime="ubi9"
+ENV ZCUTILS_DISABLE_LIBFABRIC=1
+
+FROM runtime-ubi9 AS build-ubi9
+RUN dnf --disablerepo='*' --enablerepo=ubi-9-baseos-rpms --enablerepo=ubi-9-appstream-rpms \
+    --enablerepo=ubi-9-codeready-builder-rpms --setopt=install_weak_deps=False \
+    install -y gcc gcc-c++ make cmake perl pkgconf-pkg-config golang python3 && dnf clean all
+
+# Full RHEL-package runtime, starting with UBI: build on an entitled RHEL host with Podman subscription
+# mounts, or supply an entitled internal base. Never bake credentials into layers.
+FROM ${RHEL_IMAGE} AS runtime-rhel9
+RUN dnf install -y ca-certificates e2fsprogs util-linux xfsprogs libfabric && dnf clean all
+
+FROM runtime-rhel9 AS build-rhel9
+RUN dnf install -y gcc gcc-c++ make cmake perl pkgconf-pkg-config libfabric-devel golang python3 && dnf clean all
+
+FROM ${UBUNTU_IMAGE} AS runtime-ubuntu
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates e2fsprogs util-linux xfsprogs libfabric1 && rm -rf /var/lib/apt/lists/*
+
+FROM runtime-ubuntu AS build-ubuntu
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake perl pkg-config protobuf-compiler libfabric-dev golang-go python3 && rm -rf /var/lib/apt/lists/*
+
+FROM ${AL2023_IMAGE} AS runtime-amzn2023
+RUN dnf --setopt=install_weak_deps=False install -y ca-certificates e2fsprogs util-linux xfsprogs libfabric && dnf clean all
+
+FROM runtime-amzn2023 AS build-amzn2023
+RUN dnf --setopt=install_weak_deps=False install -y gcc gcc-c++ make perl pkgconf-pkg-config libfabric-devel python3 binutils && dnf clean all
+
+FROM build-${FIPS_BUILD_DISTRO} AS builder
+ARG FIPS_DISTRO
+ARG FIPS_BUILD_DISTRO
+ARG FIPS_PROVIDER_ROOT=zccusan/deploy/zcblock-csi/fips/provider.empty
+# RHEL 9 tools may build a thin UBI 9 runtime. Never copy an Ubuntu-linked
+# program into UBI, or silently drop a runtime dependency from a full build.
+RUN case "${FIPS_BUILD_DISTRO}:${FIPS_DISTRO}" in \
+    amzn2023:amzn2023|ubuntu:ubuntu|ubi9:ubi9|rhel9:rhel9|rhel9:ubi9) ;; \
+    *) echo "Unsupported builder/runtime pair: ${FIPS_BUILD_DISTRO}:${FIPS_DISTRO}" >&2; exit 2 ;; esac
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
+ENV PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WORKDIR /work
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    perl \
-    pkg-config \
-    protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY vendor/aws-lc-fips-sys-provider ./vendor/aws-lc-fips-sys-provider
+COPY ${FIPS_PROVIDER_ROOT}/ /opt/aws-lc-fips-5314/
+ENV AWS_LC_FIPS_SYS_SYSTEM_DIR=/opt/aws-lc-fips-5314
+RUN --mount=type=cache,id=zcutils-fips-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=zcutils-fips-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    test -f /opt/aws-lc-fips-5314/lib/libcrypto.a \
+    && test -f /opt/aws-lc-fips-5314/lib/bcm.o \
+    && test -f /opt/aws-lc-fips-5314/share/zcutils/fips/provider-receipt.json \
+    && cargo fetch --locked
 COPY src ./src
+COPY tests/fixtures/client-wal/live-client.json ./tests/fixtures/client-wal/live-client.json
+COPY zccusan/deploy/zcblock-csi/kernel-module-artifacts.example.yaml ./zccusan/deploy/zcblock-csi/kernel-module-artifacts.example.yaml
+COPY zccusan/deploy/zcblock-csi/getting-started/ ./zccusan/deploy/zcblock-csi/getting-started/
+COPY scripts/fips-acceptance.py ./scripts/fips-acceptance.py
+COPY scripts/fips-recompile-aws-lc.py ./scripts/fips-recompile-aws-lc.py
+COPY scripts/github-ec2-runner-smoke.py ./scripts/github-ec2-runner-smoke.py
+COPY .github/workflows/fips-aws-lc-5314.yml ./.github/workflows/fips-aws-lc-5314.yml
+COPY zccusan/deploy/zcblock-csi/fips/AWS-LC-RECOMPILATION.md ./zccusan/deploy/zcblock-csi/fips/AWS-LC-RECOMPILATION.md
+COPY zccusan/deploy/zcblock-csi/fips/acceptance-review-history.json ./zccusan/deploy/zcblock-csi/fips/acceptance-review-history.json
+COPY zccusan/deploy/zcblock-csi/Dockerfile.fips ./zccusan/deploy/zcblock-csi/Dockerfile.fips
+ARG BUILD_JOBS=4
+RUN --mount=type=cache,id=zcutils-fips-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=zcutils-fips-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    if [ "$FIPS_DISTRO" = ubi9 ]; then export ZCUTILS_DISABLE_LIBFABRIC=1; fi; \
+    RUST_MIN_STACK=33554432 cargo build --locked --release --features fips --jobs ${BUILD_JOBS} --bin zc-fips-check --bin zcutils --bin zcblock-csi --bin zcblock-node-setup --bin zcblock-control --bin zcblock-freeze --bin zccusan-telemetry-server --bin zccusan-operator --bin zcrepl --bin zcpit --bin zctier --bin zcnblk-fan --bin zcnblk-shm-target --bin zcnblk-wal-failover --bin zcnblk-wal-leaf --bin zcnblk-order-smoke
+RUN --mount=type=cache,id=zcutils-fips-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=zcutils-fips-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    if [ "$FIPS_DISTRO" = ubi9 ]; then export ZCUTILS_DISABLE_LIBFABRIC=1; fi; \
+    RUST_MIN_STACK=33554432 cargo test --locked --release --features fips --jobs ${BUILD_JOBS} --lib crypto_protocol_tests \
+    && RUST_MIN_STACK=33554432 cargo test --locked --release --features fips --jobs ${BUILD_JOBS} --lib zcnblk_aes_transport_round_trips_split_frames
+RUN --mount=type=cache,id=zcutils-fips-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=zcutils-fips-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    mkdir -p /out/bin /out/evidence \
+    && for bin in zc-fips-check zcutils zcblock-csi zcblock-node-setup zcblock-control zcblock-freeze zccusan-telemetry-server zccusan-operator zcrepl zcpit zctier zcnblk-fan zcnblk-shm-target zcnblk-wal-failover zcnblk-wal-leaf zcnblk-order-smoke; do cp target/release/$bin /out/bin/; done \
+    && /out/bin/zc-fips-check --require-fips > /out/evidence/build-provider.json \
+    && cp Cargo.lock /out/evidence/Cargo.lock \
+    && cp /opt/aws-lc-fips-5314/share/zcutils/fips/provider-receipt.json /out/evidence/provider-receipt.json \
+    && cargo tree --locked --features fips > /out/evidence/dependencies.txt \
+    && rustc -Vv > /out/evidence/rustc.txt \
+    && cc --version > /out/evidence/cc.txt \
+    && printf 'builder=%s\nruntime=%s\n' "$FIPS_BUILD_DISTRO" "$FIPS_DISTRO" > /out/evidence/image-stages.txt \
+    && (cd /out/bin && sha256sum *) > /out/evidence/binaries.sha256
+RUN python3 scripts/fips-acceptance.py collect-build --binaries /out/bin --out /out/evidence
 
-RUN RUST_MIN_STACK=33554432 cargo build --release --jobs 16 \
-    --bin zcutils \
-    --bin zcblock-csi \
-    --bin zcblock-control \
-    --bin zcblock-freeze \
-    --bin zccusan-telemetry-server \
-    --bin zccusan-operator \
-    --bin zcrepl \
-    --bin zcpit \
-    --bin zctier \
-    --bin zcnblk-fan \
-    --bin zcnblk-shm-target \
-    --bin zcnblk-wal-failover \
-    --bin zcnblk-wal-leaf
-
-FROM docker.io/library/debian:bookworm-slim AS runtime-tools
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    e2fsprogs \
-    libfabric1 \
-    util-linux \
-    xfsprogs \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /work/target/release/zcblock-csi /runtime-root/usr/local/bin/zcblock-csi
-COPY --from=builder /work/target/release/zcutils /runtime-root/usr/local/bin/zcutils
-COPY --from=builder /work/target/release/zcblock-control /runtime-root/usr/local/bin/zcblock-control
-COPY --from=builder /work/target/release/zcblock-freeze /runtime-root/usr/local/bin/zcblock-freeze
-COPY --from=builder /work/target/release/zccusan-telemetry-server /runtime-root/usr/local/bin/zccusan-telemetry-server
-COPY --from=builder /work/target/release/zccusan-operator /runtime-root/usr/local/bin/zccusan-operator
-COPY --from=builder /work/target/release/zcrepl /runtime-root/usr/local/bin/zcrepl
-COPY --from=builder /work/target/release/zcpit /runtime-root/usr/local/bin/zcpit
-COPY --from=builder /work/target/release/zctier /runtime-root/usr/local/bin/zctier
-COPY --from=builder /work/target/release/zcnblk-fan /runtime-root/usr/local/bin/zcnblk-fan
-COPY --from=builder /work/target/release/zcnblk-shm-target /runtime-root/usr/local/bin/zcnblk-shm-target
-COPY --from=builder /work/target/release/zcnblk-wal-failover /runtime-root/usr/local/bin/zcnblk-wal-failover
-COPY --from=builder /work/target/release/zcnblk-wal-leaf /runtime-root/usr/local/bin/zcnblk-wal-leaf
-COPY zccusan/deploy/zcblock-csi/allowed-raw-partitions.empty.txt /runtime-root/etc/zcblock-csi/allowed-raw-partitions.txt
-
-RUN set -eux; \
-    bins="/runtime-root/usr/local/bin/zcutils /runtime-root/usr/local/bin/zcblock-csi /runtime-root/usr/local/bin/zcblock-control /runtime-root/usr/local/bin/zcblock-freeze /runtime-root/usr/local/bin/zccusan-telemetry-server /runtime-root/usr/local/bin/zccusan-operator /runtime-root/usr/local/bin/zcrepl /runtime-root/usr/local/bin/zcpit /runtime-root/usr/local/bin/zctier /runtime-root/usr/local/bin/zcnblk-fan /runtime-root/usr/local/bin/zcnblk-shm-target /runtime-root/usr/local/bin/zcnblk-wal-failover /runtime-root/usr/local/bin/zcnblk-wal-leaf /usr/bin/mount /usr/bin/umount /usr/bin/findmnt /usr/sbin/blkid /usr/sbin/losetup /usr/sbin/mkfs.ext4 /usr/sbin/mkfs.xfs /usr/sbin/fsfreeze"; \
-    for bin in /usr/bin/mount /usr/bin/umount /usr/bin/findmnt /usr/sbin/blkid /usr/sbin/losetup /usr/sbin/mkfs.ext4 /usr/sbin/mkfs.xfs /usr/sbin/fsfreeze; do \
-      mkdir -p "/runtime-root$(dirname \"$bin\")"; \
-      cp "$bin" "/runtime-root$bin"; \
-    done; \
-    for bin in $bins; do \
-      ldd "$bin" | awk '/=> \/ / {print $3} /^\// {print $1}'; \
-    done | sort -u | while read -r lib; do \
-      mkdir -p "/runtime-root$(dirname \"$lib\")"; \
-      if [ -e "$lib" ]; then \
-        cp -L "$lib" "/runtime-root$lib"; \
-      fi; \
-    done; \
-    for loader in /lib/ld-linux-*.so.* /lib64/ld-linux-*.so.*; do \
-      if [ -e "$loader" ]; then \
-        mkdir -p "/runtime-root$(dirname \"$loader\")"; \
-        cp -L "$loader" "/runtime-root$loader"; \
-      fi; \
-    done; \
-    if [ -e /etc/mke2fs.conf ]; then \
-      mkdir -p /runtime-root/etc; \
-      cp /etc/mke2fs.conf /runtime-root/etc/mke2fs.conf; \
+# This starts from the runtime stage, never the entitled/compiler stage.
+# Removing packages at startup or in a later layer would still publish them.
+FROM runtime-${FIPS_DISTRO} AS runtime
+ARG FIPS_DISTRO
+COPY --from=builder /out/bin/ /usr/local/bin/
+COPY --from=builder /out/evidence/ /usr/share/zcutils/fips/
+RUN if [ "$FIPS_DISTRO" = ubi9 ]; then \
+      set -eu; \
+      for package in gcc gcc-c++ make cmake perl golang libfabric libfabric-devel e2fsprogs xfsprogs; do \
+        if rpm -q "$package" >/dev/null 2>&1; then echo "Unexpected thin-runtime package: $package" >&2; exit 1; fi; \
+      done; \
+      test ! -e /usr/local/cargo; test ! -e /usr/local/rustup; \
+      rpm -qa --qf '%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\t%{LICENSE}\n' | sort > /usr/share/zcutils/fips/runtime-packages.tsv; \
+      for binary in /usr/local/bin/*; do \
+        ldd "$binary" > /tmp/zc-runtime-linkage; \
+        if grep -q 'not found' /tmp/zc-runtime-linkage; then cat /tmp/zc-runtime-linkage >&2; exit 1; fi; \
+        printf '\n%s\n' "$binary" >> /usr/share/zcutils/fips/runtime-linkage.txt; \
+        cat /tmp/zc-runtime-linkage >> /usr/share/zcutils/fips/runtime-linkage.txt; \
+      done; \
+      rm /tmp/zc-runtime-linkage; \
     fi
-
-FROM registry.access.redhat.com/ubi9-minimal
-
-COPY --from=runtime-tools /runtime-root/ /
-
-ENV PATH="/usr/local/bin:/usr/sbin:/usr/bin"
+COPY zccusan/deploy/zcblock-csi/allowed-raw-partitions.empty.txt /etc/zcblock-csi/allowed-raw-partitions.txt
+ARG KMOD_BUNDLE_ROOT=zccusan/deploy/zcblock-csi/kmod-bundle
+COPY ${KMOD_BUNDLE_ROOT}/ /opt/zcutils/kmods/
+LABEL io.zcutils.crypto.mode="fips-aspiring" io.zcutils.crypto.validation="not-asserted"
+# Set to 0 only for explicit provider-only testing on ordinary hosts.
+ENV ZC_REQUIRE_HOST_FIPS=1
+ENV PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 USER 0:0
 ENTRYPOINT ["/usr/local/bin/zcblock-csi"]

@@ -295,4 +295,4 @@ kubectl delete -f storage-profile.yaml
 kubectl delete -f media-grant.yaml
 ```
 
-If any command fails—or before using real disks, RDMA, or performance tuning—continue with [getting started 2](GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES_DETAILED.md), then try [tiering](GETTING_STARTED_WITH_TIERING_ON_KUBERNETES.md) and review the [cross-region replication](GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md) guide's distinction between the current checkpoint compatibility test and the intended continuous-WAL path.
+If any command fails—or before using real disks, RDMA, or performance tuning—continue with [getting started 2](GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES_DETAILED.md), then try [tiering](GETTING_STARTED_WITH_TIERING_ON_KUBERNETES.md) and begin the three-part [cross-region replication and recovery series](GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md).

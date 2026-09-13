@@ -54,6 +54,9 @@ jobs:
         env:
           RUNNER_LABEL: ${{ inputs.runner_label }}
           RUNNER_JIT_CONFIG: ${{ secrets[inputs.jit_secret_name] }}
+          RUNNER_IMAGE_ID: ami-07006ea0a33e11e4e
+          RUNNER_INSTANCE_TYPE: m6i.large
+          RUNNER_LIFETIME_MINUTES: "15"
         run: python3 scripts/github-ec2-runner-smoke.py launch
       - name: Save launch evidence
         if: always()
@@ -73,6 +76,8 @@ jobs:
       - name: Produce the artifact and identify its EC2 worker
         env:
           EXPECTED_INSTANCE_ID: ${{ needs.launch.outputs.instance_id }}
+          EXPECTED_AMI_ID: ami-07006ea0a33e11e4e
+          EXPECTED_INSTANCE_TYPE: m6i.large
         run: |
           python3 - <<'PY'
           import json, os, pathlib, platform, urllib.request
@@ -84,10 +89,15 @@ jobs:
               return urllib.request.urlopen(req, timeout=5).read().decode()
           instance_id = metadata('instance-id')
           assert instance_id == os.environ['EXPECTED_INSTANCE_ID']
+          ami_id = metadata('ami-id')
+          instance_type = metadata('instance-type')
+          assert ami_id == os.environ['EXPECTED_AMI_ID']
+          assert instance_type == os.environ['EXPECTED_INSTANCE_TYPE']
           out = pathlib.Path('hello-artifact')
           out.mkdir()
           (out / 'hello.txt').write_text('Hello, world!\n')
-          evidence = {'instance_id': instance_id, 'ami_id': metadata('ami-id'), 'hostname': platform.node(),
+          evidence = {'instance_id': instance_id, 'ami_id': ami_id, 'instance_type': instance_type,
+                      'hostname': platform.node(),
                       'runner_name': os.environ['RUNNER_NAME'], 'github_run_id': os.environ['GITHUB_RUN_ID'],
                       'os_release': pathlib.Path('/etc/redhat-release').read_text().strip()}
           (out / 'worker.json').write_text(json.dumps(evidence, indent=2) + '\n')

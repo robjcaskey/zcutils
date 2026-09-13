@@ -18,6 +18,7 @@ struct Args {
 }
 
 fn main() {
+    zcutils::crypto_policy::initialize_or_exit();
     match run() {
         Ok(response) => {
             print!("{response}");

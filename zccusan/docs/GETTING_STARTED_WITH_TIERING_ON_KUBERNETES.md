@@ -56,6 +56,6 @@ wrapped by this first tier policy, `rehydrateOnColdStart` must be true, and
 behind a later userspace tier implementation; it will never become the tier or
 mirror primitive.
 
-Continue with
-[cross-region checkpoint replication](GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md)
-after the regional volume is healthy.
+Continue with the three-part [cross-region replication and recovery
+series](GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md) after
+the regional volume is healthy.

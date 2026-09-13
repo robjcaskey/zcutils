@@ -65,6 +65,7 @@ impl<W: Write> Write for BoundedWriter<W> {
 }
 
 fn main() {
+    zcutils::crypto_policy::initialize_or_exit();
     if let Err(e) = run() {
         eprintln!("zcrepl: {e}");
         std::process::exit(1);

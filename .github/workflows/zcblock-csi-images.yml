@@ -241,6 +241,46 @@ jobs:
           grep -q 'no TCP fallback was selected' <<<"${preflight}"
           printf 'ZCCUSAN_IMAGE_NATIVE_SMOKE_PASS arch=%s kmods=%s providers=efa,verbs rdma_without_device=fail-closed\n' \
             "${actual_arch}" "${actual_modules}"
+      - name: Install Syft for image attestations
+        if: github.ref == 'refs/heads/main' && needs.prepare.outputs.source_sha == github.sha
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+      - name: Install Cosign for image attestations
+        if: github.ref == 'refs/heads/main' && needs.prepare.outputs.source_sha == github.sha
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.2
+      - name: Assume the dedicated attestation signer role
+        if: github.ref == 'refs/heads/main' && needs.prepare.outputs.source_sha == github.sha
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_ATTESTATION_SIGNER_ROLE_ARN }}
+          aws-region: us-east-1
+          allowed-account-ids: '968134102381'
+          role-session-name: zcutils-attest-${{ github.run_id }}-${{ matrix.arch }}
+          role-duration-seconds: 900
+      - name: Generate and verify signed SPDX and CycloneDX attestations
+        if: github.ref == 'refs/heads/main' && needs.prepare.outputs.source_sha == github.sha
+        env:
+          IMAGE_TAGS: ${{ steps.arch_tags.outputs.tags }}
+          ATTESTATION_DIR: ${{ runner.temp }}/image-attestations/${{ matrix.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_TAGS%%,*}"
+          python3 scripts/zc-image-attest.py generate \
+            --skip-build \
+            --variant nonfips \
+            --image "${image}" \
+            --output-dir "${ATTESTATION_DIR}" \
+            --kms-key-parameter
+      - name: Upload signed image attestations
+        if: github.ref == 'refs/heads/main' && needs.prepare.outputs.source_sha == github.sha
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zcblock-csi-${{ matrix.arch }}-sbom-attestations-${{ github.run_id }}
+          path: ${{ runner.temp }}/image-attestations/${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 14
       - name: Log out of Docker Hub
         if: always()
         run: docker logout docker.io || true

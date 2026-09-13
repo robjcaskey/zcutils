@@ -147,6 +147,7 @@ struct HttpResponse {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    zcutils::crypto_policy::initialize_or_exit();
     let cfg = Arc::new(Config::from_args().map_err(invalid_input)?);
     fs::create_dir_all(cfg.volumes_dir())?;
     fs::create_dir_all(cfg.snapshots_dir())?;

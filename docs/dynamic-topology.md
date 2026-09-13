@@ -75,6 +75,10 @@ in-memory state and durable change log unchanged.
 Metadata voters do not count as payload copies merely because they know a HWM.
 A small Raft tiebreaker can vote without owning the data WAL.
 
+The proposed [WAL custody tier model](wal-custody-tiers.md) extends these
+obligations to memory holders, protected memory, geographic forwarding,
+overflow, and recovery coverage for successive regional failures.
+
 ## QEMU topology-evolution proof
 
 `scripts/zctopology-evolution-qemu.sh` builds a minimal initramfs and launches

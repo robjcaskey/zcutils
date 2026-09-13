@@ -1,0 +1,9 @@
+# Used only by the ephemeral/local cache builder. The registry is bound to the
+# builder host's loopback interface and is not reachable from the VPC or Internet.
+[registry."127.0.0.1:5000"]
+  http = true
+  insecure = true
+
+[registry."localhost:5000"]
+  http = true
+  insecure = true

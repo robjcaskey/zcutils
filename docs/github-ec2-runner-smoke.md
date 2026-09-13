@@ -22,7 +22,7 @@ need its own GitHub App or equivalent registration credential.
 The workflow expects these non-secret repository variables from the Terraform
 runner stack: `AWS_FIPS_RUNNER_ROLE_ARN`, `AWS_FIPS_RUNNER_ACCOUNT_ID`,
 `AWS_FIPS_RUNNER_REGION`, and `AWS_FIPS_RUNNER_CONFIG`. The configuration includes
-the allowed AMI, dedicated subnet/security group, required ad hoc tags, and
+the workflow-selected AMI, dedicated subnet/security group, required ad hoc tags, and
 Scheduler role/group. The controller role must trust the repository's exact
 `main` branch OIDC subject.
 

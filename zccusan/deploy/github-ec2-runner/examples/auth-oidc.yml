@@ -1,0 +1,29 @@
+# Copy into .github/workflows/ to exercise authentication. This example only
+# reads the caller identity; it does not start an EC2 instance or build runner.
+name: AWS ephemeral runner authentication
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  authenticate:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Exchange GitHub identity for temporary AWS credentials
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_FIPS_RUNNER_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_FIPS_RUNNER_REGION }}
+          allowed-account-ids: ${{ vars.AWS_FIPS_RUNNER_ACCOUNT_ID }}
+          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
+          role-duration-seconds: 900
+      - name: Verify assumed identity
+        run: aws sts get-caller-identity

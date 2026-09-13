@@ -142,6 +142,10 @@ without dragging in the SAN stack.
   explicit lane, CPU, and queue mapping.
 - `docs/man/zcutils.1.md`: man-page style command reference.
 - `docs/nvme-slot-topology-todo.md`: storage topology notes.
+- `docs/image-sbom-attestations.md`: local Docker/Podman workflow for
+  digest-bound SPDX and CycloneDX SBOM attestations for non-FIPS and
+  FIPS-aspiring zcblock-csi images, including verified digest-pinned BuildKit
+  developer caches.
 
 ## zccusan Docs
 

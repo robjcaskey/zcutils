@@ -24,6 +24,7 @@ const MODULE_NAME: &str = "zcnblk_client_mod";
 const MODULE_FILE: &str = "zcnblk_client_mod.ko";
 
 fn main() {
+    zcutils::crypto_policy::initialize_or_exit();
     let mode = env::args().nth(1).unwrap_or_else(|| "setup".to_string());
     let result = match mode.as_str() {
         "setup" => run_setup(),

@@ -1,0 +1,55 @@
+name: FIPS acceptance suite regressions
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/fips-acceptance-tests.yml'
+      - '.github/workflows/fips-aws-lc-5314.yml'
+      - '.github/workflows/zcblock-csi-images.yml'
+      - 'scripts/*fips*'
+      - 'scripts/github-ec2-runner-smoke.py'
+      - 'scripts/test_github_ec2_runner_smoke.py'
+      - 'scripts/zc-image-attest.py'
+      - 'scripts/test_zc_image_attest.py'
+      - 'scripts/configure-runner-build-cache.sh'
+      - 'scripts/test_runner_build_cache.py'
+      - 'config/squid-runner-build-cache.conf'
+      - 'config/buildkit-loopback-registry.toml'
+      - 'src/*crypto*'
+      - 'src/fips_evidence.rs'
+      - 'src/fips_application_checks.rs'
+      - 'src/lib.rs'
+      - 'src/global_secure_rpc.rs'
+      - 'src/main.rs'
+      - 'src/bin/zc-fips-check.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'vendor/aws-lc-fips-sys-provider/**'
+      - 'zccusan/deploy/zcblock-csi/Dockerfile'
+      - 'zccusan/deploy/zcblock-csi/*fips*'
+      - 'zccusan/deploy/zcblock-csi/fips/**'
+      - 'zccusan/deploy/github-ec2-runner-cache/**'
+      - 'zccusan/deploy/image-attestation-signing/**'
+      - 'docs/image-sbom-attestations.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regressions:
+    name: Check acceptance rejection rules (synthetic fixtures)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Exercise acceptance, stale evidence and failure handling
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_fips*.py' -v
+          python3 -m unittest scripts/test_github_ec2_runner_smoke.py -v
+          python3 -m unittest scripts/test_zc_image_attest.py -v
+          python3 -m unittest scripts/test_runner_build_cache.py -v
+      # This job checks the checker. Release acceptance must run `check` on
+      # the actual deployment node; a hosted-runner green job is not FIPS proof.

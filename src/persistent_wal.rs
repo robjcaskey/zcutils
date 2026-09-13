@@ -19,7 +19,10 @@ const SUPER_MAGIC: &[u8; 8] = b"ZCPWALS1";
 const FRAME_MAGIC: &[u8; 8] = b"ZCPWALF1";
 const VERSION: u32 = 1;
 const FRAME_FIXED: usize = 64;
-const MAX_RECORDS: usize = (BLOCK - FRAME_FIXED) / 8;
+/// Leave the final four bytes for the metadata checksum. Counting them as
+/// page-table space overwrites the high half of the last logical page number.
+pub const MAX_APPEND_RECORDS: usize = (BLOCK - FRAME_FIXED - 4) / 8;
+const MAX_RECORDS: usize = MAX_APPEND_RECORDS;
 const FLAG_PAYLOAD_CRC32C: u32 = 1;
 const BLKGETSIZE64: libc::c_ulong = 0x8008_1272;
 const FS_IOC_FIEMAP: libc::c_ulong = 0xc020_660b;
@@ -242,6 +245,10 @@ impl PersistentWalRuntime {
         self.wal.append_contiguous(offset, payload)
     }
 
+    pub fn append_pages(&self, logical_pages: &[u64], payload: &[u8]) -> io::Result<u64> {
+        self.wal.append_pages(logical_pages, payload)
+    }
+
     pub fn read_at(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
         self.wal.read_at(offset, out)
     }
@@ -258,6 +265,22 @@ impl PersistentWalRuntime {
 
     pub fn stats(&self) -> PersistentWalStats {
         self.wal.stats()
+    }
+
+    /// A successful fsync on tmpfs/ramfs is not a persistent replica receipt.
+    /// This is admission-time validation, not work performed for each I/O.
+    pub fn validate_persistent_backings(&self) -> io::Result<()> {
+        for file in [&self.wal.journal, &self.wal.base] {
+            let mut stat = mem::MaybeUninit::<libc::statfs>::uninit();
+            if unsafe { libc::fstatfs(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let kind = unsafe { stat.assume_init() }.f_type as u64;
+            if kind == 0x01021994 || kind == 0x858458f6 {
+                return Err(invalid("volatile filesystem cannot supply a persistent replica receipt"));
+            }
+        }
+        Ok(())
     }
 
     pub fn pin_retained_tail(&self) -> PersistentWalRetention {
@@ -374,6 +397,11 @@ impl PersistentWal {
             options.file_provisioning,
             options.io_mode,
         )?;
+        // Diagnose aliases before attempting the second exclusive open. This
+        // read-only probe neither provisions nor changes the existing base.
+        if let Ok(existing_base) = File::open(base_path.as_ref()) {
+            reject_same_backing(&journal, &existing_base)?;
+        }
         let (base, base_backing) = open_backing(
             base_path.as_ref(),
             logical_bytes,
@@ -413,6 +441,19 @@ impl PersistentWal {
             }),
         };
         wal.recover_or_initialize()?;
+        // A synced WAL is not recoverable by name after power loss unless its
+        // directory entries are durable too. This is admission-time work only.
+        for (file, path, kind) in [
+            (&wal.journal, journal_path.as_ref(), wal.journal_backing.kind),
+            (&wal.base, base_path.as_ref(), wal.base_backing.kind),
+        ] {
+            if kind == BackingKind::RegularFile {
+                file.sync_all()?;
+                let parent = path.parent().filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
+                File::open(parent)?.sync_all()?;
+            }
+        }
         Ok(wal)
     }
 
@@ -1120,6 +1161,12 @@ fn open_backing(
         }
         Err(error) => return Err(error),
     };
+    // Acquire custody BEFORE any sizing/allocation. A failed second writer
+    // must not resize an active WAL, and two journals must not reduce into
+    // the same base concurrently. Locks live with the open file descriptions.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
     let metadata = file.metadata()?;
     let file_type = metadata.mode() & libc::S_IFMT;
     match file_type {
@@ -1457,6 +1504,48 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn custody_lock_precedes_resize_and_prevents_shared_base_writers() {
+        let (journal, base) = paths("exclusive-custody");
+        let logical_bytes = (BLOCK * 8) as u64;
+        let journal_bytes = (BLOCK * 32) as u64;
+        let wal = PersistentWal::open(&journal, &base, logical_bytes, journal_bytes).unwrap();
+        assert!(PersistentWal::open(&journal, &base, logical_bytes * 2, journal_bytes * 2).is_err());
+        assert_eq!(fs::metadata(&journal).unwrap().len(), journal_bytes);
+        assert_eq!(fs::metadata(&base).unwrap().len(), logical_bytes);
+        let other_journal = journal.with_file_name("second-journal");
+        assert!(PersistentWal::open(&other_journal, &base, logical_bytes * 2, journal_bytes).is_err());
+        assert_eq!(fs::metadata(&base).unwrap().len(), logical_bytes);
+        drop(wal);
+        let replacement = PersistentWal::open(&journal, &base, logical_bytes, journal_bytes).unwrap();
+        drop(replacement);
+        fs::remove_dir_all(journal.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn maximum_page_table_does_not_overlap_metadata_checksum() {
+        assert_eq!(MAX_APPEND_RECORDS, 503);
+        let pages = (0..MAX_APPEND_RECORDS as u64)
+            .map(|page| 0x0123_4567_0000_0000 | page).collect::<Vec<_>>();
+        let mut block = AlignedBlock::zeroed();
+        encode_frame_header(&mut block.0, 1, 1, ((pages.len() + 1) * BLOCK) as u64,
+            &pages, 0, IntegrityMode::Frame);
+        let decoded = decode_frame_header(&block.0).unwrap();
+        assert_eq!(decoded.logical_pages, pages);
+    }
+
+    #[test]
+    fn oversized_page_table_is_rejected_before_payload_write() {
+        let (journal, base) = paths("oversized-page-table");
+        let pages = MAX_APPEND_RECORDS + 1;
+        let wal = PersistentWal::open(&journal, &base, (pages * BLOCK) as u64,
+            ((pages + 4) * BLOCK) as u64).unwrap();
+        assert!(wal.append_contiguous(0, &vec![7; pages * BLOCK]).is_err());
+        assert_eq!(wal.stats().appended_sequence, 0);
+        drop(wal);
+        fs::remove_dir_all(journal.parent().unwrap()).unwrap();
+    }
 
     fn paths(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let nonce = SystemTime::now()

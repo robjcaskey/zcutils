@@ -21,7 +21,7 @@ zccusan/deploy/zcblock-csi/build-load-apply.sh
 ```
 
 By default this builds the non-FIPS image (`IMAGE_VARIANT=nonfips`). For the
-FIPS-aspiring variant, set:
+FIPS-aspiring variant (Ubuntu by default; see [FIPS image and QEMU lab](FIPS.md) for UBI/RHEL scope and prerequisites), set:
 
 ```sh
 IMAGE_VARIANT=fips-aspiring zccusan/deploy/zcblock-csi/build-load-apply.sh
@@ -63,8 +63,11 @@ IMAGE_C=docker.io/robjcaskey/zcblock-csi:0.1.6 \
 
 `REGION_IMAGES='a=IMAGE b=IMAGE c=IMAGE'` supports arbitrary local-region
 names. See the
-[cross-region getting-started guide](../../docs/GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md)
-for the complete workflow and its trust/failover boundaries.
+[three-part cross-region getting-started
+series](../../docs/GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md)
+for the target continuous-WAL, recovery-preview, automatic failover, and policy
+workflow. The series is explicitly marked as a target-state implementation
+contract where it goes beyond the current checkpoint compatibility path.
 
 You can run both scripts against the FIPS-aspiring track with:
 

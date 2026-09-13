@@ -1,0 +1,19 @@
+aws_account_id = "968134102381"
+aws_region     = "us-east-1"
+
+# Verified using the repository's actions/oidc/customization/sub API.
+github_oidc_subjects = ["repo:robjcaskey/zcutils:ref:refs/heads/main"]
+
+# Empty network with no hourly charge. Each runtime worker gets an automatic
+# public IPv4 address, released when terminated. No NAT gateway or Elastic IP.
+create_public_network = true
+public_subnet_cidr     = "10.84.0.0/24"
+
+# Isolated from HPC/ad hoc networks. This is a nondefault VPC/subnet, so the
+# Spot helper's default-for-az discovery will not automatically select it.
+# Do not restore or change any existing ad hoc/default VPC internet routes.
+
+# To use an existing working public network instead, set the above to false and
+# supply allowed_subnet_ids and allowed_security_group_ids.
+
+enable_key_fallback = false

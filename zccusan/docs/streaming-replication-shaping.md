@@ -165,15 +165,19 @@ device such as `/dev/zcbrdN` or an allowlisted raw partition.
 
 ## Stream Types
 
-`snapshot`: bulk transfer of a frozen snapshot image or raw volume image.
-Usually large, low priority, high burst, resumable by byte range.
-
 `wal`: continuous logical record stream. Usually smaller extents, latency
-bounded, ordered per lane, ACKed by durable extent sequence.
+bounded, ordered per lane, ACKed by durable extent sequence. This is the normal
+steady-state replication path and remains attached for the lifetime of a
+replica.
 
-`catchup`: replay from a snapshot cut to current WAL watermarks. It should be
-scheduled between snapshot and live WAL priority so replicas converge without
-starving foreground replication.
+`catchup`: retained WAL replay from an older durable HWM to the live WAL
+watermarks. It should be scheduled below live WAL so a recovering replica
+converges without starving foreground replication.
+
+`snapshot`: exceptional bulk seeding of a new replica, PITR capture, or repair
+when the retained WAL is insufficient. It is usually large, low priority, high
+burst, and resumable by byte range. Completing the image transfer is not enough
+to make a replica current; catch-up and then live WAL must follow.
 
 ## Topology Alignment
 
@@ -189,15 +193,19 @@ the right base. The gateway should not collapse lanes into one global FIFO.
 Order is per lane unless a snapshot/barrier manifest explicitly requests a
 global cut.
 
-## Snapshot and WAL Catchup
+## Replica bootstrap and WAL catchup
 
-A coherent async replica is:
+A coherent new or repaired async replica is:
 
 1. Create a source snapshot under the freeze/barrier protocol.
 2. Transfer the snapshot image through the gateway as `snapshot` traffic.
 3. Record the WAL cut manifest: per lane durable sequence and byte range.
 4. Replay `catchup` extents after the snapshot cut.
-5. Switch to live `wal` once the replica reaches the current watermark.
+5. Join the continuing live `wal` feed once the replica reaches the current
+   watermark, without creating a gap between catch-up and live delivery.
+
+An already-current replica stays on step 5. It does not repeat the snapshot
+cycle for routine replication or failover.
 
 The `zcsnap` manifest and `docs/wal-extent-framing.md` define the logical cut
 shape. The CSI snapshot implementation gives us a source image today; the

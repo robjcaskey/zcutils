@@ -7,8 +7,12 @@
 #include <rdma/fi_endpoint.h>
 #include <rdma/fi_eq.h>
 #include <rdma/fi_errno.h>
-#include <rdma/fi_ext.h>
 #if defined(__has_include)
+/* Ubuntu 22.04's libfabric predates the optional extension header. The
+ * extension-dependent options below remain gated by FI_MAJOR_VERSION. */
+#if __has_include(<rdma/fi_ext.h>)
+#include <rdma/fi_ext.h>
+#endif
 #if __has_include(<rdma/fi_ext_efa.h>)
 #include <rdma/fi_ext_efa.h>
 #endif

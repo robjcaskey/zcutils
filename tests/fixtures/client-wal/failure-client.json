@@ -1,0 +1,22 @@
+{
+  "policy": {
+    "scope": {"volume": 17, "log": 34, "writer_epoch": 1, "lane": 0},
+    "count_client_local_wal": true,
+    "local": {"id": 1, "incarnation": 1, "failure_domain": 1},
+    "remote": [
+      {"id": 2, "incarnation": 1, "failure_domain": 2},
+      {"id": 3, "incarnation": 1, "failure_domain": 3}
+    ]
+  },
+  "journal_directory": "/mnt/terminal/client",
+  "capacity_bytes_per_lane": 131072,
+  "direct": true,
+  "serial_hop": true,
+  "repair": {
+    "survivor_control": "10.63.72.3:45000",
+    "replacement_control": "10.63.72.4:45000",
+    "replacement": {"id": 2, "incarnation": 2, "failure_domain": 4},
+    "controller_directory": "/mnt/terminal/repair-controller",
+    "logical_bytes": 524288
+  }
+}

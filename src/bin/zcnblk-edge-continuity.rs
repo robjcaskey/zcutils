@@ -98,6 +98,17 @@ fn run() -> io::Result<()> {
     let mut reads = 0u64;
     let mut dirty_read_matches = 0u64;
     let mut syncs = 0u64;
+    let mut fua_writes = 0u64;
+    let fua_every = env::var("ZCNBLK_EDGE_CONTINUITY_FUA_EVERY")
+        .ok()
+        .map(|v| {
+            v.parse::<u64>()
+                .map_err(|_| invalid("invalid FUA interval"))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let sync_contract = env::var("ZCNBLK_EDGE_CONTINUITY_SYNC_CONTRACT")
+        .unwrap_or_else(|_| "remote-global-hwm-drain".into());
     let mut identity_checks = 0u64;
     let started = Instant::now();
 
@@ -130,7 +141,7 @@ fn run() -> io::Result<()> {
     file.sync_data()?;
     syncs += 1;
     println!(
-        "zcnblk-edge-continuity-start: target={target} device={} inode={} open_descriptors=1 base_offset={base_offset} slots={slots} block_bytes={BLOCK_BYTES} interval_us={interval_us} sync_every={sync_every} ordinary_write_completion=early-local-retained-wal-admission sync_completion=remote-global-hwm-drain",
+        "zcnblk-edge-continuity-start: target={target} device={} inode={} open_descriptors=1 base_offset={base_offset} slots={slots} block_bytes={BLOCK_BYTES} interval_us={interval_us} sync_every={sync_every} ordinary_write_completion=early-local-retained-wal-admission sync_completion={sync_contract}",
         initial.dev(),
         initial.ino(),
     );
@@ -140,11 +151,34 @@ fn run() -> io::Result<()> {
         let slot = sequence % slots;
         sequence = sequence.saturating_add(1);
         fill_block(write_block.as_mut_slice(), slot, sequence);
-        exact_pwrite(
-            &file,
-            write_block.as_slice(),
-            slot_offset(base_offset, slot)?,
-        )?;
+        if fua_every != 0 && sequence % fua_every == 0 {
+            let iov = libc::iovec {
+                iov_base: write_block.as_slice().as_ptr().cast_mut().cast(),
+                iov_len: BLOCK_BYTES,
+            };
+            let wrote = unsafe {
+                libc::pwritev2(
+                    file.as_raw_fd(),
+                    &iov,
+                    1,
+                    slot_offset(base_offset, slot)? as libc::off_t,
+                    libc::RWF_DSYNC,
+                )
+            };
+            if wrote < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if wrote as usize != BLOCK_BYTES {
+                return Err(invalid("short FUA write"));
+            }
+            fua_writes += 1;
+        } else {
+            exact_pwrite(
+                &file,
+                write_block.as_slice(),
+                slot_offset(base_offset, slot)?,
+            )?;
+        }
         writes += 1;
         exact_pread(
             &file,
@@ -185,6 +219,9 @@ fn run() -> io::Result<()> {
     file.sync_data()?;
     syncs += 1;
     let mut final_slot_matches = 0u64;
+    use sha2::{Digest, Sha256};
+    let mut expected_hash = Sha256::new();
+    let mut actual_hash = Sha256::new();
     for (slot, expected_sequence) in last_sequences.into_iter().enumerate() {
         fill_block(write_block.as_mut_slice(), slot as u64, expected_sequence);
         exact_pread(
@@ -200,6 +237,32 @@ fn run() -> io::Result<()> {
             expected_sequence,
         )?;
         final_slot_matches += 1;
+        expected_hash.update(write_block.as_slice());
+        actual_hash.update(read_block.as_slice());
+    }
+    if let Ok(bytes) = env::var("ZCNBLK_EDGE_CONTINUITY_VOLUME_BYTES") {
+        let bytes: u64 = bytes
+            .parse()
+            .map_err(|_| invalid("invalid digest volume size"))?;
+        if base_offset != 0 || bytes < end_offset || bytes % BLOCK_BYTES as u64 != 0 {
+            return Err(invalid(
+                "whole-volume digest requires zero-based aligned geometry",
+            ));
+        }
+        write_block.as_mut_slice().fill(0);
+        for offset in (end_offset..bytes).step_by(BLOCK_BYTES) {
+            exact_pread(&file, read_block.as_mut_slice(), offset)?;
+            if read_block.as_slice() != write_block.as_slice() {
+                return Err(invalid("unwritten volume range changed"));
+            }
+            expected_hash.update(write_block.as_slice());
+            actual_hash.update(read_block.as_slice());
+        }
+        println!(
+            "ZCNBLK_EDGE_CONTINUITY_DIGEST bytes={bytes} expected={:x} actual={:x}",
+            expected_hash.finalize(),
+            actual_hash.finalize()
+        );
     }
     let final_metadata = file.metadata()?;
     if final_metadata.dev() != initial.dev() || final_metadata.ino() != initial.ino() {
@@ -209,7 +272,7 @@ fn run() -> io::Result<()> {
     }
     let elapsed = started.elapsed();
     println!(
-        "ZCNBLK_EDGE_CONTINUITY_PASS target={target} device={} inode={} identity_stable=true open_descriptor_replaced=false writes={writes} reads={reads} dirty_read_matches={dirty_read_matches} final_slot_matches={final_slot_matches} syncs={syncs} identity_checks={identity_checks} mismatches=0 elapsed_seconds={:.6} proof_iops={:.0} final_completion=remote-global-hwm-drain",
+        "ZCNBLK_EDGE_CONTINUITY_PASS target={target} device={} inode={} identity_stable=true open_descriptor_replaced=false writes={writes} reads={reads} dirty_read_matches={dirty_read_matches} final_slot_matches={final_slot_matches} syncs={syncs} fua_writes={fua_writes} identity_checks={identity_checks} mismatches=0 elapsed_seconds={:.6} proof_iops={:.0} final_completion={sync_contract}",
         initial.dev(),
         initial.ino(),
         elapsed.as_secs_f64(),

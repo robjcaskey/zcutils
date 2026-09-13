@@ -1,0 +1,20 @@
+{
+  "policy": {
+    "scope": { "volume": 17, "log": 34, "writer_epoch": 1, "lane": 0 },
+    "count_client_local_wal": true,
+    "local": { "id": 1, "incarnation": 1, "failure_domain": 1 },
+    "remote": [
+      { "id": 2, "incarnation": 1, "failure_domain": 2 },
+      { "id": 3, "incarnation": 1, "failure_domain": 3 }
+    ]
+  },
+  "listen": "127.0.0.1:29600",
+  "journal_directory": "/mnt/terminal/client",
+  "journal_bytes": 8388608,
+  "logical_bytes": 1048576,
+  "middle": { "address": "10.63.73.2:42000", "owner": { "id": 2, "incarnation": 1, "failure_domain": 2 } },
+  "tail": { "address": "10.63.73.3:42000", "owner": { "id": 3, "incarnation": 1, "failure_domain": 3 } },
+  "replacement": { "address": "10.63.73.4:42000", "owner": { "id": 2, "incarnation": 2, "failure_domain": 4 } },
+  "allow_plaintext_private_network": true,
+  "failure_timeout_ms": 1500
+}

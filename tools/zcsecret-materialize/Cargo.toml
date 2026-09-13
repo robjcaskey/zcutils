@@ -13,3 +13,8 @@ serde_json = "1"
 [[bin]]
 name = "zcsecret-materialize"
 path = "../../src/bin/zcsecret-materialize.rs"
+
+# The shared lifecycle source also compiles in zcutils' FIPS build. This small
+# standalone package has no FIPS feature and retains its OS-random implementation.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("fips"))'] }

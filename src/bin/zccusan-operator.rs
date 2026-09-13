@@ -2748,6 +2748,7 @@ async fn kernel_module_catalog_controller(ctx: Arc<Context>) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    zcutils::crypto_policy::initialize_or_exit();
     let client = Client::try_default().await?;
     let repository = env::var("ZCCUSAN_RUNTIME_IMAGE")
         .unwrap_or_else(|_| "docker.io/robjcaskey/zcblock-csi:nightly".to_string());

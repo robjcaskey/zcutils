@@ -1,0 +1,24 @@
+[package]
+name = "aws-lc-fips-sys"
+version = "0.13.11"
+edition = "2021"
+rust-version = "1.70"
+links = "aws_lc_fips_0_13_11"
+license = "ISC AND (Apache-2.0 OR ISC) AND OpenSSL"
+description = "Certificate-5314 provider-link adapter for the aws-lc-fips-sys 0.13.11 ABI"
+publish = false
+
+[features]
+default = []
+asan = []
+bindgen = []
+ssl = []
+
+[lib]
+name = "aws_lc_fips_sys"
+path = "src/lib.rs"
+
+[build-dependencies]
+cc = "1"
+serde_json = "1"
+sha2 = "0.10"

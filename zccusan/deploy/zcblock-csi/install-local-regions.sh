@@ -133,7 +133,13 @@ cd "$ROOT"
 
 if [ "$BUILD_IMAGE" = "1" ]; then
   ARCHIVE="$(mktemp --suffix=.tar)"
-  podman build -t "$IMAGE" -f "$DOCKERFILE" .
+  if [[ "$IMAGE_VARIANT" == fips-aspiring && "$DOCKERFILE" == zccusan/deploy/zcblock-csi/Dockerfile.fips ]]; then
+    podman build --build-arg "FIPS_DISTRO=${FIPS_DISTRO:-amzn2023}" \
+      --build-arg "FIPS_PROVIDER_ROOT=${FIPS_PROVIDER_ROOT:-zccusan/deploy/zcblock-csi/fips/provider}" \
+      -t "$IMAGE" -f "$DOCKERFILE" .
+  else
+    podman build -t "$IMAGE" -f "$DOCKERFILE" .
+  fi
   podman save "$IMAGE" -o "$ARCHIVE"
   if [ "$(id -u)" -eq 0 ]; then
     ctr -n k8s.io images import "$ARCHIVE"

@@ -62,6 +62,7 @@ struct SharedState {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    zcutils::crypto_policy::initialize_or_exit();
     let cfg = Config::from_env();
     let state = Arc::new(SharedState {
         inner: Mutex::new(EventServer::new()),

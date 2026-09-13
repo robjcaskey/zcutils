@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Mint a one-job runner config, dispatch the smoke workflow, and download its artifacts."""
+"""Mint a one-job runner config, dispatch a bounded workflow, and verify its artifacts."""
 import argparse
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import time
@@ -33,15 +34,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default="robjcaskey/zcutils")
     parser.add_argument("--output-dir", type=Path, default=Path("target/github-ec2-runner-smoke"))
+    parser.add_argument("--fips-build", action="store_true",
+                        help="run the certificate-5314 provider/link workflow instead of the cheap smoke test")
+    parser.add_argument("--aws-profile", default="slopmud-breakglass",
+                        help="local profile used to verify KMS-backed FIPS image signatures")
     args = parser.parse_args()
     suffix = uuid.uuid4().hex[:12]
-    label = "zc-fips-smoke-" + suffix
+    label = ("zc-fips-build-" if args.fips_build else "zc-fips-smoke-") + suffix
     secret = "FIPS_EPHEMERAL_JIT_" + suffix.upper()
     out = args.output_dir / label
     out.mkdir(mode=0o700, parents=True, exist_ok=False)
     endpoint = f"repos/{args.repo}/actions"
-    workflow = "fips-ec2-runner-smoke.yml"
-    report = {"repo": args.repo, "label": label, "secret_name": secret}
+    workflow = "fips-aws-lc-5314.yml" if args.fips_build else "fips-ec2-runner-smoke.yml"
+    report = {"repo": args.repo, "label": label, "secret_name": secret,
+              "workflow": workflow}
     runner_id, run_id, complete = None, None, False
 
     def save():
@@ -80,7 +86,10 @@ def main():
             raise RuntimeError("Dispatched run did not appear within one minute")
         save()
         print(report["url"], flush=True)
-        end = time.monotonic() + 20 * 60
+        # The worker is independently capped at 45 minutes, but GitHub-hosted
+        # launch and cleanup jobs run outside that lifetime.  Leave enough
+        # monitoring time to observe cleanup after the worker has terminated.
+        end = time.monotonic() + (60 if args.fips_build else 20) * 60
         previous = None
         while time.monotonic() < end:
             run = api(endpoint + f"/runs/{run_id}")
@@ -105,17 +114,59 @@ def main():
             log = gh(["run", "view", str(run_id), "--repo", args.repo, "--log-failed"])
             (out / "failed-jobs.log").write_text(log)
             raise RuntimeError("Workflow failed; evidence saved in " + str(out))
-        hello = out / "artifacts" / f"hello-world-{run_id}"
-        assert (hello / "hello.txt").read_text() == "Hello, world!\n"
-        worker = json.loads((hello / "worker.json").read_text())
-        launch = json.loads((out / "artifacts" / f"runner-launch-{run_id}" / "launch.json").read_text())
-        cleanup = json.loads((out / "artifacts" / f"runner-cleanup-{run_id}" / "cleanup.json").read_text())
-        assert worker["instance_id"] == launch["instance_id"]
+        launch_prefix = "5314-runner-launch" if args.fips_build else "runner-launch"
+        cleanup_prefix = "5314-runner-cleanup" if args.fips_build else "runner-cleanup"
+        launch = json.loads((out / "artifacts" / f"{launch_prefix}-{run_id}" / "launch.json").read_text())
+        cleanup = json.loads((out / "artifacts" / f"{cleanup_prefix}-{run_id}" / "cleanup.json").read_text())
         assert cleanup["termination_confirmed"] and cleanup["schedule_removed"]
-        assert worker["instance_id"] in cleanup["instance_ids"]
-        report.update(instance_id=worker["instance_id"], downloaded_and_verified=True,
-                      hello_sha256=hashlib.sha256((hello / "hello.txt").read_bytes()).hexdigest())
-        print("Downloaded and verified:", hello / "hello.txt", flush=True)
+        assert launch["instance_id"] in cleanup["instance_ids"]
+        if args.fips_build:
+            artifact = out / "artifacts" / f"aws-lc-fips-5314-x86_64-{run_id}"
+            subprocess.run(["sha256sum", "-c", "evidence/files.sha256"], cwd=artifact,
+                           check=True, stdout=subprocess.DEVNULL)
+            provider = json.loads((artifact / "provider/share/zcutils/fips/provider-receipt.json").read_text())
+            receipt = json.loads((artifact / "evidence/build-receipt.json").read_text())
+            assert provider["certificate_number"] == 5314
+            assert provider["certificate_profile_environment"] is True
+            assert provider["source"]["archive_sha256"] == \
+                "fe408fa438850786396faf79eba9ea4116c3802e60f3a95865f0dd2adb64c9f1"
+            assert receipt["recompilation_assessment"]["status"] == "section-11.1-linked"
+            assert receipt["binaries"]["zc-fips-check"]["static_identity_symbols"] == \
+                ["awslc_version_string"]
+            attestations = artifact / "image-attestations"
+            manifest = json.loads((attestations / "zcblock-csi-fips-aspiring.attestation-manifest.json").read_text())
+            assert manifest["signed"] is True
+            assert manifest["fipsRuntimeCheck"] == "provider-only"
+            assert manifest["imageSignature"]["signingAuthority"] == "Rob J. Caskey"
+            image_ref = (artifact / "evidence/fips-image-ref.txt").read_text().strip()
+            assert manifest["subject"]["name"] == image_ref
+            verify_env = {**os.environ, "AWS_PROFILE": args.aws_profile, "AWS_REGION": "us-east-1"}
+            kms_key = "awskms:///alias/zcutils-build-attestation-signing-authority-Rob-J-Caskey"
+            subprocess.run([
+                "python3", "scripts/zc-image-attest.py", "verify",
+                "--variant", "fips-aspiring", "--output-dir", str(attestations),
+                "--require-signature", "--cosign-verification-key", kms_key,
+            ], check=True, env=verify_env)
+            subprocess.run([
+                "cosign", "verify", "--key", kms_key,
+                "-a", "signingAuthority=Rob J. Caskey",
+                "-a", f"builderIdentity={manifest['imageSignature']['builderIdentity']}",
+                manifest["imageSignature"]["resolvedRef"],
+            ], check=True, env=verify_env, stdout=subprocess.DEVNULL)
+            report.update(instance_id=launch["instance_id"], downloaded_and_verified=True,
+                          provider_libcrypto_sha256=provider["provider"]["libcrypto_sha256"],
+                          linked_binary_sha256=receipt["binaries"]["zc-fips-check"]["sha256"],
+                          fips_image=image_ref,
+                          fips_image_digest=manifest["subject"]["digest"]["sha256"])
+            print("Downloaded and verified:", artifact, flush=True)
+        else:
+            hello = out / "artifacts" / f"hello-world-{run_id}"
+            assert (hello / "hello.txt").read_text() == "Hello, world!\n"
+            worker = json.loads((hello / "worker.json").read_text())
+            assert worker["instance_id"] == launch["instance_id"]
+            report.update(instance_id=worker["instance_id"], downloaded_and_verified=True,
+                          hello_sha256=hashlib.sha256((hello / "hello.txt").read_bytes()).hexdigest())
+            print("Downloaded and verified:", hello / "hello.txt", flush=True)
     finally:
         if run_id is not None and not complete:
             try:

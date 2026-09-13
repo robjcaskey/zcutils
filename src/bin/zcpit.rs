@@ -14,6 +14,7 @@ struct Args {
 }
 
 fn main() {
+    zcutils::crypto_policy::initialize_or_exit();
     if let Err(e) = run() {
         eprintln!("zcpit: {e}");
         std::process::exit(1);

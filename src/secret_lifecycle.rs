@@ -301,6 +301,12 @@ fn generate_version(generation: u64, now_ms: u64, ttl_ms: u64) -> io::Result<Sec
         .checked_add(ttl_ms)
         .ok_or_else(|| invalid("secret expiry timestamp overflow"))?;
     let mut random = [0u8; DEFAULT_SECRET_BYTES];
+    #[cfg(feature = "fips")]
+    {
+        use aws_lc_rs::rand::{SecureRandom, SystemRandom};
+        SystemRandom::new().fill(&mut random).map_err(|_| invalid("AWS-LC credential generation failed"))?;
+    }
+    #[cfg(not(feature = "fips"))]
     File::open("/dev/urandom")?.read_exact(&mut random)?;
     let mut secret = String::with_capacity(random.len() * 2);
     for byte in random {

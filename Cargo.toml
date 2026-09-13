@@ -7,9 +7,17 @@ description = "Linux zero-copy descriptor stream and io_uring utility experiment
 readme = "README.md"
 license = "MIT OR Apache-2.0 OR BSD-2-Clause"
 
+[features]
+# An enabled provider is not a certificate-backed validation claim. See FIPS.md.
+fips = ["aws-lc-rs/fips", "rustls/fips", "dep:aws-lc-fips-sys"]
+
 [dependencies]
 arc-swap = "1.7"
-aws-lc-rs = "1.15"
+# Pin the wrapper and module together; automatic upgrades can change the CMVP target.
+aws-lc-rs = "=1.15.3"
+# The diagnostic calls the native module used by aws-lc-rs. The build evidence
+# collector rejects multiple resolved aws-lc-fips-sys versions.
+aws-lc-fips-sys = { version = "=0.13.11", optional = true }
 futures = "0.3"
 k8s-csi = "0.4.0"
 hdrhistogram = { version = "7.6", default-features = false }
@@ -26,6 +34,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 sha2 = "0.10"
+zeroize = "1"
 tokio = { version = "1.0", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { version = "0.5", features = ["transport"] }
@@ -36,9 +45,19 @@ virtio-queue = "0.18"
 vm-memory = { version = "0.18", features = ["backend-mmap", "backend-atomic", "backend-bitmap"] }
 vmm-sys-util = "0.15"
 
+[patch.crates-io]
+# This adapter preserves the upstream 0.13.11 FFI surface for AWS-LC FIPS
+# 3.1.0, but requires the separately reproduced certificate-5314 provider.
+# It contains no AWS-LC C sources and has no bundled-build fallback.
+aws-lc-fips-sys = { path = "vendor/aws-lc-fips-sys-provider" }
+
 [[bin]]
 name = "zcutils"
 path = "src/main.rs"
+
+[[bin]]
+name = "zc-fips-check"
+path = "src/bin/zc-fips-check.rs"
 
 [[bin]]
 name = "zcracing-mirror"

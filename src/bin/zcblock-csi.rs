@@ -512,6 +512,7 @@ enum ControlCommand {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    zcutils::crypto_policy::initialize_or_exit();
     let cfg = Config::from_args().map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let cfg = Arc::new(cfg);
     fs::create_dir_all(cfg.volumes_dir())?;
