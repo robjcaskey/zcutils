@@ -126,6 +126,8 @@ class RunnerBuildCacheStaticTests(unittest.TestCase):
         self.assertLess(script.index("mount -o noatime"), script.index("systemctl start zc-gh-runner.service"))
         self.assertIn("EnvironmentFile=-/etc/zcutils-build-cache.env", script)
         self.assertNotIn("CARGO_TARGET_DIR", script)
+        self.assertIn("lttng-ust openssl-libs krb5-libs zlib libicu", script)
+        self.assertIn('[[ "$ID" == amzn && "$VERSION_ID" == 2023 ]]', script)
         self.assertIn('&& 0 == 1', script)
         initialize = RUNNER.boot_script(encoded, "zc-fips-build-0123456789ab", 35,
                                         "vol-0123456789abcdef0", True, True)

@@ -57,7 +57,10 @@ shutdown -P +__SHUTDOWN_MINUTES__
 useradd --create-home --shell /bin/bash gha
 dnf -y install xfsprogs util-linux
 __CACHE_SETUP__
-dnf -y install tar gzip
+# GitHub's dependency detector does not recognize Amazon Linux 2023. Install
+# its documented Fedora-family runtime libraries explicitly and keep the
+# detector below as a fail-closed check on every other operating system.
+dnf -y install tar gzip lttng-ust openssl-libs krb5-libs zlib libicu
 if [[ '__LABEL__' == zc-fips-build-* ]]; then
   # Build prerequisites live in the disposable worker, not the Terraform stack.
   yum -y groupinstall 'Development Tools'
@@ -70,7 +73,10 @@ install -d -m 0755 /opt/actions-runner
 curl -fL --connect-timeout 10 --max-time 180 --retry 3 '__RUNNER_URL__' -o /tmp/runner.tar.gz
 echo '__RUNNER_SHA256__  /tmp/runner.tar.gz' | sha256sum -c -
 tar -xzf /tmp/runner.tar.gz -C /opt/actions-runner
-/opt/actions-runner/bin/installdependencies.sh
+if ! /opt/actions-runner/bin/installdependencies.sh; then
+  . /etc/os-release
+  [[ "$ID" == amzn && "$VERSION_ID" == 2023 ]]
+fi
 printf '%s' '__JIT_CONFIG__' > /home/gha/.jit-config
 chown -R gha:gha /opt/actions-runner
 chown gha:gha /home/gha/.jit-config
