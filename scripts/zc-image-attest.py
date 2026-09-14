@@ -338,6 +338,13 @@ def sign_and_verify_image(
     }, claims
 
 
+def python_iso_timestamp(value: str) -> str:
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    # Docker uses RFC 3339 Nano timestamps, while Python 3.9's ISO parser
+    # accepts at most six fractional digits.  Attestations record whole seconds.
+    return re.sub(r"(\.\d{6})\d+(?=[+-]\d{2}:\d{2}$)", r"\1", normalized)
+
+
 def inspect_image(engine: str, image: str) -> tuple[str, str]:
     inspected = json.loads(run([engine, "image", "inspect", image]))[0]
     repo_digests = sorted(inspected.get("RepoDigests") or [])
@@ -355,7 +362,9 @@ def inspect_image(engine: str, image: str) -> tuple[str, str]:
         raise SystemExit(f"image inspection did not return a sha256 digest: {digest!r}")
     created = inspected.get("Created", "")
     if created:
-        parsed = dt.datetime.fromisoformat(created.replace("Z", "+00:00"))
+        parsed = dt.datetime.fromisoformat(python_iso_timestamp(created))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError(f"image creation timestamp has no UTC offset: {created!r}")
         created = parsed.astimezone(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     else:
         created = "1970-01-01T00:00:00Z"

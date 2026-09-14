@@ -38,12 +38,30 @@ class ImageAttestationTests(unittest.TestCase):
         self.assertNotIn("private", outputs.casefold())
         self.assertGreaterEqual(main.count("prevent_destroy = true"), 2)
 
-    def test_inspect_accepts_podman_digest_and_normalizes_timestamp(self) -> None:
-        inspected = [{"Id": "c" * 64, "Created": "2026-01-01T01:02:03.123456+00:00"}]
+    def test_inspect_accepts_container_timestamps_and_normalizes_to_utc(self) -> None:
+        timestamps = (
+            ("2026-01-01T01:02:03.123456+00:00", "2026-01-01T01:02:03Z"),
+            ("2026-01-01T01:02:03.123456789Z", "2026-01-01T01:02:03Z"),
+            ("2026-01-01T23:59:59.999999999-01:00", "2026-01-02T00:59:59Z"),
+        )
+        for raw, expected in timestamps:
+            with self.subTest(raw=raw):
+                inspected = [{"Id": "c" * 64, "Created": raw}]
+                with mock.patch.object(MODULE, "run", return_value=json.dumps(inspected)):
+                    digest, created = MODULE.inspect_image("podman", "example:test")
+                self.assertEqual(digest, "c" * 64)
+                self.assertEqual(created, expected)
+
+        self.assertEqual(
+            MODULE.python_iso_timestamp("2026-01-01T01:02:03.123456789Z"),
+            "2026-01-01T01:02:03.123456+00:00",
+        )
+
+    def test_inspect_rejects_creation_timestamp_without_offset(self) -> None:
+        inspected = [{"Id": "c" * 64, "Created": "2026-01-01T01:02:03.123456789"}]
         with mock.patch.object(MODULE, "run", return_value=json.dumps(inspected)):
-            digest, created = MODULE.inspect_image("podman", "example:test")
-        self.assertEqual(digest, "c" * 64)
-        self.assertEqual(created, "2026-01-01T01:02:03Z")
+            with self.assertRaisesRegex(ValueError, "has no UTC offset"):
+                MODULE.inspect_image("docker", "example:test")
 
     def test_normalizers_name_authority_and_bind_subject(self) -> None:
         digest = "a" * 64
