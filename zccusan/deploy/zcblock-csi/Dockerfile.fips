@@ -101,7 +101,9 @@ RUN --mount=type=cache,id=zcutils-fips-cargo-registry,target=/usr/local/cargo/re
     && cc --version > /out/evidence/cc.txt \
     && printf 'builder=%s\nruntime=%s\n' "$FIPS_BUILD_DISTRO" "$FIPS_DISTRO" > /out/evidence/image-stages.txt \
     && (cd /out/bin && sha256sum *) > /out/evidence/binaries.sha256
-RUN python3 scripts/fips-acceptance.py collect-build --binaries /out/bin --out /out/evidence
+RUN --mount=type=cache,id=zcutils-fips-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=zcutils-fips-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    python3 scripts/fips-acceptance.py collect-build --binaries /out/bin --out /out/evidence
 
 # This starts from the runtime stage, never the entitled/compiler stage.
 # Removing packages at startup or in a later layer would still publish them.
