@@ -130,6 +130,8 @@ class RunnerBuildCacheStaticTests(unittest.TestCase):
         initialize = RUNNER.boot_script(encoded, "zc-fips-build-0123456789ab", 35,
                                         "vol-0123456789abcdef0", True, True)
         self.assertIn('&& 1 == 1', initialize)
+        self.assertIn('mkfs.xfs -L zcbuildcache "$cache_device"', initialize)
+        self.assertLessEqual(len("zcbuildcache"), 12)
         self.assertIn("http_port 127.0.0.1:3128", initialize)
         self.assertIn("docker run -d --name zcutils-build-cache-registry", initialize)
         self.assertIn("ZCUTILS_CACHE_REF=127.0.0.1:5000/", initialize)

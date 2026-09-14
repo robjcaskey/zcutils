@@ -119,7 +119,8 @@ for attempt in $(seq 1 120); do [[ -b "$cache_device" ]] && break; sleep 1; done
 [[ -b "$cache_device" ]]
 cache_filesystem="$(blkid -s TYPE -o value "$cache_device" 2>/dev/null || true)"
 if [[ -z "$cache_filesystem" && {format_empty} == 1 ]]; then
-  mkfs.xfs -L zcutils-build-cache "$cache_device"
+  # XFS labels are limited to 12 bytes.
+  mkfs.xfs -L zcbuildcache "$cache_device"
   cache_filesystem=xfs
 fi
 [[ "$cache_filesystem" == xfs ]]
@@ -280,12 +281,12 @@ def wait_for_instance_running(config, instance_id, expected_az, timeout=180):
     raise RuntimeError("runner did not reach running state before cache attachment timeout")
 
 
-def cleanup(config, run_id):
+def cleanup(config, run_id, termination_timeout=180):
     instances = instances_for_run(config, run_id)
     ids = [i["InstanceId"] for i in instances]
     if ids:
         aws(config, "ec2", "terminate-instances", InstanceIds=ids)
-        end = time.monotonic() + 180
+        end = time.monotonic() + termination_timeout
         while time.monotonic() < end:
             states = instances_for_run(config, run_id)
             if all(i["State"]["Name"] == "terminated" for i in states):
@@ -436,7 +437,10 @@ def main():
     if args.command == "launch":
         launch(config, run_id, identity)
     else:
-        cleanup(config, run_id)
+        termination_timeout = int(os.environ.get("RUNNER_CLEANUP_TIMEOUT_SECONDS", "720"))
+        if not 180 <= termination_timeout <= 900:
+            raise ValueError("cleanup timeout must be between 180 and 900 seconds")
+        cleanup(config, run_id, termination_timeout=termination_timeout)
 
 
 if __name__ == "__main__":

@@ -220,7 +220,7 @@ jobs:
     needs: [launch, build]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 18
     permissions:
       contents: read
       id-token: write
@@ -238,6 +238,8 @@ jobs:
           role-session-name: gha-5314-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
           role-duration-seconds: 900
       - name: Confirm termination and remove the deadline schedule
+        env:
+          RUNNER_CLEANUP_TIMEOUT_SECONDS: "720"
         run: python3 scripts/github-ec2-runner-smoke.py cleanup
       - name: Save cleanup evidence
         if: always()
