@@ -7,8 +7,10 @@ at Kubernetes admission. An independent rebuild adds a separate check that the
 shipped executables can be produced again from the stated inputs.
 
 These checks apply to signed `nonfips` and `fips-aspiring` images. Registry SBOM
-publication was added in commit `4e4cbb9c`; older images may have only detached
-SBOM signatures in their build artifacts. A tag or badge alone does not establish
+publication with `--sign-image` was added in commit `4e4cbb9c` and is enabled in
+the canonical FIPS workflow. The ordinary workflow currently exports detached
+SBOM signatures for each architecture; its top-level multi-architecture manifest
+is signed separately using the GitHub Actions identity. A tag or badge alone does not establish
 that an image has passed these checks. A passing reproducibility badge covers the
 unsigned executable bundle, not the entire OCI filesystem or FIPS conformance.
 
@@ -57,7 +59,7 @@ The following examples use Bash. Replace the quoted example values:
 set -euo pipefail
 IMAGE='docker.io/robjcaskey/zcblock-csi@sha256:REPLACE_WITH_IMAGE_DIGEST'
 KEY='/trust/release-signing-public-key.pem'
-PREFIX='zcblock-csi-fips-aspiring'  # or zcblock-csi-nonfips
+PREFIX='zcblock-csi-fips-aspiring'  # this registry example is the canonical FIPS image
 ARTIFACTS='/archive/release/image-attestations'
 
 sha256sum "$KEY"   # compare with the separately approved key-file fingerprint
@@ -114,6 +116,32 @@ later tag update cannot select a different image.
 To check reproduction, also compare this hash with the bundle hash from an
 approved independent-build comparison. Matching a signed SBOM does not itself
 mean anyone rebuilt the software.
+
+### Ordinary multi-architecture images
+
+The ordinary workflow's top-level manifest uses a keyless GitHub Actions
+signature. Verify that manifest with its exact workflow identity:
+
+```sh
+cosign verify \
+  --certificate-identity 'https://github.com/robjcaskey/zcutils/.github/workflows/zcblock-csi-images.yml@refs/heads/main' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  "$IMAGE"
+```
+
+Its architecture-specific SBOM artifacts use the published Rob J. Caskey KMS
+public key. Download the artifact for the chosen architecture, set
+`PREFIX=zcblock-csi-nonfips`, and verify the detached statements and bundle using
+`cosign verify-blob` or the OpenSSL procedure below. Compare their image subject
+with the architecture image digest, not the multi-architecture index digest.
+If deploying the index, inspect its descriptors and confirm that the verified
+architecture digest is its selected child. A keyless signature on the index does
+not substitute for that child/SBOM comparison.
+
+The generated SBOM admission policy targets images with registry-published
+attestations, such as the canonical FIPS image. The ordinary workflow's detached
+SBOM files alone cannot satisfy that policy. Its keyless index signature needs
+an identity-based policy if used as an admission control.
 
 ## 2. Kubernetes admission: enforce the decision
 
@@ -185,12 +213,12 @@ together so another reviewer can repeat the checks.
 
 ### Verify detached artifacts with OpenSSL, without Cosign
 
-The canonical FIPS release's Cosign 2.5.3 detached `.cosign.bundle` files contain
-an ECDSA P-256 signature in the `base64Signature` field. These commands target
-that format; the ordinary image pipeline uses newer bundles. OpenSSL can verify that signature over
-the **original file bytes**. This works for both the executable tar and the
-SPDX/CycloneDX `.intoto.json` files. No reformatting, unpacking, or JSON
-reserialization is allowed before signature verification.
+The canonical FIPS release uses Cosign 2.5.3 legacy bundles, with a signature in
+`base64Signature`. The ordinary architecture builds use Cosign 3.1.2 Sigstore v0.3
+bundles, with a signature in `messageSignature.signature`. Both contain an ECDSA
+P-256 signature that OpenSSL can verify over the **original file bytes**. No
+reformatting, unpacking, or JSON reserialization is allowed before verification.
+The commands below explicitly recognize those two formats and reject others.
 
 Start with downloaded release artifacts, the independently approved PEM key, and
 the same `IMAGE`, `KEY`, `PREFIX`, and `ARTIFACTS` variables used above. Downloading
@@ -203,9 +231,20 @@ for FILE in \
   "$ARTIFACTS/$PREFIX.cyclonedx.json.intoto.json" \
   "$ARTIFACTS/$PREFIX.unsigned-executable-bundle.tar"
 do
-  jq -er '.base64Signature | select(type == "string" and length > 0)' \
-    "$FILE.cosign.bundle" | base64 --decode > signature.der
+  jq -er '
+    if has("base64Signature") and (has("messageSignature") | not) then .base64Signature
+    elif .mediaType == "application/vnd.dev.sigstore.bundle.v0.3+json"
+         and (has("base64Signature") | not)
+         and .messageSignature.messageDigest.algorithm == "SHA2_256"
+    then .messageSignature.signature
+    else error("unsupported or ambiguous signature bundle") end |
+    select(type == "string" and length > 0)
+  ' "$FILE.cosign.bundle" | base64 --decode > signature.der
   openssl dgst -sha256 -verify "$KEY" -signature signature.der "$FILE"
+  if jq -e 'has("messageSignature")' "$FILE.cosign.bundle" >/dev/null; then
+    test "$(jq -er '.messageSignature.messageDigest.digest' "$FILE.cosign.bundle")" = \
+      "$(openssl dgst -sha256 -binary "$FILE" | base64 | tr -d '\n')"
+  fi
 done
 rm signature.der
 
@@ -228,8 +267,8 @@ cmp authenticated-cyclonedx.json supplied-cyclonedx.json
 ```
 
 Every OpenSSL invocation must report `Verified OK` and exit successfully. An
-absent `base64Signature` means this is not the documented envelope format; stop
-and inspect its format rather than selecting an arbitrary signature field.
+unsupported envelope format must be inspected rather than selecting an arbitrary
+signature field.
 These commands verify the publisher's signature, **not** the Rekor transparency
 log's signature, inclusion proof, or trusted time. Thus they establish authenticity
 under the approved long-lived key, but do not replace Cosign's additional
