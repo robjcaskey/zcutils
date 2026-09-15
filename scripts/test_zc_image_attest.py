@@ -19,6 +19,33 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ImageAttestationTests(unittest.TestCase):
+    def test_registry_attestation_requires_exact_verified_sbom_and_image(self):
+        import base64
+        with tempfile.TemporaryDirectory() as tmp:
+            sbom = Path(tmp) / 'sbom.json'
+            sbom.write_text(json.dumps({'annotations': [{'comment': 'bundle=abc'}]}))
+            args = Namespace(cosign='cosign', image='registry.example/zc:test')
+            claim = MODULE.make_statement(args.image, 'a' * 64, MODULE.SPDX_PREDICATE,
+                                          json.loads(sbom.read_text()))
+            def envelope(value):
+                return json.dumps({'payload': base64.b64encode(json.dumps(value).encode()).decode()})
+            with mock.patch.object(MODULE, 'run', side_effect=['', envelope(claim)]) as run:
+                result = MODULE.publish_and_verify_sbom(args, 'trusted-key', 'a' * 64,
+                                                       sbom, MODULE.SPDX_PREDICATE)
+                self.assertTrue(result['verified'])
+                self.assertEqual(run.call_args_list[1].args[0][1], 'verify-attestation')
+            for change in ('predicate', 'subject'):
+                bad = dict(claim)
+                bad[change] = {} if change == 'predicate' else []
+                with mock.patch.object(MODULE, 'run', side_effect=['', envelope(bad)]):
+                    with self.assertRaisesRegex(SystemExit, 'exact SBOM'):
+                        MODULE.publish_and_verify_sbom(args, 'trusted-key', 'a' * 64,
+                                                       sbom, MODULE.SPDX_PREDICATE)
+            with mock.patch.object(MODULE, 'run', side_effect=['', subprocess.CalledProcessError(1, 'cosign')]):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    MODULE.publish_and_verify_sbom(args, 'wrong-key', 'a' * 64,
+                                                   sbom, MODULE.SPDX_PREDICATE)
+
     def test_signing_terraform_uses_exact_non_exportable_identity(self) -> None:
         module = SCRIPT.parents[1] / "zccusan/deploy/image-attestation-signing"
         main = (module / "main.tf").read_text()

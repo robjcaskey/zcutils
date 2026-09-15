@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import importlib.util
 import datetime as dt
 import hashlib
@@ -553,6 +554,31 @@ def normalize_cyclonedx(
     metadata["properties"] = properties
 
 
+def publish_and_verify_sbom(args, signing_key, digest, sbom, predicate_type):
+    """Publish a registry-discoverable DSSE attestation and verify its exact claim."""
+    reference = f"{repository_without_tag(args.image)}@sha256:{digest}"
+    run([args.cosign, "attest", "--yes", "--key", signing_key,
+         "--type", predicate_type, "--predicate", str(sbom), reference])
+    raw = run([args.cosign, "verify-attestation", "--key", signing_key,
+               "--type", predicate_type, "--output", "json", reference])
+    # Cosign emits one JSON envelope per line (some versions emit an array).
+    try:
+        envelopes = json.loads(raw)
+        if isinstance(envelopes, dict):
+            envelopes = [envelopes]
+    except json.JSONDecodeError:
+        envelopes = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    expected = json.loads(sbom.read_text())
+    for envelope in envelopes:
+        claim = json.loads(base64.b64decode(envelope['payload'], validate=True))
+        if (claim.get('predicateType') == predicate_type and claim.get('predicate') == expected
+                and any(subject.get('digest', {}).get('sha256') == digest
+                        for subject in claim.get('subject', []))):
+            return {'image': reference, 'predicateType': predicate_type,
+                    'predicateSha256': sha256_file(sbom), 'verified': True}
+    raise SystemExit('registry attestation does not bind the exact SBOM to this image')
+
+
 def make_statement(image: str, digest: str, predicate_type: str, predicate: dict) -> dict:
     return {
         "_type": STATEMENT_TYPE,
@@ -761,6 +787,14 @@ def generate(args: argparse.Namespace) -> None:
         value['subject'].append(payload_subject)
         canonical_write(statement, value)
         statements.append(statement)
+
+    if args.sign_image:
+        registry_records = [publish_and_verify_sbom(args, signing_key, digest, sbom, kind)
+                            for sbom, kind in ((spdx, SPDX_PREDICATE),
+                                              (cyclonedx, CYCLONEDX_PREDICATE))]
+        registry_record = output / f"{prefix}.registry-attestations.json"
+        canonical_write(registry_record, registry_records)
+        cache_files.append(registry_record)
 
     bundles: list[Path] = []
     public_key: Path | None = None
