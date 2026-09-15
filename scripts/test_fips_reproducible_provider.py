@@ -38,6 +38,10 @@ class NativeComparisonTests(unittest.TestCase):
             native.repro.write_json(root / 'offline.json', reports['offline'])
             with self.assertRaisesRegex(ValueError, 'mismatch'):
                 native.compare_native(*args)
+            self.assertFalse((root / 'result.json').exists())
+            failure = json.loads((root / 'result.failure.json').read_text())
+            self.assertEqual(failure['status'], 'different')
+            self.assertEqual(failure['mismatches'], ['bcm.o'])
 
     def test_normal_workflow_does_not_enable_online_comparison(self):
         root = Path(__file__).resolve().parents[1]

@@ -138,6 +138,19 @@ jobs:
             --work-dir "$RUNNER_TEMP/aws-lc-5314-work" \
             --provider-dir "$GITHUB_WORKSPACE/zccusan/deploy/zcblock-csi/fips/provider" \
             --report "$RUNNER_TEMP/aws-lc-5314-native.json" "${compare_args[@]}"
+      - name: Preserve failed native comparison outputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-comparison-failure-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/aws-lc-5314-work/*.json
+            ${{ runner.temp }}/aws-lc-5314-work/online/**/libcrypto.a
+            ${{ runner.temp }}/aws-lc-5314-work/offline/**/libcrypto.a
+            ${{ runner.temp }}/aws-lc-5314-work/online/**/bcm.o
+            ${{ runner.temp }}/aws-lc-5314-work/offline/**/bcm.o
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
       - name: Install Cosign

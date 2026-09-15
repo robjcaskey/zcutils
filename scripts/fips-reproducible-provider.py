@@ -33,6 +33,7 @@ def compare_native(online_report, offline_report, online_root, offline_root, out
         if online[key] != offline[key]:
             raise ValueError('native build input mismatch: ' + key)
     hashes = {}
+    mismatches = []
     for name in ('bcm.o', 'libcrypto.a', 'bssl', 'identity_probe'):
         pair = {}
         for mode, report, root in (('online', online, online_root), ('offline', offline, offline_root)):
@@ -45,8 +46,13 @@ def compare_native(online_report, offline_report, online_root, offline_root, out
                 raise ValueError('native artifact changed after build: ' + name)
             pair[mode] = value
         if pair['online'] != pair['offline']:
-            raise ValueError('native online/offline mismatch: ' + name)
+            mismatches.append(name)
         hashes[name] = pair
+    if mismatches:
+        failure = {'status': 'different', 'artifacts': hashes, 'mismatches': mismatches}
+        repro.write_json(Path(output).with_suffix('.failure.json'), failure)
+        print(json.dumps(failure, indent=2), file=sys.stderr, flush=True)
+        raise ValueError('native online/offline mismatch: ' + ', '.join(mismatches))
     repro.write_json(output, {'schema': 1, 'status': 'identical', 'selected_artifacts': 'offline',
                               'scope': 'native module, archive, tool and identity probe', 'artifacts': hashes,
                               'online_report_sha256': repro.sha256(online_report),
