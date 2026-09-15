@@ -24,12 +24,17 @@ class AdmissionTests(unittest.TestCase):
                 admission.admission_policy(repository, 'key', 'a' * 64)
 
     def test_badge_requires_signatures_and_successful_comparison(self):
-        for failure in ('signature', 'comparison', None):
+        for failure in ('missing-binding', 'signature', 'comparison', None):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 key = root / 'key.pem'
                 key.write_text('trusted-public-key')
                 output = root / 'output'
+                for name in ('first', 'second'):
+                    directory = root / name / 'image-attestations'
+                    directory.mkdir(parents=True)
+                    (directory / 'zcblock-csi-fips-aspiring.attestation-manifest.json').write_text(
+                        json.dumps({} if failure == 'missing-binding' else {'payload': {'digest': 'test'}}))
                 argv = ['tool', '--first', str(root / 'first'), '--second', str(root / 'second'),
                         '--first-launch', 'first.json', '--second-launch', 'second.json',
                         '--trusted-public-key', str(key), '--output-dir', str(output),
@@ -45,7 +50,7 @@ class AdmissionTests(unittest.TestCase):
                         with self.assertRaises(ValueError):
                             admission.main()
                         self.assertFalse((output / 'reproducibility-badge.json').exists())
-                        if failure == 'signature':
+                        if failure in ('signature', 'missing-binding'):
                             compare.assert_not_called()
                     else:
                         admission.main()

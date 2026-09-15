@@ -59,6 +59,10 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=False)
     key = args.trusted_public_key.resolve()
     for root in (args.first, args.second):
+        manifest = json.loads((root / 'image-attestations' /
+                               'zcblock-csi-fips-aspiring.attestation-manifest.json').read_text())
+        if not manifest.get('payload'):
+            raise ValueError('a signed unsigned-executable-bundle binding is required for a badge')
         attest.verify_directory(root / 'image-attestations', 'zcblock-csi-fips-aspiring',
                                 cosign=args.cosign, cosign_verification_key=str(key),
                                 require_signature=True)
