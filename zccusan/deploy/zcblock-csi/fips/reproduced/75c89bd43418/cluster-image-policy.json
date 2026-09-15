@@ -1,0 +1,34 @@
+{
+  "apiVersion": "policy.sigstore.dev/v1beta1",
+  "kind": "ClusterImagePolicy",
+  "metadata": {
+    "name": "zcblock-csi-reproduced-executables"
+  },
+  "spec": {
+    "images": [
+      {
+        "glob": "docker.io/robjcaskey/zcblock-csi:*"
+      },
+      {
+        "glob": "docker.io/robjcaskey/zcblock-csi@sha256:*"
+      }
+    ],
+    "authorities": [
+      {
+        "key": {
+          "data": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAP9FcyARQosYSAm5MpX6JBDh+vH6\ntL4NPFHohbSSmp3eKIAINjozeRyB4K6M+W43m6GVeXjRyVSHS1dH47TGNw==\n-----END PUBLIC KEY-----\n"
+        },
+        "attestations": [
+          {
+            "name": "reproduced-executable-bundle",
+            "predicateType": "https://spdx.dev/Document",
+            "policy": {
+              "type": "rego",
+              "data": "package sigstore\n    default isCompliant = false\n    isCompliant {\n      matches := [a | a := input.predicate.annotations[_]; startswith(a.comment, \"zcutils:unsigned-executable-bundle:sha256=\")]\n      count(matches) == 1\n      matches[0].comment == \"zcutils:unsigned-executable-bundle:sha256=afcd58e2676990271f2077540c78403857a220b086dc7cbc79a9150e417bc4fc\"\n    }\n"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

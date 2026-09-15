@@ -2,6 +2,7 @@
 
 [![FIPS gate tests](https://github.com/robjcaskey/zcutils/actions/workflows/fips-acceptance-tests.yml/badge.svg?branch=main)](https://github.com/robjcaskey/zcutils/actions/workflows/fips-acceptance-tests.yml)
 [![Image build](https://github.com/robjcaskey/zcutils/actions/workflows/zcblock-csi-images.yml/badge.svg?branch=main)](https://github.com/robjcaskey/zcutils/actions/workflows/zcblock-csi-images.yml)
+[![Executables 75c89bd4: reproduced on 2 workers](https://img.shields.io/badge/executables%2075c89bd4-reproduced%20on%202%20workers-brightgreen)](zccusan/deploy/zcblock-csi/fips/reproduced/75c89bd43418/README.md)
 [![SBOM formats: SPDX and CycloneDX](https://img.shields.io/badge/SBOM-SPDX%20%2B%20CycloneDX-blue)](zccusan/deploy/zcblock-csi/IMAGE-VALIDATION.md)
 [![Image verification: Cosign and OpenSSL](https://img.shields.io/badge/verify-Cosign%20%2B%20OpenSSL-blue)](zccusan/deploy/zcblock-csi/IMAGE-VALIDATION.md)
 [![License: MIT or Apache-2.0 or BSD-2-Clause](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0%20OR%20BSD--2--Clause-blue)](LICENSE.md)
@@ -9,6 +10,8 @@
 The gate-test badge reports checker regressions, not FIPS validation. Verification
 badges link to the procedures and their scope; signed artifacts must still be
 checked for the exact image being deployed.
+The reproduction badge links to a signed project-run comparison for the named
+revision, not the latest source or independent certification.
 
 `zcutils` is an experimental Linux utility crate for zero-copy descriptor
 streams, lane-multiplexed TCP transfer, and low-level io_uring storage/network

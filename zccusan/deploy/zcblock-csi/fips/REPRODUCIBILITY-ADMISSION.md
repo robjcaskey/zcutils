@@ -6,6 +6,10 @@ application executables, their stable bundle manifest, and the native provider
 objects. It does not establish reproducibility of the complete OCI filesystem,
 SBOMs, signature envelopes, or FIPS deployment conformance.
 
+Published result: [revision 75c89bd43418](reproduced/75c89bd43418/README.md)
+matched on two distinct workers, including the complete unsigned executable
+bundle. The linked signed report identifies the exact images and inputs.
+
 Build the first release normally. Verify its signed SBOM with an independently
 trusted public key and retain its exported unsigned executable bundle SHA-256 and
 effective build timestamp. Pass both values to the next build on a fresh worker:
