@@ -13,6 +13,12 @@ runner creates it through a user namespace; passwordless sudo is unnecessary. Th
 verified before execution. The resulting provider package is the input to the
 application build; Cargo does not recompile the native module.
 
+The compiler consumes the provider headers, objects, and stable provider receipt.
+That receipt binds source, tools, platform, procedure, and packaged module hashes;
+its hash is embedded in the application. The full `provider-build-record.json`
+retains the timestamp, boot ID, and intermediate-output hashes and enters the
+image during assembly. Those per-run observations do not change the executable.
+
 `Dockerfile.fips` prepares OS packages, the Rust toolchain, and locked source
 dependencies in `build-inputs`. Cargo's download cache seeds a complete copy of
 those dependencies in `/opt/cargo-inputs`; compilation does not mount that cache

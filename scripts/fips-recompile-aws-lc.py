@@ -171,6 +171,21 @@ def build_identity_probe(source_root, build_root, crypto):
     return probe
 
 
+def provider_identity(report):
+    """Stable compilation identity; per-run observations stay in the build record."""
+    identity = {key: report[key] for key in (
+        "schema", "certificate_number", "module_name", "module_version_string",
+        "security_policy", "security_policy_section", "source", "commands", "tools",
+        "network_interfaces", "environment_findings", "build_procedure_passed",
+        "certificate_profile_environment", "claim", "provider",
+    ) if key in report}
+    identity["environment"] = {key: value for key, value in report.get("environment", {}).items()
+                               if key != "boot_id"}
+    identity["artifacts"] = {name: {"sha256": report["artifacts"][name]["sha256"]}
+                             for name in ("libcrypto.a", "bcm.o")}
+    return identity
+
+
 def create_provider(provider_dir, source_root, crypto, bcm, report):
     """Package the already-built module without running another build step."""
     provider = Path(provider_dir).resolve()
@@ -198,7 +213,11 @@ def create_provider(provider_dir, source_root, crypto, bcm, report):
         raise ValueError("packaged libcrypto.a differs from the prescribed build output")
     if report["provider"]["bcm_sha256"] != report["artifacts"]["bcm.o"]["sha256"]:
         raise ValueError("packaged bcm.o differs from the prescribed build output")
-    receipt_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    # The application embeds the receipt hash. Keep timestamps, boot identity,
+    # and intermediate/tool output hashes in the assembled record, not its code.
+    receipt_path.with_name("provider-build-record.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n")
+    receipt_path.write_text(json.dumps(provider_identity(report), indent=2, sort_keys=True) + "\n")
     return provider, receipt_path
 
 

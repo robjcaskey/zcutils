@@ -40,7 +40,10 @@ class RecompilationTests(unittest.TestCase):
         dockerfile = (root / "zccusan/deploy/zcblock-csi/Dockerfile.fips").read_text()
         cargo = (root / "Cargo.toml").read_text()
         self.assertIn("ARG FIPS_DISTRO=amzn2023", dockerfile)
-        self.assertIn("COPY ${FIPS_PROVIDER_ROOT}/ /opt/aws-lc-fips-5314/", dockerfile)
+        self.assertIn("COPY ${FIPS_PROVIDER_ROOT}/lib/ /opt/aws-lc-fips-5314/lib/", dockerfile)
+        compiler, assembly = dockerfile.split('FROM ${FIPS_COMPILED_STAGE} AS builder')
+        self.assertNotIn('COPY ${FIPS_PROVIDER_ROOT}/share/ /', compiler)
+        self.assertIn('COPY ${FIPS_PROVIDER_ROOT}/share/ /', assembly)
         self.assertIn("ENV AWS_LC_FIPS_SYS_SYSTEM_DIR=/opt/aws-lc-fips-5314", dockerfile)
         self.assertIn("COPY .github/workflows/fips-aws-lc-5314.yml", dockerfile)
         self.assertIn("COPY scripts/github-ec2-runner-smoke.py", dockerfile)
@@ -136,10 +139,31 @@ class RecompilationTests(unittest.TestCase):
             self.assertEqual(crypto.read_bytes(), (provider / "lib/libcrypto.a").read_bytes())
             self.assertEqual(bcm.read_bytes(), (provider / "lib/bcm.o").read_bytes())
             receipt = json.loads(receipt_path.read_text())
+            self.assertEqual(report, json.loads(receipt_path.with_name('provider-build-record.json').read_text()))
             self.assertEqual(receipt["artifacts"]["libcrypto.a"]["sha256"],
                              receipt["provider"]["libcrypto_sha256"])
             with self.assertRaisesRegex(ValueError, "already exists"):
                 recompile.create_provider(provider, source, crypto, bcm, report)
+
+    def test_identity_excludes_run_metadata_but_binds_provider_and_build_inputs(self):
+        report = {'completed_at': 'first', 'environment': {'boot_id': 'boot-1', 'product_name': 'c6i.metal'},
+                  'source': {'archive_sha256': 'source'}, 'tools': {'cc': 'compiler'},
+                  'artifacts': {'libcrypto.a': {'sha256': 'crypto', 'path': '/first/libcrypto.a'},
+                                'bcm.o': {'sha256': 'bcm'}, 'cmake_cache': {'sha256': 'cache-1'}}}
+        first = recompile.provider_identity(report)
+        report['completed_at'] = 'second'
+        report['environment']['boot_id'] = 'boot-2'
+        report['artifacts']['cmake_cache']['sha256'] = 'cache-2'
+        report['artifacts']['libcrypto.a']['path'] = '/second/libcrypto.a'
+        self.assertEqual(first, recompile.provider_identity(report))
+        for key in ('libcrypto.a', 'bcm.o'):
+            changed = json.loads(json.dumps(report))
+            changed['artifacts'][key]['sha256'] = 'changed'
+            self.assertNotEqual(first, recompile.provider_identity(changed))
+        for key in ('source', 'tools', 'environment'):
+            changed = json.loads(json.dumps(report))
+            changed[key]['changed'] = 'different input'
+            self.assertNotEqual(first, recompile.provider_identity(changed))
 
 
 if __name__ == "__main__":

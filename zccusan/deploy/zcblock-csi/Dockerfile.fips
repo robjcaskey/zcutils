@@ -62,7 +62,9 @@ ENV PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:
 WORKDIR /work
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY vendor/aws-lc-fips-sys-provider ./vendor/aws-lc-fips-sys-provider
-COPY ${FIPS_PROVIDER_ROOT}/ /opt/aws-lc-fips-5314/
+COPY ${FIPS_PROVIDER_ROOT}/include/ /opt/aws-lc-fips-5314/include/
+COPY ${FIPS_PROVIDER_ROOT}/lib/ /opt/aws-lc-fips-5314/lib/
+COPY ${FIPS_PROVIDER_ROOT}/share/zcutils/fips/provider-receipt.json /opt/aws-lc-fips-5314/share/zcutils/fips/provider-receipt.json
 ENV AWS_LC_FIPS_SYS_SYSTEM_DIR=/opt/aws-lc-fips-5314
 RUN --mount=type=cache,id=zcutils-fips-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=zcutils-fips-cargo-git,target=/usr/local/cargo/git,sharing=locked \
@@ -93,6 +95,9 @@ COPY --from=online-reference /out /online-reference
 RUN --network=none python3 scripts/fips-build-reproducibility.py compare \
     --offline /out --online /online-reference --report /out/evidence/application-reproducibility.json
 FROM ${FIPS_COMPILED_STAGE} AS builder
+ARG FIPS_PROVIDER_ROOT=zccusan/deploy/zcblock-csi/fips/provider.empty
+# Per-run provider observations belong to release assembly, not compiler inputs.
+COPY ${FIPS_PROVIDER_ROOT}/share/ /opt/aws-lc-fips-5314/share/
 # Fixtures are needed by tests, not release compilation.
 COPY tests/fixtures/client-wal/live-client.json ./tests/fixtures/client-wal/live-client.json
 COPY zccusan/deploy/zcblock-csi/kernel-module-artifacts.example.yaml ./zccusan/deploy/zcblock-csi/kernel-module-artifacts.example.yaml
@@ -112,7 +117,7 @@ RUN --network=none mkdir -p /out/evidence \
     && cp /out/build.json /out/evidence/offline-build.json \
     && /out/bin/zc-fips-check --require-fips > /out/evidence/build-provider.json \
     && cp Cargo.lock /out/evidence/Cargo.lock \
-    && cp /opt/aws-lc-fips-5314/share/zcutils/fips/provider-receipt.json /out/evidence/provider-receipt.json \
+    && cp -a /opt/aws-lc-fips-5314/share/zcutils/fips/. /out/evidence/ \
     && cargo tree --frozen --features fips > /out/evidence/dependencies.txt \
     && rustc -Vv > /out/evidence/rustc.txt \
     && cc --version > /out/evidence/cc.txt \
