@@ -6,7 +6,7 @@ does not establish certificate coverage. Never promote a lab report into a
 CMVP validation statement.
 
 For organizational requirements, deployment verification, and the SG-8 vendor
-statement, see [FIPS deployment requirements and verification](fips/FIPS-DEPLOYMENT-PATHS.md).
+statement, see [zccusan FIPS overview](fips/FIPS-OVERVIEW.md).
 
 ## Image variants
 
