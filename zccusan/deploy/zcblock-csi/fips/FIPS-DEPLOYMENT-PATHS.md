@@ -6,8 +6,8 @@
 > The rest of this guide assumes that work has been resolved for the release
 > being deployed. It does not describe the current build as accepted or validated.
 
-The intended approach is to use the AWS-LC 3 Cryptographic Module (static),
-certificate 5314, within its permitted build and operating conditions. zccusan
+zccusan can use validated cryptography through the AWS-LC 3 Cryptographic
+Module (static), certificate 5314, within its permitted build and operating conditions. zccusan
 is free software. An end-user organization can evaluate and operate it itself,
 or use a commercial vendor experienced in zccusan to perform technical work.
 Both paths use the same underlying module validation.
