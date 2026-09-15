@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Regression tests for rejection/acceptance decisions; all green fixtures are synthetic."""
-# ACCEPTANCE-CRITERIA-REVIEWED: 2026-09-15T08:34:47Z
-# ACCEPTANCE-CRITERIA-SHA256: 030bdb356cb31d3ee936b18ba0e163504f6fbb2c0c6c3f7b63a4dde7b95e5e7f
-# ACCEPTANCE-TESTS-SHA256: 5e7b348c04b84011f597b19e72933f089fcff74b39a06cd6ba0e9ab963f3a619
+# ACCEPTANCE-CRITERIA-REVIEWED: 2026-09-15T09:39:17Z
+# ACCEPTANCE-CRITERIA-SHA256: 9382cce0952597df7aff20dd1e8c92d05f961e0fd950dcff4ffaa6ad9bd301b4
+# ACCEPTANCE-TESTS-SHA256: 2f4d605a5f5cc22b2fb401d7e822268b80073ad52f9131d00dea88ab60d81aaa
 import argparse
 import copy
 import datetime as dt
@@ -155,6 +155,26 @@ class ControlTests(unittest.TestCase):
             self.assertEqual(receipt, evidence["receipt"])
             (root / "lib/libcrypto.a").write_bytes(b"changed")
             self.assertTrue(fips.provider_evidence(root)[1])
+            original = b'!<arch>\n' + f'{"bcm.o/":<16}{123:<12}{0:<6}{0:<6}{"644":<8}{4:<10}`\n'.encode() + b'code'
+            normalized = bytearray(original)
+            normalized[24:36] = b'0           '
+            (root / 'lib/libcrypto.a').write_bytes(normalized)
+            receipt['provider']['archive_normalization'] = 'ar-timestamp-zero-v1'
+            receipt['provider']['libcrypto_sha256'] = fips.digest(normalized)
+            receipt['artifacts']['libcrypto.a']['sha256'] = fips.digest(normalized)
+            path.with_name('libcrypto.original.a').write_bytes(original)
+            fips.write_json(path.with_name('provider-build-record.json'), {
+                'artifacts': {'libcrypto.a': {'sha256': fips.digest(original)}},
+                'provider': {'original_libcrypto_sha256': fips.digest(original)}})
+            fips.write_json(path, receipt)
+            self.assertEqual([], fips.provider_evidence(root)[1])
+            # Updating packaged hashes cannot conceal a changed object payload.
+            normalized[-1] ^= 1
+            (root / 'lib/libcrypto.a').write_bytes(normalized)
+            receipt['provider']['libcrypto_sha256'] = fips.digest(normalized)
+            receipt['artifacts']['libcrypto.a']['sha256'] = fips.digest(normalized)
+            fips.write_json(path, receipt)
+            self.assertIn('normalized provider differs from the prescribed archive beyond timestamps', fips.provider_evidence(root)[1])
 
     def test_acceptance_criteria_and_tests_match_reviewed_hashes(self):
         comments = review_comments()

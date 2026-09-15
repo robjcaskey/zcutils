@@ -79,6 +79,15 @@ class ImageAttestationTests(unittest.TestCase):
         digest = "d" * 64
 
         def fake_run(command: list[str], **_kwargs: object) -> str:
+            if command[:2] == ['docker', 'create']:
+                return 'container-test'
+            if command[:2] == ['docker', 'rm']:
+                return ''
+            if command[:2] == ['docker', 'cp']:
+                directory = Path(command[-1])
+                directory.mkdir()
+                (directory / 'zcblock-csi').write_bytes(b'executable')
+                return ''
             if command[1:3] == ["image", "inspect"]:
                 return json.dumps([{"Id": "sha256:" + digest, "Created": "2026-01-01T00:00:00Z"}])
             if command[0] == "syft":
@@ -116,13 +125,33 @@ class ImageAttestationTests(unittest.TestCase):
                     sign_cache_export=False,
                     allow_insecure_loopback_registry=False,
                 )
-                with mock.patch.object(MODULE.shutil, "which", return_value="/bin/fake"), mock.patch.object(MODULE, "run", side_effect=fake_run), mock.patch.object(MODULE, "verify_offline_image", side_effect=lambda a: (a.output_dir / "offline-build.json").write_text("{}")) as verify_offline:
+                def offline_record(a):
+                    (a.output_dir / 'offline-build.json').write_text(json.dumps({
+                        'artifacts': {'zcblock-csi': MODULE.release_payload.digest(b'executable')},
+                        'inputs': {}, 'provider_libcrypto_sha256': 'a' * 64}))
+                with mock.patch.object(MODULE.shutil, "which", return_value="/bin/fake"), mock.patch.object(MODULE, "run", side_effect=fake_run), mock.patch.object(MODULE, "verify_offline_image", side_effect=offline_record) as verify_offline:
                     MODULE.generate(args)
                     self.assertEqual(verify_offline.call_count, int(variant == "fips-aspiring"))
                 manifest = json.loads((Path(temporary) / f"zcblock-csi-{variant}.attestation-manifest.json").read_text())
                 self.assertEqual(manifest["signingAuthority"], "Rob J. Caskey")
                 self.assertEqual(manifest["subject"]["digest"]["sha256"], digest)
                 self.assertFalse(manifest["signed"])
+                exported = Path(temporary) / 'unsigned-executable-bundle.sha256'
+                self.assertEqual(exported.read_text().strip(), manifest['payload']['digest']['sha256'])
+                # A caller can require the exact earlier bundle before signing.
+                args.effective_build_timestamp = args.source_date_epoch
+                args.expected_unsigned_executable_bundle_sha256 = '0' * 64
+                with mock.patch.object(MODULE.shutil, 'which', return_value='/bin/fake'), mock.patch.object(MODULE, 'run', side_effect=fake_run), mock.patch.object(MODULE, 'verify_offline_image', side_effect=offline_record), mock.patch.object(MODULE, 'resolve_signing_key') as signing:
+                    with self.assertRaisesRegex(SystemExit, 'signing and publication refused'):
+                        MODULE.generate(args)
+                    signing.assert_not_called()
+                # Updating the outer checksum cannot hide a conflicting SBOM hash.
+                exported.write_text('0' * 64 + '\n')
+                manifest['files'][exported.name]['sha256'] = MODULE.sha256_file(exported)
+                manifest_path = Path(temporary) / f'zcblock-csi-{variant}.attestation-manifest.json'
+                manifest_path.write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(SystemExit, 'exported payload hash'):
+                    MODULE.verify_directory(Path(temporary), f'zcblock-csi-{variant}')
 
     def test_ssm_reference_resolves_to_cosign_kms_uri(self) -> None:
         args = Namespace(

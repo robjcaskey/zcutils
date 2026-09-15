@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import datetime as dt
 import hashlib
 import json
@@ -406,6 +407,7 @@ def build_image(args: argparse.Namespace, cache_import: dict | None = None) -> N
                 "--build-arg",
                 "IMAGE_VARIANT=nonfips",
         ]
+        command.extend(['--build-arg', f'SOURCE_DATE_EPOCH={args.source_date_epoch}'])
         append_build_cache_args(command, args, cache_import)
         command.append(str(ROOT))
         run(command)
@@ -427,6 +429,7 @@ def build_image(args: argparse.Namespace, cache_import: dict | None = None) -> N
         args.image,
     ]
     build_args = {
+        "SOURCE_DATE_EPOCH": str(args.source_date_epoch),
         "FIPS_DISTRO": distro,
         "FIPS_BUILD_DISTRO": build_distro,
         "FIPS_PROVIDER_ROOT": provider_root,
@@ -588,6 +591,33 @@ def resolve_signing_key(args: argparse.Namespace) -> str | None:
     return "awskms:///" + key_id
 
 
+PAYLOAD_SPEC = importlib.util.spec_from_file_location('release_payload', Path(__file__).with_name('zc-release-payload.py'))
+release_payload = importlib.util.module_from_spec(PAYLOAD_SPEC)
+PAYLOAD_SPEC.loader.exec_module(release_payload)
+
+
+def create_release_payload(args):
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    target = args.output_dir / f'zcblock-csi-{args.variant}.unsigned-executable-bundle.tar'
+    with tempfile.TemporaryDirectory(prefix='zc-release-payload-') as temp:
+        root = Path(temp)
+        container = run([args.engine, 'create', args.image]).strip()
+        try:
+            run([args.engine, 'cp', container + ':/usr/local/bin', str(root / 'bin')])
+        finally:
+            run([args.engine, 'rm', container])
+        inputs = {'variant': args.variant}
+        if args.variant == 'fips-aspiring':
+            record = json.loads((args.output_dir / 'offline-build.json').read_text())
+            observed = {p.name: sha256_file(p) for p in (root / 'bin').iterdir()}
+            if observed != record['artifacts']:
+                raise SystemExit('release payload differs from offline executables')
+            inputs.update(record['inputs'])
+            inputs['provider_libcrypto_sha256'] = record['provider_libcrypto_sha256']
+        release_payload.create(root / 'bin', target, args.source_date_epoch, inputs)
+    return target
+
+
 def verify_offline_image(args):
     """Verify publication uses the offline payload recorded during compilation."""
     with tempfile.TemporaryDirectory(prefix="zc-fips-published-payload-") as temp:
@@ -606,6 +636,10 @@ def verify_offline_image(args):
 
 
 def generate(args: argparse.Namespace) -> None:
+    explicit = getattr(args, 'effective_build_timestamp', None)
+    if explicit is not None and args.source_date_epoch is not None and int(explicit) != args.source_date_epoch:
+        raise SystemExit('effective-build-timestamp conflicts with source-date-epoch')
+    args.source_date_epoch = release_payload.effective_timestamp(explicit if explicit is not None else args.source_date_epoch)
     for executable in (args.engine, args.syft):
         if shutil.which(executable) is None:
             raise SystemExit(f"required executable is unavailable: {executable}")
@@ -632,6 +666,17 @@ def generate(args: argparse.Namespace) -> None:
         build_image(args, cache_import)
     if args.variant == "fips-aspiring":
         verify_offline_image(args)
+    payload_path = create_release_payload(args)
+    payload_subject = {'name': payload_path.name, 'digest': {'sha256': sha256_file(payload_path)}}
+    expected = getattr(args, 'expected_unsigned_executable_bundle_sha256', None)
+    if expected:
+        expected = expected.removeprefix('sha256:').lower()
+        if not re.fullmatch('[0-9a-f]{64}', expected):
+            raise SystemExit('expected-unsigned-executable-bundle-sha256 must be a SHA-256 digest')
+        if expected != payload_subject['digest']['sha256']:
+            raise SystemExit('rebuilt payload does not match expected-unsigned-executable-bundle-sha256; signing and publication refused')
+    payload_hash_path = args.output_dir / 'unsigned-executable-bundle.sha256'
+    payload_hash_path.write_text(payload_subject['digest']['sha256'] + '\n')
     signing_key = resolve_signing_key(args)
     cache: dict[str, dict] = {}
     if cache_import:
@@ -701,13 +746,20 @@ def generate(args: argparse.Namespace) -> None:
     cyclonedx_doc = json.loads(cyclonedx.read_text(encoding="utf-8"))
     normalize_spdx(spdx_doc, args.image, args.variant, digest, created, cache or None)
     normalize_cyclonedx(cyclonedx_doc, args.image, args.variant, digest, created, cache or None)
+    spdx_doc.setdefault('annotations', []).append({
+        'annotationType': 'OTHER', 'annotator': 'Tool: zc-image-attest', 'annotationDate': created,
+        'comment': 'zcutils:unsigned-executable-bundle:sha256=' + payload_subject['digest']['sha256']})
+    cyclonedx_doc['metadata'].setdefault('properties', []).append({
+        'name': 'zcutils:unsigned-executable-bundle:sha256', 'value': payload_subject['digest']['sha256']})
     canonical_write(spdx, spdx_doc)
     canonical_write(cyclonedx, cyclonedx_doc)
 
     statements: list[Path] = []
     for sbom, predicate_type in ((spdx, SPDX_PREDICATE), (cyclonedx, CYCLONEDX_PREDICATE)):
         statement = output / f"{sbom.name}.intoto.json"
-        canonical_write(statement, make_statement(args.image, digest, predicate_type, json.loads(sbom.read_text())))
+        value = make_statement(args.image, digest, predicate_type, json.loads(sbom.read_text()))
+        value['subject'].append(payload_subject)
+        canonical_write(statement, value)
         statements.append(statement)
 
     bundles: list[Path] = []
@@ -741,12 +793,21 @@ def generate(args: argparse.Namespace) -> None:
         files.append(output / "offline-build.json")
     if public_key is not None:
         files.append(public_key)
+    files.append(payload_path)
+    files.append(payload_hash_path)
+    payload_bundle = None
+    if signing_key:
+        payload_bundle = Path(str(payload_path) + '.cosign.bundle')
+        release_payload.sign(payload_path, payload_bundle, signing_key, args.cosign)
+        files.append(payload_bundle)
     manifest = {
         "schema": 1,
         "signingAuthority": AUTHORITY,
         "variant": args.variant,
         "signed": bool(signing_key),
         "subject": {"name": args.image, "digest": {"sha256": digest}},
+        "payload": {**payload_subject, 'effective_build_timestamp': args.source_date_epoch,
+                    'signature_bundle': payload_bundle.name if payload_bundle else None},
         "files": {path.name: {"sha256": sha256_file(path)} for path in files},
     }
     if args.variant == "fips-aspiring":
@@ -784,13 +845,38 @@ def verify_directory(
     if manifest.get("signingAuthority") != AUTHORITY:
         raise SystemExit("attestation manifest has the wrong signing authority")
     expected_subject = manifest["subject"]
+    expected_subjects = [expected_subject]
+    payload = manifest.get('payload')
+    if payload:
+        if payload['name'] != f'{prefix}.unsigned-executable-bundle.tar':
+            raise SystemExit('unexpected unsigned executable bundle name')
+        if payload.get('signature_bundle') not in (None, payload['name'] + '.cosign.bundle'):
+            raise SystemExit('unexpected bundle signature name')
+        expected_subjects.append({'name': payload['name'], 'digest': payload['digest']})
+        payload_path = output / payload['name']
+        if sha256_file(payload_path) != payload['digest']['sha256']:
+            raise SystemExit('payload digest mismatch')
+        release_payload.validate(payload_path)
+        expected_hash = payload['digest']['sha256']
+        if (output / 'unsigned-executable-bundle.sha256').read_text().strip() != expected_hash:
+            raise SystemExit('exported payload hash differs from the payload')
+        spdx = json.loads((output / f'{prefix}.spdx.json').read_text())
+        cdx = json.loads((output / f'{prefix}.cyclonedx.json').read_text())
+        spdx_hashes = [a['comment'].split('=', 1)[1] for a in spdx.get('annotations', [])
+                       if a.get('comment', '').startswith('zcutils:unsigned-executable-bundle:sha256=')]
+        cdx_hashes = [p.get('value') for p in cdx.get('metadata', {}).get('properties', [])
+                     if p.get('name') == 'zcutils:unsigned-executable-bundle:sha256']
+        if spdx_hashes != [expected_hash] or cdx_hashes != [expected_hash]:
+            raise SystemExit('SBOM payload hash differs from the exported payload hash')
     for name, record in manifest["files"].items():
+        if Path(name).name != name or name in ('.', '..'):
+            raise SystemExit('attestation file name must stay inside the output directory')
         path = output / name
         if sha256_file(path) != record["sha256"]:
             raise SystemExit(f"checksum mismatch: {name}")
         if name.endswith(".intoto.json"):
             statement = json.loads(path.read_text(encoding="utf-8"))
-            if statement.get("_type") != STATEMENT_TYPE or statement.get("subject") != [expected_subject]:
+            if statement.get("_type") != STATEMENT_TYPE or statement.get("subject") != expected_subjects:
                 raise SystemExit(f"invalid in-toto subject: {name}")
             sbom_name = name.removesuffix(".intoto.json")
             expected_type = CYCLONEDX_PREDICATE if sbom_name.endswith(".cyclonedx.json") else SPDX_PREDICATE
@@ -810,6 +896,11 @@ def verify_directory(
         if sha256_file(key_path) != trusted_public_key_sha256.lower():
             raise SystemExit("verification public-key SHA-256 does not match the trusted pin")
     if signed:
+        if payload:
+            if not payload.get('signature_bundle') or not cosign_verification_key:
+                raise SystemExit('signed payload requires a bundle and trusted verification key')
+            release_payload.verify_signature(output / payload['name'], output / payload['signature_bundle'],
+                                             cosign_verification_key, cosign or 'cosign')
         bundles = sorted(output.glob(f"{prefix}.*.intoto.json.cosign.bundle"))
         if len(bundles) != 2:
             raise SystemExit("signed evidence must contain exactly two cosign bundles")
@@ -842,6 +933,11 @@ def verify(args: argparse.Namespace) -> None:
         trusted_public_key_sha256=args.trusted_public_key_sha256,
     )
     print(f"verified {args.variant} attestations in {args.output_dir.resolve()}")
+    manifest = json.loads((args.output_dir / f'zcblock-csi-{args.variant}.attestation-manifest.json').read_text())
+    if manifest.get('payload'):
+        print(json.dumps({'unsigned_executable_bundle_sha256': manifest['payload']['digest']['sha256'],
+                          'effective_build_timestamp': manifest['payload']['effective_build_timestamp'],
+                          'signatures_verified': manifest.get('signed') is True}, sort_keys=True))
 
 
 def parser() -> argparse.ArgumentParser:
@@ -864,6 +960,9 @@ def parser() -> argparse.ArgumentParser:
         help=f"read a KMS ARN/alias from SSM (default when flag has no value: {SSM_KMS_PARAMETER})",
     )
     create.add_argument("--source-date-epoch", type=int)
+    create.add_argument("--effective-build-timestamp", type=int,
+                        help="Unix seconds; generated once when omitted and exported in the payload manifest")
+    create.add_argument('--expected-unsigned-executable-bundle-sha256', help='refuse signing/publication unless the rebuilt payload matches')
     create.add_argument("--skip-build", action="store_true")
     create.add_argument("--push-image", action="store_true", help="push the final image before scanning it")
     create.add_argument("--sign-image", action="store_true", help="sign and immediately verify the pushed image digest")

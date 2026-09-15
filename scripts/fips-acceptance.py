@@ -8,6 +8,7 @@ certificate. Policy files and review records must come from trusted review.
 import argparse
 import datetime as dt
 import hashlib
+import importlib.util
 from html.parser import HTMLParser
 import json
 import os
@@ -174,6 +175,19 @@ def provider_evidence(provider_dir):
             errors.append("installed bcm.o does not match the prescribed build output")
         if result["headers_manifest_sha256"] != provider.get("headers_manifest_sha256"):
             errors.append("installed provider headers differ from the provider receipt")
+        if provider.get('archive_normalization'):
+            if provider['archive_normalization'] != 'ar-timestamp-zero-v1':
+                errors.append('unrecognized provider archive normalization')
+            else:
+                original = receipt_path.with_name('libcrypto.original.a').read_bytes()
+                record = json.loads(receipt_path.with_name('provider-build-record.json').read_text())
+                spec = importlib.util.spec_from_file_location('archive_normalizer', Path(__file__).with_name('fips-recompile-aws-lc.py'))
+                normalizer = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(normalizer)
+                if (digest(original) != record['artifacts']['libcrypto.a']['sha256'] or
+                    digest(original) != record['provider']['original_libcrypto_sha256'] or
+                    normalizer.normalize_archive_timestamps(original) != crypto.read_bytes()):
+                    errors.append('normalized provider differs from the prescribed archive beyond timestamps')
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         errors.append(f"provider evidence is unavailable: {error}")
     return result, errors

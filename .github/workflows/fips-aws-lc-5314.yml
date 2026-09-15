@@ -4,6 +4,14 @@ run-name: AWS-LC 5314 provider ${{ inputs.runner_label }}
 on:
   workflow_dispatch:
     inputs:
+      effective_build_timestamp:
+        description: Optional Unix timestamp from a previous release; generated when omitted
+        type: string
+        default: ''
+      expected_unsigned_executable_bundle_sha256:
+        description: Optional payload hash from a verified signed SBOM; mismatch blocks signing and publication
+        type: string
+        default: ''
       compare_online:
         description: Explicit same-machine experiment; normal releases compile offline only
         type: boolean
@@ -26,6 +34,8 @@ concurrency:
 
 env:
   FIPS_COMPARE_ONLINE: ${{ inputs.compare_online && '1' || '0' }}
+  EFFECTIVE_BUILD_TIMESTAMP: ${{ inputs.effective_build_timestamp }}
+  EXPECTED_UNSIGNED_EXECUTABLE_BUNDLE_SHA256: ${{ inputs.expected_unsigned_executable_bundle_sha256 }}
   RUNNER_CONFIG_JSON: ${{ vars.AWS_FIPS_RUNNER_CONFIG }}
   EXPECTED_ROLE_ARN: ${{ vars.AWS_FIPS_RUNNER_ROLE_ARN }}
   AWS_LC_ARCHIVE_URL: https://github.com/aws/aws-lc/archive/refs/tags/AWS-LC-FIPS-3.1.0.zip
@@ -85,6 +95,9 @@ jobs:
 
   build:
     name: Build AWS-LC FIPS 3.1.0 offline
+    outputs:
+      unsigned_executable_bundle_sha256: ${{ steps.release.outputs.unsigned_executable_bundle_sha256 }}
+      effective_build_timestamp: ${{ steps.release.outputs.effective_build_timestamp }}
     needs: launch
     runs-on: ${{ needs.launch.outputs.runner_label }}
     timeout-minutes: 38
@@ -118,6 +131,17 @@ jobs:
           go version
           docker version
           curl -fsS http://127.0.0.1:5000/v2/
+      - name: Select and export the effective build timestamp
+        run: |
+          python3 - <<'PY'
+          import os, time
+          value = os.environ.get('EFFECTIVE_BUILD_TIMESTAMP') or str(int(time.time()))
+          if not value.isdigit() or not 0 <= int(value) <= 253402300799:
+              raise SystemExit('effective_build_timestamp must be Unix seconds')
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write('SOURCE_DATE_EPOCH=' + value + '\n')
+          print('Effective build timestamp:', value)
+          PY
       - name: Set up the pinned loopback-cache BuildKit daemon
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
@@ -171,6 +195,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME || 'robjcaskey' }}
           password: ${{ secrets.ZCCUSAN_DOCKERHUB_PAT || secrets.DOCKERHUB_PAT || secrets.DOCKERHUB_TOKEN }}
       - name: Build, publish, sign, and attest the FIPS-aspiring image
+        id: release
         env:
           FIPS_PROVIDER_ROOT: zccusan/deploy/zcblock-csi/fips/provider
           BUILD_JOBS: '32'
@@ -181,6 +206,9 @@ jobs:
           short_sha="${GITHUB_SHA:0:12}"
           image="docker.io/robjcaskey/zcblock-csi:fips-aspiring-5314-sha-${short_sha}-run-${GITHUB_RUN_ID}"
           cache_args=()
+          if [[ -n "$EXPECTED_UNSIGNED_EXECUTABLE_BUNDLE_SHA256" ]]; then
+            cache_args+=(--expected-unsigned-executable-bundle-sha256 "$EXPECTED_UNSIGNED_EXECUTABLE_BUNDLE_SHA256")
+          fi
           cache_url="http://127.0.0.1:5000/v2/zcutils/zcblock-csi-buildcache/manifests/trusted"
           if curl -fsS --head "${cache_url}" >/dev/null; then
             cache_args+=(
@@ -190,6 +218,7 @@ jobs:
           fi
           python3 scripts/zc-image-attest.py generate \
             --variant fips-aspiring \
+            --effective-build-timestamp "$SOURCE_DATE_EPOCH" \
             --image "${image}" \
             --output-dir "$RUNNER_TEMP/fips-image-attestations" \
             --kms-key-parameter \
@@ -202,6 +231,8 @@ jobs:
             --allow-insecure-loopback-registry \
             "${cache_args[@]}"
           printf '%s\n' "${image}" > "$RUNNER_TEMP/fips-image-ref.txt"
+          printf 'unsigned_executable_bundle_sha256=%s\n' "$(cat "$RUNNER_TEMP/fips-image-attestations/unsigned-executable-bundle.sha256")" >> "$GITHUB_OUTPUT"
+          printf 'effective_build_timestamp=%s\n' "$SOURCE_DATE_EPOCH" >> "$GITHUB_OUTPUT"
       - name: Extract and verify the selected offline artifacts
         run: |
           set -euo pipefail

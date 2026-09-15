@@ -47,6 +47,8 @@ FROM runtime-amzn2023 AS build-amzn2023
 RUN dnf --setopt=install_weak_deps=False install -y gcc gcc-c++ make perl pkgconf-pkg-config libfabric-devel python3 binutils && dnf clean all
 
 FROM build-${FIPS_BUILD_DISTRO} AS build-inputs
+ARG SOURCE_DATE_EPOCH
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 ARG FIPS_DISTRO
 ARG FIPS_BUILD_DISTRO
 ARG FIPS_PROVIDER_ROOT=zccusan/deploy/zcblock-csi/fips/provider.empty

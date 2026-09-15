@@ -37,6 +37,8 @@ def main():
     parser.add_argument("--fips-build", action="store_true",
                         help="run the certificate-5314 provider/link workflow instead of the cheap smoke test")
     parser.add_argument("--compare-online", action="store_true", help="explicit FIPS reproducibility experiment")
+    parser.add_argument('--effective-build-timestamp', type=int)
+    parser.add_argument('--expected-unsigned-executable-bundle-sha256')
     parser.add_argument("--aws-profile", default="slopmud-breakglass",
                         help="local profile used to verify KMS-backed FIPS image signatures")
     args = parser.parse_args()
@@ -75,6 +77,10 @@ def main():
         inputs = {"runner_label": label, "jit_secret_name": secret}
         if args.fips_build:
             inputs["compare_online"] = args.compare_online
+            if args.effective_build_timestamp is not None:
+                inputs['effective_build_timestamp'] = str(args.effective_build_timestamp)
+            if args.expected_unsigned_executable_bundle_sha256:
+                inputs['expected_unsigned_executable_bundle_sha256'] = args.expected_unsigned_executable_bundle_sha256
         api(endpoint + f"/workflows/{workflow}/dispatches", "POST", {
             "ref": "main", "inputs": inputs,
         })

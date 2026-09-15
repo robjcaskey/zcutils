@@ -18,6 +18,9 @@ import sys
 SPEC = importlib.util.spec_from_file_location('repro', Path(__file__).with_name('fips-build-reproducibility.py'))
 repro = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(repro)
+NATIVE_SPEC = importlib.util.spec_from_file_location('native', Path(__file__).with_name('fips-recompile-aws-lc.py'))
+native = importlib.util.module_from_spec(NATIVE_SPEC)
+NATIVE_SPEC.loader.exec_module(native)
 
 
 def compare_native(online_report, offline_report, online_root, offline_root, output):
@@ -33,6 +36,7 @@ def compare_native(online_report, offline_report, online_root, offline_root, out
         if online[key] != offline[key]:
             raise ValueError('native build input mismatch: ' + key)
     hashes = {}
+    original_archives = {}
     mismatches = []
     for name in ('bcm.o', 'libcrypto.a', 'bssl', 'identity_probe'):
         pair = {}
@@ -44,6 +48,9 @@ def compare_native(online_report, offline_report, online_root, offline_root, out
             value = repro.sha256(path)
             if value != entry['sha256']:
                 raise ValueError('native artifact changed after build: ' + name)
+            if name == 'libcrypto.a' and path.read_bytes().startswith(b'!<arch>\n'):
+                original_archives[mode] = value
+                value = native.hashlib.sha256(native.normalize_archive_timestamps(path.read_bytes())).hexdigest()
             pair[mode] = value
         if pair['online'] != pair['offline']:
             mismatches.append(name)
@@ -55,6 +62,8 @@ def compare_native(online_report, offline_report, online_root, offline_root, out
         raise ValueError('native online/offline mismatch: ' + ', '.join(mismatches))
     repro.write_json(output, {'schema': 1, 'status': 'identical', 'selected_artifacts': 'offline',
                               'scope': 'native module, archive, tool and identity probe', 'artifacts': hashes,
+                              'archive_normalization': 'ar-timestamp-zero-v1',
+                              'original_archive_sha256': original_archives,
                               'online_report_sha256': repro.sha256(online_report),
                               'offline_report_sha256': repro.sha256(offline_report)})
 

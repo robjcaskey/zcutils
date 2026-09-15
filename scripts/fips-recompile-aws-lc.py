@@ -171,6 +171,34 @@ def build_identity_probe(source_root, build_root, crypto):
     return probe
 
 
+def normalize_archive_timestamps(data):
+    """Zero only GNU ar member timestamps; preserve all other bytes and offsets."""
+    if not data.startswith(b"!<arch>\n"):
+        raise ValueError("expected a regular ar archive")
+    result = bytearray(data)
+    offset = 8
+    count = 0
+    while offset < len(data):
+        header = data[offset:offset + 60]
+        if len(header) != 60 or header[58:] != b"`\n":
+            raise ValueError("invalid ar member header")
+        size_text = header[48:58].strip()
+        if not size_text.isdigit():
+            raise ValueError("invalid ar member size")
+        size = int(size_text)
+        end = offset + 60 + size + size % 2
+        if end > len(data):
+            raise ValueError("truncated ar member")
+        # GNU's long-name table has a blank timestamp; preserve that header.
+        if header[:16].strip() != b"//":
+            result[offset + 16:offset + 28] = b"0           "
+        offset = end
+        count += 1
+    if not count:
+        raise ValueError("empty ar archive")
+    return bytes(result)
+
+
 def provider_identity(report):
     """Stable compilation identity; per-run observations stay in the build record."""
     identity = {key: report[key] for key in (
@@ -183,6 +211,10 @@ def provider_identity(report):
                                if key != "boot_id"}
     identity["artifacts"] = {name: {"sha256": report["artifacts"][name]["sha256"]}
                              for name in ("libcrypto.a", "bcm.o")}
+    if "provider" in report:
+        identity["provider"] = {key: value for key, value in report["provider"].items()
+                                if key != "original_libcrypto_sha256"}
+        identity["artifacts"]["libcrypto.a"]["sha256"] = report["provider"]["libcrypto_sha256"]
     return identity
 
 
@@ -195,7 +227,8 @@ def create_provider(provider_dir, source_root, crypto, bcm, report):
     shutil.copytree(Path(source_root) / "include", provider / "include")
     lib = provider / "lib"
     lib.mkdir()
-    shutil.copy2(crypto, lib / "libcrypto.a")
+    original = Path(crypto).read_bytes()
+    (lib / "libcrypto.a").write_bytes(normalize_archive_timestamps(original))
     shutil.copy2(bcm, lib / "bcm.o")
     receipt_path = provider / "share/zcutils/fips/provider-receipt.json"
     receipt_path.parent.mkdir(parents=True)
@@ -203,13 +236,15 @@ def create_provider(provider_dir, source_root, crypto, bcm, report):
         "format": "zc-aws-lc-fips-provider-v1",
         "libcrypto": "lib/libcrypto.a",
         "libcrypto_sha256": file_digest(lib / "libcrypto.a"),
+        "original_libcrypto_sha256": file_digest(crypto),
+        "archive_normalization": "ar-timestamp-zero-v1",
         "bcm": "lib/bcm.o",
         "bcm_sha256": file_digest(lib / "bcm.o"),
         "headers_manifest_sha256": canonical_digest(tree_manifest(provider / "include")),
         "linkage": "static-unprefixed",
         "ffi_abi": "aws-lc-fips-sys-0.13.11",
     }
-    if report["provider"]["libcrypto_sha256"] != report["artifacts"]["libcrypto.a"]["sha256"]:
+    if report["provider"]["original_libcrypto_sha256"] != report["artifacts"]["libcrypto.a"]["sha256"]:
         raise ValueError("packaged libcrypto.a differs from the prescribed build output")
     if report["provider"]["bcm_sha256"] != report["artifacts"]["bcm.o"]["sha256"]:
         raise ValueError("packaged bcm.o differs from the prescribed build output")
@@ -217,6 +252,7 @@ def create_provider(provider_dir, source_root, crypto, bcm, report):
     # and intermediate/tool output hashes in the assembled record, not its code.
     receipt_path.with_name("provider-build-record.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n")
+    receipt_path.with_name("libcrypto.original.a").write_bytes(original)
     receipt_path.write_text(json.dumps(provider_identity(report), indent=2, sort_keys=True) + "\n")
     return provider, receipt_path
 

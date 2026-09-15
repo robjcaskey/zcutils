@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import socket
 import subprocess
+import time
 
 
 BINARIES = (
@@ -82,6 +83,10 @@ def build(mode, out, jobs):
     if (Path('target').exists() and any(Path('target').iterdir())) or Path(out).exists():
         raise ValueError('build requires empty target and output directories')
     env = dict(os.environ, RUST_MIN_STACK='33554432', CARGO_INCREMENTAL='0')
+    epoch = env.get('SOURCE_DATE_EPOCH') or str(int(time.time()))
+    if not epoch.isdigit():
+        raise ValueError('SOURCE_DATE_EPOCH must be Unix seconds')
+    env['SOURCE_DATE_EPOCH'] = epoch
     env.pop('CARGO_TARGET_DIR', None)
     env.pop('RUSTC_WRAPPER', None)
     env.pop('RUSTC_WORKSPACE_WRAPPER', None)
@@ -100,6 +105,7 @@ def build(mode, out, jobs):
     write_json(output / 'build.json', {
         'schema': 1, 'mode': mode, 'network_interfaces': interfaces,
         'clean_target': True, 'command': command, 'inputs': inputs,
+        'effective_build_timestamp': int(epoch),
         'cargo_lock_sha256': sha256('Cargo.lock'),
         'provider_libcrypto_sha256': sha256(Path(env['AWS_LC_FIPS_SYS_SYSTEM_DIR']) / 'lib/libcrypto.a'),
         'artifacts': manifest(output / 'bin'),

@@ -121,7 +121,9 @@ class RecompilationTests(unittest.TestCase):
             (source / "include/openssl").mkdir(parents=True)
             (source / "include/openssl/base.h").write_text("#define OPENSSL_IS_AWSLC\n")
             crypto, bcm = root / "libcrypto.a", root / "bcm.o"
-            crypto.write_bytes(b"prescribed archive")
+            content = b'prescribed object'
+            header = f'{"bcm.o/":<16}{123:<12}{0:<6}{0:<6}{"644":<8}{len(content):<10}`\n'.encode()
+            crypto.write_bytes(b'!<arch>\n' + header + content + b'\n' * (len(content) % 2))
             bcm.write_bytes(b"prescribed module")
             report = {
                 "schema": 1,
@@ -136,7 +138,8 @@ class RecompilationTests(unittest.TestCase):
             }
             provider, receipt_path = recompile.create_provider(
                 root / "provider", source, crypto, bcm, report)
-            self.assertEqual(crypto.read_bytes(), (provider / "lib/libcrypto.a").read_bytes())
+            self.assertEqual(recompile.normalize_archive_timestamps(crypto.read_bytes()), (provider / "lib/libcrypto.a").read_bytes())
+            self.assertEqual(crypto.read_bytes(), (provider / 'share/zcutils/fips/libcrypto.original.a').read_bytes())
             self.assertEqual(bcm.read_bytes(), (provider / "lib/bcm.o").read_bytes())
             receipt = json.loads(receipt_path.read_text())
             self.assertEqual(report, json.loads(receipt_path.with_name('provider-build-record.json').read_text()))
