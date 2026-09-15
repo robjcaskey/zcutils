@@ -1,6 +1,6 @@
 # FIPS deployment: independent use and vendor assistance
 
-> **Work remains:** TLS call-graph review, dependency reachability review, and
+> **Future-state assumptions:** TLS call-graph review, dependency reachability review, and
 > evidence for encryption-key usage limits remain open, along with the other
 > acceptance work listed in the [crypto integration guide](CRYPTO-INTEGRATION.md).
 > The rest of this guide assumes that work has been resolved for the release
