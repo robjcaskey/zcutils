@@ -93,7 +93,7 @@ def main():
         # The worker is independently capped at 45 minutes, but GitHub-hosted
         # launch and cleanup jobs run outside that lifetime.  Leave enough
         # monitoring time to observe cleanup after the worker has terminated.
-        end = time.monotonic() + (60 if args.fips_build else 20) * 60
+        end = time.monotonic() + (120 if args.fips_build else 20) * 60
         previous = None
         while time.monotonic() < end:
             run = api(endpoint + f"/runs/{run_id}")
