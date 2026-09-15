@@ -15,6 +15,9 @@ import time
 RUNNER_URL = "https://github.com/actions/runner/releases/download/v2.337.0/actions-runner-linux-x64-2.337.0.tar.gz"
 RUNNER_SHA256 = "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613"
 REGISTRY_IMAGE = "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
+CLEANUP_TIMEOUT_MIN_SECONDS = 180
+CLEANUP_TIMEOUT_DEFAULT_SECONDS = 720
+CLEANUP_TIMEOUT_MAX_SECONDS = 2400
 
 
 def aws(config, service, operation, *, user_data=None, **parameters):
@@ -443,9 +446,14 @@ def main():
     if args.command == "launch":
         launch(config, run_id, identity)
     else:
-        termination_timeout = int(os.environ.get("RUNNER_CLEANUP_TIMEOUT_SECONDS", "720"))
-        if not 180 <= termination_timeout <= 900:
-            raise ValueError("cleanup timeout must be between 180 and 900 seconds")
+        termination_timeout = int(os.environ.get(
+            "RUNNER_CLEANUP_TIMEOUT_SECONDS", str(CLEANUP_TIMEOUT_DEFAULT_SECONDS)
+        ))
+        if not CLEANUP_TIMEOUT_MIN_SECONDS <= termination_timeout <= CLEANUP_TIMEOUT_MAX_SECONDS:
+            raise ValueError(
+                "cleanup timeout must be between "
+                f"{CLEANUP_TIMEOUT_MIN_SECONDS} and {CLEANUP_TIMEOUT_MAX_SECONDS} seconds"
+            )
         cleanup(config, run_id, termination_timeout=termination_timeout)
 
 

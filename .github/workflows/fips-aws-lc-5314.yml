@@ -220,7 +220,8 @@ jobs:
     needs: [launch, build]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 18
+    # c6i.metal termination has taken more than 20 minutes in practice.
+    timeout-minutes: 38
     permissions:
       contents: read
       id-token: write
@@ -236,10 +237,10 @@ jobs:
           aws-region: ${{ vars.AWS_FIPS_RUNNER_REGION }}
           allowed-account-ids: ${{ vars.AWS_FIPS_RUNNER_ACCOUNT_ID }}
           role-session-name: gha-5314-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
-          role-duration-seconds: 900
+          role-duration-seconds: 3600
       - name: Confirm termination and remove the deadline schedule
         env:
-          RUNNER_CLEANUP_TIMEOUT_SECONDS: "720"
+          RUNNER_CLEANUP_TIMEOUT_SECONDS: "1800"
         run: python3 scripts/github-ec2-runner-smoke.py cleanup
       - name: Save cleanup evidence
         if: always()

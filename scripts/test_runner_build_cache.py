@@ -59,6 +59,15 @@ class RunnerBuildCacheStaticTests(unittest.TestCase):
         self.assertIn("--allow-insecure-loopback-registry", workflow)
         self.assertNotIn("zcblock-csi-buildcache", (ROOT / ".github/workflows/zcblock-csi-images.yml").read_text())
 
+    def test_fips_cleanup_wait_covers_observed_metal_termination(self) -> None:
+        workflow = (ROOT / ".github/workflows/fips-aws-lc-5314.yml").read_text()
+        cleanup = workflow.split("\n  cleanup:\n", 1)[1]
+        self.assertIn("timeout-minutes: 38", cleanup)
+        self.assertIn("role-duration-seconds: 3600", cleanup)
+        self.assertIn('RUNNER_CLEANUP_TIMEOUT_SECONDS: "1800"', cleanup)
+        self.assertGreaterEqual(RUNNER.CLEANUP_TIMEOUT_MAX_SECONDS, 1800)
+        self.assertLess(1800, 38 * 60)
+
     def test_bootstrap_checks_az_attachment_encryption_and_size(self) -> None:
         text = (ROOT / "scripts/configure-runner-build-cache.sh").read_text()
         for required in ("AvailabilityZone", "Attachments", '"Size": 20',
