@@ -31,6 +31,8 @@ mod client_wal_repair;
 mod wal_custody;
 mod wal_custody_peer;
 pub mod crypto_policy;
+#[cfg(feature = "fips")]
+mod fips_key_usage;
 pub mod fips_application_checks;
 pub mod cloud_topology;
 pub mod dirty_pool;

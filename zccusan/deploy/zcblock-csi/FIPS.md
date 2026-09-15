@@ -394,7 +394,16 @@ finding, and four actual review documents under the review bundle directory:
 Each document entry has a relative `path` and its `sha256`. The record binds the
 image ID/digest, source, build receipt, profile and node environment. Changed
 inputs, omitted findings, altered documents, or expired reviews fail. The
-90-day maximum review lifetime is a project rule, not a NIST requirement.
+reviewer sets the explicit expiry under the applicable assessment policy; the
+checker does not impose a maximum duration.
+
+Each run also writes `*.service-review-template.json` when the image contains
+its structural inventory. Complete its exact-image/source TLS and dependency
+findings, operating records and aggregate GCM key budgets as described in
+[the crypto integration guide](fips/CRYPTO-INTEGRATION.md). Pass it with
+`--service-review /path/to/service-review.json`. Missing records block service
+and operational acceptance; collection and arithmetic checks alone do not
+establish semantic coverage or distributed usage bounds.
 
 Pass the completed record with `--review /path/to/review.json`. Review records
 and policy profiles must be controlled by trusted repository/CI review: a name
@@ -417,6 +426,7 @@ For a build that must pass acceptance before the wrapper returns success:
 FIPS_ACCEPTANCE=1 \
 FIPS_VALIDATED_SOURCE=/path/to/AWS-LC-FIPS-3.1.0.zip \
 FIPS_ACCEPTANCE_REVIEW=/path/to/review.json \
+FIPS_ACCEPTANCE_SERVICE_REVIEW=/path/to/service-review.json \
 FIPS_DISTRO=amzn2023 \
 FIPS_PROVIDER_ROOT=zccusan/deploy/zcblock-csi/fips/provider \
   zccusan/deploy/zcblock-csi/build-fips-image.sh
@@ -454,8 +464,8 @@ of a FIPS deployment. The existing QEMU and OpenShift lab checks continue to
 report runtime compatibility and mode; this stricter suite is the acceptance
 gate.
 
-The acceptance implementation, certificate profile, and AWS-LC recompilation
-guide have a combined SHA-256 review stamp in the header of
+The acceptance implementation, structural service checker and its tests,
+certificate profile, and AWS-LC recompilation guide have a combined SHA-256 review stamp in the header of
 `scripts/test_fips_acceptance.py`. That header also contains the normalized
 test-file SHA-256 and review date. The test normalizes only those three comment
 values to avoid a self-referential digest, verifies both hashes, and requires a

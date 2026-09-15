@@ -3,6 +3,8 @@
 use aws_lc_rs::{aead, kdf};
 use std::io;
 
+use crate::fips_key_usage as key_usage;
+
 pub(crate) fn random(bytes: &mut [u8]) -> io::Result<()> {
     use aws_lc_rs::rand::{SecureRandom, SystemRandom};
     SystemRandom::new()
@@ -10,11 +12,27 @@ pub(crate) fn random(bytes: &mut [u8]) -> io::Result<()> {
         .map_err(|_| io::Error::other("AWS-LC random generation failed"))
 }
 
-pub(crate) type Cipher = aead::RandomizedNonceKey;
+pub(crate) struct Cipher {
+    key: aead::RandomizedNonceKey,
+    // A module-produced identifier, never the raw key. Identical derived key
+    // material shares its process-wide invocation budget across reconstructions.
+    #[cfg(test)]
+    key_id: [u8; 32],
+    budget: key_usage::Budget,
+}
 
 pub(crate) fn from_key(key: &[u8]) -> io::Result<Cipher> {
-    Cipher::new(&aead::AES_256_GCM, key)
-        .map_err(|_| io::Error::other("AWS-LC AES-256-GCM key initialization failed"))
+    let cipher = aead::RandomizedNonceKey::new(&aead::AES_256_GCM, key)
+        .map_err(|_| io::Error::other("AWS-LC AES-256-GCM key initialization failed"))?;
+    let identifier = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, key);
+    let mut key_id = [0u8; 32];
+    key_id.copy_from_slice(identifier.as_ref());
+    Ok(Cipher {
+        key: cipher,
+        #[cfg(test)]
+        key_id,
+        budget: key_usage::Budget::new(key_id),
+    })
 }
 
 pub(crate) fn derive(secret: &str, domain: &[u8], context: &[u8]) -> io::Result<Cipher> {
@@ -75,7 +93,9 @@ pub(crate) fn seal(
 ) -> io::Result<Vec<u8>> {
     let mut authenticated = binding.to_vec();
     authenticated.extend_from_slice(aad);
+    cipher.budget.reserve()?;
     let nonce = cipher
+        .key
         .seal_in_place_append_tag(aead::Aad::from(&authenticated), &mut plaintext)
         .map_err(|_| io::Error::other("AWS-LC internal-nonce AES-GCM encryption failed"))?;
     let mut wire = Vec::with_capacity(12 + plaintext.len());
@@ -99,9 +119,57 @@ pub(crate) fn open(
     authenticated.extend_from_slice(aad);
     let mut plaintext = wire[12..].to_vec();
     let len = cipher
+        .key
         .open_in_place(nonce, aead::Aad::from(&authenticated), &mut plaintext)
         .map_err(|_| io::Error::other("AES-GCM authentication failed"))?
         .len();
     plaintext.truncate(len);
     Ok(plaintext)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_module_calls_are_outside_application_frame_accounting() {
+        let material = [0xad; 32];
+        let application = from_key(&material).unwrap();
+        assert!(!key_usage::tracked_for_test(application.key_id));
+        // The counter is not an AWS-LC hook: independent users of this module,
+        // including TLS implementations, do not pass through its reservation.
+        let direct = aead::RandomizedNonceKey::new(&aead::AES_256_GCM, &material).unwrap();
+        direct
+            .seal_in_place_append_tag(aead::Aad::empty(), &mut vec![1, 2, 3])
+            .unwrap();
+        assert!(!key_usage::tracked_for_test(application.key_id));
+        seal(&application, b"", b"", vec![1, 2, 3]).unwrap();
+        assert!(key_usage::tracked_for_test(application.key_id));
+    }
+
+    #[test]
+    fn exhausted_key_reconstruction_rejects_encryption_but_allows_decryption() {
+        let first = from_key(&[0x79; 32]).unwrap();
+        let wire = seal(&first, b"binding", b"aad", b"protected".to_vec()).unwrap();
+        key_usage::exhaust_for_test(first.key_id);
+        let second = from_key(&[0x79; 32]).unwrap();
+        let error = seal(&second, b"binding", b"aad", b"blocked".to_vec()).unwrap_err();
+        assert!(error.to_string().contains("invocation limit"));
+        assert_eq!(
+            open(&second, b"binding", b"aad", &wire).unwrap(),
+            b"protected"
+        );
+    }
+
+    #[test]
+    fn derivation_context_separates_key_budgets() {
+        let secret = "87".repeat(32);
+        let first = derive(&secret, b"test", b"a").unwrap();
+        let second = derive(&secret, b"test", b"b").unwrap();
+        assert_ne!(first.key_id, second.key_id);
+        key_usage::exhaust_for_test(first.key_id);
+        let reconstructed = derive(&secret, b"test", b"a").unwrap();
+        assert!(seal(&reconstructed, b"", b"", vec![]).is_err());
+        assert!(seal(&second, b"", b"", vec![]).is_ok());
+    }
 }

@@ -1,10 +1,51 @@
 # zccusan FIPS overview
 
-> **Future-state assumptions:** TLS call-graph review, dependency reachability review, and
-> verification of encryption-key usage limits remain open, along with the other
-> acceptance work listed in the [crypto integration guide](CRYPTO-INTEGRATION.md).
-> The rest of this guide assumes that work has been resolved for the release
-> being deployed. It does not describe the current build as accepted or validated.
+## Assurances under development
+
+> **Future-state: TLS service coverage.** Direct RPC TLS configurations already
+> check the AWS-LC provider and configuration mode. Review of every TLS client,
+> including clients constructed by dependencies, remains open. A provider probe
+> alone does not establish their call paths or negotiated algorithms.
+
+> **Future-state: dependency reachability.** The source/dependency inventory and
+> review gate retain alternate-provider and frozen-version advisory findings.
+> The new service-assurance checker records resolved dependency paths and binds
+> review dispositions to full source hashes during offline assembly and assessment.
+> Exact-release semantic dispositions are still needed to establish which APIs each shipped executable can invoke. Dependency presence
+> or absence alone does not prove service coverage.
+
+> **Future-state: aggregate encryption-key budgets.** A tested process-lifetime GCM
+> application-frame attempt counter counts recreated keys and concurrent users without eviction
+> or reset, and fails closed at 2^32 attempts. The bounded registry also rejects
+> previously unseen encryption keys once it holds 65,536 keys. Across nodes and
+> restarts,
+> accepted deployment bounds or coordinated durable accounting remain necessary
+> to keep the total random-IV encryptions under each key within 2^32.
+
+> **Future-state: encryption-budget telemetry.** Standard metrics and performance
+> telemetry now expose consumed and remaining process-local application-frame key
+> budgets and limits,
+> with shared actual-key accounting within that service and no public key identifiers. Tests cover
+> accounting and telemetry privacy; full image validation remains pending.
+> Process-local measurements cannot establish a cross-node or
+> restart-persistent aggregate without corresponding shared accounting.
+
+> **Future-state: TLS key-usage accounting.** The application counter observes
+> only frame encryption through `approved_crypto::seal`. Rustls/AWS-LC TLS record
+> encryption and direct cryptographic calls by dependencies are outside it.
+> Their separate key-usage controls and review remain open; application metrics
+> cannot establish coverage for every cryptographic key in the process.
+
+> **Future-state: operational acceptance.** Review of external entropy, credential
+> generation/import/rotation, TLS certificates and algorithms, self-test failure
+> handling, permitted build/operating conditions, and Security Policy restrictions
+> remains open for the exact release and deployment. Build checks cannot supply
+> the missing operational observations or a vendor's module-use assertions.
+
+The deployment process below describes decisions that can be made once the
+applicable assurance above is established. It does not describe the current
+build as accepted or validated. The [crypto integration guide](CRYPTO-INTEGRATION.md)
+tracks the implementation and remaining review work.
 
 zccusan can use validated cryptography through the AWS-LC 3 Cryptographic
 Module (static), certificate 5314, within its permitted build and operating

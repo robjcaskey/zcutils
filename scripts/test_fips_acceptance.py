@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Regression tests for rejection/acceptance decisions; all green fixtures are synthetic."""
-# ACCEPTANCE-CRITERIA-REVIEWED: 2026-09-15T09:56:50Z
-# ACCEPTANCE-CRITERIA-SHA256: 9dfc5766b1ee2c99444a5d54b4300a5507d2df334050761afc6a8f52ebb909dc
-# ACCEPTANCE-TESTS-SHA256: 53959f0da2af587b9a80d7f37ad5e9df6e586e3866debc5039f5efecffde4370
+# ACCEPTANCE-CRITERIA-REVIEWED: 2026-09-15T10:38:47Z
+# ACCEPTANCE-CRITERIA-SHA256: a447a920465349a473300c0c361ae9be6b2069152afbf0cd9095e23e16cb9f37
+# ACCEPTANCE-TESTS-SHA256: 3ad00bfddb01bcea3fa10420d31f270483430391e89a4f7831aeae4dc0222d73
 import argparse
 import copy
 import datetime as dt
@@ -26,6 +26,8 @@ SPEC.loader.exec_module(fips)
 ROOT = Path(__file__).resolve().parents[1]
 CRITERIA_FILES = (
     "scripts/fips-acceptance.py",
+    "scripts/fips-service-assurances.py",
+    "scripts/test_fips_service_assurances.py",
     "zccusan/deploy/zcblock-csi/fips/acceptance-5314.json",
     "zccusan/deploy/zcblock-csi/fips/AWS-LC-RECOMPILATION.md",
 )
@@ -314,6 +316,8 @@ class AcceptanceTests(unittest.TestCase):
             "build.rs": "fn main() {}\n", "src/lib.rs": "// synthetic library\n",
             "src/global_secure_rpc.rs": "// synthetic RPC\n",
             ".github/workflows/fips-aws-lc-5314.yml": "# synthetic workflow\n",
+            "scripts/fips-service-assurances.py": "# synthetic service collector\n",
+            "scripts/test_fips_service_assurances.py": "# synthetic service tests\n",
             "scripts/fips-acceptance.py": "# synthetic collector\n",
             "scripts/github-ec2-runner-smoke.py": "# synthetic launcher\n",
             "scripts/fips-prepare-source.py": "# synthetic source preparation\n",
@@ -370,9 +374,37 @@ class AcceptanceTests(unittest.TestCase):
                                                      "review_override_allowed": False},
                         "tools": dict.fromkeys(("rustc", "cargo", "cc", "nm", "readelf"), "synthetic version"),
                         "dependencies": [{"name": "aws-lc-fips-sys", "version": "synthetic", "features": []}]}
+        self.graph = {
+            "packages": [{"id": "root", "name": "zcutils", "version": "synthetic"},
+                         {"id": "provider", "name": "aws-lc-fips-sys", "version": "synthetic"}],
+            "resolve": {"root": "root", "nodes": [
+                {"id": "root", "features": ["fips"], "dependencies": ["provider"]},
+                {"id": "provider", "features": [], "dependencies": []}]},
+        }
+        helper = fips.service_assurances_module()
+        self.service_inventory = helper.inventory(self.root, self.graph)
+        self.receipt["service_assurances"] = {name: self.service_inventory[name]
+                                             for name in ("inventory_sha256", "metadata_sha256")}
+        self.service_review_path = self.root / "service-review.json"
+        record_path = self.root / "service-review-record.txt"
+        record_path.write_text("Synthetic fixture only; not a real semantic or operational review.")
+        record = {"path": record_path.name, "sha256": fips.file_digest(record_path)}
+        today = dt.date.today()
+        self.service_review = {
+            "schema": 1, "inventory_sha256": self.service_inventory["inventory_sha256"],
+            "image_digest": self.image_digest, "reviewer": "SYNTHETIC TEST FIXTURE",
+            "reviewed_at": today.isoformat(), "expires_at": (today + dt.timedelta(days=1)).isoformat(),
+            "findings": {finding["id"]: {"disposition": "diagnostic-only", "rationale": "synthetic", "record": record}
+                         for finding in self.service_inventory["findings"]},
+            "sections": {name: record for name in helper.SECTIONS},
+            "gcm_key_budgets": [{"key_scope": "synthetic key", "max_encrypting_instances": 1,
+                "max_attempts_per_second_per_instance": 1, "max_key_lifetime_seconds": 1,
+                "prior_attempts": 0, "enforcement_record": record}],
+        }
+        fips.write_json(self.service_review_path, self.service_review)
         self.args = argparse.Namespace(profile=self.profile_path, source_root=self.root, image="mutable-tag",
                                        storage=None, offline=False, validated_source=self.archive,
-                                       review=self.root / "review.json", report=self.root / "report.json")
+                                       review=self.root / "review.json", report=self.root / "report.json", service_review=self.service_review_path)
         self.review = self.make_review()
         self.save_review()
         self.engine = mock.Mock()
@@ -406,7 +438,9 @@ class AcceptanceTests(unittest.TestCase):
     def container_run(self, image, entrypoint, arguments):
         self.assertEqual(self.image_id, image, "all executions must bind the inspected immutable image")
         if entrypoint == "/bin/cat":
-            output = json.dumps(self.receipt)
+            documents = {"build-receipt.json": self.receipt, "cargo-metadata.json": self.graph,
+                         "service-inventory.json": self.service_inventory}
+            output = json.dumps(documents[Path(arguments[0]).name])
         elif entrypoint == "/bin/sh":
             output = "\n".join(self.profile["binaries"])
         elif entrypoint == "/usr/bin/sha256sum":
@@ -429,6 +463,38 @@ class AcceptanceTests(unittest.TestCase):
         report = self.run_check()
         self.assertTrue(report["accepted"])
         self.assertEqual(set(self.profile["binaries"]), set(report["evidence"]["executables"]))
+
+    def test_missing_structural_review_blocks_services_and_operation(self):
+        self.args.service_review = None
+        report = self.run_check()
+        self.assertEqual("BLOCKED", report["gates"]["services"])
+        self.assertEqual("BLOCKED", report["gates"]["operation"])
+        self.assertTrue(Path(self.args.report).with_suffix(".service-review-template.json").is_file())
+
+    def test_structural_source_inventory_and_receipt_cannot_diverge(self):
+        self.service_inventory["source_files"]["Cargo.lock"] = "9" * 64
+        report = self.run_check()
+        self.assertFalse(report["accepted"])
+        self.assertEqual("FAIL", report["gates"]["services"])
+
+    def test_structural_graph_cannot_disable_fips_after_collection(self):
+        self.graph["resolve"]["nodes"][0]["features"] = []
+        self.assertFalse(self.run_check()["accepted"])
+
+    def test_oversubscribed_aggregate_key_budget_fails_acceptance(self):
+        self.service_review["gcm_key_budgets"][0]["prior_attempts"] = 2**32
+        fips.write_json(self.service_review_path, self.service_review)
+        report = self.run_check()
+        self.assertEqual("FAIL", report["gates"]["services"])
+        self.assertEqual("FAIL", report["gates"]["operation"])
+
+    def test_explicit_review_expiry_is_honored_without_arbitrary_duration_cap(self):
+        expiry = (dt.date.today() + dt.timedelta(days=365)).isoformat()
+        self.service_review["expires_at"] = expiry
+        fips.write_json(self.service_review_path, self.service_review)
+        self.review["expires_at"] = expiry
+        self.save_review()
+        self.assertTrue(self.run_check()["accepted"])
 
     def test_current_module_version_mismatch_rejects_even_with_good_mode(self):
         self.probes["zcblock-csi"]["module"]["module_version_string"] = "AWS-LC FIPS 4.2.0"

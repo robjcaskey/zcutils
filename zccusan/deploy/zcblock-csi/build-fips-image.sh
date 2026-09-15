@@ -42,6 +42,7 @@ if [[ "${FIPS_ACCEPTANCE:-0}" == 1 ]]; then
     [[ -z "${FIPS_PODMAN_STORAGE:-}" ]] || acceptance+=(--storage "$FIPS_PODMAN_STORAGE")
     [[ -z "${FIPS_VALIDATED_SOURCE:-}" ]] || acceptance+=(--validated-source "$FIPS_VALIDATED_SOURCE")
     [[ -z "${FIPS_ACCEPTANCE_REVIEW:-}" ]] || acceptance+=(--review "$FIPS_ACCEPTANCE_REVIEW")
+    [[ -z "${FIPS_ACCEPTANCE_SERVICE_REVIEW:-}" ]] || acceptance+=(--service-review "$FIPS_ACCEPTANCE_SERVICE_REVIEW")
     "${acceptance[@]}"
 fi
 printf 'Built %s (builder=%s, runtime=%s; FIPS-aspiring; certificate coverage is not asserted)\n' "$IMAGE" "$FIPS_BUILD_DISTRO" "$FIPS_DISTRO"

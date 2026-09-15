@@ -33,8 +33,21 @@ and directions. Temporary raw KDF input, output and fixed-info buffers are zeroi
 Internally generated random IVs do not remove GCM usage limits. Credential
 rotation must bound aggregate encryptions under each derived key across all
 processes/nodes/restarts to the applicable SP 800-38D random-IV limit (at most
-2^32 invocations per key). Current expiration/rotation is time-based; it does not
-provide a distributed per-key invocation counter. Deployment review must establish
+2^32 invocations per key). The application reserves an attempt before each
+application-frame GCM encryption through `approved_crypto::seal` and rejects
+attempts above 2^32 under the same tracked key in one process. AWS-LC SHA-256
+identifies the actual derived key, so reconstructing a key or sharing it among
+threads does not reset the counter. Failures and authenticated empty frames
+consume attempts too; decryption remains available after exhaustion. The registry
+never evicts keys and rejects unseen encryption keys after 65,536 distinct keys
+have encrypted in that process. Plan capacity and key lifecycle accordingly.
+Do not restart merely to evade a budget or capacity failure: the lifetime
+usage of any reused key must still be accounted for.
+
+Current expiration/rotation is time-based; there is still no distributed or
+restart-persistent per-key invocation counter. TLS record protection also has
+its own provider/protocol limits and is outside this application-frame counter.
+Deployment review must establish
 a defensible workload/rate/lifetime bound before acceptance. This guide cannot
 substitute for that evidence.
 
@@ -118,3 +131,115 @@ do not patch the frozen module and retain an unchanged-source claim.
 Cargo resolves WebPKI 0.103.13 with this wrapper. Upstream's subsequent
 0.103.14 release adds ML-DSA support; 0.103.13 includes the earlier CRL parsing
 and URI name-constraint fixes. See [upstream release notes](https://github.com/rustls/webpki/releases).
+
+
+## Structural service-assurance checks
+
+`scripts/fips-service-assurances.py` collects review inputs from the complete
+first-party Rust source hashes, Cargo inputs and the target-filtered resolved
+Cargo graph. Collection rejects a root without the FIPS feature, a reachable
+AWS-LC wrapper or Rustls 0.23 without its FIPS feature, missing graph nodes, or
+an absent FIPS native provider. It records the paths that bring alternate
+providers into the graph and inventories TLS construction, alternate crypto,
+external RNG and restricted native APIs. The scan includes inactive and test
+code deliberately; it is a review index, not a Rust call-graph analysis.
+
+Offline image assembly runs the Rust budget/telemetry tests and Python
+assurance tests, then retains `cargo-metadata.json` and `service-inventory.json`
+under `/usr/share/zcutils/fips/`. The build receipt binds both. Deployment
+acceptance recomputes the source/graph inventory and rejects disagreement.
+It writes an incomplete `*.service-review-template.json`; missing semantic and
+operational records leave the services and operation gates BLOCKED.
+
+Pass the completed assessment with `fips-acceptance.py check --service-review
+review/service-review.json`, alongside the existing `--review` deployment record.
+The records must describe the same exact image. For separate inspection of
+these inputs, the lower-level commands are:
+
+```sh
+cargo metadata --offline --locked --features fips --filter-platform "$TARGET" \
+  --format-version 1 > cargo-metadata.json
+python3 scripts/fips-service-assurances.py collect --source-root . \
+  --cargo-metadata cargo-metadata.json --out service-inventory.json
+python3 scripts/fips-service-assurances.py check --inventory service-inventory.json \
+  --review review/service-review.json --image-digest "$IMAGE_DIGEST"
+```
+
+`TARGET` must match the actual compiled target. To establish coverage of the
+exact release, a named reviewer supplies a schema-1 JSON record binding the
+`inventory_sha256`, `image_digest`, `reviewed_at` and `expires_at`. Assessment
+must occur within those dates; the assessor sets expiry under the applicable
+policy. No arbitrary maximum duration is imposed by this checker.
+Its `findings` map must cover exactly every inventory finding ID. Each entry
+contains a disposition (`approved-service`, `non-security-use`,
+`unreachable-in-release` or `diagnostic-only`), a rationale and a `record` with
+bundle-relative `path` and `sha256`. Full source hashes mean changed control flow
+invalidates the review even when the scanner's matches stay the same.
+
+To establish permitted operation, `sections` must bind supporting records for
+`tls_service_coverage`, `dependency_reachability`, `entropy_and_credentials`,
+`self_test_failure_handling` and `operating_conditions`, each with `path` and
+`sha256`. Reviewers gather these through source tracing, protocol/configuration
+inspection, fault tests and observation of the actual operating environment.
+The script verifies record presence and integrity, not their semantic truth.
+
+To establish an aggregate GCM usage bound, `gcm_key_budgets` must enumerate
+`key_scope`, `max_encrypting_instances`,
+`max_attempts_per_second_per_instance`, `max_key_lifetime_seconds`,
+`prior_attempts`, and an `enforcement_record` with `path` and `sha256`.
+The checker rejects non-integer bounds, duplicate scopes, missing justification,
+and totals above 2^32:
+
+```
+prior_attempts + max_encrypting_instances
+              * max_attempts_per_second_per_instance
+              * max_key_lifetime_seconds <= 2^32
+```
+
+These must be enforced maximums over every process/node/restart using the same
+actual key, including retries, failures and empty frames; measured averages are
+insufficient. The reviewer must establish that scopes cannot double-count a
+shared key as independent budgets and that no encryption path is omitted. The
+script cannot discover undeclared key reuse or enforce distributed rates.
+Authenticate the reviewer's identity and records independently and compare the
+image digest with the installed image. Passing these structural checks is not
+a semantic approval, a vendor letter or a CMVP certificate.
+
+
+## Observing encryption budgets alongside performance
+
+The existing control and telemetry-server `/metrics` endpoints now publish
+label-free `zccusan_fips_application_frame_gcm_*` gauges for **application-frame
+GCM through `approved_crypto::seal` in their own process**. These do not observe
+Rustls/AWS-LC TLS record encryption or independent calls by dependencies.
+Performance telemetry emitted by an encrypting process carries the corresponding
+`fips_application_frame_gcm_*` integer fields, retained through the existing
+non-identifying telemetry allowlist:
+
+| Suffix | Operator use |
+| --- | --- |
+| `process_max_key_consumed_attempts` | Consumption of the most-used application-frame key in this process; recreated key objects share its counter. |
+| `process_min_key_remaining_attempts` | Smallest remaining tracked application-frame key budget in this process. Zero means at least one key has exhausted its process ceiling. With no tracked keys, this reports the per-key ceiling. |
+| `per_key_attempt_limit` | Fixed 4,294,967,296 process ceiling for random-IV GCM attempts. |
+| `process_tracked_keys`, `process_registry_key_capacity` | Registry occupancy and its fixed capacity; previously unseen encryption keys fail at capacity. |
+| `process_exhausted_keys` | Number of tracked application-frame keys that have reached the ceiling. |
+| `enabled`, `process_snapshot_available` | Whether this build enables the counter and whether the registry snapshot was obtained. Missing detail gauges must not be interpreted as zero consumption. |
+| `scope_application_frames_only` | Always one: the observations concern application-frame GCM, not every cryptographic service in the process. |
+| `tls_record_accounting_complete` | Always zero: TLS record usage and its provider/protocol limits must be assessed separately. |
+| `cross_process_accounting_complete` | Currently always zero: these gauges cannot establish a complete distributed key budget. |
+
+Inspect low remaining budget together with the accepted workload/rate/lifetime
+bound and rotate keys before its aggregate ceiling. Do not add remaining budgets
+across processes, reset alerts on process restart, or assume the telemetry-server
+process's counters describe the encryption workers it receives events from.
+Worker performance events preserve their own process scope. No raw key, key hash,
+credential, or per-key label is published. Worst-case per-key consumption and
+remaining-budget gauges avoid both sensitive identifiers and unbounded series.
+
+A fleet-wide consumed/remaining value for a key reused across nodes or restarts
+still needs coordinated, durable per-key accounting or a reviewed collection
+scheme that preserves private key identity and accounts for missing writers.
+That work is not implemented; the explicit completeness gauge prevents these
+local measurements from being represented as that assurance. The steady-state
+encryption path uses an atomic reservation after the first registry lookup;
+metric snapshots scan the bounded registry outside the encryption operation.

@@ -1,3 +1,6 @@
+#[cfg(feature = "fips")]
+#[path = "../fips_key_usage.rs"]
+mod fips_key_usage;
 // Compile the probe independently of the storage library's platform code.
 #[path = "../crypto_policy.rs"]
 #[allow(dead_code)]

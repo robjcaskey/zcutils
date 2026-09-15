@@ -2711,7 +2711,7 @@ fn render_prometheus_metrics(
     samples: &[api::ReplicationDelaySample],
     compactions: &[api::SnapshotCompactionJob],
 ) -> String {
-    let mut out = String::new();
+    let mut out = zcutils::crypto_policy::fips_key_usage_metrics();
     let mut summary = stats_totals();
     for sample in samples {
         add_sample_to_totals(&mut summary, sample);

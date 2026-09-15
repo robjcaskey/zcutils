@@ -304,7 +304,7 @@ impl EventServer {
                 EVENT_BUFFER_CAPACITY_BYTES
             ),
         ];
-        lines.join("\n")
+        format!("{}\n{}", lines.join("\n"), zcutils::crypto_policy::fips_key_usage_metrics())
     }
 }
 

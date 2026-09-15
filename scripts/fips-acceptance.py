@@ -117,6 +117,7 @@ def source_files(root):
                  "zccusan/deploy/zcblock-csi/Dockerfile.fips", "scripts/fips-acceptance.py",
                  "scripts/github-ec2-runner-smoke.py",
                  "scripts/fips-recompile-aws-lc.py",
+                 "scripts/fips-service-assurances.py", "scripts/test_fips_service_assurances.py",
                  "scripts/fips-build-reproducibility.py", "scripts/fips-reproducible-provider.py",
                  "zccusan/deploy/zcblock-csi/fips/AWS-LC-RECOMPILATION.md",
                  "zccusan/deploy/zcblock-csi/fips/acceptance-review-history.json"):
@@ -124,6 +125,25 @@ def source_files(root):
     files.update({"vendor/aws-lc-fips-sys-provider/" + name: value for name, value in
                   tree_files(root / "vendor/aws-lc-fips-sys-provider").items()})
     return files
+
+
+def service_assurances_module():
+    spec = importlib.util.spec_from_file_location("fips_service_assurances", Path(__file__).with_name("fips-service-assurances.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def service_inventory_errors(root, metadata, inventory, receipt):
+    expected = service_assurances_module().inventory(root, metadata)
+    errors = []
+    if inventory != expected:
+        errors.append("service inventory does not match the current complete source and resolved graph")
+    binding = receipt.get("service_assurances") or {}
+    for field in ("inventory_sha256", "metadata_sha256"):
+        if binding.get(field) != expected[field]:
+            errors.append("build receipt does not bind service " + field)
+    return errors
 
 
 def cache_value(cache, name):
@@ -298,6 +318,11 @@ def collect_build(args):
                    "rustc": ["rustc", "-vV"], "cargo": ["cargo", "-V"], "cc": ["cc", "--version"],
                    "nm": ["nm", "--version"], "readelf": ["readelf", "--version"]}.items()},
                "validation_claim": "none; build provenance requires Security Policy review"}
+    service_inventory = service_assurances_module().inventory(root, metadata)
+    receipt["service_assurances"] = {field: service_inventory[field]
+                                     for field in ("inventory_sha256", "metadata_sha256")}
+    write_json(out / "cargo-metadata.json", metadata)
+    write_json(out / "service-inventory.json", service_inventory)
     write_json(out / "build-receipt.json", receipt)
     return 0
 
@@ -508,8 +533,8 @@ def review_errors(review, expected, findings, directory, today):
     try:
         reviewed = dt.date.fromisoformat(review["reviewed_at"])
         expires = dt.date.fromisoformat(review["expires_at"])
-        if not reviewed <= today <= expires or (expires - reviewed).days > 90:
-            errors.append("review is future-dated, expired or valid for more than 90 days")
+        if not reviewed <= today <= expires:
+            errors.append("review is future-dated or expired")
     except (KeyError, TypeError, ValueError):
         errors.append("missing valid review dates")
     entries = review.get("findings", {})
@@ -673,6 +698,43 @@ def check(args):
     except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as error:
         suite.add("services", "application_crypto", [str(error)], missing=True)
 
+    # The graph and inventory are retained by offline assembly and bound into
+    # the build receipt. Recompute from the checked-out exact source so a
+    # stale scan cannot hide changed control flow outside lexical matches.
+    try:
+        graph_result = engine.run(image_id, "/bin/cat", ["/usr/share/zcutils/fips/cargo-metadata.json"])
+        inventory_result = engine.run(image_id, "/bin/cat", ["/usr/share/zcutils/fips/service-inventory.json"])
+        if graph_result.returncode or inventory_result.returncode:
+            raise ValueError("image lacks the resolved graph or structural service inventory")
+        graph = json.loads(graph_result.stdout)
+        service_inventory = json.loads(inventory_result.stdout)
+        inventory_errors = service_inventory_errors(root, graph, service_inventory, receipt)
+        suite.add("services", "structural_service_inventory", inventory_errors)
+        evidence["service_inventory"] = service_inventory
+        helper = service_assurances_module()
+        service_template = {
+            "schema": 1, "inventory_sha256": service_inventory.get("inventory_sha256"),
+            "image_digest": image_digest, "reviewer": "", "reviewed_at": "", "expires_at": "",
+            "findings": {finding["id"]: {"disposition": "", "rationale": "", "record": {"path": "", "sha256": ""}}
+                         for finding in service_inventory["findings"]},
+            "sections": {name: {"path": "", "sha256": ""} for name in sorted(helper.SECTIONS)},
+            "gcm_key_budgets": [],
+        }
+        write_json(Path(args.report).with_suffix(".service-review-template.json"), service_template)
+        service_review = getattr(args, "service_review", None)
+        if service_review:
+            review_path = Path(service_review)
+            review = json.loads(review_path.read_text())
+            review_issues = helper.validate_review(service_inventory, review, review_path.parent, image_digest, today)
+            for gate in ("services", "operation"):
+                suite.add(gate, "structural_service_review", review_issues)
+        else:
+            for gate in ("services", "operation"):
+                suite.add(gate, "structural_service_review", ["supply exact-release TLS, dependency, operating and aggregate-key-budget review using --service-review"], missing=True)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired) as error:
+        for gate in ("services", "operation"):
+            suite.add(gate, "structural_service_assurances", [str(error)], missing=True)
+
     dependencies = receipt.get("dependencies", [])
     findings = source_findings(root, dependencies)
     evidence["findings"] = findings
@@ -719,6 +781,7 @@ def main():
     verify.add_argument("--storage", help="isolated local Podman storage")
     verify.add_argument("--validated-source", help="unchanged ZIP identified by the selected Security Policy")
     verify.add_argument("--review", help="trusted review JSON bound to this image/source/node/profile")
+    verify.add_argument("--service-review", help="trusted structural service review with supporting records and aggregate GCM bounds")
     verify.add_argument("--offline", action="store_true", help="skip CMVP network lookup; blocks acceptance")
     verify.add_argument("--report", required=True)
     verify.set_defaults(func=check)

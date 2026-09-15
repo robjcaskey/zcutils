@@ -16,6 +16,17 @@ const SAFE_STRING_FIELDS: &[&str] = &[
     "latency_scope",
 ];
 const SAFE_INTEGER_FIELDS: &[&str] = &[
+    "fips_application_frame_gcm_enabled",
+    "fips_application_frame_gcm_scope_application_frames_only",
+    "fips_application_frame_gcm_tls_record_accounting_complete",
+    "fips_application_frame_gcm_process_snapshot_available",
+    "fips_application_frame_gcm_cross_process_accounting_complete",
+    "fips_application_frame_gcm_process_tracked_keys",
+    "fips_application_frame_gcm_process_max_key_consumed_attempts",
+    "fips_application_frame_gcm_process_min_key_remaining_attempts",
+    "fips_application_frame_gcm_per_key_attempt_limit",
+    "fips_application_frame_gcm_process_registry_key_capacity",
+    "fips_application_frame_gcm_process_exhausted_keys",
     "event_at_ms",
     "started_at_millis",
     "interval_secs",
@@ -84,6 +95,9 @@ pub struct NonIdentifyingTelemetry {
 
 impl TelemetryRecord {
     pub fn current(event_type: &str, mut fields: Map<String, Value>) -> Self {
+        for (name, value) in crate::crypto_policy::fips_key_usage_counters() {
+            fields.insert(format!("fips_application_frame_gcm_{name}"), Value::from(value));
+        }
         fields.insert("event_type".to_string(), json!(event_type));
         fields.insert(
             "telemetry_schema_version".to_string(),
@@ -539,6 +553,23 @@ mod tests {
         assert_eq!(anonymized.as_value()["active_volume_count"], 7);
         assert_eq!(anonymized.as_value()["io_size_bytes"], 4096);
         assert!(anonymized.as_value().get("new_identifier").is_none());
+    }
+
+    #[test]
+    fn budget_gauges_accompany_performance_without_key_identifiers() {
+        let record = TelemetryRecord::current("performance", Map::from_iter([
+            ("total_iops".to_string(), json!(1000)),
+            ("key_id".to_string(), json!("sensitive-key-fingerprint")),
+        ]));
+        assert_eq!(record.as_value()["fips_application_frame_gcm_cross_process_accounting_complete"], 0);
+        let public = record.anonymize();
+        assert_eq!(public.as_value()["total_iops"], 1000);
+        assert_eq!(public.as_value()["fips_application_frame_gcm_scope_application_frames_only"], 1);
+        assert_eq!(public.as_value()["fips_application_frame_gcm_tls_record_accounting_complete"], 0);
+        assert_eq!(public.as_value()["fips_application_frame_gcm_cross_process_accounting_complete"], 0);
+        assert!(public.as_value().get("key_id").is_none());
+        #[cfg(feature = "fips")]
+        assert_eq!(public.as_value()["fips_application_frame_gcm_per_key_attempt_limit"], 4_294_967_296u64);
     }
 
     #[test]

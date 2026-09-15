@@ -64,8 +64,71 @@ pub fn initialize_or_exit() {
     }
 }
 
+/// Low-cardinality gauges for application-frame GCM in this process only.
+/// Rustls/TLS and direct dependency crypto calls are not observed.
+/// Never expose raw keys, key hashes,
+/// or a misleading sum of independent per-key budgets as one shared budget.
+pub fn fips_key_usage_counters() -> std::collections::BTreeMap<&'static str, u64> {
+    #[allow(unused_mut)]
+    let mut values = std::collections::BTreeMap::from([
+        ("enabled", u64::from(cfg!(feature = "fips"))),
+        ("process_snapshot_available", 0),
+        ("cross_process_accounting_complete", 0),
+        ("scope_application_frames_only", 1),
+        ("tls_record_accounting_complete", 0),
+    ]);
+    #[cfg(feature = "fips")]
+    if let Ok(snapshot) = crate::fips_key_usage::snapshot() {
+        values.extend(snapshot);
+        values.insert("process_snapshot_available", 1);
+    }
+    values
+}
+
+pub fn fips_key_usage_metrics() -> String {
+    let mut out = String::new();
+    for (name, value) in fips_key_usage_counters() {
+        out.push_str(&format!(
+            "# TYPE zccusan_fips_application_frame_gcm_{name} gauge\nzccusan_fips_application_frame_gcm_{name} {value}\n"
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn budget_metrics_state_scope_and_do_not_publish_key_labels() {
+        let metrics = super::fips_key_usage_metrics();
+        assert!(
+            metrics.contains(
+                "zccusan_fips_application_frame_gcm_cross_process_accounting_complete 0\n"
+            )
+        );
+        assert!(
+            metrics
+                .contains("zccusan_fips_application_frame_gcm_scope_application_frames_only 1\n")
+        );
+        assert!(
+            metrics
+                .contains("zccusan_fips_application_frame_gcm_tls_record_accounting_complete 0\n")
+        );
+        assert!(!metrics.contains("zccusan_fips_gcm_"));
+        assert!(!metrics.contains('{'));
+        #[cfg(feature = "fips")]
+        {
+            assert!(
+                metrics.contains(
+                    "zccusan_fips_application_frame_gcm_per_key_attempt_limit 4294967296\n"
+                )
+            );
+            assert!(
+                metrics
+                    .contains("zccusan_fips_application_frame_gcm_process_snapshot_available 1\n")
+            );
+        }
+    }
+
     #[test]
     fn required_provider_matches_build() {
         assert_eq!(

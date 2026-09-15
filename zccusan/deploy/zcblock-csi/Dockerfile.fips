@@ -105,6 +105,8 @@ COPY tests/fixtures/client-wal/live-client.json ./tests/fixtures/client-wal/live
 COPY zccusan/deploy/zcblock-csi/kernel-module-artifacts.example.yaml ./zccusan/deploy/zcblock-csi/kernel-module-artifacts.example.yaml
 COPY zccusan/deploy/zcblock-csi/getting-started/ ./zccusan/deploy/zcblock-csi/getting-started/
 COPY scripts/fips-acceptance.py ./scripts/fips-acceptance.py
+COPY scripts/fips-service-assurances.py ./scripts/fips-service-assurances.py
+COPY scripts/test_fips_service_assurances.py ./scripts/test_fips_service_assurances.py
 COPY scripts/fips-recompile-aws-lc.py ./scripts/fips-recompile-aws-lc.py
 COPY scripts/fips-reproducible-provider.py ./scripts/fips-reproducible-provider.py
 COPY scripts/github-ec2-runner-smoke.py ./scripts/github-ec2-runner-smoke.py
@@ -114,7 +116,11 @@ COPY zccusan/deploy/zcblock-csi/fips/acceptance-review-history.json ./zccusan/de
 COPY zccusan/deploy/zcblock-csi/Dockerfile.fips ./zccusan/deploy/zcblock-csi/Dockerfile.fips
 RUN --network=none if [ "$FIPS_DISTRO" = ubi9 ]; then export ZCUTILS_DISABLE_LIBFABRIC=1; fi; \
     RUST_MIN_STACK=33554432 cargo test --frozen --release --features fips --jobs ${BUILD_JOBS} --lib crypto_protocol_tests \
-    && RUST_MIN_STACK=33554432 cargo test --frozen --release --features fips --jobs ${BUILD_JOBS} --lib zcnblk_aes_transport_round_trips_split_frames
+    && RUST_MIN_STACK=33554432 cargo test --frozen --release --features fips --jobs ${BUILD_JOBS} --lib zcnblk_aes_transport_round_trips_split_frames \
+    && RUST_MIN_STACK=33554432 cargo test --frozen --release --features fips --jobs ${BUILD_JOBS} --lib fips_key_usage \
+    && RUST_MIN_STACK=33554432 cargo test --frozen --release --features fips --jobs ${BUILD_JOBS} --lib approved_crypto::tests \
+    && RUST_MIN_STACK=33554432 cargo test --frozen --release --features fips --jobs ${BUILD_JOBS} --lib budget_ \
+    && python3 -m unittest discover -s scripts -p test_fips_service_assurances.py
 RUN --network=none mkdir -p /out/evidence \
     && cp /out/build.json /out/evidence/offline-build.json \
     && /out/bin/zc-fips-check --require-fips > /out/evidence/build-provider.json \
