@@ -35,6 +35,7 @@ class IndependentBuildTests(unittest.TestCase):
                 'provider_libcrypto_sha256': compare.repro.sha256(root / 'provider/lib/libcrypto.a'),
             })
             compare.repro.write_json(root / 'launch.json', {'instance_id': instance})
+            compare.payload.create(root / 'bin', root / 'image-attestations/zcblock-csi-fips-aspiring.unsigned-executable-bundle.tar', 123)
         self.args = (self.root / 'a', self.root / 'b', self.root / 'a/launch.json',
                      self.root / 'b/launch.json', self.root / 'result.json')
 
@@ -57,6 +58,12 @@ class IndependentBuildTests(unittest.TestCase):
     def test_modified_native_module_fails(self):
         (self.root / 'b/provider/lib/bcm.o').write_bytes(b'different')
         with self.assertRaisesRegex(ValueError, 'differs from its build receipt'):
+            compare.compare_builds(*self.args)
+
+    def test_different_effective_timestamp_fails_bundle_comparison(self):
+        root = self.root / 'b'
+        compare.payload.create(root / 'bin', root / 'image-attestations/zcblock-csi-fips-aspiring.unsigned-executable-bundle.tar', 124)
+        with self.assertRaisesRegex(ValueError, 'payload bytes differ'):
             compare.compare_builds(*self.args)
 
 

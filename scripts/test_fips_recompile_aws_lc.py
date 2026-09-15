@@ -17,6 +17,23 @@ SPEC.loader.exec_module(recompile)
 
 
 class RecompilationTests(unittest.TestCase):
+    def test_archive_normalization_preserves_duplicates_order_and_object_bytes(self):
+        data = b'!<arch>\n'
+        offsets = []
+        for timestamp, content in ((123, b'first-object'), (456, b'second-object')):
+            offsets.append(len(data))
+            data += f'{"same.o/":<16}{timestamp:<12}{1001:<6}{1002:<6}{"100644":<8}{len(content):<10}`\n'.encode()
+            data += content + b'\n' * (len(content) % 2)
+        expected = bytearray(data)
+        for offset in offsets:
+            expected[offset + 16:offset + 28] = b'0           '
+        normalized = recompile.normalize_archive_timestamps(data)
+        self.assertEqual(bytes(expected), normalized)
+        self.assertEqual(normalized, recompile.normalize_archive_timestamps(normalized))
+        for malformed in (b'!<thin>\n', b'!<arch>\n', data[:-1], data + b'junk'):
+            with self.subTest(malformed=malformed[:8]), self.assertRaises(ValueError):
+                recompile.normalize_archive_timestamps(malformed)
+
     def test_provider_adapter_uses_exact_0311_bindings_and_has_no_module_sources(self):
         adapter = Path(__file__).resolve().parents[1] / "vendor/aws-lc-fips-sys-provider"
         expected = {
