@@ -15,7 +15,7 @@ class AdmissionTests(unittest.TestCase):
         value = admission.admission_policy('registry.example/zcblock-csi', 'trusted-key', 'a' * 64)
         authority = value['spec']['authorities'][0]
         self.assertEqual(authority['key']['data'], 'trusted-key')
-        self.assertEqual(value['spec']['images'], [{'glob': 'registry.example/zcblock-csi@sha256:*'}])
+        self.assertEqual(value['spec']['images'], [{'glob': 'registry.example/zcblock-csi:*'}, {'glob': 'registry.example/zcblock-csi@sha256:*'}])
         condition = authority['attestations'][0]['policy']['data']
         self.assertIn('count(matches) == 1', condition)
         self.assertIn('sha256=' + 'a' * 64, condition)

@@ -1,5 +1,7 @@
 # zcblock CSI Driver
 
+See [image validation](IMAGE-VALIDATION.md) for public-key verification, Kubernetes admission, and independent rebuild checks.
+
 This deploys the Rust `zcblock-csi` binary as a privileged CSI node plugin for a
 local Kubernetes node. It can provision RAM-backed `zcbrd` devices, sparse
 file-backed loop devices, guarded raw block devices, and full-image CSI

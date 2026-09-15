@@ -59,3 +59,10 @@ Before using this as a deployment gate, exercise a matching image, a mismatched
 bundle hash, a wrong signing key, and a missing attestation in an isolated test
 namespace. Confirm only the matching image is admitted. Unit tests of the policy
 generator do not substitute for that cluster test.
+
+Local integration check (2026-09-15): the generated policy was exercised through
+server-side dry-run admission in disposable K3s 1.36.4 with policy-controller
+Helm chart 0.10.8 (app 0.13.1). A real KMS-signed smoke-image SBOM passed; an
+unexpected bundle hash, an absent attestation, and a different trusted key were
+denied. This tests the admission mechanism with a fixture, not reproduction of a
+release. Release-specific comparison and signature checks still precede its badge.

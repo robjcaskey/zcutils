@@ -41,7 +41,7 @@ def admission_policy(repository, public_key, bundle_hash):
     return {
         'apiVersion': 'policy.sigstore.dev/v1beta1', 'kind': 'ClusterImagePolicy',
         'metadata': {'name': 'zcblock-csi-reproduced-executables'},
-        'spec': {'images': [{'glob': repository + '@sha256:*'}],
+        'spec': {'images': [{'glob': repository + ':*'}, {'glob': repository + '@sha256:*'}],
                  'authorities': [{'key': {'data': public_key},
                                   'attestations': [{'name': 'reproduced-executable-bundle',
                                                     'predicateType': attest.SPDX_PREDICATE,
