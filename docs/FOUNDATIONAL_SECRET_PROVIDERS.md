@@ -55,7 +55,7 @@ profile, or password. Static access-key environment variables and AWS profiles
 are rejected by default, and the child CLI is isolated from the normal shared
 credentials/config files. The narrowly scoped IAM
 permission is `ssm:GetParameter` for the exact parameter ARN plus
-`kms:Decrypt` for its customer-managed KMS key when applicable.
+`kms:Decrypt` for its KMS key when that key is managed by the organization.
 
 Parameter Store keeps versions, but it is not the rotation coordinator. A
 controller creates the new bundle, writes a strictly higher generation, waits
@@ -74,11 +74,11 @@ zcsecret-materialize sync \
 
 The secret must be a `SecretString` containing the canonical bundle. The
 minimal permission is `secretsmanager:GetSecretValue` for the exact secret ARN,
-plus `kms:Decrypt` when a customer-managed KMS key is used. Authentication is
-the same passwordless ambient-IAM path as Parameter Store. A Secrets Manager
-rotation Lambda may publish the bundle, but its stage transitions must preserve
-the overlap encoded inside the document; a provider staging label alone is not
-accepted as proof that both generations work.
+plus `kms:Decrypt` when a KMS key managed by the organization is used.
+Authentication is the same passwordless ambient-IAM path as Parameter Store. A
+Secrets Manager rotation Lambda may publish the bundle, but its stage
+transitions must preserve the overlap encoded inside the document; a provider
+staging label alone is not accepted as proof that both generations work.
 
 ## HashiCorp Vault
 

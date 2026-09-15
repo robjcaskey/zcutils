@@ -198,8 +198,9 @@ alias and SSM parameter do not exist, and policy simulation reports that the
 break-glass role may create and use the asymmetric KMS key and may create/read
 the SSM reference. No AWS resource or key material was created.
 
-Creating the customer-managed asymmetric KMS key would incur AWS charges. At
-the time of this check, AWS lists $1 per key per month, prorated hourly, plus
+Creating the asymmetric KMS key managed by the organization would incur AWS
+charges. At the time of this check, AWS lists $1 per key per month, prorated
+hourly, plus
 asymmetric signing requests (the AWS example prices ECC signing at $0.15 per
 10,000 requests). A standard SSM parameter has no additional storage charge at
 standard throughput. Verify current prices on the [AWS KMS pricing page](https://aws.amazon.com/kms/pricing/)

@@ -29,8 +29,8 @@ The policy is attached only to the dedicated `github_signer_role_arn`. The
 `signer_policy_json` output supports independent policy review.
 
 Do not apply the module merely to test it. `prevent_destroy` protects both the
-key and reference. A customer-managed KMS key incurs a recurring monthly
-charge plus signing requests; standard SSM parameters have no additional
+key and reference. A KMS key managed by the organization incurs a recurring
+monthly charge plus signing requests; standard SSM parameters have no additional
 storage charge at standard throughput. Review current AWS pricing before
 changing this deployment.
 

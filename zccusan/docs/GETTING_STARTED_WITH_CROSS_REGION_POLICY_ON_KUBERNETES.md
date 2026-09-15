@@ -8,7 +8,7 @@ This tutorial keeps automatic failover and failback, then adds two controls:
 
 - recovery order is derived from solution RPO, RTO, consistency, and business
   impact rather than a user-assigned numeric priority; and
-- an optional customer-owned HTTPS service can approve, deny, or hold the final
+- an optional organization-operated HTTPS service can approve, deny, or hold the final
   ownership switch for selected volumes.
 
 The transition gate is distinct from tutorial two's capacity provider. A
@@ -188,7 +188,7 @@ numeric priority.
 
 ## 3. Optionally define an HTTPS transition gate
 
-The customer's service implements:
+The end-user organization's service implements:
 
 ```text
 POST /v1/transition-decisions
@@ -289,7 +289,7 @@ zcctl transition watch --all
 Replication and target preparation continue. Checkout and catalog stop at
 `AwaitingApproval` with a stable plan digest. Development follows its own
 policy and may remain in durable backlog. Approve the exact pending digest
-through the customer service, then observe the transition resume:
+through the organization-operated service, then observe the transition resume:
 
 ```bash
 zcctl transition describe <transition-id>
