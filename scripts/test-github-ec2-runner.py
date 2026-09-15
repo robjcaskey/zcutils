@@ -12,12 +12,28 @@ import uuid
 
 
 def gh(args, payload=None, allow_missing=False):
-    result = subprocess.run(["gh", *args], input=payload, text=True, capture_output=True, timeout=60)
-    if result.returncode:
-        if allow_missing and "404" in result.stderr:
-            return None
-        raise RuntimeError(result.stderr.strip())
-    return result.stdout
+    # Retry only reads: a repeated dispatch/JIT request can create extra workers.
+    method = args[args.index('--method') + 1] if '--method' in args else 'GET'
+    read_only = args[0] == 'api' and method == 'GET'
+    transient = ('TLS handshake timeout', 'connection reset', 'connection refused',
+                 'unexpected EOF', 'HTTP 502', 'HTTP 503', 'HTTP 504', 'HTTP 429',
+                 'i/o timeout', 'context deadline exceeded')
+    for attempt in range(5):
+        try:
+            result = subprocess.run(["gh", *args], input=payload, text=True,
+                                    capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            if not read_only or attempt == 4:
+                raise
+        else:
+            if result.returncode == 0:
+                return result.stdout
+            if allow_missing and "404" in result.stderr:
+                return None
+            if not read_only or attempt == 4 or not any(value in result.stderr for value in transient):
+                raise RuntimeError(result.stderr.strip())
+        time.sleep(2 ** attempt)
+
 
 
 def api(path, method="GET", body=None, allow_missing=False):
