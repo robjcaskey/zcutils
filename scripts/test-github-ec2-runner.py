@@ -167,6 +167,8 @@ def main():
                           provider_libcrypto_sha256=provider["provider"]["libcrypto_sha256"],
                           linked_binary_sha256=receipt["binaries"]["zc-fips-check"]["sha256"],
                           fips_image=image_ref,
+                          unsigned_executable_bundle_sha256=manifest['payload']['digest']['sha256'],
+                          effective_build_timestamp=manifest['payload']['effective_build_timestamp'],
                           fips_image_digest=manifest["subject"]["digest"]["sha256"])
             print("Downloaded and verified:", artifact, flush=True)
         else:
