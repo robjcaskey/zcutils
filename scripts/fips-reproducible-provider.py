@@ -93,6 +93,10 @@ def main():
             command += ['--require-offline', '--provider-dir', str(root / 'offline-provider')]
             isolation = ['unshare', '--net'] if os.geteuid() == 0 else ['unshare', '--user', '--map-root-user', '--net']
             command = isolation + ['--'] + command
+        elif os.geteuid() != 0:
+            # Match the offline builder's UID/GID view while retaining networking.
+            # Non-deterministic ar records object ownership as well as timestamps.
+            command = ['unshare', '--user', '--map-root-user', '--'] + command
         # Source downloads may be shared, but each trial gets an empty Go compiler cache.
         go_cache = root / 'current-go-cache'
         env = dict(os.environ, GOCACHE=str(go_cache), CCACHE_DISABLE='1')
