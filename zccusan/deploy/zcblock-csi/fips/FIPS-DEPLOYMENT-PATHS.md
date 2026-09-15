@@ -12,11 +12,20 @@ is free software. An end-user organization can evaluate and operate it itself,
 or use a commercial vendor experienced in zccusan to perform technical work.
 Both paths use the same underlying module validation.
 
-The open-source project does not attest to the identity or authority behind
-release-signing keys, even when signatures are valid and the keys are properly
-held. Signature verification establishes a relationship between an artifact
-and a key; it does not by itself establish who controls that key or the authority of a statement signed with it. The end-user organization must establish that trust through
-its own verification or a source it accepts, such as a commercial vendor.
+The open-source project does not issue a signed vendor letter attesting that
+a supplied application incorporates a validated module, that the identified
+certificate covers that module, or that the module supplies all cryptographic
+services in the solution. These are the assertions specified in
+[NIST CMVP FAQ SG-8](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs)
+for the letter organizations are instructed to request from the application
+or product vendor when verifying validation. An end-user organization following
+that procedure can obtain the letter from a vendor that builds or verifies its
+zccusan distribution and can substantiate those assertions.
+
+The project also does not attest to the identity or authority of release-signing
+key holders. A valid artifact signature does not supply the SG-8 vendor letter.
+SG-8 describes verification of an existing module validation, not issuance of
+a new certificate or system authorization.
 
 ## What different organizations need
 
