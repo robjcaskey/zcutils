@@ -15,8 +15,7 @@ Both paths use the same underlying module validation.
 The open-source project does not attest to the identity or authority behind
 release-signing keys, even when signatures are valid and the keys are properly
 held. Signature verification establishes a relationship between an artifact
-and a key; it does not by itself establish who controls that key or who stands
-behind the release. The end-user organization must establish that trust through
+and a key; it does not by itself establish who controls that key or the authority of a statement signed with it. The end-user organization must establish that trust through
 its own verification or a source it accepts, such as a commercial vendor.
 
 ## What different organizations need
@@ -91,26 +90,30 @@ add a regression test. If a proposed operating environment is outside the
 permitted conditions, a passing functional test does not resolve that issue.
 The deployment needs an applicable policy basis or a different configuration.
 
-A vendor can also make a specific, signed statement identifying the release,
-embedded module, certificate, supported configuration, and cryptographic
-services covered by its review. NIST's verification guidance describes asking
-for such a vendor statement. Its value depends on the underlying evidence;
-it does not extend the certificate. See [CMVP FAQ SG-8](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs).
+### Vendor statement for validation verification
 
-This is a practical reason to involve a vendor even when no code changes are
-needed. The vendor can independently verify a release, identify itself and its
-signing key through a channel the organization trusts, and sign a statement
-that binds its review to the exact image digest and evidence. That statement
-is the vendor's assertion, not an assertion by the open-source project about
-the project's signing keys. It must distinguish what the vendor built, what it
-verified, and what it relies on from upstream. Endorsing an existing image does
-not make the vendor its original builder.
+[NIST CMVP FAQ SG-8](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs)
+instructs organizations verifying validation to request a signed letter from
+the application or product vendor. For an application incorporating a module,
+the letter states that it incorporates a validated module, identifies its
+certificate number, and states that the module supplies all cryptographic
+services in the solution. The organization checks those assertions against
+the CMVP entry, including the version and operating environment.
 
-An organization may require this attributable statement as part of accepting
-software into its environment. FIPS 140 does not impose a universal requirement
-for a commercial endorsement of an application release; the statement supports
-the organization's trust and assessment process while the module and deployment
-evidence establish the technical basis for the FIPS claim.
+An end-user organization following that guidance can select a vendor that
+builds or verifies its zccusan distribution and can substantiate and sign that
+letter for the specified configuration. The vendor must establish the scope
+of the solution and account for every cryptographic service before making the
+all-services assertion. A statement covering only selected calls is not the
+full statement described in SG-8. The letter should identify the exact release
+and configuration to which the assertion applies.
+
+SG-8 is verification guidance. It does not establish a universal requirement
+to obtain a commercial vendor's letter for every deployment. If an agency,
+assessment process, or organizational policy requires that letter, cite that
+specific requirement as the reason to obtain it. The letter is supplied by the
+application or product vendor; it is not a new certificate from CMVP or an
+attestation issued by the testing laboratory.
 
 The same work can be done by an end-user organization with the necessary
 expertise. Vendor participation does not change the FIPS requirements or grant
