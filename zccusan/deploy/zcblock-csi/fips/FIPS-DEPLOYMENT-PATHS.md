@@ -1,4 +1,4 @@
-# FIPS deployment: independent use and vendor assistance
+# FIPS deployment requirements and verification
 
 > **Future-state assumptions:** TLS call-graph review, dependency reachability review, and
 > evidence for encryption-key usage limits remain open, along with the other
@@ -7,25 +7,10 @@
 > being deployed. It does not describe the current build as accepted or validated.
 
 zccusan can use validated cryptography through the AWS-LC 3 Cryptographic
-Module (static), certificate 5314, within its permitted build and operating conditions. zccusan
-is free software. An end-user organization can evaluate and operate it itself,
-or use a commercial vendor experienced in zccusan to perform technical work.
-Both paths use the same underlying module validation.
-
-The open-source project does not issue a signed vendor letter attesting that
-a supplied application incorporates a validated module, that the identified
-certificate covers that module, or that the module supplies all cryptographic
-services in the solution. These are the assertions specified in
-[NIST CMVP FAQ SG-8](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs)
-for the letter organizations are instructed to request from the application
-or product vendor when verifying validation. An end-user organization following
-that procedure can obtain the letter from a vendor that builds or verifies its
-zccusan distribution and can substantiate those assertions.
-
-The project also does not attest to the identity or authority of release-signing
-key holders. A valid artifact signature does not supply the SG-8 vendor letter.
-SG-8 describes verification of an existing module validation, not issuance of
-a new certificate or system authorization.
+Module (static), certificate 5314, within its permitted build and operating
+conditions. Deployment verification connects the application release and its
+cryptographic services to that module, its certificate, and the environment
+in which it runs.
 
 ## What different organizations need
 
@@ -53,82 +38,59 @@ needs separate evaluation. It cannot be satisfied by relabeling this software
 build. Likewise, the evidence for zccusan does not establish the status of
 Kubernetes, a service mesh, disk encryption, backups, or an external key service.
 
-## Path 1: independent use
+## Deployment process
 
-The end-user organization's engineers review the published build procedure,
-module receipt, image digest, signatures, software bills of materials, and
-acceptance profile. They compare the actual node and container environment
-with the module's Security Policy and the documented deployment conditions.
-They also establish which signing identities they trust and the basis for
-trusting them; a key supplied alongside an artifact is not sufficient by itself.
+1. **Identify the requirements.** Establish which data and cryptographic
+   operations are in scope, which rules apply, and what evidence the
+   organization's assessment process requires.
+2. **Verify the release.** Review the build procedure, module receipt, image
+   digest, signatures, software bills of materials, and acceptance profile.
+   Establish which signing identities are trusted and the basis for trusting
+   them; a key supplied alongside an artifact is not sufficient by itself.
+3. **Check the operating conditions.** Compare the actual node and container
+   environment with the module's Security Policy and the documented deployment
+   conditions. A configuration outside those conditions needs an applicable
+   policy basis or a different environment; functional tests alone do not
+   establish certificate coverage.
+4. **Verify cryptographic use.** Identify the implementation handling each
+   security operation used by the workload. Configure keys, rotation, and
+   usage limits, run the deployment acceptance checks, and resolve failures.
+   Retain the evidence for the exact release and configuration. Obtain the
+   vendor statement described below when following SG-8 or when required by
+   the organization's assessment process.
+5. **Assess the deployment.** The organization's security team or assessor
+   evaluates the evidence against its requirements. A separate laboratory
+   assessment can address uncertainty about module reuse or operating
+   conditions, or satisfy an explicit assessment requirement; it is not an
+   automatic step for every installation using an existing validated module.
+6. **Review changes.** Assess updates to the image, node, dependencies, and
+   operating configuration before deployment. Determine which evidence and
+   checks need updating, including certificate status and cryptographic use.
 
-They then check which cryptographic services the workload actually uses,
-configure keys and rotation, run the acceptance checks on that deployment,
-and retain the evidence. Updates to the image, node, dependencies, or operating
-configuration require a review of what changed and which checks must be rerun.
-
-The organization's security team or assessor evaluates that evidence against
-its requirements. A separate laboratory assessment is not an automatic step
-for every installation using an existing validated module. It can be useful
-when module reuse or an operating environment needs specialist interpretation,
-or when the organization's assessment process requires it.
-
-## Path 2: assistance from a commercial vendor
-
-A vendor's useful contribution is engineering knowledge of zccusan, its
-cryptographic integration, and the target platform. Concrete work can include:
-
-- Reproducing the build and tracing the shipped executable to the module,
-  source version, build procedure, and certificate being relied on.
-- Reviewing TLS construction and other cryptographic call paths to establish
-  which implementation handles each security operation, including less common
-  error and recovery paths.
-- Implementing and testing necessary application fixes, such as enforcing key
-  usage limits or removing an unintended alternative cryptographic path.
-- Testing a specific node and Kubernetes configuration, investigating failures,
-  and determining whether a proposed platform fits the permitted conditions.
-- Maintaining a release branch and assessing how dependency updates, security
-  fixes, and platform changes affect the evidence for that release.
-- Answering source-level questions from the organization's assessor and, where
-  needed, working with a cryptographic testing laboratory or the module vendor
-  to resolve uncertainty about module use.
-
-For example, if a TLS client unexpectedly selects a different provider, a
-vendor familiar with the code can locate the construction site, fix it, and
-add a regression test. If a proposed operating environment is outside the
-permitted conditions, a passing functional test does not resolve that issue.
-The deployment needs an applicable policy basis or a different configuration.
-
-### Vendor statement for validation verification
+## Vendor statement
 
 [NIST CMVP FAQ SG-8](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs)
 instructs organizations verifying validation to request a signed letter from
 the application or product vendor. For an application incorporating a module,
 the letter states that it incorporates a validated module, identifies its
 certificate number, and states that the module supplies all cryptographic
-services in the solution. The organization checks those assertions against
+services in the solution. The organization checks these assertions against
 the CMVP entry, including the version and operating environment.
 
-An end-user organization following that guidance can select a vendor that
-builds or verifies its zccusan distribution and can substantiate and sign that
-letter for the specified configuration. The vendor must establish the scope
-of the solution and account for every cryptographic service before making the
-all-services assertion. A statement covering only selected calls is not the
-full statement described in SG-8. The letter should identify the exact release
-and configuration to which the assertion applies.
+The open-source project does not issue that letter or attest to the identity
+or authority of release-signing key holders. An end-user organization following
+SG-8 can obtain the letter from a vendor that builds or verifies its zccusan
+distribution and can substantiate the assertions for the exact release and
+configuration. The vendor must account for every cryptographic service in the
+specified solution before making the all-services assertion.
 
-SG-8 is verification guidance. It does not establish a universal requirement
-to obtain a commercial vendor's letter for every deployment. If an agency,
-assessment process, or organizational policy requires that letter, cite that
-specific requirement as the reason to obtain it. The letter is supplied by the
-application or product vendor; it is not a new certificate from CMVP or an
-attestation issued by the testing laboratory.
+SG-8 is verification guidance, not a universal requirement to obtain a
+commercial vendor's letter for every deployment. Where an agency or
+organizational policy requires the letter, identify that requirement. The
+letter supports verification of an existing module validation; it does not
+issue a new certificate or authorize the deployed system.
 
-The same work can be done by an end-user organization with the necessary
-expertise. Vendor participation does not change the FIPS requirements or grant
-a different validation status.
-
-## What either path establishes
+## What the evidence establishes
 
 The relevant result is evidence that the particular application release uses
 the identified validated module correctly in the deployed configuration.
