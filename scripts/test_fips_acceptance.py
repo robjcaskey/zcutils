@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Regression tests for rejection/acceptance decisions; all green fixtures are synthetic."""
-# ACCEPTANCE-CRITERIA-REVIEWED: 2026-09-15T09:39:17Z
-# ACCEPTANCE-CRITERIA-SHA256: 9382cce0952597df7aff20dd1e8c92d05f961e0fd950dcff4ffaa6ad9bd301b4
-# ACCEPTANCE-TESTS-SHA256: 2f4d605a5f5cc22b2fb401d7e822268b80073ad52f9131d00dea88ab60d81aaa
+# ACCEPTANCE-CRITERIA-REVIEWED: 2026-09-15T09:56:50Z
+# ACCEPTANCE-CRITERIA-SHA256: 9dfc5766b1ee2c99444a5d54b4300a5507d2df334050761afc6a8f52ebb909dc
+# ACCEPTANCE-TESTS-SHA256: 53959f0da2af587b9a80d7f37ad5e9df6e586e3866debc5039f5efecffde4370
 import argparse
 import copy
 import datetime as dt
@@ -159,7 +159,7 @@ class ControlTests(unittest.TestCase):
             normalized = bytearray(original)
             normalized[24:36] = b'0           '
             (root / 'lib/libcrypto.a').write_bytes(normalized)
-            receipt['provider']['archive_normalization'] = 'ar-timestamp-zero-v1'
+            receipt['provider']['archive_normalization'] = 'ar-deterministic-metadata-v1'
             receipt['provider']['libcrypto_sha256'] = fips.digest(normalized)
             receipt['artifacts']['libcrypto.a']['sha256'] = fips.digest(normalized)
             path.with_name('libcrypto.original.a').write_bytes(original)
@@ -174,7 +174,7 @@ class ControlTests(unittest.TestCase):
             receipt['provider']['libcrypto_sha256'] = fips.digest(normalized)
             receipt['artifacts']['libcrypto.a']['sha256'] = fips.digest(normalized)
             fips.write_json(path, receipt)
-            self.assertIn('normalized provider differs from the prescribed archive beyond timestamps', fips.provider_evidence(root)[1])
+            self.assertIn('normalized provider differs from the prescribed archive beyond archive metadata', fips.provider_evidence(root)[1])
 
     def test_acceptance_criteria_and_tests_match_reviewed_hashes(self):
         comments = review_comments()

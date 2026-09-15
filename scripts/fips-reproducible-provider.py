@@ -50,7 +50,7 @@ def compare_native(online_report, offline_report, online_root, offline_root, out
                 raise ValueError('native artifact changed after build: ' + name)
             if name == 'libcrypto.a' and path.read_bytes().startswith(b'!<arch>\n'):
                 original_archives[mode] = value
-                value = native.hashlib.sha256(native.normalize_archive_timestamps(path.read_bytes())).hexdigest()
+                value = native.hashlib.sha256(native.normalize_archive_metadata(path.read_bytes())).hexdigest()
             pair[mode] = value
         if pair['online'] != pair['offline']:
             mismatches.append(name)
@@ -62,7 +62,7 @@ def compare_native(online_report, offline_report, online_root, offline_root, out
         raise ValueError('native online/offline mismatch: ' + ', '.join(mismatches))
     repro.write_json(output, {'schema': 1, 'status': 'identical', 'selected_artifacts': 'offline',
                               'scope': 'native module, archive, tool and identity probe', 'artifacts': hashes,
-                              'archive_normalization': 'ar-timestamp-zero-v1',
+                              'archive_normalization': 'ar-deterministic-metadata-v1',
                               'original_archive_sha256': original_archives,
                               'online_report_sha256': repro.sha256(online_report),
                               'offline_report_sha256': repro.sha256(offline_report)})

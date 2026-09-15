@@ -27,12 +27,19 @@ class RecompilationTests(unittest.TestCase):
         expected = bytearray(data)
         for offset in offsets:
             expected[offset + 16:offset + 28] = b'0           '
-        normalized = recompile.normalize_archive_timestamps(data)
+            expected[offset + 28:offset + 40] = b'0     0     '
+            expected[offset + 40:offset + 48] = b'644     '
+        normalized = recompile.normalize_archive_metadata(data)
         self.assertEqual(bytes(expected), normalized)
-        self.assertEqual(normalized, recompile.normalize_archive_timestamps(normalized))
+        self.assertEqual(normalized, recompile.normalize_archive_metadata(normalized))
+        different_owner = bytearray(data)
+        for offset in offsets:
+            different_owner[offset + 28:offset + 40] = b'999   998   '
+            different_owner[offset + 40:offset + 48] = b'100600  '
+        self.assertEqual(normalized, recompile.normalize_archive_metadata(bytes(different_owner)))
         for malformed in (b'!<thin>\n', b'!<arch>\n', data[:-1], data + b'junk'):
             with self.subTest(malformed=malformed[:8]), self.assertRaises(ValueError):
-                recompile.normalize_archive_timestamps(malformed)
+                recompile.normalize_archive_metadata(malformed)
 
     def test_provider_adapter_uses_exact_0311_bindings_and_has_no_module_sources(self):
         adapter = Path(__file__).resolve().parents[1] / "vendor/aws-lc-fips-sys-provider"
@@ -155,7 +162,7 @@ class RecompilationTests(unittest.TestCase):
             }
             provider, receipt_path = recompile.create_provider(
                 root / "provider", source, crypto, bcm, report)
-            self.assertEqual(recompile.normalize_archive_timestamps(crypto.read_bytes()), (provider / "lib/libcrypto.a").read_bytes())
+            self.assertEqual(recompile.normalize_archive_metadata(crypto.read_bytes()), (provider / "lib/libcrypto.a").read_bytes())
             self.assertEqual(crypto.read_bytes(), (provider / 'share/zcutils/fips/libcrypto.original.a').read_bytes())
             self.assertEqual(bcm.read_bytes(), (provider / "lib/bcm.o").read_bytes())
             receipt = json.loads(receipt_path.read_text())

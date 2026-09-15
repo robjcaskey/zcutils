@@ -171,8 +171,8 @@ def build_identity_probe(source_root, build_root, crypto):
     return probe
 
 
-def normalize_archive_timestamps(data):
-    """Zero only GNU ar member timestamps; preserve all other bytes and offsets."""
+def normalize_archive_metadata(data):
+    """Normalize GNU ar bookkeeping; preserve object/index bytes and offsets."""
     if not data.startswith(b"!<arch>\n"):
         raise ValueError("expected a regular ar archive")
     result = bytearray(data)
@@ -192,6 +192,10 @@ def normalize_archive_timestamps(data):
         # GNU's long-name table has a blank timestamp; preserve that header.
         if header[:16].strip() != b"//":
             result[offset + 16:offset + 28] = b"0           "
+            result[offset + 28:offset + 34] = b"0     "
+            result[offset + 34:offset + 40] = b"0     "
+            result[offset + 40:offset + 48] = (b"0       " if header[:16].strip() in (b'/', b'/SYM64/')
+                                               else b"644     ")
         offset = end
         count += 1
     if not count:
@@ -228,7 +232,7 @@ def create_provider(provider_dir, source_root, crypto, bcm, report):
     lib = provider / "lib"
     lib.mkdir()
     original = Path(crypto).read_bytes()
-    (lib / "libcrypto.a").write_bytes(normalize_archive_timestamps(original))
+    (lib / "libcrypto.a").write_bytes(normalize_archive_metadata(original))
     shutil.copy2(bcm, lib / "bcm.o")
     receipt_path = provider / "share/zcutils/fips/provider-receipt.json"
     receipt_path.parent.mkdir(parents=True)
@@ -237,7 +241,7 @@ def create_provider(provider_dir, source_root, crypto, bcm, report):
         "libcrypto": "lib/libcrypto.a",
         "libcrypto_sha256": file_digest(lib / "libcrypto.a"),
         "original_libcrypto_sha256": file_digest(crypto),
-        "archive_normalization": "ar-timestamp-zero-v1",
+        "archive_normalization": "ar-deterministic-metadata-v1",
         "bcm": "lib/bcm.o",
         "bcm_sha256": file_digest(lib / "bcm.o"),
         "headers_manifest_sha256": canonical_digest(tree_manifest(provider / "include")),

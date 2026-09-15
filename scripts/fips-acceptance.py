@@ -176,7 +176,7 @@ def provider_evidence(provider_dir):
         if result["headers_manifest_sha256"] != provider.get("headers_manifest_sha256"):
             errors.append("installed provider headers differ from the provider receipt")
         if provider.get('archive_normalization'):
-            if provider['archive_normalization'] != 'ar-timestamp-zero-v1':
+            if provider['archive_normalization'] != 'ar-deterministic-metadata-v1':
                 errors.append('unrecognized provider archive normalization')
             else:
                 original = receipt_path.with_name('libcrypto.original.a').read_bytes()
@@ -186,8 +186,8 @@ def provider_evidence(provider_dir):
                 spec.loader.exec_module(normalizer)
                 if (digest(original) != record['artifacts']['libcrypto.a']['sha256'] or
                     digest(original) != record['provider']['original_libcrypto_sha256'] or
-                    normalizer.normalize_archive_timestamps(original) != crypto.read_bytes()):
-                    errors.append('normalized provider differs from the prescribed archive beyond timestamps')
+                    normalizer.normalize_archive_metadata(original) != crypto.read_bytes()):
+                    errors.append('normalized provider differs from the prescribed archive beyond archive metadata')
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
         errors.append(f"provider evidence is unavailable: {error}")
     return result, errors

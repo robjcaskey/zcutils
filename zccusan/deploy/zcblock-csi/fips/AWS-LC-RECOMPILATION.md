@@ -58,11 +58,11 @@ python3 scripts/fips-recompile-aws-lc.py \
 
 Both the work and provider directories must be new. The provider directory is
 a package of the already-built headers, `libcrypto.a`, `bcm.o`, and a receipt;
-creating it does not rebuild or change the native module. Packaging zeros only
-the member timestamps in `libcrypto.a`, preserving every other byte, including
+creating it does not rebuild or change the native module. Packaging zeros member timestamps and owner/group IDs and fixes object modes
+to 0644 in `libcrypto.a`, preserving all remaining bytes, including
 objects, names, order, duplicates, and the symbol index. The original archive is
 retained as `share/zcutils/fips/libcrypto.original.a`; the full build record binds
-its original hash. Acceptance recomputes this exact timestamp-only transformation
+its original hash. Acceptance recomputes this exact archive-metadata transformation
 and rejects any other change. The stable provider receipt identifies the
 normalized linker input. This packaging step is documented for boundary review,
 not asserted to extend certificate coverage. Keep the package inside the

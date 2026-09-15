@@ -15,12 +15,12 @@ application build; Cargo does not recompile the native module.
 
 The compiler consumes the provider headers, objects, and stable provider receipt.
 That receipt binds source, tools, platform, procedure, and packaged module hashes;
-its hash is embedded in the application. Archive member timestamps are zeroed
-without changing any other bytes. The full `provider-build-record.json`
+its hash is embedded in the application. Archive timestamps and owner/group IDs are zeroed, and object modes use 0644.
+Object contents, names, order, duplicates, symbol indexes, and offsets stay unchanged. The full `provider-build-record.json`
 retains the timestamp, boot ID, and intermediate-output hashes and enters the
 image during assembly. Those per-run observations do not change the executable.
 The original archive is retained with that record. Acceptance verifies the
-normalized linker input against the original, allowing only timestamp changes.
+normalized linker input against the original, allowing only these archive metadata changes.
 
 `Dockerfile.fips` prepares OS packages, the Rust toolchain, and locked source
 dependencies in `build-inputs`. Cargo's download cache seeds a complete copy of
@@ -115,7 +115,7 @@ set `compare_online=true`, or run the local workflow helper with
 
 In that experiment, the native runner rebuilds the provider from clean source
 at the same absolute path with networking enabled and disabled, then compares
-the module object, timestamp-normalized archive, tool, and identity probe. Original
+the module object, metadata-normalized archive, tool, and identity probe. Original
 archive hashes remain recorded separately. The application Dockerfile
 selects the explicit `reproducibility-check` stage: two clean compiler branches
 use the same prepared inputs, and every shipped executable must have matching
