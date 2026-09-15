@@ -133,7 +133,7 @@ jobs:
           printf '%s  %s\n' "$AWS_LC_ARCHIVE_SHA256" "$RUNNER_TEMP/AWS-LC-FIPS-3.1.0.zip" | sha256sum -c -
           compare_args=()
           if [[ "$FIPS_COMPARE_ONLINE" == 1 ]]; then compare_args+=(--compare-online); fi
-          sudo -n env "PATH=$PATH" python3 scripts/fips-reproducible-provider.py \
+          python3 scripts/fips-reproducible-provider.py \
             --archive "$RUNNER_TEMP/AWS-LC-FIPS-3.1.0.zip" \
             --work-dir "$RUNNER_TEMP/aws-lc-5314-work" \
             --provider-dir "$GITHUB_WORKSPACE/zccusan/deploy/zcblock-csi/fips/provider" \

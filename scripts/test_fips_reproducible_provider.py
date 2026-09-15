@@ -46,6 +46,10 @@ class NativeComparisonTests(unittest.TestCase):
         self.assertIn('default: false', setting)
         self.assertNotIn('cargo build --locked --release', workflow)
         self.assertIn('scripts/fips-reproducible-provider.py', workflow)
+        self.assertNotIn('sudo -n', workflow)
+        native_source = (root / 'scripts/fips-reproducible-provider.py').read_text()
+        self.assertIn("['unshare', '--user', '--map-root-user', '--net']", native_source)
+        self.assertIn("GOCACHE=str(go_cache)", native_source)
         self.assertIn('cp -a "$RUNNER_TEMP/linked-bin/." "$artifact/bin/"', workflow)
 
 

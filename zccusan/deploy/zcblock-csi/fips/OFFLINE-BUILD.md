@@ -8,7 +8,8 @@ still use the network. This is not an air-gapped end-to-end workflow.
 ## Compilation
 
 `scripts/fips-reproducible-provider.py` invokes the prescribed AWS-LC procedure
-inside a new network namespace containing only loopback. The source archive is
+inside a new network namespace containing only loopback. An unprivileged
+runner creates it through a user namespace; passwordless sudo is unnecessary. The source archive is
 verified before execution. The resulting provider package is the input to the
 application build; Cargo does not recompile the native module.
 
@@ -51,3 +52,18 @@ outputs. Preserve the release's offline manifest and native artifact hashes for
 that comparison. Per-run receipts, signatures, and OCI metadata are not expected
 to match byte for byte; matching executable hashes must not be described as
 matching complete OCI image digests.
+
+After downloading and verifying two releases and their launch records, compare
+independent workers with:
+
+```sh
+python3 scripts/fips-compare-builds.py \
+  --first /path/to/first/artifact --first-launch /path/to/first/launch.json \
+  --second /path/to/second/artifact --second-launch /path/to/second/launch.json \
+  --report independent-build-comparison.json
+```
+
+The tool requires distinct worker instance IDs, verifies the actual packaged
+files against the offline manifests, and compares source/tool identity and
+native-provider outputs. It does not authenticate the supplied launch records;
+verify the downloaded artifacts and their origin before running it.

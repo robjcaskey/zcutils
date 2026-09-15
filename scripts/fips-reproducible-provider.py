@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare two native module builds and install only the offline provider.
 
-Run as root on the selected builder so unshare can create a network namespace.
+An unprivileged builder uses a user namespace to create its network namespace.
 Both builds use the same absolute working path sequentially, with no native
 compiler-output cache. Network isolation does not change the prescribed CMake
 or make commands.
@@ -62,8 +62,6 @@ def main():
     parser.add_argument('--compare-online', action='store_true', help='explicit experiment; disabled in normal offline builds')
     parser.add_argument('--allow-untested-environment', action='store_true')
     args = parser.parse_args()
-    if os.geteuid() != 0:
-        raise ValueError('run as root to enforce network isolation with unshare')
     root = Path(args.work_dir).resolve()
     provider = Path(args.provider_dir).resolve()
     if root.exists() or provider.exists():
@@ -78,8 +76,16 @@ def main():
             command += ['--allow-untested-environment']
         if mode == 'offline':
             command += ['--require-offline', '--provider-dir', str(root / 'offline-provider')]
-            command = ['unshare', '--net', '--'] + command
-        subprocess.run(command, check=True)
+            isolation = ['unshare', '--net'] if os.geteuid() == 0 else ['unshare', '--user', '--map-root-user', '--net']
+            command = isolation + ['--'] + command
+        # Source downloads may be shared, but each trial gets an empty Go compiler cache.
+        go_cache = root / 'current-go-cache'
+        env = dict(os.environ, GOCACHE=str(go_cache), CCACHE_DISABLE='1')
+        if mode == 'offline':
+            env['GOPROXY'] = 'off'
+        subprocess.run(command, check=True, env=env)
+        if go_cache.exists():
+            shutil.rmtree(go_cache)
         current.rename(root / mode)
     if args.compare_online:
         compare_native(root / 'online.json', root / 'offline.json', root / 'online', root / 'offline',

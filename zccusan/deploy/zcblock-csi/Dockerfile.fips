@@ -77,9 +77,6 @@ RUN --mount=type=cache,id=zcutils-fips-cargo-registry,target=/usr/local/cargo/re
 ENV CARGO_HOME=/opt/cargo-inputs
 COPY scripts/fips-build-reproducibility.py ./scripts/fips-build-reproducibility.py
 COPY src ./src
-COPY tests/fixtures/client-wal/live-client.json ./tests/fixtures/client-wal/live-client.json
-COPY zccusan/deploy/zcblock-csi/kernel-module-artifacts.example.yaml ./zccusan/deploy/zcblock-csi/kernel-module-artifacts.example.yaml
-COPY zccusan/deploy/zcblock-csi/getting-started/ ./zccusan/deploy/zcblock-csi/getting-started/
 # Each branch starts from prepared sources with no target directory.
 FROM build-inputs AS online-reference
 ARG BUILD_JOBS=4
@@ -96,6 +93,10 @@ COPY --from=online-reference /out /online-reference
 RUN --network=none python3 scripts/fips-build-reproducibility.py compare \
     --offline /out --online /online-reference --report /out/evidence/application-reproducibility.json
 FROM ${FIPS_COMPILED_STAGE} AS builder
+# Fixtures are needed by tests, not release compilation.
+COPY tests/fixtures/client-wal/live-client.json ./tests/fixtures/client-wal/live-client.json
+COPY zccusan/deploy/zcblock-csi/kernel-module-artifacts.example.yaml ./zccusan/deploy/zcblock-csi/kernel-module-artifacts.example.yaml
+COPY zccusan/deploy/zcblock-csi/getting-started/ ./zccusan/deploy/zcblock-csi/getting-started/
 COPY scripts/fips-acceptance.py ./scripts/fips-acceptance.py
 COPY scripts/fips-recompile-aws-lc.py ./scripts/fips-recompile-aws-lc.py
 COPY scripts/fips-reproducible-provider.py ./scripts/fips-reproducible-provider.py
