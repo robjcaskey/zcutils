@@ -42,8 +42,9 @@ silently replace the trusted key for an older release.
 
 ## 1. Standard tools: verify the release you will deploy
 
-Use Cosign, `jq`, and `sha256sum`. The build pipeline uses Cosign 2.5.3; preserve
-its normal signature, claim, and transparency-log checks. Obtain the image digest,
+Use Cosign, `jq`, and `sha256sum`. The canonical FIPS pipeline uses Cosign 2.5.3;
+the ordinary image pipeline uses 3.1.2. Preserve normal signature, claim, and
+transparency-log checks. Obtain the image digest,
 release artifacts, and approved public key through your release approval process.
 The key included in a downloaded artifact is a convenience copy, not a trust
 anchor. Compare its fingerprint with an independently approved fingerprint before
@@ -184,8 +185,9 @@ together so another reviewer can repeat the checks.
 
 ### Verify detached artifacts with OpenSSL, without Cosign
 
-The current release's detached `.cosign.bundle` files contain an ECDSA P-256
-signature in the `base64Signature` field. OpenSSL can verify that signature over
+The canonical FIPS release's Cosign 2.5.3 detached `.cosign.bundle` files contain
+an ECDSA P-256 signature in the `base64Signature` field. These commands target
+that format; the ordinary image pipeline uses newer bundles. OpenSSL can verify that signature over
 the **original file bytes**. This works for both the executable tar and the
 SPDX/CycloneDX `.intoto.json` files. No reformatting, unpacking, or JSON
 reserialization is allowed before signature verification.

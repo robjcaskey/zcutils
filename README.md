@@ -1,5 +1,15 @@
 # zcutils
 
+[![FIPS gate tests](https://github.com/robjcaskey/zcutils/actions/workflows/fips-acceptance-tests.yml/badge.svg?branch=main)](https://github.com/robjcaskey/zcutils/actions/workflows/fips-acceptance-tests.yml)
+[![Image build](https://github.com/robjcaskey/zcutils/actions/workflows/zcblock-csi-images.yml/badge.svg?branch=main)](https://github.com/robjcaskey/zcutils/actions/workflows/zcblock-csi-images.yml)
+[![SBOM formats: SPDX and CycloneDX](https://img.shields.io/badge/SBOM-SPDX%20%2B%20CycloneDX-blue)](zccusan/deploy/zcblock-csi/IMAGE-VALIDATION.md)
+[![Image verification: Cosign and OpenSSL](https://img.shields.io/badge/verify-Cosign%20%2B%20OpenSSL-blue)](zccusan/deploy/zcblock-csi/IMAGE-VALIDATION.md)
+[![License: MIT or Apache-2.0 or BSD-2-Clause](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0%20OR%20BSD--2--Clause-blue)](LICENSE.md)
+
+The gate-test badge reports checker regressions, not FIPS validation. Verification
+badges link to the procedures and their scope; signed artifacts must still be
+checked for the exact image being deployed.
+
 `zcutils` is an experimental Linux utility crate for zero-copy descriptor
 streams, lane-multiplexed TCP transfer, and low-level io_uring storage/network
 benchmarks. It builds one umbrella binary plus direct command binaries for the

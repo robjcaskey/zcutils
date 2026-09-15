@@ -16,6 +16,7 @@ RUN --mount=type=cache,id=zcutils-nonfips-builder-apt-lists,target=/var/lib/apt/
     protobuf-compiler
 
 COPY Cargo.toml Cargo.lock ./
+COPY vendor/aws-lc-fips-sys-provider ./vendor/aws-lc-fips-sys-provider
 COPY build.rs ./
 COPY src ./src
 ARG SOURCE_DATE_EPOCH
