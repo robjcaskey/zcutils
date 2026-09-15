@@ -18,6 +18,8 @@ RUN --mount=type=cache,id=zcutils-nonfips-builder-apt-lists,target=/var/lib/apt/
 COPY Cargo.toml Cargo.lock ./
 COPY build.rs ./
 COPY src ./src
+ARG SOURCE_DATE_EPOCH
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 
 RUN --mount=type=cache,id=zcutils-nonfips-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=zcutils-nonfips-cargo-git,target=/usr/local/cargo/git,sharing=locked \

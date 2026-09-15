@@ -231,7 +231,7 @@ jobs:
             --allow-insecure-loopback-registry \
             "${cache_args[@]}"
           printf '%s\n' "${image}" > "$RUNNER_TEMP/fips-image-ref.txt"
-          printf 'unsigned_executable_bundle_sha256=%s\n' "$(cat "$RUNNER_TEMP/fips-image-attestations/unsigned-executable-bundle.sha256")" >> "$GITHUB_OUTPUT"
+          printf 'unsigned_executable_bundle_sha256=%s\n' "$(cat "$RUNNER_TEMP/fips-image-attestations/zcblock-csi-fips-aspiring.unsigned-executable-bundle.sha256")" >> "$GITHUB_OUTPUT"
           printf 'effective_build_timestamp=%s\n' "$SOURCE_DATE_EPOCH" >> "$GITHUB_OUTPUT"
       - name: Extract and verify the selected offline artifacts
         run: |

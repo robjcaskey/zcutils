@@ -136,7 +136,7 @@ class ImageAttestationTests(unittest.TestCase):
                 self.assertEqual(manifest["signingAuthority"], "Rob J. Caskey")
                 self.assertEqual(manifest["subject"]["digest"]["sha256"], digest)
                 self.assertFalse(manifest["signed"])
-                exported = Path(temporary) / 'unsigned-executable-bundle.sha256'
+                exported = Path(temporary) / f'zcblock-csi-{variant}.unsigned-executable-bundle.sha256'
                 self.assertEqual(exported.read_text().strip(), manifest['payload']['digest']['sha256'])
                 # A caller can require the exact earlier bundle before signing.
                 args.effective_build_timestamp = args.source_date_epoch

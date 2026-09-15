@@ -81,7 +81,8 @@ effective timestamp. No new wall-clock start/end fields are added.
 bundle hash. A mismatch stops before signing or publication. The FIPS workflow
 exposes the corresponding `expected_unsigned_executable_bundle_sha256` and
 `effective_build_timestamp` dispatch inputs and exports both values as job
-outputs. Every build also writes `unsigned-executable-bundle.sha256`.
+outputs. Every build also writes
+`zcblock-csi-<variant>.unsigned-executable-bundle.sha256`.
 
 The bundle hash appears as `zcutils:unsigned-executable-bundle:sha256` in a
 CycloneDX metadata property and an SPDX annotation. Both signed in-toto SBOM

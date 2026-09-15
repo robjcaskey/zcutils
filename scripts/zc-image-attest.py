@@ -675,7 +675,7 @@ def generate(args: argparse.Namespace) -> None:
             raise SystemExit('expected-unsigned-executable-bundle-sha256 must be a SHA-256 digest')
         if expected != payload_subject['digest']['sha256']:
             raise SystemExit('rebuilt payload does not match expected-unsigned-executable-bundle-sha256; signing and publication refused')
-    payload_hash_path = args.output_dir / 'unsigned-executable-bundle.sha256'
+    payload_hash_path = args.output_dir / f'zcblock-csi-{args.variant}.unsigned-executable-bundle.sha256'
     payload_hash_path.write_text(payload_subject['digest']['sha256'] + '\n')
     signing_key = resolve_signing_key(args)
     cache: dict[str, dict] = {}
@@ -858,7 +858,7 @@ def verify_directory(
             raise SystemExit('payload digest mismatch')
         release_payload.validate(payload_path)
         expected_hash = payload['digest']['sha256']
-        if (output / 'unsigned-executable-bundle.sha256').read_text().strip() != expected_hash:
+        if (output / f'{prefix}.unsigned-executable-bundle.sha256').read_text().strip() != expected_hash:
             raise SystemExit('exported payload hash differs from the payload')
         spdx = json.loads((output / f'{prefix}.spdx.json').read_text())
         cdx = json.loads((output / f'{prefix}.cyclonedx.json').read_text())
