@@ -87,19 +87,15 @@ class RunnerBuildCacheStaticTests(unittest.TestCase):
         self.assertTrue(fips.startswith("# syntax=docker/dockerfile:1@sha256:"))
         self.assertIn("ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux@sha256:", fips)
         self.assertIn("ARG RUST_IMAGE=docker.io/library/rust@sha256:", fips)
-        self.assertEqual(fips.count("id=zcutils-fips-cargo-registry"), 5)
-        self.assertEqual(fips.count("id=zcutils-fips-cargo-git"), 5)
+        self.assertEqual(fips.count("id=zcutils-fips-cargo-registry"), 1)
+        self.assertEqual(fips.count("id=zcutils-fips-cargo-git"), 1)
         acceptance = "python3 scripts/fips-acceptance.py collect-build"
         acceptance_offset = fips.index(acceptance)
         acceptance_run = fips.rfind("RUN ", 0, acceptance_offset)
-        self.assertIn(
-            "id=zcutils-fips-cargo-registry",
-            fips[acceptance_run:acceptance_offset],
-        )
-        self.assertIn(
-            "id=zcutils-fips-cargo-git",
-            fips[acceptance_run:acceptance_offset],
-        )
+        self.assertIn("--network=none", fips[acceptance_run:acceptance_offset])
+        self.assertIn("ENV CARGO_HOME=/opt/cargo-inputs", fips)
+        self.assertIn("cp -a /usr/local/cargo/registry /opt/cargo-inputs/", fips)
+        self.assertNotIn("--mount=type=cache", fips[acceptance_run:acceptance_offset])
         self.assertNotIn("target=/work/target", fips)
 
     def test_controller_accepts_only_available_tagged_same_az_cache(self) -> None:

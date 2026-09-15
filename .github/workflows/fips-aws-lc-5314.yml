@@ -4,6 +4,10 @@ run-name: AWS-LC 5314 provider ${{ inputs.runner_label }}
 on:
   workflow_dispatch:
     inputs:
+      compare_online:
+        description: Explicit same-machine experiment; normal releases compile offline only
+        type: boolean
+        default: false
       runner_label:
         description: Unique label produced by scripts/test-github-ec2-runner.py --fips-build
         required: true
@@ -21,6 +25,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  FIPS_COMPARE_ONLINE: ${{ inputs.compare_online && '1' || '0' }}
   RUNNER_CONFIG_JSON: ${{ vars.AWS_FIPS_RUNNER_CONFIG }}
   EXPECTED_ROLE_ARN: ${{ vars.AWS_FIPS_RUNNER_ROLE_ARN }}
   AWS_LC_ARCHIVE_URL: https://github.com/aws/aws-lc/archive/refs/tags/AWS-LC-FIPS-3.1.0.zip
@@ -79,7 +84,7 @@ jobs:
           retention-days: 14
 
   build:
-    name: Reproduce and link AWS-LC FIPS 3.1.0
+    name: Build AWS-LC FIPS 3.1.0 offline
     needs: launch
     runs-on: ${{ needs.launch.outputs.runner_label }}
     timeout-minutes: 38
@@ -121,6 +126,18 @@ jobs:
             image=moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
             network=host
           buildkitd-config: config/buildkit-loopback-registry.toml
+      - name: Reproduce the section 11.1 module and provider package
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --connect-timeout 15 "$AWS_LC_ARCHIVE_URL" -o "$RUNNER_TEMP/AWS-LC-FIPS-3.1.0.zip"
+          printf '%s  %s\n' "$AWS_LC_ARCHIVE_SHA256" "$RUNNER_TEMP/AWS-LC-FIPS-3.1.0.zip" | sha256sum -c -
+          compare_args=()
+          if [[ "$FIPS_COMPARE_ONLINE" == 1 ]]; then compare_args+=(--compare-online); fi
+          sudo -n env "PATH=$PATH" python3 scripts/fips-reproducible-provider.py \
+            --archive "$RUNNER_TEMP/AWS-LC-FIPS-3.1.0.zip" \
+            --work-dir "$RUNNER_TEMP/aws-lc-5314-work" \
+            --provider-dir "$GITHUB_WORKSPACE/zccusan/deploy/zcblock-csi/fips/provider" \
+            --report "$RUNNER_TEMP/aws-lc-5314-native.json" "${compare_args[@]}"
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
       - name: Install Cosign
@@ -140,29 +157,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME || 'robjcaskey' }}
           password: ${{ secrets.ZCCUSAN_DOCKERHUB_PAT || secrets.DOCKERHUB_PAT || secrets.DOCKERHUB_TOKEN }}
-      - name: Reproduce the section 11.1 module and provider package
-        run: |
-          set -euo pipefail
-          curl -fL --retry 3 --connect-timeout 15 "$AWS_LC_ARCHIVE_URL" -o "$RUNNER_TEMP/AWS-LC-FIPS-3.1.0.zip"
-          printf '%s  %s\n' "$AWS_LC_ARCHIVE_SHA256" "$RUNNER_TEMP/AWS-LC-FIPS-3.1.0.zip" | sha256sum -c -
-          python3 scripts/fips-recompile-aws-lc.py \
-            --archive "$RUNNER_TEMP/AWS-LC-FIPS-3.1.0.zip" \
-            --work-dir "$RUNNER_TEMP/aws-lc-5314-work" \
-            --provider-dir "$GITHUB_WORKSPACE/zccusan/deploy/zcblock-csi/fips/provider" \
-            --report "$RUNNER_TEMP/aws-lc-5314-native.json"
-      - name: Link and exercise the Rust diagnostic
-        env:
-          AWS_LC_FIPS_SYS_SYSTEM_DIR: ${{ github.workspace }}/zccusan/deploy/zcblock-csi/fips/provider
-          ZCUTILS_DISABLE_LIBFABRIC: "1"
-        run: |
-          set -euo pipefail
-          cargo build --locked --release --features fips --jobs 32 --bin zc-fips-check
-          target/release/zc-fips-check --require-fips > "$RUNNER_TEMP/zc-fips-check.json"
-          mkdir -p "$RUNNER_TEMP/linked-bin" "$RUNNER_TEMP/link-evidence"
-          cp target/release/zc-fips-check "$RUNNER_TEMP/linked-bin/"
-          python3 scripts/fips-acceptance.py collect-build \
-            --binaries "$RUNNER_TEMP/linked-bin" --out "$RUNNER_TEMP/link-evidence"
-          test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["recompilation_assessment"]["status"])' "$RUNNER_TEMP/link-evidence/build-receipt.json")" = section-11.1-linked
       - name: Build, publish, sign, and attest the FIPS-aspiring image
         env:
           FIPS_PROVIDER_ROOT: zccusan/deploy/zcblock-csi/fips/provider
@@ -195,16 +189,33 @@ jobs:
             --allow-insecure-loopback-registry \
             "${cache_args[@]}"
           printf '%s\n' "${image}" > "$RUNNER_TEMP/fips-image-ref.txt"
+      - name: Extract and verify the selected offline artifacts
+        run: |
+          set -euo pipefail
+          image="$(cat "$RUNNER_TEMP/fips-image-ref.txt")"
+          container="$(docker create "$image")"
+          trap 'docker rm "$container" >/dev/null' EXIT
+          mkdir -p "$RUNNER_TEMP/linked-bin" "$RUNNER_TEMP/link-evidence"
+          docker cp "$container:/usr/local/bin/." "$RUNNER_TEMP/linked-bin/"
+          docker cp "$container:/usr/share/zcutils/fips/." "$RUNNER_TEMP/link-evidence/"
+          docker run --rm --network none --entrypoint /usr/local/bin/zc-fips-check "$image" --require-fips > "$RUNNER_TEMP/zc-fips-check.json"
+          python3 scripts/fips-build-reproducibility.py verify \
+            --binaries "$RUNNER_TEMP/linked-bin" \
+            --report "$RUNNER_TEMP/link-evidence/offline-build.json"
       - name: Assemble hash-bound evidence
         run: |
           set -euo pipefail
           artifact="$RUNNER_TEMP/fips-artifact"
           mkdir -p "$artifact/evidence" "$artifact/bin"
           cp -a zccusan/deploy/zcblock-csi/fips/provider "$artifact/provider"
-          cp target/release/zc-fips-check "$artifact/bin/"
+          cp -a "$RUNNER_TEMP/linked-bin/." "$artifact/bin/"
           cp "$RUNNER_TEMP/aws-lc-5314-native.json" "$artifact/evidence/"
           cp "$RUNNER_TEMP/zc-fips-check.json" "$artifact/evidence/"
-          cp "$RUNNER_TEMP/link-evidence/build-receipt.json" "$artifact/evidence/"
+          cp -a "$RUNNER_TEMP/link-evidence/." "$artifact/evidence/"
+          if [[ "$FIPS_COMPARE_ONLINE" == 1 ]]; then
+            cp "$RUNNER_TEMP/aws-lc-5314-work/provider-reproducibility.json" "$artifact/evidence/"
+            cp "$RUNNER_TEMP/aws-lc-5314-work/online.json" "$artifact/evidence/provider-online.json"
+          fi
           cp "$RUNNER_TEMP/fips-image-ref.txt" "$artifact/evidence/"
           cp -a "$RUNNER_TEMP/fips-image-attestations" "$artifact/image-attestations"
           (cd "$artifact" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/files.sha256"

@@ -15,6 +15,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import zipfile
@@ -211,6 +212,9 @@ def tree_manifest(root):
 
 
 def reproduce(args):
+    interfaces = sorted(name for _, name in socket.if_nameindex())
+    if getattr(args, "require_offline", False) and any(name != "lo" for name in interfaces):
+        raise ValueError("offline module build has a non-loopback network interface")
     archive = Path(args.archive).resolve()
     work = Path(args.work_dir).resolve()
     report_path = Path(args.report).resolve()
@@ -260,6 +264,7 @@ def reproduce(args):
         "module_version_string": MODULE_VERSION,
         "security_policy": POLICY_URL,
         "security_policy_section": "11.1",
+        "network_interfaces": interfaces,
         "completed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "source": {
             "archive": archive.name,
@@ -305,6 +310,7 @@ def reproduce(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--require-offline", action="store_true", help="reject non-loopback network interfaces")
     parser.add_argument("--archive", required=True, help="unchanged AWS-LC-FIPS-3.1.0.zip")
     parser.add_argument("--work-dir", required=True, help="new directory for this build")
     parser.add_argument("--report", required=True, help="evidence JSON outside work-dir")

@@ -116,6 +116,7 @@ def source_files(root):
                  "zccusan/deploy/zcblock-csi/Dockerfile.fips", "scripts/fips-acceptance.py",
                  "scripts/github-ec2-runner-smoke.py",
                  "scripts/fips-recompile-aws-lc.py",
+                 "scripts/fips-build-reproducibility.py", "scripts/fips-reproducible-provider.py",
                  "zccusan/deploy/zcblock-csi/fips/AWS-LC-RECOMPILATION.md",
                  "zccusan/deploy/zcblock-csi/fips/acceptance-review-history.json"):
         files[name] = file_digest(root / name)

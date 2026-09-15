@@ -14,6 +14,9 @@ its use. Build records, configuration records, tests, and technical review
 support that decision. The following process explains what each record proves
 and how to obtain it.
 
+For how releases are compiled and checked before publication, see
+[Offline FIPS compilation](OFFLINE-BUILD.md).
+
 ## Deployment goals and how to establish them
 
 Each applicable goal below needs a supported conclusion before it can be used

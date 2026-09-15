@@ -36,6 +36,7 @@ def main():
     parser.add_argument("--output-dir", type=Path, default=Path("target/github-ec2-runner-smoke"))
     parser.add_argument("--fips-build", action="store_true",
                         help="run the certificate-5314 provider/link workflow instead of the cheap smoke test")
+    parser.add_argument("--compare-online", action="store_true", help="explicit FIPS reproducibility experiment")
     parser.add_argument("--aws-profile", default="slopmud-breakglass",
                         help="local profile used to verify KMS-backed FIPS image signatures")
     args = parser.parse_args()
@@ -71,8 +72,11 @@ def main():
         gh(["secret", "set", secret, "--repo", args.repo], response["encoded_jit_config"])
         del response
         save()
+        inputs = {"runner_label": label, "jit_secret_name": secret}
+        if args.fips_build:
+            inputs["compare_online"] = args.compare_online
         api(endpoint + f"/workflows/{workflow}/dispatches", "POST", {
-            "ref": "main", "inputs": {"runner_label": label, "jit_secret_name": secret},
+            "ref": "main", "inputs": inputs,
         })
         for _ in range(30):
             runs = api(endpoint + f"/workflows/{workflow}/runs?event=workflow_dispatch&per_page=20")

@@ -3,6 +3,8 @@
 # Keep userspace libraries within one distribution; never overlay Debian libc
 # onto UBI. UBI is a container base, not a bootable guest operating system.
 ARG FIPS_DISTRO=amzn2023
+# Normal builds compile offline only. The explicit experiment can select reproducibility-check.
+ARG FIPS_COMPILED_STAGE=offline-build
 ARG FIPS_BUILD_DISTRO=${FIPS_DISTRO}
 ARG UBI_IMAGE=registry.access.redhat.com/ubi9/ubi@sha256:dec374e05cc13ebbc0975c9f521f3db6942d27f8ccdf06b180160490eef8bdbc
 ARG RHEL_IMAGE=registry.access.redhat.com/ubi9/ubi@sha256:dec374e05cc13ebbc0975c9f521f3db6942d27f8ccdf06b180160490eef8bdbc
@@ -44,7 +46,7 @@ RUN dnf --setopt=install_weak_deps=False install -y ca-certificates e2fsprogs ut
 FROM runtime-amzn2023 AS build-amzn2023
 RUN dnf --setopt=install_weak_deps=False install -y gcc gcc-c++ make perl pkgconf-pkg-config libfabric-devel python3 binutils && dnf clean all
 
-FROM build-${FIPS_BUILD_DISTRO} AS builder
+FROM build-${FIPS_BUILD_DISTRO} AS build-inputs
 ARG FIPS_DISTRO
 ARG FIPS_BUILD_DISTRO
 ARG FIPS_PROVIDER_ROOT=zccusan/deploy/zcblock-csi/fips/provider.empty
@@ -67,43 +69,55 @@ RUN --mount=type=cache,id=zcutils-fips-cargo-registry,target=/usr/local/cargo/re
     test -f /opt/aws-lc-fips-5314/lib/libcrypto.a \
     && test -f /opt/aws-lc-fips-5314/lib/bcm.o \
     && test -f /opt/aws-lc-fips-5314/share/zcutils/fips/provider-receipt.json \
-    && cargo fetch --locked
+    && cargo fetch --locked \
+    && mkdir -p /opt/cargo-inputs \
+    && cp -a /usr/local/cargo/registry /opt/cargo-inputs/ \
+    && if [ -d /usr/local/cargo/git ]; then cp -a /usr/local/cargo/git /opt/cargo-inputs/; fi
+# Persist complete source dependencies, not compiler outputs, in the input image.
+ENV CARGO_HOME=/opt/cargo-inputs
+COPY scripts/fips-build-reproducibility.py ./scripts/fips-build-reproducibility.py
 COPY src ./src
 COPY tests/fixtures/client-wal/live-client.json ./tests/fixtures/client-wal/live-client.json
 COPY zccusan/deploy/zcblock-csi/kernel-module-artifacts.example.yaml ./zccusan/deploy/zcblock-csi/kernel-module-artifacts.example.yaml
 COPY zccusan/deploy/zcblock-csi/getting-started/ ./zccusan/deploy/zcblock-csi/getting-started/
+# Each branch starts from prepared sources with no target directory.
+FROM build-inputs AS online-reference
+ARG BUILD_JOBS=4
+ARG FIPS_REBUILD_NONCE
+RUN test -n "$FIPS_REBUILD_NONCE" && python3 scripts/fips-build-reproducibility.py build --mode online --jobs ${BUILD_JOBS}
+
+FROM build-inputs AS offline-build
+ARG BUILD_JOBS=4
+ARG FIPS_REBUILD_NONCE
+RUN --network=none test -n "$FIPS_REBUILD_NONCE" && python3 scripts/fips-build-reproducibility.py build --mode offline --jobs ${BUILD_JOBS}
+
+FROM offline-build AS reproducibility-check
+COPY --from=online-reference /out /online-reference
+RUN --network=none python3 scripts/fips-build-reproducibility.py compare \
+    --offline /out --online /online-reference --report /out/evidence/application-reproducibility.json
+FROM ${FIPS_COMPILED_STAGE} AS builder
 COPY scripts/fips-acceptance.py ./scripts/fips-acceptance.py
 COPY scripts/fips-recompile-aws-lc.py ./scripts/fips-recompile-aws-lc.py
+COPY scripts/fips-reproducible-provider.py ./scripts/fips-reproducible-provider.py
 COPY scripts/github-ec2-runner-smoke.py ./scripts/github-ec2-runner-smoke.py
 COPY .github/workflows/fips-aws-lc-5314.yml ./.github/workflows/fips-aws-lc-5314.yml
 COPY zccusan/deploy/zcblock-csi/fips/AWS-LC-RECOMPILATION.md ./zccusan/deploy/zcblock-csi/fips/AWS-LC-RECOMPILATION.md
 COPY zccusan/deploy/zcblock-csi/fips/acceptance-review-history.json ./zccusan/deploy/zcblock-csi/fips/acceptance-review-history.json
 COPY zccusan/deploy/zcblock-csi/Dockerfile.fips ./zccusan/deploy/zcblock-csi/Dockerfile.fips
-ARG BUILD_JOBS=4
-RUN --mount=type=cache,id=zcutils-fips-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=zcutils-fips-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    if [ "$FIPS_DISTRO" = ubi9 ]; then export ZCUTILS_DISABLE_LIBFABRIC=1; fi; \
-    RUST_MIN_STACK=33554432 cargo build --locked --release --features fips --jobs ${BUILD_JOBS} --bin zc-fips-check --bin zcutils --bin zcblock-csi --bin zcblock-node-setup --bin zcblock-control --bin zcblock-freeze --bin zccusan-telemetry-server --bin zccusan-operator --bin zcrepl --bin zcpit --bin zctier --bin zcnblk-fan --bin zcnblk-shm-target --bin zcnblk-wal-failover --bin zcnblk-wal-leaf --bin zcnblk-order-smoke
-RUN --mount=type=cache,id=zcutils-fips-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=zcutils-fips-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    if [ "$FIPS_DISTRO" = ubi9 ]; then export ZCUTILS_DISABLE_LIBFABRIC=1; fi; \
-    RUST_MIN_STACK=33554432 cargo test --locked --release --features fips --jobs ${BUILD_JOBS} --lib crypto_protocol_tests \
-    && RUST_MIN_STACK=33554432 cargo test --locked --release --features fips --jobs ${BUILD_JOBS} --lib zcnblk_aes_transport_round_trips_split_frames
-RUN --mount=type=cache,id=zcutils-fips-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=zcutils-fips-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    mkdir -p /out/bin /out/evidence \
-    && for bin in zc-fips-check zcutils zcblock-csi zcblock-node-setup zcblock-control zcblock-freeze zccusan-telemetry-server zccusan-operator zcrepl zcpit zctier zcnblk-fan zcnblk-shm-target zcnblk-wal-failover zcnblk-wal-leaf zcnblk-order-smoke; do cp target/release/$bin /out/bin/; done \
+RUN --network=none if [ "$FIPS_DISTRO" = ubi9 ]; then export ZCUTILS_DISABLE_LIBFABRIC=1; fi; \
+    RUST_MIN_STACK=33554432 cargo test --frozen --release --features fips --jobs ${BUILD_JOBS} --lib crypto_protocol_tests \
+    && RUST_MIN_STACK=33554432 cargo test --frozen --release --features fips --jobs ${BUILD_JOBS} --lib zcnblk_aes_transport_round_trips_split_frames
+RUN --network=none mkdir -p /out/evidence \
+    && cp /out/build.json /out/evidence/offline-build.json \
     && /out/bin/zc-fips-check --require-fips > /out/evidence/build-provider.json \
     && cp Cargo.lock /out/evidence/Cargo.lock \
     && cp /opt/aws-lc-fips-5314/share/zcutils/fips/provider-receipt.json /out/evidence/provider-receipt.json \
-    && cargo tree --locked --features fips > /out/evidence/dependencies.txt \
+    && cargo tree --frozen --features fips > /out/evidence/dependencies.txt \
     && rustc -Vv > /out/evidence/rustc.txt \
     && cc --version > /out/evidence/cc.txt \
     && printf 'builder=%s\nruntime=%s\n' "$FIPS_BUILD_DISTRO" "$FIPS_DISTRO" > /out/evidence/image-stages.txt \
     && (cd /out/bin && sha256sum *) > /out/evidence/binaries.sha256
-RUN --mount=type=cache,id=zcutils-fips-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=zcutils-fips-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    python3 scripts/fips-acceptance.py collect-build --binaries /out/bin --out /out/evidence
+RUN --network=none python3 scripts/fips-acceptance.py collect-build --binaries /out/bin --out /out/evidence
 
 # This starts from the runtime stage, never the entitled/compiler stage.
 # Removing packages at startup or in a later layer would still publish them.
@@ -111,7 +125,7 @@ FROM runtime-${FIPS_DISTRO} AS runtime
 ARG FIPS_DISTRO
 COPY --from=builder /out/bin/ /usr/local/bin/
 COPY --from=builder /out/evidence/ /usr/share/zcutils/fips/
-RUN if [ "$FIPS_DISTRO" = ubi9 ]; then \
+RUN --network=none if [ "$FIPS_DISTRO" = ubi9 ]; then \
       set -eu; \
       for package in gcc gcc-c++ make cmake perl golang libfabric libfabric-devel e2fsprogs xfsprogs; do \
         if rpm -q "$package" >/dev/null 2>&1; then echo "Unexpected thin-runtime package: $package" >&2; exit 1; fi; \

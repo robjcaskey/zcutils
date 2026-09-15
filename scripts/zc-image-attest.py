@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 
 
@@ -430,6 +431,8 @@ def build_image(args: argparse.Namespace, cache_import: dict | None = None) -> N
         "FIPS_BUILD_DISTRO": build_distro,
         "FIPS_PROVIDER_ROOT": provider_root,
         "BUILD_JOBS": os.environ.get("BUILD_JOBS", "4"),
+        "FIPS_REBUILD_NONCE": str(uuid.uuid4()),
+        "FIPS_COMPILED_STAGE": "reproducibility-check" if os.environ.get("FIPS_COMPARE_ONLINE") == "1" else "offline-build",
     }
     for name in ("AL2023_IMAGE", "UBI_IMAGE", "RHEL_IMAGE", "UBUNTU_IMAGE", "RUST_IMAGE", "KMOD_BUNDLE_ROOT"):
         if os.environ.get(name):
@@ -585,6 +588,23 @@ def resolve_signing_key(args: argparse.Namespace) -> str | None:
     return "awskms:///" + key_id
 
 
+def verify_offline_image(args):
+    """Verify publication uses the offline payload recorded during compilation."""
+    with tempfile.TemporaryDirectory(prefix="zc-fips-published-payload-") as temp:
+        root = Path(temp)
+        container = run([args.engine, "create", args.image]).strip()
+        try:
+            run([args.engine, "cp", container + ":/usr/local/bin", str(root / "bin")])
+            run([args.engine, "cp", container + ":/usr/share/zcutils/fips/offline-build.json",
+                 str(root / "offline-build.json")])
+        finally:
+            run([args.engine, "rm", container])
+        run([sys.executable, str(ROOT / "scripts/fips-build-reproducibility.py"), "verify",
+             "--binaries", str(root / "bin"), "--report", str(root / "offline-build.json")])
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / "offline-build.json", args.output_dir / "offline-build.json")
+
+
 def generate(args: argparse.Namespace) -> None:
     for executable in (args.engine, args.syft):
         if shutil.which(executable) is None:
@@ -610,6 +630,8 @@ def generate(args: argparse.Namespace) -> None:
     cache_import, cache_verification = resolve_and_verify_cache(args)
     if not args.skip_build:
         build_image(args, cache_import)
+    if args.variant == "fips-aspiring":
+        verify_offline_image(args)
     signing_key = resolve_signing_key(args)
     cache: dict[str, dict] = {}
     if cache_import:
@@ -715,6 +737,8 @@ def generate(args: argparse.Namespace) -> None:
             bundles.append(bundle)
 
     files = [spdx, cyclonedx, *statements, *bundles, *cache_files]
+    if args.variant == "fips-aspiring":
+        files.append(output / "offline-build.json")
     if public_key is not None:
         files.append(public_key)
     manifest = {

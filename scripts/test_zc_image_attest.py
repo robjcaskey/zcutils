@@ -116,8 +116,9 @@ class ImageAttestationTests(unittest.TestCase):
                     sign_cache_export=False,
                     allow_insecure_loopback_registry=False,
                 )
-                with mock.patch.object(MODULE.shutil, "which", return_value="/bin/fake"), mock.patch.object(MODULE, "run", side_effect=fake_run):
+                with mock.patch.object(MODULE.shutil, "which", return_value="/bin/fake"), mock.patch.object(MODULE, "run", side_effect=fake_run), mock.patch.object(MODULE, "verify_offline_image", side_effect=lambda a: (a.output_dir / "offline-build.json").write_text("{}")) as verify_offline:
                     MODULE.generate(args)
+                    self.assertEqual(verify_offline.call_count, int(variant == "fips-aspiring"))
                 manifest = json.loads((Path(temporary) / f"zcblock-csi-{variant}.attestation-manifest.json").read_text())
                 self.assertEqual(manifest["signingAuthority"], "Rob J. Caskey")
                 self.assertEqual(manifest["subject"]["digest"]["sha256"], digest)

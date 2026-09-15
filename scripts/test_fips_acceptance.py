@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Regression tests for rejection/acceptance decisions; all green fixtures are synthetic."""
-# ACCEPTANCE-CRITERIA-REVIEWED: 2026-09-13T14:57:51Z
-# ACCEPTANCE-CRITERIA-SHA256: 6c1ea3ce36ebdcc129ef84a684509e52d25b003d54596a338c42b7bff4d3c30f
-# ACCEPTANCE-TESTS-SHA256: 29a9846c52d087474b113e6a5e57e6acf4c1991512be577830c65e3570cab617
+# ACCEPTANCE-CRITERIA-REVIEWED: 2026-09-15T08:34:47Z
+# ACCEPTANCE-CRITERIA-SHA256: 030bdb356cb31d3ee936b18ba0e163504f6fbb2c0c6c3f7b63a4dde7b95e5e7f
+# ACCEPTANCE-TESTS-SHA256: 5e7b348c04b84011f597b19e72933f089fcff74b39a06cd6ba0e9ab963f3a619
 import argparse
 import copy
 import datetime as dt
@@ -115,6 +115,11 @@ def good_application():
 
 
 class ControlTests(unittest.TestCase):
+    def test_offline_compilation_recipes_are_bound_to_source_receipts(self):
+        files = fips.source_files(ROOT)
+        for name in ("scripts/fips-build-reproducibility.py", "scripts/fips-reproducible-provider.py"):
+            self.assertEqual(files[name], fips.file_digest(ROOT / name))
+
     def test_provider_evidence_binds_installed_artifacts_and_exact_commands(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -293,6 +298,8 @@ class AcceptanceTests(unittest.TestCase):
             "scripts/github-ec2-runner-smoke.py": "# synthetic launcher\n",
             "scripts/fips-prepare-source.py": "# synthetic source preparation\n",
             "scripts/fips-recompile-aws-lc.py": "# synthetic recompilation runner\n",
+            "scripts/fips-build-reproducibility.py": "# synthetic offline compiler\n",
+            "scripts/fips-reproducible-provider.py": "# synthetic native isolation\n",
             "zccusan/deploy/zcblock-csi/fips/AWS-LC-RECOMPILATION.md": "# synthetic guide\n",
             "zccusan/deploy/zcblock-csi/fips/acceptance-review-history.json": "{\"schema\": 1}\n",
             "zccusan/deploy/zcblock-csi/Dockerfile.fips": "# synthetic build recipe\n",

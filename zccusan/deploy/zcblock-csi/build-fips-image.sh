@@ -27,7 +27,7 @@ case "$FIPS_PROVIDER_ROOT" in /*|../*|*/../*|*/..) echo 'FIPS_PROVIDER_ROOT must
     exit 2
 }
 args=(--build-arg "FIPS_DISTRO=$FIPS_DISTRO" --build-arg "FIPS_BUILD_DISTRO=$FIPS_BUILD_DISTRO" \
-      --build-arg "FIPS_PROVIDER_ROOT=$FIPS_PROVIDER_ROOT" --build-arg "BUILD_JOBS=${BUILD_JOBS:-4}")
+      --build-arg "FIPS_REBUILD_NONCE=$(cat /proc/sys/kernel/random/uuid)" --build-arg "FIPS_PROVIDER_ROOT=$FIPS_PROVIDER_ROOT" --build-arg "BUILD_JOBS=${BUILD_JOBS:-4}")
 for name in AL2023_IMAGE UBI_IMAGE RHEL_IMAGE UBUNTU_IMAGE RUST_IMAGE KMOD_BUNDLE_ROOT; do
     [[ -z "${!name:-}" ]] || args+=(--build-arg "$name=${!name}")
 done
