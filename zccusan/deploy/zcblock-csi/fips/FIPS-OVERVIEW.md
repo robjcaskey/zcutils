@@ -107,24 +107,49 @@ specified solution before making the all-services assertion.
 
 ## What the evidence establishes
 
-The relevant result is evidence that the particular application release uses
-the identified validated module correctly in the deployed configuration.
-A passing checker supports that conclusion only for the checks it performs.
-The end-user organization's assessment process decides whether the system
-meets its requirements.
+The evidence collected in the [deployment process](#deployment-process) connects
+four facts about the zccusan installation being assessed:
 
-An independent lab can examine module integration and operating conditions.
-Its assessment does not expand Amazon's certificate or create a new zccusan
-validation. CMVP validates cryptographic modules; embedding one does not
-validate the containing application. See [CMVP FAQ P-17](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs).
+1. **Which code is running.** The image digest and executable hashes identify
+   the installed release. The verified build and module receipts connect that
+   executable to the AWS-LC module version being claimed. Signatures are checked
+   against the signing identities accepted in step 2.
+2. **Which validation applies.** The module version and build procedure are
+   compared with certificate 5314 and its Security Policy. The node and
+   container records from step 3 establish whether the actual environment
+   meets the applicable operating conditions.
+3. **Which operations use that module.** The service map and integration review
+   from step 4 identify the implementation used by each in-scope zccusan
+   cryptographic operation. Approved-mode checks and the key-generation,
+   rotation, and usage-limit evidence support the claim for those operations.
+   Evidence for encryption supplied by other components is assessed separately,
+   as described under [scope](#scope-of-the-zccusan-evidence).
+4. **What was checked on the deployment.** The acceptance results record which
+   checks passed or failed for the identified release and configuration. Review
+   findings account for conditions that the automated checks cannot establish.
+   The [vendor statement](#vendor-statement), when obtained, records the
+   vendor's assertions about module use; those assertions must agree with the
+   release, service map, and certificate evidence above.
 
-When supported by the release and deployment evidence, a statement can read:
+In step 5, the assessor uses these records to determine whether zccusan meets
+the applicable requirement in the [requirements table](#requirements-when-using-zccusan).
+The assessment should identify the image digest, deployment profile, covered
+services, requirement assessed, date, and any unresolved findings. For example,
+a conclusion supported by the records could read:
 
-> This deployment uses the AWS-LC 3 Cryptographic Module (static), FIPS 140-3
-> certificate 5314, in approved mode under the identified deployment profile.
-> zccusan is not independently CMVP validated.
+> For zccusan image [digest] deployed under profile [profile and revision],
+> the reviewed cryptographic operations [service-map reference] use the AWS-LC 3
+> Cryptographic Module (static), certificate 5314, in approved mode. Evidence
+> [record references], assessed on [date], supports satisfaction of [specific
+> cryptographic requirement] for those operations in that configuration.
 
-The controlling module references are the [certificate record](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5314)
-and its [Security Policy](https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp5314.pdf).
-For project-specific conditions, see the [AWS-LC recompilation guide](AWS-LC-RECOMPILATION.md)
-and [crypto integration guide](CRYPTO-INTEGRATION.md).
+This conclusion applies to the identified installation and services. Step 6
+requires reviewing changes before applying it to a different release or
+configuration. It relies on Amazon's existing module validation; it does not
+issue a CMVP certificate for zccusan. See [CMVP FAQ P-17](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs).
+
+Use the [certificate record](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5314)
+and its [Security Policy](https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp5314.pdf)
+for the module identity and permitted conditions, the
+[AWS-LC recompilation guide](AWS-LC-RECOMPILATION.md) for build evidence, and the
+[crypto integration guide](CRYPTO-INTEGRATION.md) for application service review.
