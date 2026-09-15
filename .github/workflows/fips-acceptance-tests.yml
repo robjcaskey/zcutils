@@ -11,6 +11,12 @@ on:
       - 'scripts/test_github_ec2_runner_smoke.py'
       - 'scripts/zc-image-attest.py'
       - 'scripts/test_zc_image_attest.py'
+      - 'scripts/zc-release-payload.py'
+      - 'scripts/test_zc_release_payload.py'
+      - 'scripts/zc-reproducibility-admission.py'
+      - 'scripts/test_zc_reproducibility_admission.py'
+      - 'scripts/test-github-ec2-runner.py'
+      - 'scripts/test_github_runner_monitor.py'
       - 'scripts/configure-runner-build-cache.sh'
       - 'scripts/test_runner_build_cache.py'
       - 'config/squid-runner-build-cache.conf'
@@ -54,6 +60,9 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_fips*.py' -v
           python3 -m unittest scripts/test_github_ec2_runner_smoke.py -v
           python3 -m unittest scripts/test_zc_image_attest.py -v
+          python3 -m unittest scripts/test_zc_release_payload.py -v
+          python3 -m unittest scripts/test_zc_reproducibility_admission.py -v
+          python3 -m unittest scripts/test_github_runner_monitor.py -v
           python3 -m unittest scripts/test_runner_build_cache.py -v
       # This job checks the checker. Release acceptance must run `check` on
       # the actual deployment node; a hosted-runner green job is not FIPS proof.
