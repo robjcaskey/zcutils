@@ -5,7 +5,7 @@ claim that all cryptographic services are approved. A passing runtime probe
 does not establish certificate coverage. Never promote a lab report into a
 CMVP validation statement.
 
-For organizational requirements, deployment verification, and the SG-8 vendor
+For deployment criteria, evidence, and the SG-8 vendor
 statement, see [zccusan FIPS overview](fips/FIPS-OVERVIEW.md).
 
 ## Image variants

@@ -1,92 +1,89 @@
 # zccusan FIPS overview
 
 > **Future-state assumptions:** TLS call-graph review, dependency reachability review, and
-> evidence for encryption-key usage limits remain open, along with the other
+> verification of encryption-key usage limits remain open, along with the other
 > acceptance work listed in the [crypto integration guide](CRYPTO-INTEGRATION.md).
 > The rest of this guide assumes that work has been resolved for the release
 > being deployed. It does not describe the current build as accepted or validated.
 
 zccusan can use validated cryptography through the AWS-LC 3 Cryptographic
 Module (static), certificate 5314, within its permitted build and operating
-conditions. Deployment verification connects the application release and its
-cryptographic services to that module, its certificate, and the environment
-in which it runs.
+conditions. The goal is to establish whether a particular zccusan release,
+configuration, and set of cryptographic operations satisfy the criteria for
+its use. Build records, configuration records, tests, and technical review
+support that decision. The following process explains what each record proves
+and how to obtain it.
 
-## Requirements when using zccusan
+## Deployment goals and how to establish them
 
-For a zccusan deployment, identify which volumes contain protected data and
-which zccusan transfer, native transport, RPC, and TLS connections carry that
-data or protect access to it. For each operation whose cryptography is relied
-on to meet a FIPS requirement, establish that the deployed executable uses the
-validated module in approved mode under the permitted operating conditions.
-The [crypto integration guide](CRYPTO-INTEGRATION.md) maps zccusan's services
-to their cryptographic implementations.
-
-The table identifies the inputs needed to assess zccusan against each
-requirement and the resulting evidence. It does not prescribe new official
-forms or imply that each assessment issues a certificate. Regulatory references
+Each applicable goal below needs a supported conclusion before it can be used
+in the deployment assessment. The last column identifies standards or policies
+for which organizations typically use that conclusion. Regulatory references
 were reviewed on 2026-09-14; use the applicable version and assessment path.
 
-| Standard or requirement | Requirement as applied to zccusan | Inputs needed | Resulting evidence or decision |
+| Goal for the zccusan deployment | Supporting records needed | How to obtain and verify them | Typical assessment use |
 | --- | --- | --- | --- |
-| [FIPS 140-3 module use](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.140-3.pdf) | Cryptographic operations relied on for required protection must use a validated module under its permitted conditions. | Exact zccusan image and executable identification; AWS-LC version and certificate 5314; Security Policy; build receipt; actual node/container configuration; cryptographic service map; approved-mode and deployment checks. | A traceable basis for the module-use claim for that release and configuration, with unresolved gaps identified. Embedding AWS-LC does not issue a separate zccusan certificate. See [CMVP FAQ P-17](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs). |
-| [CMVP FAQ SG-8 verification guidance](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs) | Request the application/product vendor's signed letter identifying the validated module and certificate and asserting that it supplies all cryptographic services in the solution; compare the assertions with the CMVP entry. | Defined zccusan release and solution boundary; complete cryptographic service inventory; module-use evidence; a vendor able to substantiate and sign the assertions. | Signed vendor letter and verification that its assertions agree with the certificate entry. SG-8 is guidance; a mandatory letter requirement must come from the applicable assessment or policy. |
-| [CMMC Level 2 SC.L2-3.13.11 / NIST SP 800-171 Rev. 2](https://dodcio.defense.gov/Portals/0/Documents/CMMC/AssessmentGuideL2v2.pdf) | Use validated cryptography when zccusan cryptography protects CUI confidentiality. | CUI-bearing volumes and transfer paths; identification of encryption at each relevant boundary; module certificates; configuration and system security plan entries; test evidence. | Evidence supporting assessment of 3.13.11 for the zccusan portion of the system. A zccusan acceptance report alone does not establish compliance for the entire system. |
-| [FedRAMP Rev5 readiness expectations](https://www.fedramp.gov/resources/documents/3PAO_Readiness_Assessment_Report_Guide.pdf) | For Moderate and higher, establish validated encryption for data at rest and in transit, including the relevant zccusan storage and communication paths. | Assessment boundary and data-flow inventory; zccusan module-use evidence; evidence for the implementations encrypting stored data and backups; inherited service controls and enabled configuration. | Assessment evidence mapping each relevant zccusan data path to its cryptographic protection and identifying coverage gaps. This contributes to the service assessment; it is not a separate authorization of zccusan. |
-| [FedRAMP 2026 20x Class C cryptographic-module rules](https://www.fedramp.gov/2026/reference/20x/c/cryptographic-module-use/) | Document modules protecting federal data. The linked rules use SHOULD for active validated modules or their update streams and for their default use where available. Apply the stated adoption and transition dates. | Applicable assessment path and dates; inventory of zccusan services and modules; validation or update-stream status; configuration used for agency tenants; basis for applicable departures. | Module documentation and configuration evidence for the zccusan services within the assessed service. Do not substitute these rules for a different applicable FedRAMP path. |
-| [HIPAA Security Rule](https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html) | Assess appropriate safeguards for electronic protected health information stored or transported through zccusan. HIPAA alone does not impose a blanket FIPS-build requirement. | Risk analysis covering the relevant zccusan volumes and connections; chosen encryption and key controls; any additional policy requiring validated cryptography. | Documented safeguard decisions and implementation evidence. Include FIPS module-use evidence when an additional applicable requirement calls for it. |
-| Deployment-specific FIPS policy | Apply the policy's stated scope: validated cryptographic use, a required module security level, or compatibility with FIPS-enabled nodes. | Exact policy text; zccusan workload and configuration; module evidence or compatibility tests appropriate to that requirement. | A finding against the specific policy. Successful installation on a FIPS-enabled node establishes compatibility only, unless module coverage and approved use are also established. |
+| Establish that the installed executable incorporates the module identified by certificate 5314. | Image digest, executable hashes, build and module receipts, AWS-LC version, certificate, and Security Policy. | Retrieve the release artifacts and receipts; verify signatures against independently trusted identities; compare installed digests and hashes with those records; review the module build and linkage against the permitted procedure. | Establishing validated module use under [FIPS 140-3](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.140-3.pdf). |
+| Establish that the actual node and container permit the claimed module use. | Recorded node, operating system, architecture, container userspace, acceptance profile, and approved-mode test results. | Inspect the running node and container, compare the recorded values with the Security Policy and selected profile, and run the acceptance checks on that installation. Resolve unsupported conditions before claiming coverage. | Checking operating-environment coverage under [CMVP verification guidance](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs). Successful installation alone establishes compatibility only. |
+| Establish that zccusan encryption relied on for CUI confidentiality uses validated cryptography in approved mode. | Inventory of CUI-bearing volumes and connections; cryptographic service map; reviewed call paths; key-generation, rotation, and usage-limit records; service test results. | Trace each protected operation to its implementation, review the relevant call paths, inspect key configuration, and run service checks. Establish usage bounds across processes and restarts for the workload being accepted. | Assessing the zccusan portion of a system against [NIST SP 800-171 Rev. 2 / CMMC Level 2 SC.L2-3.13.11](https://dodcio.defense.gov/Portals/0/Documents/CMMC/AssessmentGuideL2v2.pdf). |
+| Establish validated protection for covered data at rest and in transit, including protection outside zccusan. | Mapping of volumes, replicas, backups, and connections to their encryption implementations; module certificates; enabled encryption settings; relevant inherited service controls. | Trace storage and network paths, inspect where encryption occurs, retrieve the responsible component's module documentation, and verify the settings that activate the protection. Record any uncovered path. | Assessing zccusan within [FedRAMP Rev5 Moderate or higher](https://www.fedramp.gov/resources/documents/3PAO_Readiness_Assessment_Report_Guide.pdf). |
+| Establish which cryptographic modules protect data in each deployed zccusan service. | Service/module inventory, validation or update-stream status, tenant configuration, and applicable assessment dates. | Inspect deployed services and their dependencies, consult module listings and supplier update documentation, and record the effective tenant settings and any departures from the applicable rules. | Following the [FedRAMP 2026 20x Class C rules](https://www.fedramp.gov/2026/reference/20x/c/cryptographic-module-use/), which mandate documentation and use SHOULD for active validated modules or their update streams, subject to transition dates. |
+| Obtain the vendor's module-use assertions for the exact solution being verified. | Signed letter identifying the module and certificate and asserting that it supplies all cryptographic services in the specified solution. | Obtain the letter from the application/product vendor after it reviews the release, complete service inventory, and module use; compare its assertions with the CMVP entry. See [Vendor statement](#vendor-statement). | Following [CMVP FAQ SG-8](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs) or an assessment policy calling for that letter. |
+| Decide whether the FIPS build and selected controls are appropriate for the workload. | Applicable policy or risk analysis, protected data paths, selected controls, and the verification results for any claimed validated protection. | Review the governing policy and workload risks; select controls; inspect and test their implementation; record why they meet the stated criteria. | Applying an internal cryptographic policy or evaluating safeguards under the [HIPAA Security Rule](https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html). HIPAA alone does not mandate a FIPS build of zccusan. |
 
-### Scope of the zccusan evidence
+### Establishing the scope of protection
 
-The selected certificate-5314 profile uses Amazon Linux 2023 userspace and
-requires the listed node conditions and approved operation. Installing the
-image on EKS, GKE, or another Kubernetes service does not by itself establish
-those conditions. Check the actual node and container against the
-[image and environment guidance](../FIPS.md).
+To claim coverage for the selected certificate-5314 profile, the installation
+needs Amazon Linux 2023 userspace and the listed node conditions. Record the
+actual node and container properties and compare them with the
+[image and environment guidance](../FIPS.md). An EKS or GKE service name does
+not identify those properties.
 
-Transport encryption does not establish encryption at rest. For protected
-zccusan volumes, identify where encryption of persisted data occurs and which
-module performs it. Assess stored copies, replicas, and backups at their
-actual encryption boundaries. If protection is provided by an underlying
-storage service, retain that service's evidence and the configuration enabling
-it; the zccusan AWS-LC certificate is not evidence for a separate implementation.
+To establish encryption at rest for a zccusan volume, identify where its
+persisted data is encrypted and which module performs that operation. Repeat
+that check for replicas and backups. Obtain the responsible storage component's
+module documentation and inspect its encryption settings. This connects the
+stored data to its actual protection; transport-encryption tests cannot
+establish that connection.
 
-Likewise, zccusan's evidence covers the application services identified in its
-review. Kubernetes API connections, service-mesh proxies, and external key
-services need their own evidence where they provide required protection.
-A requirement for hardware-protected keys or a higher module security level
-must be checked against the actual key handling and module certificate; the
-zccusan FIPS image alone does not establish either property.
+To establish protection for Kubernetes API connections, service-mesh traffic,
+or external key operations, identify the component performing each operation,
+obtain its module documentation, and verify its active configuration. For
+hardware-protected keys or a particular module security level, also compare
+the actual key handling and certificate with the policy being assessed.
+zccusan's embedded AWS-LC module cannot establish these properties for other
+components.
 
 ## Deployment process
 
-1. **Identify the requirements.** Establish which data and cryptographic
-   operations are in scope, which rules apply, and what evidence the
-   organization's assessment process requires.
-2. **Verify the release.** Review the build procedure, module receipt, image
-   digest, signatures, software bills of materials, and acceptance profile.
-   Establish which signing identities are trusted and the basis for trusting
-   them; a key supplied alongside an artifact is not sufficient by itself.
-3. **Check the operating conditions.** Compare the actual node and container
-   environment with the module's Security Policy and the documented deployment
-   conditions. A configuration outside those conditions needs an applicable
-   policy basis or a different environment; functional tests alone do not
-   establish certificate coverage.
-4. **Verify cryptographic use.** Identify the implementation handling each
-   security operation used by the workload. Configure keys, rotation, and
-   usage limits, run the deployment acceptance checks, and resolve failures.
-   Retain the evidence for the exact release and configuration. Obtain the
-   vendor statement described below when following SG-8 or when required by
-   the organization's assessment process.
-5. **Assess the deployment.** The organization's security team or assessor
-   evaluates the evidence against its requirements. A separate laboratory
-   assessment can address uncertainty about module reuse or operating
-   conditions, or satisfy an explicit assessment requirement; it is not an
-   automatic step for every installation using an existing validated module.
-6. **Review changes.** Assess updates to the image, node, dependencies, and
-   operating configuration before deployment. Determine which evidence and
-   checks need updating, including certificate status and cryptographic use.
+1. **Define the decision.** Record the exact zccusan workload, protected data,
+   applicable criteria, and the person or assessment process that decides
+   whether the deployment satisfies them. Use this scope to select the goals
+   in the [table above](#deployment-goals-and-how-to-establish-them).
+2. **Identify the installed release.** Obtain and verify the release and module
+   records described in the first row. Retain the installed image digest and
+   executable hashes so subsequent checks apply to the same code.
+3. **Establish permitted operation.** Capture the node and container properties,
+   compare them with the selected profile and Security Policy, and run the
+   installation's acceptance checks. Record differences and resolve those that
+   prevent use under the profile.
+4. **Establish coverage of the workload.** Use the service map, call-path review,
+   key procedures, and tests to account for each covered cryptographic operation.
+   Inspect separate storage and platform components as described under
+   [scope](#establishing-the-scope-of-protection). Obtain the vendor letter when
+   following SG-8 or an assessment policy calling for it. Each conclusion must
+   cite the configuration, test, or review record that supports it.
+5. **Decide whether the deployment meets the selected criteria.** The security
+   team or assessor compares the conclusions from steps 2–4 with the criteria
+   recorded in step 1. Resolve missing support or failed checks before recording
+   a positive finding for the affected criterion. Where specialist interpretation
+   is needed, have a laboratory review the specific module-use or environment
+   question and retain its reasoning with that finding.
+6. **Preserve the basis for the decision.** Before changing the image, node,
+   dependencies, or configuration, compare the proposed change with the accepted
+   installation. Recheck certificate status and repeat the affected inspections,
+   tests, and reviews so the decision remains tied to the code and configuration
+   actually in use.
 
 ## Vendor statement
 
@@ -105,51 +102,34 @@ distribution and can substantiate the assertions for the exact release and
 configuration. The vendor must account for every cryptographic service in the
 specified solution before making the all-services assertion.
 
-## What the evidence establishes
+## Recording the deployment decision
 
-The evidence collected in the [deployment process](#deployment-process) connects
-four facts about the zccusan installation being assessed:
+The end result of step 5 is a finding about whether the identified zccusan
+installation satisfies each criterion selected in step 1. To make that finding
+reviewable, record the image digest, deployment profile and revision, covered
+services, criterion, assessment date, and unresolved issues. Link each finding
+to the build, configuration, service-review, and test records gathered in steps
+2–4; a missing record leaves the corresponding conclusion unsupported.
 
-1. **Which code is running.** The image digest and executable hashes identify
-   the installed release. The verified build and module receipts connect that
-   executable to the AWS-LC module version being claimed. Signatures are checked
-   against the signing identities accepted in step 2.
-2. **Which validation applies.** The module version and build procedure are
-   compared with certificate 5314 and its Security Policy. The node and
-   container records from step 3 establish whether the actual environment
-   meets the applicable operating conditions.
-3. **Which operations use that module.** The service map and integration review
-   from step 4 identify the implementation used by each in-scope zccusan
-   cryptographic operation. Approved-mode checks and the key-generation,
-   rotation, and usage-limit evidence support the claim for those operations.
-   Evidence for encryption supplied by other components is assessed separately,
-   as described under [scope](#scope-of-the-zccusan-evidence).
-4. **What was checked on the deployment.** The acceptance results record which
-   checks passed or failed for the identified release and configuration. Review
-   findings account for conditions that the automated checks cannot establish.
-   The [vendor statement](#vendor-statement), when obtained, records the
-   vendor's assertions about module use; those assertions must agree with the
-   release, service map, and certificate evidence above.
+For example, after verifying the relevant records, the assessor could write:
 
-In step 5, the assessor uses these records to determine whether zccusan meets
-the applicable requirement in the [requirements table](#requirements-when-using-zccusan).
-The assessment should identify the image digest, deployment profile, covered
-services, requirement assessed, date, and any unresolved findings. For example,
-a conclusion supported by the records could read:
+> zccusan image [digest], deployed under [profile and revision], satisfies
+> [specific cryptographic criterion] for [covered operations]. The build review
+> [reference] identifies the embedded AWS-LC module covered by certificate 5314;
+> the environment review [reference] establishes permitted operation; and the
+> service review and deployment checks [references] establish approved use for
+> those operations. This finding was made on [date].
 
-> For zccusan image [digest] deployed under profile [profile and revision],
-> the reviewed cryptographic operations [service-map reference] use the AWS-LC 3
-> Cryptographic Module (static), certificate 5314, in approved mode. Evidence
-> [record references], assessed on [date], supports satisfaction of [specific
-> cryptographic requirement] for those operations in that configuration.
+This finding applies to the identified installation and services. Step 6
+explains how to reassess it when they change. It relies on Amazon's existing
+module validation and does not issue a CMVP certificate for zccusan. See
+[CMVP FAQ P-17](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs).
 
-This conclusion applies to the identified installation and services. Step 6
-requires reviewing changes before applying it to a different release or
-configuration. It relies on Amazon's existing module validation; it does not
-issue a CMVP certificate for zccusan. See [CMVP FAQ P-17](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs).
-
-Use the [certificate record](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5314)
-and its [Security Policy](https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp5314.pdf)
-for the module identity and permitted conditions, the
-[AWS-LC recompilation guide](AWS-LC-RECOMPILATION.md) for build evidence, and the
-[crypto integration guide](CRYPTO-INTEGRATION.md) for application service review.
+To verify module identity and permitted conditions, consult the
+[certificate record](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5314)
+and its [Security Policy](https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp5314.pdf).
+To verify how the embedded module was built, follow the receipt and procedure
+checks in the [AWS-LC recompilation guide](AWS-LC-RECOMPILATION.md).
+To verify which implementation handles each application operation, use the
+service mapping and review instructions in the
+[crypto integration guide](CRYPTO-INTEGRATION.md).
