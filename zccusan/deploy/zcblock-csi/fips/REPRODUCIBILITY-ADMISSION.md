@@ -60,9 +60,12 @@ To publish a new result and update the front-page reproduction badge:
    signing authority's key, producing `verification-manifest.cosign.bundle`.
    Never reuse an earlier result's signature. Run the template's verification
    commands against the new manifest and files.
-4. Replace only the front-page **executables** badge's revision and result link
+4. Update the front-page **reproducible build** and **offline build** badges' revisions and result links
    with the newly verified revision and directory. Keep the visible revision in
-   its label. The live **Image build** and **FIPS gate tests** badges update from
+   each value: `verified @<revision>`. Use label–value pairs, such as
+   `reproducible build | verified @75c89bd4` and
+   `offline build | verified @75c89bd4`. The offline-build badge also needs the
+   recorded network isolation and selection of offline artifacts. The live **Image build** and **FIPS gate tests** badges update from
    GitHub automatically and need no release-specific edit. Add the new result
    link to this guide.
 5. Check that no template placeholders remain, all relative links resolve from

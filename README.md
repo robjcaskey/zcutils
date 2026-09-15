@@ -2,16 +2,21 @@
 
 [![FIPS gate tests](https://github.com/robjcaskey/zcutils/actions/workflows/fips-acceptance-tests.yml/badge.svg?branch=main)](https://github.com/robjcaskey/zcutils/actions/workflows/fips-acceptance-tests.yml)
 [![Image build](https://github.com/robjcaskey/zcutils/actions/workflows/zcblock-csi-images.yml/badge.svg?branch=main)](https://github.com/robjcaskey/zcutils/actions/workflows/zcblock-csi-images.yml)
-[![Executables 75c89bd4: reproduced on 2 workers](https://img.shields.io/badge/executables%2075c89bd4-reproduced%20on%202%20workers-brightgreen)](zccusan/deploy/zcblock-csi/fips/reproduced/75c89bd43418/README.md)
-[![SBOM formats: SPDX and CycloneDX](https://img.shields.io/badge/SBOM-SPDX%20%2B%20CycloneDX-blue)](zccusan/deploy/zcblock-csi/IMAGE-VALIDATION.md)
-[![Image verification: Cosign and OpenSSL](https://img.shields.io/badge/verify-Cosign%20%2B%20OpenSSL-blue)](zccusan/deploy/zcblock-csi/IMAGE-VALIDATION.md)
+[![Reproducible build: verified at 75c89bd4](https://img.shields.io/badge/reproducible%20build-verified%20%4075c89bd4-brightgreen)](zccusan/deploy/zcblock-csi/fips/reproduced/75c89bd43418/README.md)
+[![Offline build: verified at 75c89bd4](https://img.shields.io/badge/offline%20build-verified%20%4075c89bd4-brightgreen)](zccusan/deploy/zcblock-csi/fips/reproduced/75c89bd43418/README.md)
+[![FIPS CMVP: 5314](https://img.shields.io/badge/FIPS%20CMVP-5314-blue)](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5314)
+[![SPDX: signed](https://img.shields.io/badge/SPDX-signed-blue)](zccusan/deploy/zcblock-csi/IMAGE-VALIDATION.md)
+[![CycloneDX: signed](https://img.shields.io/badge/CycloneDX-signed-blue)](zccusan/deploy/zcblock-csi/IMAGE-VALIDATION.md)
 [![License: MIT or Apache-2.0 or BSD-2-Clause](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0%20OR%20BSD--2--Clause-blue)](LICENSE.md)
 
-The gate-test badge reports checker regressions, not FIPS validation. Verification
-badges link to the procedures and their scope; signed artifacts must still be
-checked for the exact image being deployed.
-The reproduction badge links to a signed project-run comparison for the named
-revision, not the latest source or independent certification.
+The FIPS gate-test badge reports checker regressions. CMVP #5314 applies to the
+cryptographic module; zccusan application and deployment conformance remain
+under review. The reproducible-build and offline-build badges cover compilation
+and the unsigned executable bundle at the named revision, with a signed
+project-run comparison across two workers. They do not cover the entire OCI
+image, online input preparation and signing, later revisions, or independent
+certification. The SBOM badges link to signature verification instructions for
+the exact image being deployed.
 
 `zcutils` is an experimental Linux utility crate for zero-copy descriptor
 streams, lane-multiplexed TCP transfer, and low-level io_uring storage/network
