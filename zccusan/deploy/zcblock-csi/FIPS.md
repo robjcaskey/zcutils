@@ -5,10 +5,8 @@ claim that all cryptographic services are approved. A passing runtime probe
 does not establish certificate coverage. Never promote a lab report into a
 CMVP validation statement.
 
-End-user organizations can follow either a self-directed evaluation or use an
-integration vendor experienced with zccusan for outcome-backed preparation,
-deployment, remediation, and review. See
-[Two paths to a FIPS deployment determination](fips/FIPS-DEPLOYMENT-PATHS.md).
+For typical organizational requirements and the technical role of a commercial
+vendor, see [FIPS deployment: independent use and vendor assistance](fips/FIPS-DEPLOYMENT-PATHS.md).
 
 ## Image variants
 

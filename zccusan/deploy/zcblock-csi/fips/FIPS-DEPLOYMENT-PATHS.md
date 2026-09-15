@@ -1,206 +1,141 @@
-# Two paths to a FIPS deployment determination
+# FIPS deployment: independent use and vendor assistance
 
-zccusan is distributed with the material needed to evaluate a deployment that
-uses the AWS-LC 3 Cryptographic Module (static), FIPS 140-3 certificate 5314.
-The end-user organization may complete that work with its own security team and
-assessor, or select an integration vendor with experience in zccusan to guide
-the work.
+> **Work remains:** TLS call-graph review, dependency reachability review, and
+> evidence for encryption-key usage limits remain open, along with the other
+> acceptance work listed in the [crypto integration guide](CRYPTO-INTEGRATION.md).
+> The rest of this guide assumes that work has been resolved for the release
+> being deployed. It does not describe the current build as accepted or validated.
 
-Both paths start with the same signed image, software bills of materials,
-provider and build receipts, acceptance profile, conformance checker, and
-operating guidance. Both end with the end-user organization's assessor or
-authorizing official deciding whether the deployed system meets the
-organization's FIPS requirements. Neither path turns zccusan itself into a
-CMVP-validated product, and neither expands the scope of Amazon's certificate.
+The intended approach is to use the AWS-LC 3 Cryptographic Module (static),
+certificate 5314, within its permitted build and operating conditions. zccusan
+is free software. An end-user organization can evaluate and operate it itself,
+or use a commercial vendor experienced in zccusan to perform technical work.
+Both paths use the same underlying module validation.
 
-## Path 1: end-user organization-directed evaluation
+The open-source project does not attest to the identity or authority behind
+release-signing keys, even when signatures are valid and the keys are properly
+held. Signature verification establishes a relationship between an artifact
+and a key; it does not by itself establish who controls that key or who stands
+behind the release. The end-user organization must establish that trust through
+its own verification or a source it accepts, such as a commercial vendor.
 
-This path fits an end-user organization that already has FIPS engineering,
-platform security, and assessment resources.
+## What different organizations need
 
-1. **Select a deployment profile.** The end-user organization chooses a listed
-   operating system, architecture, hardware profile, Kubernetes configuration,
-   and exact zccusan image digest. A configuration outside the published matrix
-   requires a separately documented basis.
-2. **Verify the release.** The end-user organization verifies the image
-   signature, SPDX and CycloneDX attestations, file hashes, provider receipt,
-   section 11.1 build receipt, and certificate status. Verification is performed
-   against immutable digests rather than mutable tags.
-3. **Map the cryptographic use.** The end-user organization reviews the service
-   map, key and entropy flows, approved algorithms and parameters,
-   service-indicator evidence, non-approved diagnostic operations, and excluded
-   features against its own workload.
-4. **Obtain the required determination.** The end-user organization gives the
-   evaluation kit to its accredited FIPS laboratory, compliance assessor, or
-   authorizing official. The reviewer determines whether the application
-   remains outside the validated module boundary and whether certificate 5314
-   may be relied on for the selected profile. A lab report is an applicability
-   assessment; it is not a new CMVP certificate.
-5. **Deploy and collect evidence.** The end-user organization enables the
-   required host FIPS mode, enforces the selected image and configuration, runs
-   the acceptance checker, and retains the resulting deployment conformance
-   record with its system authorization evidence.
-6. **Operate within the profile.** The end-user organization monitors
-   certificate status, image and node drift, approved-mode failures, key
-   lifecycle, security advisories, and profile expiration. An upgrade is
-   evaluated before replacing a covered digest or platform component.
+Start with the rule that applies to the data and system, rather than the
+organization's industry label. These are common cases, not complete compliance
+checklists. Sources reviewed on 2026-09-14; use the applicable rule version and
+assessment path when planning a deployment.
 
-The end-user organization owns lab and assessor coordination, interpretation of
-its regulatory requirements, environment preparation, remediation, deployment
-evidence, and continuing authorization. The published kit is designed to avoid
-routine vendor participation, but a reviewer may still identify a question or
-gap that requires source-level investigation.
-
-## Path 2: guided evaluation and deployment
-
-This path fits an end-user organization that wants a shorter assessment cycle,
-has a custom platform, or prefers a single technical coordinator. The
-organization selects an integration vendor with demonstrated experience in
-zccusan, FIPS 140 module reuse, container platforms, and the organization's
-target infrastructure.
-
-The end-user organization may purchase help at any of these checkpoints:
-
-1. **Readiness and scope.** The integration vendor inventories the end-user
-   organization's FIPS requirements, data paths, cryptographic services,
-   deployment targets, sidecars, key systems, and authorization boundary. It
-   recommends an existing profile or identifies the evidence needed for a new
-   one.
-2. **Lab-ready package.** The integration vendor verifies the release evidence,
-   maps certificate 5314 and its Security Policy to the proposed deployment,
-   prepares the module-boundary and approved-services rationale, and organizes
-   the questions for the organization's chosen laboratory or assessor.
-3. **Environment preparation.** The integration vendor helps configure the
-   supported FIPS-mode nodes, admission controls, immutable image references,
-   kernel artifacts, key and entropy procedures, logging, and failure policy.
-   Credentials and authorization decisions remain under the end-user
-   organization's control.
-4. **Conformance rehearsal.** Before formal review, the integration vendor runs
-   the acceptance suite, traces failures to their evidence source, remediates
-   integration gaps, and produces a reviewable deployment conformance record.
-   Failed or missing gates remain visible; they are not converted into passes by
-   an advisory opinion.
-5. **Reviewer coordination.** The integration vendor answers technical
-   questions, demonstrates reproduction and runtime checks, maintains the
-   evidence index, and supports resolution of findings. The laboratory,
-   assessor, or authorizing official retains independent judgment.
-6. **Handoff and continuing conformance.** The integration vendor delivers the
-   final profile, runbooks, evidence bundle, exceptions, upgrade rules, and
-   monitoring plan. Optional continuing services can evaluate new releases,
-   add supported profiles, investigate drift, and prepare renewal evidence.
-
-The guided path adds preparation, integration, remediation, and reviewer
-coordination. It does not sell or issue a FIPS certificate. If a reviewer finds
-that the proposed use falls outside certificate 5314, the integration vendor
-can help the end-user organization choose among changing the deployment,
-seeking participation from the module vendor, or sponsoring a new module
-validation.
-
-## Outcome-backed guided service
-
-A guided engagement can be contracted around completed outcomes instead of
-advice hours. The strongest defensible offer combines three milestones:
-
-1. **Written determination.** The integration vendor engages or coordinates a
-   named qualified reviewer, supplies the complete evidence package, answers
-   requests for information within an agreed response time, and remains engaged
-   until the reviewer issues a written applicability disposition for the agreed
-   profiles. The disposition may approve reliance on certificate 5314, require
-   changes, or determine that a new validation is necessary; the integration
-   vendor cannot predetermine the reviewer's independent conclusion. Any
-   laboratory deliverable must state its accredited scope and clearly identify
-   opinions or interpretations outside that scope.
-2. **Conforming deployment.** For a profile that the reviewer accepts, the
-   integration vendor delivers the agreed environment with the exact signed
-   image digest, required policy controls, and an acceptance report containing
-   no `FAIL` or `BLOCKED` gates. The evidence bundle must pass its hash,
-   signature, provenance, and profile checks and be ready for the end-user
-   organization's authorization record.
-3. **Supported handoff.** The integration vendor delivers operating and upgrade
-   runbooks, open findings and exclusions, evidence-retention instructions, and
-   a dated support window. It stays available through the first assessor review
-   and closes in-scope technical findings or documents the third-party decision
-   that prevents closure.
-
-The engagement should also define an early suitability gate. Before substantial
-implementation work begins, the integration vendor must state whether the
-requested profile appears eligible to rely on certificate 5314, identify every
-known gap, and give the end-user organization a written go, change, or stop
-recommendation. If the profile is not eligible, the result is a documented
-decision and migration plan rather than an open-ended consulting effort.
-
-A complete result includes reproducible configuration as well as reports. The
-handoff should contain pinned image digests, configuration or infrastructure as
-code, admission and runtime policy, acceptance output, an evidence index, and a
-clean-room reproduction procedure. A second operator should be able to verify
-the package without access to the original build host or the integration
-vendor's private systems.
-
-The statement of work can make these commitments enforceable through:
-
-- fixed milestone pricing with a final-payment holdback until the deliverables
-  meet their acceptance criteria;
-- included remediation of product or integration defects found within the
-  agreed profile;
-- response-time objectives for laboratory and assessor questions;
-- a dated implementation schedule, dependency register, and escalation path for
-  delays within the integration vendor's control;
-- re-performance, service credits, or a limited refund when a
-  vendor-controlled acceptance criterion is missed;
-- a stabilization period in which drift alarms, restart behavior, evidence
-  collection, and upgrade blocking are exercised in the deployed environment;
-- a release-continuity period covering certificate-status monitoring,
-  vulnerability disposition, replacement evidence, and migration guidance; and
-- an optional profile-extension price and schedule when the end-user
-  organization needs additional operating environments.
-
-This creates a result-oriented service without making an impossible promise.
-CMVP alone issues a new module validation, the qualified reviewer controls its
-applicability opinion, and the authorizing official controls system acceptance.
-No integration vendor can guarantee those independent decisions. It can
-guarantee the completeness and integrity of its evidence, successful execution
-of the agreed conformance gates, timely remediation of defects it controls, and
-continued support through a written disposition and deployable result.
-
-## Responsibility and deliverables
-
-| Activity | End-user organization-directed path | Guided path |
+| Organization or workload | Typical requirement | What to establish for this deployment |
 | --- | --- | --- |
-| Choose regulatory and authorization requirements | End-user organization | End-user organization, advised by integration vendor |
-| Select or extend a deployment profile | End-user organization | Integration vendor prepares; end-user organization approves |
-| Verify image, SBOMs, receipts, and signatures | End-user organization | Integration vendor performs and demonstrates |
-| Prepare module-reuse rationale | End-user organization or its reviewer | Integration vendor prepares for reviewer |
-| Configure and operate the deployment | End-user organization | End-user organization, with implementation assistance |
-| Run acceptance and remediate failures | End-user organization | Integration vendor assists and documents |
-| Decide certificate applicability | End-user organization's qualified reviewer | End-user organization's qualified reviewer |
-| Authorize the deployed system | End-user organization's authorizing official | End-user organization's authorizing official |
-| Monitor drift, advisories, and certificate status | End-user organization | End-user organization or continuing integration service |
+| U.S. federal agency, or a system operated on its behalf, protecting sensitive unclassified information | FIPS applies to cryptographic modules used for that protection. | Identify the modules and certificates, permitted operating conditions, and approved services used by the system. Follow the agency's system assessment and authorization process. See [FIPS 140-3 applicability](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.140-3.pdf). |
+| Defense supplier or research organization handling controlled unclassified information (CUI) under applicable NIST SP 800-171 requirements | For example, CMMC Level 2 practice 3.13.11 requires validated cryptography when cryptography protects CUI confidentiality. | Trace CUI storage and transmission to the actual cryptographic implementations. Retain module certificates, configuration evidence, and tests for assessment. The applicable requirements depend on the governing agreement and rule version. See the [Level 2 assessment guide](https://dodcio.defense.gov/Portals/0/Documents/CMMC/AssessmentGuideL2v2.pdf). |
+| Cloud service provider pursuing FedRAMP | Cryptographic requirements apply across the service's assessment boundary and depend on the FedRAMP path, class or baseline, and transition rules. | Inventory encryption in application traffic, storage, backups, and platform services; identify inherited controls and configuration responsibilities. Check the [Rev5 readiness guide](https://www.fedramp.gov/resources/documents/3PAO_Readiness_Assessment_Report_Guide.pdf) or the applicable [2026 cryptographic-module rules](https://www.fedramp.gov/2026/reference/20x/c/cryptographic-module-use/). |
+| Healthcare organization subject to HIPAA | HIPAA's Security Rule is technology neutral and risk based; HIPAA alone does not impose a blanket requirement that every application use a FIPS-validated module. | Determine whether FIPS is required by an additional policy or obligation. If it is, identify the protected data paths and module evidence just as for other deployments. See the [HHS Security Rule summary](https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html). |
+| Enterprise, university, or nonprofit with an internal FIPS policy | The organization's policy defines which systems and cryptographic uses require validation. | Establish whether the policy requires validated modules, particular security levels, or specific operating environments. A requirement merely to run on FIPS-enabled nodes establishes compatibility, not certificate coverage. |
 
-The normal outputs are a module-reuse applicability report from the qualified
-reviewer and a deployment conformance record from the end-user organization's
-environment. These documents support the organization's system authorization.
-They do not create a new certificate. An end-user organization seeking its own
-CMVP certificate must act as, or contract with, the validation sponsor; define
-the cryptographic module boundary; engage an accredited laboratory; complete
-the CMVP submission; and own ongoing certificate maintenance.
+For FedRAMP in particular, avoid a single timeless rule. The Rev5 readiness
+reference expects validated encryption for Moderate and higher data at rest and
+in transit. The linked 2026 20x Class C rules require module documentation but
+use SHOULD for active validated modules or their update streams, with stated
+adoption and transition dates. Apply the rules governing the actual assessment.
 
-## Claim language
+A requirement for a higher module security level or hardware-protected keys
+needs separate evaluation. It cannot be satisfied by relabeling this software
+build. Likewise, the evidence for zccusan does not establish the status of
+Kubernetes, a service mesh, disk encryption, backups, or an external key service.
 
-For a deployment accepted under the module-reuse path, use language similar to:
+## Path 1: independent use
+
+The end-user organization's engineers review the published build procedure,
+module receipt, image digest, signatures, software bills of materials, and
+acceptance profile. They compare the actual node and container environment
+with the module's Security Policy and the documented deployment conditions.
+They also establish which signing identities they trust and the basis for
+trusting them; a key supplied alongside an artifact is not sufficient by itself.
+
+They then check which cryptographic services the workload actually uses,
+configure keys and rotation, run the acceptance checks on that deployment,
+and retain the evidence. Updates to the image, node, dependencies, or operating
+configuration require a review of what changed and which checks must be rerun.
+
+The organization's security team or assessor evaluates that evidence against
+its requirements. A separate laboratory assessment is not an automatic step
+for every installation using an existing validated module. It can be useful
+when module reuse or an operating environment needs specialist interpretation,
+or when the organization's assessment process requires it.
+
+## Path 2: assistance from a commercial vendor
+
+A vendor's useful contribution is engineering knowledge of zccusan, its
+cryptographic integration, and the target platform. Concrete work can include:
+
+- Reproducing the build and tracing the shipped executable to the module,
+  source version, build procedure, and certificate being relied on.
+- Reviewing TLS construction and other cryptographic call paths to establish
+  which implementation handles each security operation, including less common
+  error and recovery paths.
+- Implementing and testing necessary application fixes, such as enforcing key
+  usage limits or removing an unintended alternative cryptographic path.
+- Testing a specific node and Kubernetes configuration, investigating failures,
+  and determining whether a proposed platform fits the permitted conditions.
+- Maintaining a release branch and assessing how dependency updates, security
+  fixes, and platform changes affect the evidence for that release.
+- Answering source-level questions from the organization's assessor and, where
+  needed, working with a cryptographic testing laboratory or the module vendor
+  to resolve uncertainty about module use.
+
+For example, if a TLS client unexpectedly selects a different provider, a
+vendor familiar with the code can locate the construction site, fix it, and
+add a regression test. If a proposed operating environment is outside the
+permitted conditions, a passing functional test does not resolve that issue.
+The deployment needs an applicable policy basis or a different configuration.
+
+A vendor can also make a specific, signed statement identifying the release,
+embedded module, certificate, supported configuration, and cryptographic
+services covered by its review. NIST's verification guidance describes asking
+for such a vendor statement. Its value depends on the underlying evidence;
+it does not extend the certificate. See [CMVP FAQ SG-8](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs).
+
+This is a practical reason to involve a vendor even when no code changes are
+needed. The vendor can independently verify a release, identify itself and its
+signing key through a channel the organization trusts, and sign a statement
+that binds its review to the exact image digest and evidence. That statement
+is the vendor's assertion, not an assertion by the open-source project about
+the project's signing keys. It must distinguish what the vendor built, what it
+verified, and what it relies on from upstream. Endorsing an existing image does
+not make the vendor its original builder.
+
+An organization may require this attributable statement as part of accepting
+software into its environment. FIPS 140 does not impose a universal requirement
+for a commercial endorsement of an application release; the statement supports
+the organization's trust and assessment process while the module and deployment
+evidence establish the technical basis for the FIPS claim.
+
+The same work can be done by an end-user organization with the necessary
+expertise. Vendor participation does not change the FIPS requirements or grant
+a different validation status.
+
+## What either path establishes
+
+The relevant result is evidence that the particular application release uses
+the identified validated module correctly in the deployed configuration.
+A passing checker supports that conclusion only for the checks it performs.
+The end-user organization's assessment process decides whether the system
+meets its requirements.
+
+An independent lab can examine module integration and operating conditions.
+Its assessment does not expand Amazon's certificate or create a new zccusan
+validation. CMVP validates cryptographic modules; embedding one does not
+validate the containing application. See [CMVP FAQ P-17](https://csrc.nist.gov/Projects/cryptographic-module-validation-program/faqs).
+
+When supported by the release and deployment evidence, a statement can read:
 
 > This deployment uses the AWS-LC 3 Cryptographic Module (static), FIPS 140-3
 > certificate 5314, in approved mode under the identified deployment profile.
 > zccusan is not independently CMVP validated.
 
-Do not describe a passing checker, lab applicability report, FIPS-enabled host,
-algorithm certificate, or system authorization as a new CMVP validation of
-zccusan.
-
-The controlling references are the live
-[certificate 5314 record](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5314),
-its [Security Policy](https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp5314.pdf),
-the [CMVP Management Manual](https://csrc.nist.gov/projects/cryptographic-module-validation-program/cmvp-fips-140-3-management-manual),
-the [CMVP frequently asked questions](https://csrc.nist.gov/projects/cryptographic-module-validation-program/faqs),
-the [NVLAP cryptographic testing handbook](https://doi.org/10.6028/NIST.HB.150-17-2021),
-the [AWS-LC recompilation guide](AWS-LC-RECOMPILATION.md), and the
-[crypto integration guide](CRYPTO-INTEGRATION.md).
+The controlling module references are the [certificate record](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5314)
+and its [Security Policy](https://csrc.nist.gov/CSRC/media/projects/cryptographic-module-validation-program/documents/security-policies/140sp5314.pdf).
+For project-specific conditions, see the [AWS-LC recompilation guide](AWS-LC-RECOMPILATION.md)
+and [crypto integration guide](CRYPTO-INTEGRATION.md).
