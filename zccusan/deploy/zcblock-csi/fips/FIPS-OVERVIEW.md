@@ -105,12 +105,6 @@ distribution and can substantiate the assertions for the exact release and
 configuration. The vendor must account for every cryptographic service in the
 specified solution before making the all-services assertion.
 
-SG-8 is verification guidance, not a universal requirement to obtain a
-commercial vendor's letter for every deployment. Where an agency or
-organizational policy requires the letter, identify that requirement. The
-letter supports verification of an existing module validation; it does not
-issue a new certificate or authorize the deployed system.
-
 ## What the evidence establishes
 
 The relevant result is evidence that the particular application release uses
