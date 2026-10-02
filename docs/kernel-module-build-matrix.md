@@ -28,6 +28,13 @@ from memory: consult the current provider release table, select the desired new
 cluster default or stable channel, record the exact digest/package NVR, and run
 the complete build before merging the lock change.
 
+Debian header builds use the dated `aptSnapshot` and `aptSuite` in each target
+to keep exact ABI packages available after they leave the live mirrors. The
+build container uses Debian snapshot repositories with signature and package
+hash verification enabled; only historical Release expiry checks are disabled.
+The artifact includes `build-apt-sources.list` alongside its package versions.
+This does not change the runtime image package repositories.
+
 ## Local builds without cloud resources
 
 List or build exact targets with Docker or Podman:

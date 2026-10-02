@@ -244,15 +244,29 @@ build_apt_family()
 {
 	local platform="$1" image="$2" kernel_release="$3" kernel_package="$4"
 	local kernel_package_version="$5" source_dir="$6" stage_dir="$7"
+	local apt_snapshot="$8" apt_suite="$9"
+	if [ -n "$apt_snapshot" ]; then
+		[[ "$apt_snapshot" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "invalid APT snapshot"
+		[[ "$apt_suite" =~ ^[a-z]+$ ]] || die "invalid APT suite"
+	fi
 	container_run "$platform" \
 		-e DEBIAN_FRONTEND=noninteractive \
+		-e APT_SNAPSHOT="$apt_snapshot" -e APT_SUITE="$apt_suite" \
 		-e KERNEL_RELEASE="$kernel_release" \
 		-e KERNEL_PACKAGE="$kernel_package" \
 		-e KERNEL_PACKAGE_VERSION="$kernel_package_version" \
 		-v "$source_dir:/src" -v "$stage_dir:/out" \
 		"$image" bash -lc '
 set -euo pipefail
-apt-get -qq update
+if [ -n "$APT_SNAPSHOT" ]; then
+    # Only the build container uses historical indexes. Release signatures and
+    # package hashes remain enforced; only snapshot expiry checks are disabled.
+    rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources
+    printf "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s/ %s main\n" "$APT_SNAPSHOT" "$APT_SUITE" > /etc/apt/sources.list
+    printf "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/%s/ %s-security main\n" "$APT_SNAPSHOT" "$APT_SUITE" >> /etc/apt/sources.list
+    cp /etc/apt/sources.list /out/build-apt-sources.list
+fi
+apt-get -qq -o APT::Update::Error-Mode=any -o Acquire::Retries=3 update
 apt-get -qq -y install gcc make kmod libelf-dev "${KERNEL_PACKAGE}=${KERNEL_PACKAGE_VERSION}"
 make -C "/usr/src/linux-headers-$KERNEL_RELEASE" M=/src clean modules
 install -m 0644 /src/zcnblk_client_mod.ko /out/zcnblk_client_mod.ko
@@ -442,6 +456,9 @@ publish_stage()
 	mkdir -p "$destination"
 	install -m 0644 "$stage_dir/zcnblk_client_mod.ko" "$destination/zcnblk_client_mod.ko"
 	install -m 0644 "$stage_dir/build-environment.txt" "$destination/build-environment.txt"
+	if [ -f "$stage_dir/build-apt-sources.list" ]; then
+		install -m 0644 "$stage_dir/build-apt-sources.list" "$destination/build-apt-sources.list"
+	fi
 	printf '%s\n' "$vermagic" > "$destination/vermagic.txt"
 	(
 		cd "$destination"
@@ -515,7 +532,8 @@ build_target()
 		;;
 	debian|ubuntu)
 		build_apt_family "$platform" "$image" "$kernel_release" "$kernel_package" \
-			"$kernel_package_version" "$source_dir" "$stage_dir"
+			"$kernel_package_version" "$source_dir" "$stage_dir" \
+			"$(json_optional "$target_name" aptSnapshot)" "$(json_optional "$target_name" aptSuite)"
 		;;
 	ubi-el)
 		build_ubi_el "$platform" "$image" "$kernel_release" "$kernel_package" \
