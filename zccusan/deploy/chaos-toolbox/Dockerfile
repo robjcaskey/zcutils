@@ -5,7 +5,7 @@ WORKDIR /work
 COPY zccusan/chaos-toolbox/Cargo.toml zccusan/chaos-toolbox/Cargo.lock ./
 COPY zccusan/chaos-toolbox/src ./src
 
-RUN cargo build --release
+RUN cargo test --locked && cargo build --release --locked
 
 FROM docker.io/library/debian:trixie-slim AS runtime-tools
 
