@@ -13,6 +13,7 @@ fips = ["aws-lc-rs/fips", "rustls/fips", "dep:aws-lc-fips-sys"]
 
 [dependencies]
 arc-swap = "1.7"
+base64 = "0.22"
 # Pin the wrapper and module together; automatic upgrades can change the CMVP target.
 aws-lc-rs = "=1.15.3"
 # The diagnostic calls the native module used by aws-lc-rs. The build evidence
@@ -54,6 +55,10 @@ aws-lc-fips-sys = { path = "vendor/aws-lc-fips-sys-provider" }
 [[bin]]
 name = "zcutils"
 path = "src/main.rs"
+
+[[bin]]
+name = "zc-federation-auth-debug"
+path = "src/bin/zc-federation-auth-debug.rs"
 
 [[bin]]
 name = "zc-fips-check"
