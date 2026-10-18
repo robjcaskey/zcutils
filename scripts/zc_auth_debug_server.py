@@ -15,6 +15,7 @@ from pathlib import Path
 import secrets
 import signal
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -118,7 +119,7 @@ def identity(token, keys, audience):
         raise Rejected("invalid_identity") from error
 
 
-def http_json(url, body=None, token=None, approval=None):
+def http_json(url, body=None, token=None, approval=None, timeout=5):
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = "Bearer " + token
@@ -127,7 +128,7 @@ def http_json(url, body=None, token=None, approval=None):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, headers=headers)
     try:
-        with loopback_open(req) as response:
+        with loopback_open(req, timeout=timeout) as response:
             return response.status, parse_json(response.read(65537))
     except urllib.error.HTTPError as error:
         return error.code, parse_json(error.read(65537))
@@ -244,6 +245,86 @@ class Workflow:
             raise Rejected("independent_approver_required")
 
 
+class WorkloadSupervisor:
+    """Own child PIDs; successful writes, not desired counts, prove activation."""
+    def __init__(self, config):
+        self.config = config
+        self.root = Path(config["driver_config"]).parent / "workers"
+        self.root.mkdir(mode=0o700)
+        self.children = {}
+        self.audit = open(self.root.parent / "workload-events.log", "w", buffering=1)
+
+    def require_configured(self, members):
+        if any(resource not in self.config.get("workloads", {}) for resource in members):
+            raise Rejected("workload_not_configured", 400)
+
+    def state(self, region, resource):
+        child = self.children.get((region, resource))
+        if child is None:
+            return dict(resource=resource, region=region, running=False, pid=None)
+        witness = json.loads(child["ready"].read_text()) if child["ready"].exists() else {}
+        return dict(witness, resource=resource, region=region,
+                    pid=child["process"].pid, running=child["process"].poll() is None,
+                    exit_code=child["process"].poll())
+
+    def event(self, name, state):
+        self.audit.write(json.dumps(dict(state, event=name, observed_at=time.time())) + "\n")
+
+    def start(self, region, resource):
+        self.require_configured([resource])
+        existing = self.children.get((region, resource))
+        if existing and existing["process"].poll() is None:
+            return self.state(region, resource)
+        if existing:
+            existing["log"].close()
+        run_id = secrets.token_hex(12)
+        prefix = self.root / (region + "-" + resource + "-" + run_id)
+        config_path, ready = prefix.with_suffix(".json"), prefix.with_suffix(".ready")
+        oauth = dict(self.config["workloads"][resource])
+        if {"resource": resource, "region": region} in self.config.get("workload_authentication_faults", []):
+            oauth["client_secret"] = "intentionally-invalid-debug-credential"
+        write_private(config_path, dict(resource=resource, region=region, run_id=run_id,
+            region_url=self.config["region_urls"][region], oauth=oauth, ready_file=str(ready)))
+        log = open(prefix.with_suffix(".log"), "w")
+        process = subprocess.Popen([sys.executable, str(Path(__file__).with_name("zc_auth_debug_workload.py")),
+                                    "--config", str(config_path)], stdout=log, stderr=log)
+        self.children[(region, resource)] = dict(process=process, ready=ready, log=log)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            exit_code = process.poll()
+            if exit_code is not None:
+                raise Rejected("workload_authentication_failed" if exit_code == 77 else "workload_exited_before_first_write", 503)
+            if ready.exists():
+                state = self.state(region, resource)
+                if state["pid"] != process.pid or state.get("run_id") != run_id:
+                    raise Rejected("invalid_workload_witness", 503)
+                self.event("started_after_verified_write", state)
+                return state
+            time.sleep(0.01)
+        self.stop(region, resource)
+        raise Rejected("workload_first_write_timeout", 503)
+
+    def stop(self, region, resource):
+        child = self.children.get((region, resource))
+        if child and child["process"].poll() is None:
+            child["process"].terminate()
+            try:
+                child["process"].wait(timeout=7)
+            except subprocess.TimeoutExpired:
+                child["process"].kill()
+                child["process"].wait(timeout=5)
+        state = self.state(region, resource)
+        if child:
+            child["log"].close()
+            self.event("stopped_and_reaped", state)
+        return state
+
+    def close(self):
+        for region, resource in list(self.children):
+            self.stop(region, resource)
+        self.audit.close()
+
+
 class Driver:
     def __init__(self, config):
         self.config = config
@@ -251,6 +332,10 @@ class Driver:
         self.process = subprocess.Popen([config["driver"], "--debug-config", config["driver_config"]],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr, text=True)
         self.lock = threading.Lock()
+        self.workload_lock = threading.RLock()
+        self.admission_lock = threading.Lock()
+        self.draining = set()
+        self.workloads = WorkloadSupervisor(config)
 
     def call(self, body):
         with self.lock:
@@ -270,6 +355,8 @@ class Driver:
         allowed = {"action", "resource", "target_region", "record_key", "value", "epoch", "ops", "replica"}
         if set(body) - allowed or not {"action", "resource"} <= set(body):
             raise Rejected("invalid_operation", 400)
+        if body["action"] in ("prepare_failover", "plan_workloads", "ack_workload"):
+            raise Rejected("private_adapter_operation", 400)
         status_token = None
         if approval:
             try:
@@ -281,19 +368,78 @@ class Driver:
             except Exception:
                 pass  # Rust fails closed when no independently signed status exists.
         request = dict(body, region=region, token=token, approval=approval, status=status_token)
-        if body["action"] != "replicate":
-            return self.call(request)
-        request["action"] = "export"
-        exported = self.call(request)
+        if body["action"] in ("start_workloads", "pause_workloads", "workload_status"):
+            with self.workload_lock:
+                plan = self.call(dict(request, action="plan_workloads"))
+                self.workloads.require_configured(plan["members"])
+                method = {"start_workloads": self.workloads.start, "pause_workloads": self.workloads.stop,
+                          "workload_status": self.workloads.state}[body["action"]]
+                return {"workers": [method(region, resource) for resource in plan["members"]]}
+        if body["action"] == "failover":
+            return self.failover(request)
+        if body["action"] == "replicate":
+            return self.replicate(request)
+        if body["action"] in ("write", "delete_record"):
+            with self.admission_lock:
+                if (region, body["resource"]) in self.draining:
+                    raise Rejected("clean_cut_in_progress")
+                return self.call(request)
+        return self.call(request)
+
+    def replicate(self, request):
+        exported = self.call(dict(request, action="export"))
         # Routes are pinned to the two local listeners, never to caller URLs.
-        target = body["target_region"]
+        target = request["target_region"]
         code, imported = http_json(self.config["region_urls"][target] + "/operation",
-                                  {"action": "import", "resource": body["resource"], "replica": exported["replica"]}, token)
+                                  {"action": "import", "resource": request["resource"], "replica": exported["replica"]}, request["token"])
         if code != 200:
             raise Rejected(imported.get("error", "replication_failed"), code)
         return dict(imported, replica=exported["replica"])
 
+    def failover(self, request):
+        with self.workload_lock:
+            # No process may be stopped, and no admission barrier installed,
+            # until the full source/destination atomic closure is authorized.
+            plan = self.call(dict(request, action="prepare_failover"))
+            self.workloads.require_configured(plan["members"])
+            source, target = request["region"], request["target_region"]
+            stopped = {r: self.workloads.stop(source, r) for r in plan["members"]}
+            if any(state["running"] for state in stopped.values()):
+                raise Rejected("source_workload_did_not_stop", 503)
+            barriers = {(source, r) for r in plan["members"]}
+            with self.admission_lock:
+                self.draining.update(barriers)
+            try:
+                # Final snapshots are taken only after all writers have exited
+                # and all admitted source writes have completed.
+                for resource in plan["members"]:
+                    self.replicate(dict(request, resource=resource, epoch=plan["epochs"][resource]))
+                result = self.call(dict(request, source_quiesced=True))
+                try:
+                    started = {r: self.workloads.start(target, r) for r in plan["members"]}
+                except Exception:
+                    # Custody has committed. Stop partial target activation,
+                    # retain the new epoch/data and leave actions unacknowledged.
+                    # Rolling custody back here could resurrect a stale writer.
+                    for resource in plan["members"]:
+                        self.workloads.stop(target, resource)
+                    raise
+                if any(not state["running"] for state in started.values()):
+                    raise Rejected("target_workload_did_not_start", 503)
+                actions = list(result["workload_actions"])
+                epochs = {v["volume_id"]: v["placement_epoch"] for v in result["volumes"]}
+                for action in actions:
+                    resource = action["volume_id"]
+                    result = self.call(dict(request, action="ack_workload", resource=resource,
+                        region=target, epoch=epochs[resource], action_id=action["action_id"]))
+                result["workload_transitions"] = [dict(resource=r, source=stopped[r], target=started[r]) for r in plan["members"]]
+                return result
+            finally:
+                with self.admission_lock:
+                    self.draining.difference_update(barriers)
+
     def close(self):
+        self.workloads.close()
         self.process.stdin.close()
         try:
             self.process.wait(timeout=5)
@@ -439,11 +585,11 @@ def main():
     try:
         stopped.wait()
     finally:
+        if driver:
+            driver.close()
         for server in servers:
             server.shutdown()
             server.server_close()
-        if driver:
-            driver.close()
         for thread in threads:
             thread.join(timeout=5)
 

@@ -24,6 +24,7 @@ class Scenario:
     def __init__(self, work, driver):
         self.work, self.driver = Path(work), driver
         self.processes, self.logs, self.checks, self.credentials = [], [], [], {}
+        self.workload_transitions = []
 
     def check(self, name, condition=True):
         if not condition:
@@ -66,7 +67,8 @@ class Scenario:
             return json.load(response)["access_token"]
 
     def op(self, token, region, action, resource, expected=200, approval=None, **fields):
-        code, result = http_json(self.regions[region] + "/operation", dict(fields, action=action, resource=resource), token, approval)
+        code, result = http_json(self.regions[region] + "/operation", dict(fields, action=action, resource=resource), token, approval,
+                                timeout=30 if action in ("failover", "start_workloads", "pause_workloads") else 5)
         if code != expected:
             raise AssertionError(f"{region}/{action}/{resource}: expected {expected}, got {code}: {result.get('error')}")
         return result
@@ -94,14 +96,15 @@ class Scenario:
         assert code == 200 and grant["state"] == "approved", "grant unavailable"
         return request["id"], grant["approval_token"], grant["expires_at"]
 
-    def configure(self, interactive=False):
+    def configure(self, interactive=False, target_worker_failure=False):
         a = self.oauth("issuer-a", {
             "alpha-admin": {"subject": "alpha-admin"}, "retail-only": {"subject": "retail-only"},
+            "workload-root": {"subject": "workload-root", "ttl":4}, "workload-retail": {"subject": "workload-retail", "ttl":4},
             "claims-admin": {"subject": "unbound", "extra_claims": {"roles": ["admin", "record-maintainer"], "tenant": "beta"}},
             "wrong-audience": {"subject": "alpha-admin", "audience": "urn:other-federation"},
             "future": {"subject": "alpha-admin", "ttl": 300, "not_before_delay": 120},
             "expired": {"subject": "alpha-admin", "ttl": -1}, "short": {"subject": "alpha-admin", "ttl": 2}})
-        b = self.oauth("issuer-b", {"alpha-operator": {"subject": "alpha-operator"},
+        b = self.oauth("issuer-b", {"alpha-operator": {"subject": "alpha-operator"}, "workload-wholesale": {"subject": "workload-wholesale", "ttl":4},
                                     "west-admin": {"subject": "west-admin"}, "same-subject": {"subject": "alpha-admin"}})
         keys = [a["verification_key"], b["verification_key"]]
         principal = {"issuer": a["url"], "subject": "alpha-admin"}
@@ -126,6 +129,14 @@ class Scenario:
                 actions = ordinary + (["delete_record"] if region == "us-east" or subject == "west-admin" else [])
                 grants.append(dict(principal=dict(issuer=issuer, subject=subject), region=region, tenant=tenant,
                                    descendants=descendants, actions=actions))
+        workloads = {}
+        for resource, issuer_name, client in [("alpha-root", "issuer-a", "workload-root"),
+                ("alpha-retail", "issuer-a", "workload-retail"), ("alpha-wholesale", "issuer-b", "workload-wholesale")]:
+            issuer_url, clients = self.credentials[issuer_name]
+            workloads[resource] = dict(url=issuer_url, client_id=client, client_secret=clients[client]["secret"])
+            for region in ("us-east", "us-west"):
+                grants.append(dict(principal=dict(issuer=issuer_url, subject=clients[client]["subject"]), region=region,
+                                   tenant=resources[resource]["tenant"], descendants=False, actions=["read", "write"], resources=[resource]))
         policy = dict(federation="auth-lab", audience="urn:zcutils:auth-lab", identity_keys=keys,
                       approval_key=workflow["verification_key"], approval_audience="urn:zcutils:auth-lab:approval",
                       max_approval_seconds=30, resources=resources, grants=grants,
@@ -134,7 +145,8 @@ class Scenario:
         write_private(driver_config, dict(authorization=policy, data_dir=str(self.work / "media"), west_owned=["beta-west"],
                                          atomic_groups={"alpha-app": ["alpha-root", "alpha-retail", "alpha-wholesale"]}))
         ready, _ = self.start("regions", "regions", dict(driver=str(self.driver), driver_config=str(driver_config),
-            driver_log=str(self.work / "driver.log"), approval_url=self.workflow, introspection_secret=self.introspection_secret))
+            driver_log=str(self.work / "driver.log"), approval_url=self.workflow, introspection_secret=self.introspection_secret,
+            workloads=workloads, workload_authentication_faults=[dict(resource="alpha-root",region="us-west")] if target_worker_failure else []))
         self.regions = ready["regions"]
         self.a, self.b = self.token("issuer-a", "alpha-admin"), self.token("issuer-b", "alpha-operator")
         self.retail, self.beta = self.token("issuer-a", "retail-only"), self.token("issuer-b", "west-admin")
@@ -167,8 +179,13 @@ class Scenario:
         self.op(self.beta, "us-east", "manage_tenant", "alpha-retail", 403)
         self.op(self.retail, "us-east", "write", "alpha-wholesale", 403, record_key="bad", value="intrusion", epoch=1)
         self.check("forgery, prefix collision, foreign deletion and sibling writes leave data unchanged", before == self.fingerprint())
+        for token, region, resource, target in [(self.a,"us-west","beta-west","us-east"),
+                                               (self.beta,"us-east","alpha-root","us-west")]:
+            for action in ("read","write","delete_record","manage_tenant","replicate","failover"):
+                self.op(token,region,action,resource,403,epoch=1,record_key="foreign-probe",value="intrusion",target_region=target)
+        self.check("foreign tenant CRUD, management, replication and failover all fail before side effects", before == self.fingerprint())
         self.check("foreign west tenant retains exact records", self.read(self.beta, "us-west", "beta-west")["data"]["records"] == {"seed": "private-beta-west"})
-        for resource in ("alpha-retail", "alpha-wholesale"):
+        for resource in ("alpha-root", "alpha-retail", "alpha-wholesale"):
             self.op(self.a, "us-west", "manage_tenant", resource, value="Recovery site " + resource)
         metadata = json.loads((self.work / "media/us-west-alpha-retail-tenant.json").read_text())
         self.check("west delegates actual subtenant metadata updates", metadata["label"] == "Recovery site alpha-retail"
@@ -180,6 +197,15 @@ class Scenario:
         self.op(self.b, "us-east", "quota", "quota-probe", 429)
         self.op(self.token("issuer-a", "alpha-admin"), "us-east", "quota", "quota-probe", 429)
         self.check("both issuers and token refresh share one existing lane bucket", quota["admitted"] == 4)
+        before = self.fingerprint()
+        worker = self.token("issuer-a", "workload-root")
+        self.op(worker, "us-east", "write", "quota-probe", 403, epoch=1, record_key="bad", value="intrusion")
+        code, _ = http_json(self.regions["us-east"] + "/operation",
+                            dict(action="ack_workload", resource="alpha-root", epoch=1), self.a)
+        forged_quiescence, _ = http_json(self.regions["us-east"] + "/operation",
+            dict(action="failover",resource="alpha-root",epoch=1,target_region="us-west",source_quiesced=True),self.a)
+        self.check("workers cannot use another resource and clients cannot forge adapter acknowledgements",
+                   code == 400 and forged_quiescence == 400 and before == self.fingerprint())
 
     def failover_roundtrips(self):
         members = ["alpha-root", "alpha-retail", "alpha-wholesale"]
@@ -209,11 +235,52 @@ class Scenario:
             corrupted = dict(packets[0], ciphertext=("A" if cipher[0] != "A" else "B") + cipher[1:])
             self.op(self.a, target, "import", "alpha-root", 403, replica=corrupted)
             self.check(f"cycle {cycle}: replica substitution denied without mutation", before == self.fingerprint())
+            started = self.op(self.a, source, "start_workloads", "alpha-root", epoch=epoch)["workers"]
+            self.check(f"cycle {cycle}: three real source workers authenticate and write",
+                       len(started) == 3 and all(w["running"] and w["pid"] and w["counter"] > 0 for w in started))
+            if cycle == 0:
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    renewed = self.op(self.a, source, "workload_status", "alpha-root", epoch=epoch)["workers"]
+                    if all(w.get("credential_generation",0) >= 2 for w in renewed):
+                        break
+                    time.sleep(0.05)
+                self.check("live worker token renewal preserves process identity and scoped access",
+                           all(w["running"] and w.get("credential_generation",0) >= 2 for w in renewed)
+                           and {w["pid"] for w in renewed} == {w["pid"] for w in started})
+            self.op(self.retail, source, "pause_workloads", "alpha-retail", 403, epoch=epoch)
+            self.op(self.retail, source, "failover", "alpha-retail", 403, epoch=epoch, target_region=target)
+            active = self.op(self.a, source, "workload_status", "alpha-root", epoch=epoch)["workers"]
+            self.check(f"cycle {cycle}: unauthorized atomic control cannot stop a sibling worker",
+                       all(w["running"] for w in active) and {w["pid"] for w in active} == {w["pid"] for w in started})
+            self.op(self.token("issuer-a", "workload-root"), source, "failover", "alpha-root", 403, epoch=epoch, target_region=target)
             result = self.op(self.b, source, "failover", "alpha-root", epoch=epoch, target_region=target)
             self.check(f"cycle {cycle}: actual failover state machine completes custody transfer", result["operation"]["phase"] == "completed"
                 and len(result["volumes"]) == 3 and all(v["authority_region"] == target and v["placement_epoch"] == epoch + 1 for v in result["volumes"]))
             self.check(f"cycle {cycle}: workload actions stop source and start destination", len(result["workload_actions"]) == 3
                 and all(a["source_replicas"] == 0 and a["target_replicas"] == 1 and a["acknowledged"] for a in result["workload_actions"]))
+            transitions = result["workload_transitions"]
+            self.workload_transitions.extend(transitions)
+            self.check(f"cycle {cycle}: source processes exit before target write witnesses acknowledge actions",
+                       len(transitions) == 3 and all(t["source"]["exit_code"] == 0 and not t["source"]["running"]
+                           and t["source"]["pid"] and t["target"]["running"]
+                           and t["source"]["run_id"] != t["target"]["run_id"]
+                           and t["target"]["region"] == target and t["target"]["epoch"] == epoch + 1
+                           and t["target"]["counter"] > t["source"]["counter"]
+                           and t["target"]["sequence"] > t["source"]["sequence"] for t in transitions))
+            paused = self.op(self.a, target, "pause_workloads", "alpha-root", epoch=epoch + 1)["workers"]
+            self.check(f"cycle {cycle}: target workload counters continue from replicated source counters",
+                       all(not w["running"] and w["exit_code"] == 0 and
+                           w["counter"] >= next(t["target"]["counter"] for t in transitions if t["resource"] == w["resource"])
+                           for w in paused))
+            for resource in members:
+                old = dict(self.read(self.a,source,resource)["data"]["records"])
+                new = dict(self.read(self.a,target,resource)["data"]["records"])
+                old.pop("workload-runtime")
+                new.pop("workload-runtime")
+                if old != new:
+                    raise AssertionError("live handoff lost application data for " + resource)
+            self.check(f"cycle {cycle}: live final cut preserves every non-counter application record")
             before = self.fingerprint()
             self.op(self.a, source, "write", "alpha-root", 403, epoch=epoch, record_key="bad", value="stale")
             self.op(self.a, target, "write", "alpha-root", 403, epoch=epoch, record_key="bad", value="stale")
@@ -279,6 +346,29 @@ class Scenario:
         self.op(self.a, "us-east", "delete_record", "alpha-retail", 403, approval=live_grant, epoch=5, record_key="workload-sequence")
         self.read(self.a, "us-east", "alpha-retail")
         self.check("approval outage denies elevation but allows ordinary access", before == self.fingerprint())
+        self.op(self.beta, "us-west", "write", "beta-west", epoch=1, record_key="local-delete-probe", value="owned")
+        self.op(self.beta, "us-west", "delete_record", "beta-west", epoch=1, record_key="local-delete-probe")
+        self.check("west local owner retains its own record permissions during workflow outage",
+                   self.read(self.beta, "us-west", "beta-west")["data"]["records"] == {"seed":"private-beta-west"})
+
+    def activation_failure(self):
+        for resource in ("alpha-root", "alpha-retail", "alpha-wholesale"):
+            self.op(self.a, "us-east", "replicate", resource, epoch=1, target_region="us-west")
+        self.op(self.a, "us-east", "start_workloads", "alpha-root", epoch=1)
+        result = self.op(self.a, "us-east", "failover", "alpha-root", 503, epoch=1, target_region="us-west")
+        self.check("activation fault is an actual target authentication failure", result["error"] == "workload_authentication_failed")
+        for resource in ("alpha-root", "alpha-retail", "alpha-wholesale"):
+            state = self.read(self.a, "us-west", resource)
+            self.check("activation fault: " + resource + " remains unacknowledged after custody commits",
+                       state["volume"]["authority_region"] == "us-west" and state["volume"]["placement_epoch"] == 2
+                       and state["workload_phase"] == "reconciling_workloads"
+                       and len(state["pending_workload_actions"]) == 1)
+        self.op(self.a, "us-east", "write", "alpha-root", 403, epoch=1, record_key="bad", value="old-owner")
+        workers = self.op(self.a, "us-west", "workload_status", "alpha-root", epoch=2)["workers"]
+        self.check("activation fault cannot report a running target or restore stale source authority",
+                   all(not w["running"] for w in workers)
+                   and next(w for w in workers if w["resource"] == "alpha-root")["exit_code"] == 77
+                   and self.read(self.beta,"us-west","beta-west")["data"]["records"] == {"seed":"private-beta-west"})
 
     def close(self):
         for process in reversed(self.processes):
@@ -322,17 +412,34 @@ def main():
             scenario.authentication_and_isolation()
             scenario.failover_roundtrips()
             scenario.breakglass()
+            # Fresh services and storage isolate the failure case from the
+            # successful roundtrips. Only the target root worker gets bad creds.
+            fault_dir = Path(work) / "activation-failure"
+            fault_dir.mkdir(mode=0o700)
+            fault = Scenario(fault_dir, args.driver.resolve())
+            try:
+                fault.configure(target_worker_failure=True)
+                fault.activation_failure()
+                scenario.checks.extend("fault scenario: " + name for name in fault.checks)
+            finally:
+                fault.close()
+                fault_output = args.output / "activation-failure"
+                fault_output.mkdir(exist_ok=True)
+                for path in fault_dir.glob("*.log"):
+                    (fault_output / path.name).write_bytes(path.read_bytes())
             passed = True
         finally:
             scenario.close()
             summary = dict(passed=passed, checks=scenario.checks,
                 topology=dict(oauth_servers=2, approval_servers=1, regional_http_listeners=2,
                     consensus="in-process existing state machines", ha_observations="modeled",
-                    storage="encrypted ordinary files", representative_benchmark=False),
-                limitations=["loopback debug HTTP", "no live Raft or Kubernetes cluster", "no real ServiceNow, MFA or emergency bypass"])
+                    storage="encrypted ordinary files", workloads="separately authenticated OS child processes",
+                    workload_handoffs=len(scenario.workload_transitions), representative_benchmark=False),
+                limitations=["loopback debug HTTP", "no live Raft or Kubernetes cluster", "modeled HA observations", "no real ServiceNow, MFA or emergency bypass"])
             if not args.serve:
                 (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
                 (args.output / "approval-audit.json").write_text(json.dumps(getattr(scenario, "audit", []), indent=2) + "\n")
+                (args.output / "workload-transitions.json").write_text(json.dumps(scenario.workload_transitions, indent=2) + "\n")
                 for path in Path(work).glob("*.log"):
                     (args.output / path.name).write_bytes(path.read_bytes())
     print(f"ZC_FEDERATION_AUTH_E2E_PASS checks={len(scenario.checks)} evidence={args.output}")

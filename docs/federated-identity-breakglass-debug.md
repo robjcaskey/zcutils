@@ -52,6 +52,8 @@ keys or trust each other. Each resource-owning region has explicit grants;
 issuer roles, groups, email, tenant claims, and matching subject strings cannot
 create local authority. Tenant scope uses complete path segments: `acme`
 includes `acme/retail` when descendants are delegated, but never `acme-other`.
+An optional explicit resource set further restricts a grant. An absent set
+uses the tenant scope; an explicit empty set grants no resources.
 
 The fixture's single federation contains:
 
@@ -61,12 +63,35 @@ The fixture's single federation contains:
 | B / alpha-operator | Ordinary acme operations; no eligible approval grant | Same narrowly delegated acme operations |
 | A / retail-only | Exact retail-subtenant operations | Exact retail-subtenant operations; cannot move siblings through atomic-set expansion |
 | B / west-admin | Explicit beta permissions only | Local beta tenant; cannot administer acme |
+| Dedicated A / root and retail workers, B / wholesale worker | Read/write to each worker's exact resource only | Same resource restriction when authoritative here; no management, failover or elevation |
 
 The atomic acme application comprises root, retail and wholesale volumes.
 Failover expands the complete set and authorizes every participant at both
 source and destination **before** observations, checkpoints, custody or workload
 state can change. Source outbound trust and destination inbound admission both
 remain necessary. Ciphertext placement does not authorize key escrow.
+
+The workload adapter uses real OS child processes. Each has its own scoped
+OAuth client credentials, obtains and renews its own access token, and writes
+a persistent counter while pinned to one region and resource. A clean move:
+
+1. Authorizes the complete atomic scope at both regions before stopping any
+   process. A subtenant cannot use this path to stop a sibling workload.
+2. Stops and reaps all managed source workers, then installs an admission
+   barrier and waits for already-admitted source writes to finish.
+3. Replicates the final encrypted cut and lets the existing failover state
+   machine commit destination custody and its new placement epoch.
+4. Starts destination worker processes. Each must authenticate and successfully
+   write a counter continuing from the replicated value before it is ready.
+5. Acknowledges the existing workload actions only after those write witnesses
+   exist; only then can the operation become `completed`.
+
+HTTP clients cannot submit adapter acknowledgements or assert that source
+workers are quiesced. A separate fault scenario gives one destination worker
+an invalid client credential: partial target activation is stopped, custody
+remains fenced at the new epoch, actions stay unacknowledged and the operation
+remains `reconciling_workloads`. The adapter must never roll custody back after
+target writes or claim a successful move when target authentication failed.
 
 Tenant management really updates bounded display metadata. It cannot change
 tenant ownership, grants, parentage, or canonical budget IDs. It is not a full
@@ -140,6 +165,10 @@ ports and a private temporary directory. Configurations and ready files are
 mode 0600. It deletes transient credentials at exit and retains only a proof
 summary, approval audit and logs; tokens, client/reviewer secrets and private
 signing keys are not uploaded as evidence.
+`workload-transitions.json` records source process exits, destination process
+incarnations and their first successful write witnesses for all 12 handoffs.
+`workload-events.log` records real starts and reaping; `activation-failure/`
+contains the independent failure-scenario logs.
 
 To keep a fresh lab running for manual API experiments, append `--serve` to
 the harness command. It prints public endpoint URLs and the private temporary
@@ -173,10 +202,36 @@ machine, check custody/session epoch fencing, and resume writes at the target.
 Atomic scope, foreign-record preservation, shared quotas, identity substitution,
 expiry, approval denial/revocation and workflow outage are negative checks.
 
+The acceptance matrix maps the requested workflow to executable evidence:
+
+| Requirement | Evidence produced by the scenario |
+| --- | --- |
+| Two independent OAuth servers accepted in east | Both discovery/JWKS responses, distinct public keys, and successful east requests with both issuers' signed tokens |
+| Scoped west replication and management | Exact ciphertext roundtrips and real root/subtenant metadata changes; foreign CRUD, management, replication and failover all denied without media changes |
+| Tenant/subtenant workloads fail over and back | Four clean cuts with three actual worker handoffs each; source exits, fresh target incarnations, continuing counters, unchanged non-counter records and completed actions |
+| Subtenant permissions cannot move or stop siblings | Full atomic-scope denials before either media changes or stopping any running sibling worker |
+| East privileges require independent time-limited approval | A valid east administrator cannot delete without a separately approved exact grant; requester credentials cannot approve it |
+| Approval lifecycle is enforced | Eligibility/role/duration limits, pending timeout, deny, decision replay, binding substitutions, expiry, revocation and approval-service outage cases |
+| Identity refresh cannot extend privilege or quota | Reissued user tokens share one limiter and do not extend approval; running workers renew short identity tokens without changing process identity or resource scope |
+| Workload completion cannot be fabricated | Public acknowledgement/quiescence fields rejected; a real HTTP 401 at target activation produces exit 77 and leaves actions unacknowledged at the new custody epoch |
+| Debug server remains usable and bounded | `--serve` exposes the five loopback endpoints with an independent reviewer window; PID-owned shutdown removes credentials and workers |
+
+Inspect `summary.json` for `passed=true` and 12 `workload_handoffs`, then inspect
+`workload-transitions.json` for source `running=false`/`exit_code=0` and a fresh,
+running destination with larger counter and sequence. The failure scenario's
+checks require `reconciling_workloads`, retained pending actions and the
+authentication-specific worker exit code. CI runs the same harness after a
+fresh build; the authorization unit tests additionally cover validly signed
+but misbound grants, key/algorithm substitution and empty resource caps.
+
 This is a security/control workflow test, not a regional HA or performance
 benchmark. Consensus is one in-process state-machine model; three-replica
-observations, application quiescence and external workload acknowledgements
-are modeled. A workload is an HTTP client, not a Kubernetes pod or live VM.
+HA observations are modeled. Source quiescence, destination activation and
+workload acknowledgements are backed by real, separately authenticated child
+processes making HTTP writes. The workloads are not Kubernetes pods or VMs.
+The fault case proves an activation error cannot be replaced by a synthetic
+acknowledgement. This is not a durable regional consensus runtime or a
+production workload recovery supervisor.
 Ordinary files are terminal debug media, never mirror/stripe primitives.
 Ephemeral encryption keys exist only in the driver process; this is not a
 recoverable key-management or encrypted-witness implementation.

@@ -197,6 +197,10 @@ pub struct Grant {
     pub tenant: Vec<String>,
     pub descendants: bool,
     pub actions: BTreeSet<String>,
+    /// Absent means the tenant scope controls resources. An explicit empty set
+    /// grants no resources, and must never be interpreted as a wildcard.
+    #[serde(default)]
+    pub resources: Option<BTreeSet<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -286,6 +290,9 @@ impl AuthorizationPolicy {
             g.principal == principal
                 && g.region == region
                 && g.actions.contains(action)
+                && g.resources
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(resource_id))
                 && (g.tenant == resource.tenant
                     || (g.descendants && resource.tenant.starts_with(&g.tenant)))
         }) {
@@ -401,6 +408,7 @@ mod tests {
                 },
             )]),
             grants: vec![Grant {
+                resources: None,
                 principal: principal.clone(),
                 region: "east".into(),
                 tenant: vec!["acme".into()],
@@ -600,6 +608,39 @@ mod tests {
         policy.approval_key.public_key = policy.identity_keys[0].public_key.clone();
         assert!(policy.validate().is_err());
     }
+    #[test]
+    fn explicit_resource_caps_intersect_tenant_scope_and_empty_means_no_access() {
+        let (idp, _, mut policy, claims, _, _) = setup();
+        let identity = policy.identity(&idp.sign(&claims, "at+jwt"), 101).unwrap();
+        let mut other = policy.resources["v1"].clone();
+        other.id = "v2".into();
+        policy.resources.insert("v2".into(), other);
+        policy.grants[0].resources = Some(BTreeSet::from(["v1".into()]));
+        assert!(
+            policy
+                .authorize(&identity, "east", "v1", "read", None, None, 101)
+                .is_ok()
+        );
+        assert!(
+            policy
+                .authorize(&identity, "east", "v2", "read", None, None, 101)
+                .is_err()
+        );
+        policy.grants[0].resources = Some(BTreeSet::new());
+        assert!(
+            policy
+                .authorize(&identity, "east", "v1", "read", None, None, 101)
+                .is_err()
+        );
+        policy.grants[0].resources = Some(BTreeSet::from(["v2".into()]));
+        policy.resources.get_mut("v2").unwrap().tenant = vec!["beta".into()];
+        assert!(
+            policy
+                .authorize(&identity, "east", "v2", "read", None, None, 101)
+                .is_err()
+        );
+    }
+
     #[test]
     fn path_boundaries_and_expiry_are_exact() {
         let root = vec!["acme".to_string()];

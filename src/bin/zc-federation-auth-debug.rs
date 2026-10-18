@@ -1,6 +1,7 @@
 //! Private JSON-lines driver for the loopback HTTP authorization laboratory.
 //! Uses the actual placement, failover and lane-limiter implementations. Replica
-//! observations and workload-adapter acknowledgements are explicitly modeled;
+//! observations are modeled; workload acknowledgements come from the adapter
+//! only after it moves real, separately authenticated worker processes.
 //! this executable does not claim to be a Raft or durable HA service.
 
 use aws_lc_rs::{
@@ -56,6 +57,11 @@ struct Request {
     ops: Option<u32>,
     #[serde(default)]
     replica: Option<Replica>,
+    /// Private adapter fields; the HTTP operation schema does not accept them.
+    #[serde(default)]
+    action_id: Option<String>,
+    #[serde(default)]
+    source_quiesced: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -427,6 +433,7 @@ impl Lab {
         let identity = self.policy.identity(&req.token, now())?;
         let action = match req.action.as_str() {
             "export" | "import" => "replicate",
+            "prepare_failover" | "plan_workloads" | "ack_workload" => "failover",
             other => other,
         };
         self.check(&identity, &req, &req.region, &req.resource, action)?;
@@ -436,8 +443,23 @@ impl Lab {
                     .data
                     .get(&(req.region.clone(), req.resource.clone()))
                     .ok_or_else(|| bad("replica_missing"))?;
+                let pending: Vec<_> = self
+                    .global
+                    .failover
+                    .workload_actions
+                    .values()
+                    .filter(|a| a.volume_id == req.resource && !a.acknowledged)
+                    .collect();
+                let phase = self
+                    .global
+                    .failover
+                    .operations
+                    .values()
+                    .filter(|op| op.volume_ids.contains(&req.resource))
+                    .max_by_key(|op| op.new_epochs.get(&req.resource).copied().unwrap_or(0))
+                    .map(|op| op.phase);
                 Ok(
-                    json!({"data":data,"volume":self.global.failover.volumes[&req.resource],"session":self.global.failover.sessions[&format!("session-{}",req.resource)],"budget_id":self.policy.resources[&req.resource].budget_id,"tenant_label":self.tenant_metadata.get(&(req.region.clone(),self.policy.resources[&req.resource].tenant.clone()))}),
+                    json!({"data":data,"volume":self.global.failover.volumes[&req.resource],"session":self.global.failover.sessions[&format!("session-{}",req.resource)],"budget_id":self.policy.resources[&req.resource].budget_id,"tenant_label":self.tenant_metadata.get(&(req.region.clone(),self.policy.resources[&req.resource].tenant.clone())),"workload_phase":phase,"pending_workload_actions":pending}),
                 )
             }
             "write" | "delete_record" => {
@@ -547,10 +569,100 @@ impl Lab {
                 )
             }
             "failover" => self.failover(&identity, &req),
+            "prepare_failover" | "plan_workloads" => {
+                let members = self.authorized_workload_scope(&identity, &req)?;
+                if req.action == "prepare_failover" {
+                    let target = req
+                        .target_region
+                        .as_deref()
+                        .ok_or_else(|| bad("target_required"))?;
+                    region(target)?;
+                    if target == req.region {
+                        return Err(bad("source_and_target_must_differ"));
+                    }
+                    for member in &members {
+                        self.check(&identity, &req, target, member, "failover")?;
+                        self.check(&identity, &req, &req.region, member, "replicate")?;
+                        self.check(&identity, &req, target, member, "replicate")?;
+                        self.placement(&req.region, target)?;
+                        if !self.data.contains_key(&(target.into(), member.clone())) {
+                            return Err(denied("replica_not_caught_up"));
+                        }
+                    }
+                }
+                let epochs: BTreeMap<_, _> = members
+                    .iter()
+                    .map(|id| (id.clone(), self.global.failover.volumes[id].placement_epoch))
+                    .collect();
+                Ok(json!({"members":members,"epochs":epochs}))
+            }
+            "ack_workload" => {
+                self.custody(&req)?;
+                let action_id = req
+                    .action_id
+                    .as_deref()
+                    .ok_or_else(|| bad("action_id_required"))?;
+                let action = self
+                    .global
+                    .failover
+                    .workload_actions
+                    .get(action_id)
+                    .ok_or_else(|| denied("unknown_workload_action"))?
+                    .clone();
+                if action.volume_id != req.resource || action.target_region != req.region {
+                    return Err(denied("workload_action_binding_mismatch"));
+                }
+                self.check(
+                    &identity,
+                    &req,
+                    &action.source_region,
+                    &req.resource,
+                    "failover",
+                )?;
+                self.global
+                    .failover
+                    .acknowledge_workload_action(action_id, &action.adapter_id)?;
+                self.global.failover.reconcile(&action.operation_id)?;
+                Ok(self.operation_response(&action.operation_id))
+            }
             _ => Err(denied("unsupported_action")),
         }
     }
+    fn authorized_workload_scope(
+        &self,
+        identity: &VerifiedIdentity,
+        req: &Request,
+    ) -> io::Result<BTreeSet<String>> {
+        self.custody(req)?;
+        let volume = &self.global.failover.volumes[&req.resource];
+        let set = volume.consistency_set_id.as_ref().expect("configured set");
+        let members = self.global.failover.consistency_sets[set].members.clone();
+        for member in &members {
+            self.check(identity, req, &req.region, member, "failover")?;
+            if self.global.failover.volumes[member].authority_region != req.region {
+                return Err(denied("atomic_member_not_authoritative"));
+            }
+        }
+        Ok(members)
+    }
+    fn operation_response(&self, operation_id: &str) -> Value {
+        let operation = &self.global.failover.operations[operation_id];
+        let actions: Vec<_> = operation
+            .workload_action_ids
+            .iter()
+            .map(|id| &self.global.failover.workload_actions[id])
+            .collect();
+        let volumes: Vec<_> = operation
+            .volume_ids
+            .iter()
+            .map(|id| &self.global.failover.volumes[id])
+            .collect();
+        json!({"operation":operation,"workload_actions":actions,"volumes":volumes})
+    }
     fn failover(&mut self, identity: &VerifiedIdentity, req: &Request) -> io::Result<Value> {
+        if !req.source_quiesced {
+            return Err(denied("adapter_must_quiesce_source_workers"));
+        }
         self.custody(req)?;
         let target = req
             .target_region
@@ -622,19 +734,9 @@ impl Lab {
             expected_revision: revision,
             mode: FailoverMode::Clean,
         })?;
-        state.reconcile(&operation_id)?;
-        let actions: Vec<_> = state
-            .workload_actions
-            .values()
-            .filter(|a| a.operation_id == operation_id)
-            .cloned()
-            .collect();
-        for a in &actions {
-            state.acknowledge_workload_action(&a.action_id, &a.adapter_id)?;
-        }
         let phase = state.reconcile(&operation_id)?;
-        if phase != FailoverPhase::Completed {
-            return Err(bad("failover_did_not_complete"));
+        if phase != FailoverPhase::ReconcilingWorkloads {
+            return Err(bad("failover_did_not_reach_workload_handoff"));
         }
         // Recheck authorization at the simulated commit, including hard expiry.
         for member in &members {
@@ -642,13 +744,7 @@ impl Lab {
             self.check(identity, req, target, member, "failover")?;
         }
         self.global.failover = state;
-        let actions: Vec<_> = actions
-            .iter()
-            .map(|a| &self.global.failover.workload_actions[&a.action_id])
-            .collect();
-        Ok(
-            json!({"operation":self.global.failover.operations[&operation_id],"workload_actions":actions,"volumes":members.iter().map(|m|&self.global.failover.volumes[m]).collect::<Vec<_>>() }),
-        )
+        Ok(self.operation_response(&operation_id))
     }
 }
 
