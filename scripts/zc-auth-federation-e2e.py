@@ -94,7 +94,7 @@ class Scenario:
         assert code == 200 and grant["state"] == "approved", "grant unavailable"
         return request["id"], grant["approval_token"], grant["expires_at"]
 
-    def configure(self):
+    def configure(self, interactive=False):
         a = self.oauth("issuer-a", {
             "alpha-admin": {"subject": "alpha-admin"}, "retail-only": {"subject": "retail-only"},
             "claims-admin": {"subject": "unbound", "extra_claims": {"roles": ["admin", "record-maintainer"], "tenant": "beta"}},
@@ -112,7 +112,8 @@ class Scenario:
         workflow, self.workflow_process = self.start("approval", "approval", {
             "identity_keys": keys, "identity_audience": "urn:zcutils:auth-lab", "approval_audience": "urn:zcutils:auth-lab:approval",
             "federation": "auth-lab", "operator_id": "independent-security-reviewer", "operator_secret": self.operator_secret,
-            "introspection_secret": self.introspection_secret, "max_duration_seconds": 30, "request_timeout_seconds": 2,
+            "introspection_secret": self.introspection_secret, "max_duration_seconds": 30,
+            "request_timeout_seconds": 300 if interactive else 2,
             "eligibility": [dict(principal=principal, resource=r, tenant=resources[r]["tenant"], region="us-east",
                                  action="delete_record", role="record-maintainer") for r in ("alpha-retail", "alpha-wholesale")]})
         self.workflow = workflow["url"]
@@ -308,7 +309,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="zc-auth-e2e-") as work:
         scenario, passed = Scenario(work, args.driver.resolve()), False
         try:
-            scenario.configure()
+            scenario.configure(interactive=args.serve)
             if args.serve:
                 print(json.dumps({"debug_only": True, "issuers": {k: v[0] for k, v in scenario.credentials.items()},
                                   "approval": scenario.workflow, "regions": scenario.regions,

@@ -147,6 +147,8 @@ configuration directory, then waits for Ctrl-C. The private `issuer-a.json`
 and `issuer-b.json` files contain the generated client credentials;
 `approval.json` holds the distinct reviewer/introspection credentials. No
 requests are automatically approved and no E2E success is claimed in this mode.
+Manual mode allows five minutes for a reviewer decision; automated tests use
+a two-second pending-request deadline to exercise timeout denial quickly.
 
 `zc_auth_debug_server.py --mode oauth|approval|regions --config FILE
 --ready-file FILE` also allows individual fixtures to be launched manually.
