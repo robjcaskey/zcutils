@@ -39,6 +39,7 @@ pub mod dirty_pool;
 pub mod enterprise_workload;
 pub mod estate_sharding;
 pub mod fanout;
+pub mod federation_auth;
 pub mod gang_scheduler;
 pub mod global_failover;
 pub mod global_policy;

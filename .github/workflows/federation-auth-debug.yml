@@ -1,0 +1,78 @@
+name: Federated identity and JIT approval E2E
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/federation-auth-debug.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/federation_auth.rs'
+      - 'src/lib.rs'
+      - 'src/htb_controller.rs'
+      - 'src/regional_htb.rs'
+      - 'src/transport_security.rs'
+      - 'src/global_policy.rs'
+      - 'src/global_failover.rs'
+      - 'src/iops_policy.rs'
+      - 'src/bin/zc-federation-auth-debug.rs'
+      - 'scripts/zc_auth_debug_server.py'
+      - 'scripts/zc_auth_debug_workload.py'
+      - 'scripts/zc-auth-federation-e2e.py'
+      - 'scripts/requirements-federation-auth-debug.txt'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/federation-auth-debug.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/federation_auth.rs'
+      - 'src/lib.rs'
+      - 'src/htb_controller.rs'
+      - 'src/regional_htb.rs'
+      - 'src/transport_security.rs'
+      - 'src/global_policy.rs'
+      - 'src/global_failover.rs'
+      - 'src/iops_policy.rs'
+      - 'src/bin/zc-federation-auth-debug.rs'
+      - 'scripts/zc_auth_debug_server.py'
+      - 'scripts/zc_auth_debug_workload.py'
+      - 'scripts/zc-auth-federation-e2e.py'
+      - 'scripts/requirements-federation-auth-debug.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  end-to-end:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install build and fixture dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake libfabric-dev pkg-config protobuf-compiler python3-venv
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt
+          python3 -m venv "${RUNNER_TEMP}/auth-venv"
+          "${RUNNER_TEMP}/auth-venv/bin/pip" install -r scripts/requirements-federation-auth-debug.txt
+      - name: Verify authorization invariants and build the private driver
+        run: |
+          rustfmt +1.98.0 --edition 2024 --check src/federation_auth.rs src/bin/zc-federation-auth-debug.rs
+          cargo +1.98.0 test --locked --lib federation_auth::tests
+          cargo +1.98.0 build --locked --bin zc-federation-auth-debug
+      - name: Exercise real HTTP identity, approval, replication, failover and isolation
+        run: |
+          "${RUNNER_TEMP}/auth-venv/bin/python" scripts/zc-auth-federation-e2e.py --skip-build
+      - name: Upload secret-free decisions and proof summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: federation-auth-e2e-${{ github.run_id }}
+          path: target/federation-auth-e2e/
+          if-no-files-found: warn
+          retention-days: 14

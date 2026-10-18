@@ -65,6 +65,11 @@ The credential is stored as an expiring, overlapping version bundle rather
 than an indefinite token. Rotation, native encrypted framing, TLS, and test
 controls are documented in `GLOBAL_TRANSPORT_SECURITY.md`.
 
+The [federated identity and approval laboratory](federated-identity-breakglass-debug.md)
+tests a proposed principal-scoped authorization boundary with two OAuth
+issuers, independent temporary elevation, tenant isolation and failover. It is
+a loopback debug fixture; it does not replace this listener's shared credential.
+
 The five-VM overlapping-membership simulation is run with:
 
 ```text
