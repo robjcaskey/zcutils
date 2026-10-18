@@ -15,7 +15,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
-from zc_auth_debug_server import http_json, write_private
+from zc_auth_debug_server import Rejected, http_json, loopback_open, write_private
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -62,7 +62,7 @@ class Scenario:
         data = urllib.parse.urlencode({"grant_type": "client_credentials", "client_id": client,
                                        "client_secret": clients[client]["secret"]}).encode()
         req = urllib.request.Request(url + "/token", data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with loopback_open(req) as response:
             return json.load(response)["access_token"]
 
     def op(self, token, region, action, resource, expected=200, approval=None, **fields):
@@ -144,6 +144,12 @@ class Scenario:
         self.check("two independently keyed identity issuers", keys[0]["public_key"] != keys[1]["public_key"])
 
     def authentication_and_isolation(self):
+        try:
+            http_json("http://unregistered.invalid/token", {}, self.a)
+        except Rejected as error:
+            self.check("debug clients reject non-loopback destinations before sending credentials", error.reason == "debug_http_requires_loopback")
+        else:
+            raise AssertionError("external debug HTTP destination accepted")
         self.read(self.a, "us-east", "alpha-root")
         self.read(self.b, "us-east", "alpha-root")
         self.check("east accepts both registered issuers")

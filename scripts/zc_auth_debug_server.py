@@ -53,6 +53,22 @@ class Rejected(Exception):
         self.reason, self.status = reason, status
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_):
+        raise Rejected("debug_http_redirect_forbidden")
+
+
+def loopback_open(request, timeout=5):
+    url = request.full_url if isinstance(request, urllib.request.Request) else request
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not parsed.port or parsed.username or parsed.password:
+        raise Rejected("debug_http_requires_loopback")
+    # Never send debug client/reviewer credentials through ambient proxies or
+    # follow a redirect supplied by an endpoint.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    return opener.open(request, timeout=timeout)
+
+
 class Signer:
     def __init__(self, issuer):
         self.issuer = issuer
@@ -111,7 +127,7 @@ def http_json(url, body=None, token=None, approval=None):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with loopback_open(req) as response:
             return response.status, parse_json(response.read(65537))
     except urllib.error.HTTPError as error:
         return error.code, parse_json(error.read(65537))

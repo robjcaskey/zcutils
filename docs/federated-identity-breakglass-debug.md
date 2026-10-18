@@ -180,7 +180,8 @@ Ephemeral encryption keys exist only in the driver process; this is not a
 recoverable key-management or encrypted-witness implementation.
 
 All listeners bind only 127.0.0.1. HTTP credentials and routing metadata are
-visible to privileged local observers. Although record payloads are encrypted,
+visible to privileged local observers. Debug clients refuse non-loopback
+destinations, ignore ambient HTTP proxies and reject redirects. Although record payloads are encrypted,
 this HTTP envelope is **not** `public_envelope_v1` and must not be deployed on
 an untrusted/cross-region network. It does not change the production transport
 contract or assert wire conformance. There is no Kubernetes TokenReview adapter
