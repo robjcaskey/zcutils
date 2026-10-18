@@ -292,6 +292,17 @@ build_ubi_el()
 	local platform="$1" image="$2" kernel_release="$3" kernel_package="$4"
 	local baseos="$5" appstream="$6" key_url="$7" key_fingerprint="$8"
 	local source_dir="$9" stage_dir="${10}"
+	local package_url="${11}" package_sha256="${12}"
+	local package_dir="$cache_root/centos-kernel-devel/$package_sha256"
+	local package_file="$package_dir/$kernel_package.rpm"
+	[[ "$package_sha256" =~ ^[0-9a-f]{64}$ ]] || die "invalid kernel RPM SHA256"
+	mkdir -p "$package_dir"
+	if [ ! -s "$package_file" ]; then
+		curl --fail --location --silent --show-error "$package_url" --output "$package_file.tmp"
+		printf '%s  %s\n' "$package_sha256" "$package_file.tmp" | sha256sum -c - >&2
+		mv "$package_file.tmp" "$package_file"
+	fi
+	printf '%s  %s\n' "$package_sha256" "$package_file" | sha256sum -c - >&2
 	local key_dir="$cache_root/centos-keys"
 	local key_file="$key_dir/RPM-GPG-KEY-CentOS-Official-SHA256"
 	mkdir -p "$key_dir"
@@ -304,12 +315,15 @@ build_ubi_el()
 		-e KERNEL_PACKAGE="$kernel_package" \
 		-e CENTOS_BASEOS="$baseos" \
 		-e CENTOS_APPSTREAM="$appstream" \
+		-v "$package_file:/tmp/kernel-devel.rpm:ro" \
 		-v "$key_file:/tmp/RPM-GPG-KEY-CentOS-Official-SHA256:ro" \
 		-v "$source_dir:/src" -v "$stage_dir:/out" \
 		"$image" bash -lc '
 set -euo pipefail
 dnf -q -y install gcc make elfutils-libelf-devel kmod
 rpm --import /tmp/RPM-GPG-KEY-CentOS-Official-SHA256
+# Rolling Stream mirrors prune old kernels. Install the checksum-locked,
+# signed Koji RPM while resolving its dependencies from the normal repos.
 dnf -q -y \
   --repofrompath="centos-baseos,$CENTOS_BASEOS" \
   --repofrompath="centos-appstream,$CENTOS_APPSTREAM" \
@@ -317,7 +331,9 @@ dnf -q -y \
   --setopt=centos-baseos.gpgkey=file:///tmp/RPM-GPG-KEY-CentOS-Official-SHA256 \
   --setopt=centos-appstream.gpgcheck=1 \
   --setopt=centos-appstream.gpgkey=file:///tmp/RPM-GPG-KEY-CentOS-Official-SHA256 \
-  install "$KERNEL_PACKAGE"
+  --setopt=localpkg_gpgcheck=1 \
+  install /tmp/kernel-devel.rpm
+rpm -q "$KERNEL_PACKAGE"
 make -C "/usr/src/kernels/$KERNEL_RELEASE" M=/src clean modules
 install -m 0644 /src/zcnblk_client_mod.ko /out/zcnblk_client_mod.ko
 modinfo -F name /out/zcnblk_client_mod.ko > /out/module-name.txt
@@ -541,7 +557,9 @@ build_target()
 			"$(json_value "$target_name" centosAppStream)" \
 			"$(json_value "$target_name" centosKey)" \
 			"$(json_value "$target_name" centosKeyFingerprint)" \
-			"$source_dir" "$stage_dir"
+			"$source_dir" "$stage_dir" \
+			"$(json_value "$target_name" kernelPackageUrl)" \
+			"$(json_value "$target_name" kernelPackageSha256)"
 		;;
 	cos)
 		build_cos "$architecture" "$kernel_release" \

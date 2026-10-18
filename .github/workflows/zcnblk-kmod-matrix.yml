@@ -55,6 +55,11 @@ jobs:
             ([.targets[] | select(.family == "ubuntu")] | length >= 1) and
             ([.targets[] | select(.family == "debian") | .architecture] | unique | sort == ["amd64", "arm64"]) and
             ([.targets[] | select(.family == "ubi-el") | .architecture] | unique | sort == ["amd64", "arm64"]) and
+            ([.targets[] | select(.family == "ubi-el")] | all(
+              (.kernelPackageSha256 | test("^[0-9a-f]{64}$")) and
+              (.kernelPackageUrl | startswith("https://kojihub.stream.centos.org/kojifiles/packages/")) and
+              (. as $target | .kernelPackageUrl | endswith("/" + $target.kernelPackage + ".rpm"))
+            )) and
             ([.targets[] | select(.family == "nixos")] | length >= 1) and
             ([.targets[].architecture] | all(. == "amd64" or . == "arm64")) and
             ([.targets[].expectedVermagicPrefix] | all(endswith(" ")))

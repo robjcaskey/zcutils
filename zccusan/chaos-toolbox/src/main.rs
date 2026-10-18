@@ -302,27 +302,45 @@ fn process_kill(args: &[String]) -> io::Result<()> {
         }
         matches
     };
+    // Killing a container's init can reap other selected processes before we
+    // reach them. Only tolerate ESRCH for a discovered set with --all; an
+    // explicit PID and every other signal error must still fail.
+    let allow_missing = all && pid.is_none();
     for pid in pids {
         let exe = executable_name(pid)?.unwrap_or_else(|| "unknown".into());
+        let event = if dry_run {
+            "process_kill_planned"
+        } else if signal_process(pid, signal, allow_missing)? {
+            "process_killed"
+        } else {
+            "process_already_exited"
+        };
         println!(
             "{}",
             json!({
-                "event": if dry_run { "process_kill_planned" } else { "process_killed" },
+                "event": event,
                 "pid": pid,
                 "executable": exe,
                 "signal": signal.label(),
             })
         );
-        if !dry_run {
-            let pid = libc::pid_t::try_from(pid).map_err(|_| invalid("PID exceeds pid_t"))?;
-            // SAFETY: PID and signal were validated and the caller explicitly
-            // enabled host-process fault injection.
-            if unsafe { libc::kill(pid, signal.number()) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-        }
     }
     Ok(())
+}
+
+fn signal_process(pid: u32, signal: RequestedSignal, allow_missing: bool) -> io::Result<bool> {
+    let pid = libc::pid_t::try_from(pid).map_err(|_| invalid("PID exceeds pid_t"))?;
+    // SAFETY: The caller validated the target and explicitly enabled fault
+    // injection. No pointer arguments are involved.
+    if unsafe { libc::kill(pid, signal.number()) } == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if allow_missing && error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(false)
+    } else {
+        Err(error)
+    }
 }
 
 fn validate_experiment_id(value: &str) -> io::Result<String> {
@@ -757,6 +775,24 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_process_can_exit_before_it_is_signalled() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        assert!(signal_process(pid, RequestedSignal::Kill, false).unwrap());
+        child.wait().unwrap();
+        assert!(!signal_process(pid, RequestedSignal::Kill, true).unwrap());
+        assert_eq!(
+            signal_process(pid, RequestedSignal::Kill, false)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
 
     #[test]
     fn experiment_ids_are_nft_safe() {
