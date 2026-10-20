@@ -90,3 +90,12 @@ slate-gray surfaces and teal links. System light/dark preference is followed
 automatically, including changes while the page is open. Code, tables,
 navigation and focus states have a dark variant. Print keeps the light palette.
 There is no theme script or saved override.
+
+## Diskpipe landing page
+
+`docs-site/diskpipe-landing.html` is the checked-in interactive Diskpipe front
+page. The full renderer publishes it as `index.html` and renders the Markdown
+homepage and documentation library as `home.html`. The publication manifest
+includes both, so the normal documentation CI deploys the onboarding flow along
+with every generated guide. Edit the checked-in HTML rather than a local preview
+or the deployment repository.

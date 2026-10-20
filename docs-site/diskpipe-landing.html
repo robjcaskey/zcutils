@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Diskpipe · Storage for your cluster</title><link rel="stylesheet" href="site.css"><style>
+header{max-width:1240px} .onboarding{max-width:1120px;margin:64px auto;padding:0 32px} .intro{max-width:740px}h1{margin-bottom:20px}.intro p{font-size:1.15rem;color:var(--muted)}.steps{display:grid;grid-template-columns:310px minmax(0,1fr);gap:40px;margin-top:48px}fieldset{border:0;padding:0;margin:0;min-width:0}legend,.step-title{font-weight:700;font-size:15px;margin-bottom:18px}.choice{display:block;border:1px solid var(--line);border-radius:8px;padding:20px;margin-bottom:12px;cursor:pointer}.choice:has(input:checked){border-color:var(--ink);background:var(--wash);box-shadow:inset 0 0 0 1px var(--ink)}.choice input{accent-color:var(--ink);margin:0 8px 0 0}.choice strong{font-size:15px}.choice small{display:block;color:var(--muted);line-height:1.6;margin-top:10px}.prompt-box{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--code-block);color:var(--code-ink)}.prompt-top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line);font-size:13px}.prompt-top span{color:var(--code-ink)}button{font:inherit;font-weight:650;cursor:pointer;border:1px solid var(--line);border-radius:5px;padding:9px 16px;background:var(--paper);color:var(--ink)}button:hover{background:var(--wash)}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid var(--focus);outline-offset:4px}textarea{display:block;resize:vertical;width:100%;height:440px;border:0;padding:22px;background:transparent;color:inherit;font:13px/1.8 ui-monospace,SFMono-Regular,Consolas,monospace}.help{font-size:13px;color:var(--muted);margin:12px 0}.guide{font-size:13px}footer{margin:56px 0 28px}.prototype{font-size:11px;color:var(--muted);border:1px solid var(--line);padding:3px 9px;border-radius:20px}@media(max-width:760px){.onboarding{margin:35px auto;padding:0 22px}.steps{grid-template-columns:1fr;gap:22px;margin-top:30px}textarea{height:440px}h1{font-size:2.5rem}}
+
+[hidden]{display:none!important}.steps:not(.has-selection){grid-template-columns:minmax(0,620px)}.tabs{display:flex;gap:8px;border-bottom:1px solid var(--line);margin-bottom:24px;padding-bottom:12px}.tabs button{font-size:14px;background:transparent;border-color:transparent}.tabs button[aria-selected="true"]{background:var(--wash);border-color:var(--line)}.manual{border:1px solid var(--line);border-radius:8px;padding:24px}.manual h2{border:0;padding:0;margin:0 0 18px;font-size:1.3rem}.manual ol{padding-left:22px}.manual li{margin:18px 0}.manual p{font-size:14px;color:var(--muted)}
+.choices fieldset+fieldset{margin-top:0;padding-top:0;border-top:0}#back{margin-bottom:22px}.steps.has-selection{grid-template-columns:minmax(0,780px);gap:0}.steps.has-selection .choices{margin-bottom:0}
+.method-switch{margin:24px 0}#helm-install pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}#helm-install code{white-space:pre-wrap;overflow-wrap:anywhere}
+.workflow-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:24px}.workflow-heading h2{margin:0;padding:0;border:0}.workflow-heading .method-switch{margin:0}
+</style></head><body><a class="skip" href="#main">Skip to content</a><header><a class="brand" href="index.html">Diskpipe<span>STORAGE SERVICES</span></a><nav class="header-links"><a class="repo" href="home.html">Documentation</a><a class="repo" href="https://robjcaskey.github.io/zcutils/">zcutils docs ↗</a></nav></header>
+<main id="main" class="onboarding"><div class="intro"><p class="eyebrow">GET STARTED</p><h1>What do you want to do?</h1><p>Diskpipe is high-performance storage for your Kubernetes cluster: multi-user, multi-tenant, multi-region, and rate-limited, designed for low unit costs and delivering 75 GB/s on a two-node cluster, with room to scale from there.</p></div><div class="steps"><div class="choices"><button id="back" type="button" hidden>← Back</button><fieldset id="goals"><legend>Choose your goal</legend><label class="choice"><input type="radio" autocomplete="off" name="goal" value="start"><strong>Get started</strong><small>Install Diskpipe and create a volume.</small></label><label class="choice"><input type="radio" autocomplete="off" name="goal" value="replicate"><strong>Live replicate a volume</strong><small>Set up and verify volume replication.</small></label><label class="choice"><input type="radio" autocomplete="off" name="goal" value="region"><strong>Add a second region</strong><small>Expand an existing Diskpipe installation.</small></label></fieldset></div><section id="details" aria-label="How to get started" hidden><div class="workflow-heading"><h2 id="workflow-title">Get started</h2><div class="method-switch"><button id="agent-tab" type="button" aria-controls="agent-panel">My agent will help</button><button id="hand-tab" type="button" aria-controls="hand-panel" hidden>I’ll do it myself</button></div></div><div id="helm-install" hidden><p class="step-title">Install on Kubernetes</p><div class="prompt-box"><div class="prompt-top"><span>Helm install</span><button id="copy-helm" type="button">Copy command</button></div><pre><code id="helm-command">helm upgrade --install zccusan zcblock-csi --repo https://robjcaskey.github.io/zcutils --version 0.1.6 --namespace zccusan --create-namespace --wait --timeout 120s</code></pre></div><p class="help">After installing with Helm, follow the <a href="https://diskpipe.com/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.html">Kubernetes getting-started guide</a> to configure storage and create your first volume.</p><p class="step-title" style="margin-top:28px">Install on Linux</p><p class="help">Not using Kubernetes? <a href="https://diskpipe.com/standalone.html">Read the Linux guide →</a></p><p id="helm-status" role="status" class="help"></p></div><div id="agent-panel" aria-label="Agent-assisted setup" hidden><p class="help">Copy this prompt into your preferred AI agent.</p><div class="prompt-box"><div class="prompt-top"><span id="prompt-title">Single-region Kubernetes evaluation</span><button id="copy" type="button">Copy prompt</button></div><textarea id="prompt" aria-label="Prompt to copy into your AI agent" readonly spellcheck="false"></textarea></div><p class="help" role="status" id="status" aria-live="polite">Use an agent with access to your terminal and Kubernetes context.</p><a class="guide" id="guide" href="https://diskpipe.com/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.html">Read the setup guide →</a></div><div id="hand-panel" class="manual" aria-label="Manual setup"><fieldset id="platforms"><legend>Are you using Diskpipe on Kubernetes or running it on Linux?</legend><label class="choice"><input type="radio" autocomplete="off" name="platform" value="kubernetes"><strong>Diskpipe on Kubernetes</strong></label><label class="choice"><input type="radio" autocomplete="off" name="platform" value="linux"><strong>Diskpipe on Linux</strong></label></fieldset><div id="manual-result" hidden><h2 id="manual-title"></h2><ol id="manual-steps"></ol><p>Diskpipe’s source and commands currently use <code>zccusan</code>.</p><a id="manual-guide" href="#">Open the full walkthrough →</a></div></div></section></div><footer>Diskpipe · Kubernetes and independent storage services · <a href="home.html#documentation-library">All documentation</a></footer></main>
+<script>
+const goals={linux:{guide:'https://diskpipe.com/standalone.html'},single:{guide:'https://diskpipe.com/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.html'},region:{guide:'https://diskpipe.com/docs/GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.html'}};
+const prompt=document.querySelector('#prompt'),copy=document.querySelector('#copy'),status=document.querySelector('#status');let revision=0;
+const manual={linux:[
+ 'Identify existing Linux source and destination hosts, a disposable test volume, destination capacity, and a private network path. Review the cost-control guide before moving data.',
+ 'Read the standalone architecture and replication references. Check the implemented commands and prerequisites: a complete standalone production installation walkthrough is not available yet.',
+ 'Use a verified supported path to replicate the test volume, check destination data and status, then clean up only the evaluation resources you created.'
+],single:[
+ 'Check the prerequisites in the getting-started guide and choose your Kubernetes context and demo namespace.',
+ 'Follow the guide to install the single-region demo and check that its components are healthy.',
+ 'Create a test volume, write and read disposable data, then follow the cleanup instructions. The demo’s RAM-backed storage is volatile.'
+],region:[
+ 'Identify the source and destination Kubernetes contexts and check the prerequisites in the replication guide.',
+ 'Follow the replication and policy guides to connect the regions for a test tenant and workload.',
+ 'Verify replicated data and replication status. Use the failover guide for a scoped failover and failback exercise when you are ready.'
+]};
+function selected(name){return document.querySelector('input[name="'+name+'"]:checked')?.value}
+function clearGroup(name){document.querySelectorAll('input[name="'+name+'"]').forEach(e=>e.checked=false)}
+const labels={start:'Get started',replicate:'Live replicate a volume',region:'Add a second region'};
+function selectGoal(){
+ revision++;clearGroup('platform');
+ const goal=selected('goal');
+ document.querySelector('#goals').hidden=true;
+ document.querySelector('#details').hidden=false;
+ document.querySelector('#back').hidden=false;
+ document.querySelector('#manual-result').hidden=true;
+ document.querySelector('#platforms').hidden=goal==='start';
+ document.querySelector('.steps').classList.add('has-selection');
+ activateTab(document.querySelector('#hand-tab'));
+ document.querySelector('#helm-install').hidden=goal!=='start';
+ const actionPrompts={
+ start:`Help me install Diskpipe and create my first volume.
+
+Identify whether I will use Diskpipe on Kubernetes or directly on Linux. Inspect existing clusters or hosts before proposing new infrastructure.
+
+If Kubernetes: inspect configured contexts and available capacity, suggest a suitable existing cluster, and confirm the context and namespace. Read https://diskpipe.com/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.html. Verify the documented prerequisites and chart version, install the CSI components, configure supported storage, and create a disposable test volume. Demonstrate a write and read and report component health. Explain that the RAM-backed quickstart is volatile and distinguish it from persistent storage.
+
+If Linux: read https://diskpipe.com/standalone.html. Inspect the host, installed components, kernel compatibility, and storage ownership. The docs do not yet include a complete standalone production installer: verify implemented commands, explain missing steps, and do not invent an installation procedure. Where supported, install the needed services and demonstrate a disposable volume write/read. Do not install Kubernetes for this path.
+
+Prefer suitable user-provisioned cloud block capacity where supported. Compare the full cost and discuss midline or farline tiering if relevant using https://diskpipe.com/docs/GETTING_STARTED_WITH_TIERING_ON_KUBERNETES.html. Never overwrite existing volumes without confirmation. Keep placement in the documented userspace stages. Finish with a working volume and verification results, or a precise account of any unsupported installation steps.`,
+ replicate:`Help me live replicate a volume with Diskpipe.
+
+Identify whether my existing Diskpipe installation runs on Kubernetes or directly on Linux. Inspect the installation, source volume, workload, destination capacity, and private network path. Confirm the volume owner, tenant, destination, expected write rate, acceptable lag, and consistency requirements before changing replication.
+
+Read https://diskpipe.com/docs/streaming-replication-shaping.html. Verify that the current implementation supports the required live replication behavior, including initial synchronization, ongoing writes, catch-up, and consistency at the destination. Identify missing capabilities rather than substituting an offline copy and calling it live replication.
+
+If Kubernetes: inspect the current context, namespace, volume and storage resources, and deployed component versions. Use the supported replication interfaces for that installation. Do not reinstall a healthy cluster or assume that a cross-region walkthrough also documents a same-region replication workflow.
+
+If Linux: read https://diskpipe.com/standalone.html, inspect the existing services and source/destination hosts, and verify the available replication commands. Explain any missing standalone orchestration steps rather than inventing them. Do not install Kubernetes.
+
+Begin with a disposable test volume and a bounded write workload. Verify initial synchronization and subsequent writes reaching the destination, observe lag and configured rate limits, and check destination data at a defined consistent checkpoint. Explain what the evidence proves about durability and recovery. Get explicit confirmation before touching the live source, overwriting a destination, pausing writes, or promoting a replica. Keep replication and placement in the documented userspace stages. Report status, remaining lag, and how to stop replication without deleting the source.`,
+ region:`Help me add a second region to my existing Diskpipe installation.
+
+Identify whether Diskpipe runs on Kubernetes or directly on Linux. Inspect the current region, proposed destination, versions, capacity, private connectivity, and identity configuration. Confirm source and destination roles and the tenants, subtenants, and workloads that should be eligible for replication and failover.
+
+Read https://diskpipe.com/day-2.html for identity and scoped failover. Review trust boundaries, role bindings, replication budgets, rate limits, and how to avoid granting authority over unrelated tenants.
+
+If Kubernetes: inspect both contexts and namespaces. Follow https://diskpipe.com/docs/GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.html, https://diskpipe.com/docs/GETTING_STARTED_WITH_CROSS_REGION_POLICY_ON_KUBERNETES.html, and https://diskpipe.com/docs/GETTING_STARTED_WITH_CROSS_REGION_FAILOVER_ON_KUBERNETES.html. Reuse existing infrastructure where suitable and verify prerequisites before applying configuration.
+
+If Linux: read https://diskpipe.com/standalone.html and https://diskpipe.com/docs/streaming-replication-shaping.html. Inspect the existing services and verify implemented federation and regional replication interfaces. A complete standalone production installation walkthrough is not available: report missing deployment steps rather than translating Kubernetes instructions into invented Linux commands. Do not install Kubernetes.
+
+After the costed plan is approved, connect only the agreed scope and replicate a disposable test workload. Verify destination data, replication status, and tenant isolation. Propose a scoped failover and failback exercise and obtain confirmation before triggering it; do not trigger global failover. Report readiness, remaining gaps, and how to remove the added configuration without disrupting the original region.`
+ };
+ const scope=goal==='region'?'Adding a second region expresses intent, not approval for cross-region spending. Research transfer costs in both directions, including initial synchronization and recovery, and confirm the spending profile before proceeding.':'Keep the default setup in one region; exclude cross-region evaluation unless I explicitly approve the estimated cost.';
+ prompt.value=actionPrompts[goal]+`
+
+For either path, read https://diskpipe.com/docs/COST_CONTROL.html and its AWS, Google Cloud, or Azure page as applicable. Confirm budget, duration, existing capacity, new resources, bandwidth estimates, and ongoing cost if left running before spending. ${scope} Exclude storage traffic over the public internet unless I explicitly approve its estimated bandwidth cost; verify private routes and cross-zone, NAT, endpoint, and transit charges rather than assuming they are free.
+
+Use disposable data for initial validation. Preserve tenant boundaries and get confirmation before failover or destructive actions. At each natural stopping point and before ending, ask whether I am ready to clean up; list what would be deleted, data loss, and remaining charges. After approval, clean up only agreed resources, verify every created resource type for leftovers, and report what remains. Preserve pre-existing infrastructure. Never promise future reminders unless configured.`;
+ document.querySelector('#prompt-title').textContent=labels[goal];
+ document.querySelector('#workflow-title').textContent=labels[goal];
+ document.querySelector('#guide').href=goal==='region'?'https://diskpipe.com/day-2.html':'https://diskpipe.com/';
+ copy.textContent='Copy prompt';status.textContent='Your agent will identify whether you are using Kubernetes or Linux.';
+ document.querySelector('#workflow-title').tabIndex=-1;
+ document.querySelector('#workflow-title').focus({preventScroll:true});
+ document.querySelector('.steps').scrollIntoView({block:'start'});
+}
+function selectPlatform(){
+ const goal=selected('goal'),platform=selected('platform');
+ document.querySelector('#helm-install').hidden=goal!=='start'||platform==='linux';
+ const key=platform==='linux'?'linux':goal==='region'?'region':'single';
+ let steps=[...manual[key]],guide=goals[key].guide;
+ if(platform==='linux'&&goal==='start'){
+  steps[0]='Inspect an existing Linux host, storage ownership, available capacity, and private connectivity. Confirm the spending profile using the cost-control guide.';
+  steps[2]='Use verified supported commands to create a disposable volume and check writes and reads. Explain persistence limits and clean up agreed resources.';
+ }else if(platform==='linux'&&goal==='region'){
+  steps[0]='Identify the existing and proposed Linux regions and hosts. Research bandwidth and infrastructure costs and confirm spending before changes.';
+  steps[2]='Check implemented regional interfaces and missing steps before connecting a disposable workload. Verify replication and clean up agreed resources.';
+ }else if(platform==='kubernetes'&&goal==='replicate'){
+  steps[0]='Inspect the existing Diskpipe installation, source volume, destination, and private routes. Confirm ownership and spending; default to a single region.';
+  steps[1]='Read the replication reference and verify supported commands before configuring a disposable test volume. Do not assume an undocumented replication workflow is available.';
+  steps[2]='Verify replicated data and status, explain durability limits, and clean up agreed resources.';
+  guide='https://diskpipe.com/docs/streaming-replication-shaping.html';
+ }
+ document.querySelector('#manual-title').textContent=labels[goal]+' · '+(platform==='linux'?'Linux':'Kubernetes');
+ document.querySelector('#manual-steps').replaceChildren(...steps.map(text=>{const li=document.createElement('li');li.textContent=text;return li}));
+ document.querySelector('#manual-guide').href=guide;
+ document.querySelector('#manual-guide').textContent='Read the relevant guide →';
+ document.querySelector('#manual-result').hidden=false;
+}
+document.querySelector('#back').addEventListener('click',()=>{resetGoalSelection();document.querySelector('input[name=goal]').focus()});
+document.querySelectorAll('input[name=goal]').forEach(e=>e.addEventListener('change',selectGoal));
+document.querySelectorAll('input[name=platform]').forEach(e=>e.addEventListener('change',selectPlatform));
+copy.addEventListener('click',async()=>{const r=revision,text=prompt.value;try{await navigator.clipboard.writeText(text);if(r===revision){copy.textContent='Copied ✓';status.textContent='Prompt copied. Paste it into your preferred AI agent.'}}catch(e){prompt.focus();prompt.select();status.textContent='Select and copy the prompt with Ctrl+C or ⌘C.'}});
+
+function activateTab(button){
+ const agent=button.id==='agent-tab';
+ document.querySelector('#agent-panel').hidden=!agent;
+ document.querySelector('#hand-panel').hidden=agent||selected('goal')==='start';
+ document.querySelector('#helm-install').hidden=agent||selected('goal')!=='start'||selected('platform')==='linux';
+ document.querySelector('#agent-tab').hidden=agent;
+ document.querySelector('#hand-tab').hidden=!agent;
+}
+document.querySelector('#agent-tab').addEventListener('click',()=>{activateTab(document.querySelector('#agent-tab'));document.querySelector('#copy').focus()});
+document.querySelector('#hand-tab').addEventListener('click',()=>{activateTab(document.querySelector('#hand-tab'));document.querySelector(selected('goal')==='start'?'#copy-helm':'input[name=platform]').focus()});
+document.querySelector('#copy-helm').addEventListener('click',async()=>{
+ try{await navigator.clipboard.writeText(document.querySelector('#helm-command').textContent);document.querySelector('#helm-status').textContent='Command copied.'}
+ catch(e){const range=document.createRange();range.selectNodeContents(document.querySelector('#helm-command'));const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);document.querySelector('#helm-status').textContent='Press Ctrl+C or ⌘C to copy the selected command.'}
+});
+
+function resetGoalSelection(){
+ for(const name of ['goal','platform'])clearGroup(name);
+ document.querySelector('#goals').hidden=false;
+ document.querySelector('#back').hidden=true;
+ document.querySelector('#manual-result').hidden=true;
+ document.querySelector('#details').hidden=true;
+ document.querySelector('.steps').classList.remove('has-selection');
+ revision++;
+}
+resetGoalSelection();
+window.addEventListener('pageshow',resetGoalSelection);
+</script></body></html>

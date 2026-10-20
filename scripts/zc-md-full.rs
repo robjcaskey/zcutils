@@ -397,6 +397,12 @@ pub fn site(root: &Path, output: &Path) -> Result<()> {
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
         .collect();
+    let landing_path = PathBuf::from("docs-site/diskpipe-landing.html");
+    let landing = if tracked.contains(&landing_path) {
+        let mut t = Target { path: landing_path.clone(), fragment: None, query: None };
+        local_file(&root, &tracked, &mut t)?;
+        Some(fs::read_to_string(root.join(&landing_path)).map_err(|e| e.to_string())?)
+    } else { None };
     let mut pending: BTreeSet<_> = tracked
         .iter()
         .filter(|p| p.starts_with("zccusan") && markdown(p))
@@ -436,7 +442,11 @@ pub fn site(root: &Path, output: &Path) -> Result<()> {
                 }
             }
         }
-        docs.insert(source.clone(), Doc::new(&source, text));
+        let mut doc = Doc::new(&source, text);
+        if landing.is_some() && doc.output == "index.html" {
+            doc.output = "home.html".into();
+        }
+        docs.insert(source.clone(), doc);
     }
     let mut routes = BTreeSet::new();
     for doc in docs.values() {
@@ -491,13 +501,19 @@ pub fn site(root: &Path, output: &Path) -> Result<()> {
             shell(
                 doc,
                 &body,
-                if doc.output == "index.html" {
+                if doc.output == "index.html" || doc.output == "home.html" {
                     &catalog
                 } else {
                     ""
                 },
             ),
         ));
+    }
+    if let Some(html) = landing {
+        for (_, contents) in &mut rendered {
+            *contents = contents.replace("index.html#documentation-library", "home.html#documentation-library");
+        }
+        rendered.push(("index.html".into(), html));
     }
     // No output is written until all sources and references have validated.
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
