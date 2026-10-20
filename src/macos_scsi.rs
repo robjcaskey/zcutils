@@ -150,7 +150,7 @@ impl<T: Transport> Disk<T> {
                         }
                         0x80 => {
                             reply[3] = 16;
-                            reply[4..20].copy_from_slice(b"zcutils-dev-00001");
+                            reply[4..20].copy_from_slice(b"zcutils-dev-0001");
                             20
                         }
                         0xb0 => {
@@ -309,5 +309,19 @@ mod tests {
         assert_eq!(&b[..8], &[0, 0, 0, 1, 0, 0, 0x10, 0]);
         assert_eq!(d.execute(&[0xff; 6], 1, &mut b).asc, 0x20);
         assert!(Disk::new(Memory::default(), 8193).is_err());
+        for page in [0, 0x80, 0xb0] {
+            assert_eq!(d.execute(&[0x12, 1, page, 0, 64, 0], 1, &mut b).key, 0);
+        }
+        for op in [0x1a, 0x5a] {
+            let mut cdb = vec![0; if op == 0x1a { 6 } else { 10 }];
+            cdb[0] = op;
+            cdb[2] = 8;
+            if op == 0x1a {
+                cdb[4] = 64;
+            } else {
+                cdb[8] = 64;
+            }
+            assert_eq!(d.execute(&cdb, 1, &mut b).key, 0);
+        }
     }
 }

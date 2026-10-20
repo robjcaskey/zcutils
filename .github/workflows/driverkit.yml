@@ -26,10 +26,16 @@ jobs:
           cargo build --locked --bin zcnblk-macos-client
           cargo test --locked --bin zcnblk-macos-client
           codesign --force --sign - --entitlements macos/driverkit/Broker.entitlements target/debug/zcnblk-macos-client
+      - name: Archive development artifacts preserving app permissions
+        run: |
+          mkdir -p target/driverkit-dist
+          cp -R target/macos-driverkit/ZcStorage.app target/driverkit-dist/
+          cp target/debug/zcnblk-macos-client target/driverkit-dist/
+          cp docs/native-desktop-builds.md target/driverkit-dist/
+          tar -czf target/zcutils-driverkit-development.tar.gz -C target/driverkit-dist .
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: zcutils-driverkit-development
-          path: |
-            target/macos-driverkit/ZcStorage.app
-            target/debug/zcnblk-macos-client
+          path: target/zcutils-driverkit-development.tar.gz
+          if-no-files-found: error
           retention-days: 7

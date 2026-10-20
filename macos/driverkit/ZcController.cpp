@@ -1,5 +1,6 @@
 // Native block edge only. No placement, RAID, network, or leaf media here.
 #include "ZcController.h"
+#include "ZcUserClient.h"
 #include <DriverKit/IOLib.h>
 #include <DriverKit/OSNumber.h>
 #include <DriverKit/OSDictionary.h>
@@ -134,7 +135,7 @@ kern_return_t ZcController::BrokerCall(uint64_t selector,IOUserClientMethodArgum
         if (args->scalarInputCount!=4 || args->scalarOutputCount || !ivars->completion || !ivars->delivered || args->scalarInput[0]!=ivars->token) return kIOReturnBadArgument;
         auto bytes=args->scalarInput[1],key=args->scalarInput[2],asc=args->scalarInput[3];
         if (bytes>ivars->task.fRequestedTransferCount || bytes>kBlock || key>15 || asc>255 || (key && bytes)) return kIOReturnBadArgument;
-        Finish(bytes,key,asc);return kIOReturnSuccess;
+        Finish(bytes,static_cast<uint8_t>(key),static_cast<uint8_t>(asc));return kIOReturnSuccess;
     }
     return kIOReturnUnsupported;
 }
@@ -186,9 +187,16 @@ ZC_RESET(UserClearTaskSetRequest)
 ZC_RESET(UserLogicalUnitResetRequest)
 ZC_RESET(UserTargetResetRequest)
 
+bool ZcUserClient::init() {
+    if (!super::init()) return false;
+    ivars=IONewZero(ZcUserClient_IVars,1);return ivars!=nullptr;
+}
+void ZcUserClient::free() {
+    if (ivars) IODelete(ivars,ZcUserClient_IVars,1);
+    super::free();
+}
 kern_return_t IMPL(ZcUserClient, Start) {
     auto ret=Start(provider,SUPERDISPATCH);if (ret!=kIOReturnSuccess) return ret;
-    ivars=IONewZero(ZcUserClient_IVars,1);if (!ivars) return kIOReturnNoMemory;
     ivars->controller=OSDynamicCast(ZcController,provider);if (!ivars->controller) return kIOReturnBadArgument;
     // All driver state, userclient calls, and disconnects share one serial queue.
     IODispatchQueue *queue=nullptr;ret=provider->CopyDispatchQueue(kIOServiceDefaultQueueName,&queue);
@@ -199,7 +207,6 @@ kern_return_t IMPL(ZcUserClient, Start) {
 }
 kern_return_t IMPL(ZcUserClient, Stop) {
     if (ivars && ivars->controller) ivars->controller->Disconnect(this);
-    if (ivars) IODelete(ivars,ZcUserClient_IVars,1);
     return Stop(provider,SUPERDISPATCH);
 }
 kern_return_t ZcUserClient::ExternalMethod(uint64_t selector,IOUserClientMethodArguments *args,const IOUserClientMethodDispatch *,OSObject *,void *) {
