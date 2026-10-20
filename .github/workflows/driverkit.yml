@@ -1,9 +1,10 @@
 name: DriverKit development build
+# Users should build locally. This was a one-time infrastructure exercise.
+# No automatic or scheduled builds; also disabled in GitHub after validation.
+# See docs/native-desktop-builds.md for local builds and signing requirements.
 on:
-  push:
-    branches: [codex/macos-driverkit]
-    paths: ['macos/**', 'src/macos_scsi.rs', 'src/bin/zcnblk-macos-client.rs', 'Cargo.*', 'scripts/build-macos-driverkit.sh', '.github/workflows/driverkit.yml']
   workflow_dispatch:
+
 permissions:
   contents: read
 concurrency:
