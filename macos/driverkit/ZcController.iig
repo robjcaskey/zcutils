@@ -1,0 +1,38 @@
+#include <SCSIControllerDriverKit/IOUserSCSIParallelInterfaceController.iig>
+#include <DriverKit/IOUserClient.iig>
+class ZcController : public IOUserSCSIParallelInterfaceController {
+public:
+    virtual bool init() override;
+    virtual void free() override;
+    virtual kern_return_t Start(IOService *provider) override;
+    virtual kern_return_t Stop(IOService *provider) override;
+    virtual kern_return_t NewUserClient(uint32_t type, IOUserClient **userClient) override;
+    virtual void ParallelTaskCompletion ( OSAction * action TARGET, SCSIUserParallelResponse response ) override;
+    virtual kern_return_t UserReportHBAHighestLogicalUnitNumber ( uint64_t * value ) override;
+    virtual kern_return_t UserDoesHBASupportSCSIParallelFeature ( uint32_t theValue, bool * result ) override;
+    virtual kern_return_t UserInitializeTargetForID ( SCSITargetIdentifier targetID ) override;
+    virtual kern_return_t UserDoesHBAPerformAutoSense ( bool * result ) override;
+    virtual kern_return_t UserDoesHBASupportMultiPathing ( bool * result ) override;
+    virtual kern_return_t UserAbortTaskRequest ( uint64_t theT, uint64_t theL, uint64_t theQ, uint32_t * response ) override;
+    virtual kern_return_t UserAbortTaskSetRequest ( uint64_t theT, uint64_t theL, uint32_t * response ) override;
+    virtual kern_return_t UserClearACARequest ( uint64_t theT, uint64_t theL, uint32_t * response ) override;
+    virtual kern_return_t UserClearTaskSetRequest ( uint64_t theT, uint64_t theL, uint32_t * response ) override;
+    virtual kern_return_t UserLogicalUnitResetRequest ( uint64_t theT, uint64_t theL, uint32_t * response ) override;
+    virtual kern_return_t UserTargetResetRequest ( uint64_t theT, uint32_t * response ) override;
+    virtual kern_return_t UserReportInitiatorIdentifier ( uint64_t * id ) override;
+    virtual kern_return_t UserReportHighestSupportedDeviceID ( uint64_t * id ) override;
+    virtual kern_return_t UserReportMaximumTaskCount ( uint32_t * count ) override;
+    virtual kern_return_t UserDoesHBAPerformDeviceManagement ( bool * result ) override;
+    virtual kern_return_t UserInitializeController ( ) override;
+    virtual kern_return_t UserStartController ( ) override;
+    virtual kern_return_t UserProcessParallelTask ( SCSIUserParallelTask parallelRequest, uint32_t * response, OSAction * completion TYPE(ParallelTaskCompletion) ) override;
+    virtual kern_return_t UserGetDMASpecification ( uint64_t * maxTransferSize, uint32_t * alignment, uint8_t * numAddressBits, DMAOutputSegmentType * segmentType ) override;
+    virtual kern_return_t UserMapHBAData ( uint32_t * uniqueTaskID ) override;
+    virtual kern_return_t UserMapBundledParallelTaskCommandAndResponseBuffers ( IOBufferMemoryDescriptor * parallelCommandIOMemoryDescriptor, IOBufferMemoryDescriptor * parallelResponseIOMemoryDescriptor ) override;
+    virtual void BundledParallelTaskCompletion ( OSAction * action TARGET, const uint16_t parallelResponseSlotIndices[kMaxBundledParallelTasks], uint16_t parallelResponseSlotIndicesCount ) override;
+    virtual void UserProcessBundledParallelTasks ( const uint16_t parallelRequestSlotIndices[kMaxBundledParallelTasks], uint16_t parallelRequestSlotIndicesCount, OSAction * completion TYPE(BundledParallelTaskCompletion) ) override;
+    kern_return_t BrokerCall(uint64_t selector, IOUserClientMethodArguments *args, IOUserClient *owner) LOCALONLY;
+    kern_return_t BrokerMemory(uint64_t type, uint64_t *options, IOMemoryDescriptor **memory, IOUserClient *owner) LOCALONLY;
+    void Disconnect(IOUserClient *owner) LOCALONLY;
+    void Finish(uint64_t bytes, uint8_t key, uint8_t asc) LOCALONLY;
+};

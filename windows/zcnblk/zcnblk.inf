@@ -1,0 +1,50 @@
+[Version]
+Signature="$WINDOWS NT$"
+Class=SCSIAdapter
+ClassGuid={4d36e97b-e325-11ce-bfc1-08002be10318}
+Provider=%Provider%
+DriverVer=10/20/2026,0.1.0.2
+CatalogFile=zcnblk.cat
+PnpLockdown=1
+
+[Manufacturer]
+%Provider%=Models,NTamd64
+
+[Models.NTamd64]
+%Device%=Install,Root\ZCNBLK
+
+[Install.NT]
+CopyFiles=DriverFiles
+
+[DestinationDirs]
+DriverFiles=13
+
+[DriverFiles]
+zcnblk.sys
+
+[Install.NT.Services]
+AddService=zcnblk,0x00000002,Service
+
+[Service]
+DisplayName=%Device%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%13%\zcnblk.sys
+LoadOrderGroup=SCSI Miniport
+AddReg=ServiceParameters
+
+[ServiceParameters]
+HKR,"Parameters\PnpInterface","5",0x00010001,1
+HKR,"Parameters","BusType",0x00010001,14
+
+[SourceDisksNames]
+1=%Media%,,,
+
+[SourceDisksFiles]
+zcnblk.sys=1
+
+[Strings]
+Provider="zcutils"
+Device="zcutils Native zcnblk Adapter"
+Media="zcutils Windows native driver"

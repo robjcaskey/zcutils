@@ -1,11 +1,9 @@
 name: macOS storage and regional participation
 
+# Users should build locally. This workflow was exercised only to validate
+# the build infrastructure; keep automatic push/PR/scheduled builds disabled.
+# It is also disabled in GitHub after validation. See docs/native-desktop-builds.md.
 on:
-  push:
-    branches: [main, codex/macos-storage]
-    paths: ['src/**', 'Cargo.*', 'build.rs', 'scripts/build-macos-userspace.sh', 'scripts/test-portable-storage.py', '.github/workflows/macos-storage.yml']
-  pull_request:
-    paths: ['src/**', 'Cargo.*', 'build.rs', 'scripts/build-macos-userspace.sh', 'scripts/test-portable-storage.py', '.github/workflows/macos-storage.yml']
   workflow_dispatch:
 
 permissions:

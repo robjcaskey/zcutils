@@ -11,9 +11,9 @@ python3 scripts/test-portable-storage.py
 
 The build produces the TCP client and terminal target, racing userspace mirror,
 regional policy node, Kubernetes federation adapter, operator, CRD generator,
-and telemetry server. The macOS CI workflow builds both architectures, runs
-shared contract tests and executable recovery/backup/mirror checks, and uploads
-an archive of the tools. These are development artifacts, not notarized installers.
+and telemetry server. The macOS workflow was exercised on both architectures with shared contract
+tests and executable recovery/backup/mirror checks. It is retained as a disabled,
+manual reference; users should build locally. These are development artifacts, not notarized installers.
 
 ## File-backed target and shared WAL
 
@@ -84,7 +84,10 @@ modules as Linux. See the existing regional/federation runbooks for membership
 and policy administration. Platform availability does not itself authorize a new
 region or grant its storage access. The Kubernetes CSI node/kernel data path
 remains Linux-only; running the operator on a Mac does not create a macOS CSI
-node. Native macOS block mounting requires a separate DriverKit edge.
+node. An experimental SCSI DriverKit edge and userspace broker are now included;
+see [local desktop builds](native-desktop-builds.md) for build instructions and
+the signing and runtime-validation requirements. Native mounting is not yet
+verified on a provisioned Mac.
 
 ## Mixed Linux/macOS verification
 

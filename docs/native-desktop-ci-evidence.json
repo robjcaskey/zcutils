@@ -1,0 +1,55 @@
+{
+  "date_utc": "2026-10-20",
+  "runners": "Standard GitHub-hosted runners; no EC2 provisioning",
+  "workflows": "Manual dispatch only in YAML; disabled_manually in GitHub after validation",
+  "runs": [
+    {
+      "kind": "driverkit",
+      "url": "https://github.com/robjcaskey/zcutils/actions/runs/39514514040",
+      "source_commit": "f7465ab4f85f73d5510af92ac6663b9e41959d9a",
+      "attempt": 1,
+      "conclusion": "success",
+      "jobs": [
+        {
+          "name": "build",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "kind": "windows",
+      "url": "https://github.com/robjcaskey/zcutils/actions/runs/39514180059",
+      "source_commit": "a9f7da1ef2d0d69c9c6653b6e9349280cb668d88",
+      "attempt": 2,
+      "conclusion": "success",
+      "jobs": [
+        {
+          "name": "windows",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "kind": "macos",
+      "url": "https://github.com/robjcaskey/zcutils/actions/runs/39514725515",
+      "source_commit": "b9b329a70c08d1a5eb778f833bf4ed41df42ea63",
+      "attempt": 1,
+      "conclusion": "success",
+      "jobs": [
+        {
+          "name": "Linux protocol and shared-core regression",
+          "conclusion": "success"
+        },
+        {
+          "name": "macOS (macos-15-intel)",
+          "conclusion": "success"
+        },
+        {
+          "name": "macOS (macos-15)",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ],
+  "driverkit_runtime": "Compilation, broker parser tests and signature-integrity verification passed. No activation/mount proof. The SIP-enabled rented M1 has no signing identity and rejected launch of the restricted ad-hoc broker."
+}

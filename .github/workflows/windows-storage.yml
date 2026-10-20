@@ -1,0 +1,47 @@
+name: Windows storage build
+# Users should build locally. This workflow was exercised only to validate
+# the build infrastructure; keep automatic push/PR/scheduled builds disabled.
+# It is also disabled in GitHub after validation. See docs/native-desktop-builds.md.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: windows-storage-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      PROTOC: protoc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install protocol compiler
+        run: |
+          choco install protoc nasm --no-progress -y
+          if ($LASTEXITCODE -ne 0) { throw 'Native build dependencies failed' }
+          'C:\Program Files\NASM' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Build userspace
+        run: ./scripts/windows/build-userspace.ps1
+      - name: Test portable storage and broker contracts
+        run: |
+          cargo test --locked --lib
+          if ($LASTEXITCODE -ne 0) { throw 'Library tests failed' }
+          cargo test --locked --bin zcnblk-client --bin zcnblk-portable-target --bin zcnblk-windows-client
+          if ($LASTEXITCODE -ne 0) { throw 'Storage tests failed' }
+      - name: Exercise WAL recovery and backup restore over real TCP
+        run: python scripts/test-windows-storage.py
+      - name: Build native Storport driver
+        run: ./scripts/windows/build-driver.ps1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: zcutils-windows-x64-development
+          path: |
+            target/debug/zcnblk-*.exe
+            target/debug/zccusan-*.exe
+            target/windows-driver/zcnblk.sys
+            target/windows-driver/zcnblk.inf
+          if-no-files-found: error
+          retention-days: 7
