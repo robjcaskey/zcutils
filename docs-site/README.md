@@ -52,8 +52,11 @@ Diskpipe publishes at [diskpipe.com](https://diskpipe.com/) using the dedicated
 `robjcaskey/diskpipe-docs` Pages repository and its `gh-pages` branch.
 `scripts/publish-diskpipe-docs.sh` copies the generated manifest, publishes
 nested pages and removes previously generated pages that have been deleted.
-It preserves `CNAME`, repository configuration and the HTTPS provisioning
-workflow. A repository-scoped deploy key is stored in the source repository's
+It removes the legacy Pages `CNAME` and preserves repository configuration.
+CloudFront serves the public apex and www names with an ACM certificate, while
+Pages retains its default `robjcaskey.github.io/diskpipe-docs/` origin URL.
+A custom domain on Pages would redirect origin requests back to CloudFront;
+do not restore `CNAME` or set a Pages custom domain. A repository-scoped deploy key is stored in the source repository's
 `DISKPIPE_DOCS_DEPLOY_KEY` Actions secret.
 
 The independent [zcutils site](https://robjcaskey.github.io/zcutils/) retains its

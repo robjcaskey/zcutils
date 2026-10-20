@@ -48,9 +48,11 @@ for name in new:
     path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source / name, path)
 shutil.copyfile(source / 'site-manifest.txt', target / 'site-manifest.txt')
-(target / 'CNAME').write_text('diskpipe.com\n')
+# CloudFront owns the public domain; Pages must retain its github.io origin URL.
+remove_cname = (target / 'CNAME').exists()
+(target / 'CNAME').unlink(missing_ok=True)
 (target / '.nojekyll').touch()
-subprocess.run(['git', '-C', str(target), 'add', '-A', '--', *sorted(new | old), 'site-manifest.txt', 'CNAME', '.nojekyll'], check=True)
+subprocess.run(['git', '-C', str(target), 'add', '-A', '--', *sorted(new | old), 'site-manifest.txt', '.nojekyll', *(['CNAME'] if remove_cname else [])], check=True)
 print(f'DISKPIPE_FILES published={len(new)} removed={len(old-new)}')
 PY
 if ! git -C "${target_dir}" diff --cached --quiet; then
