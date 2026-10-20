@@ -3,6 +3,9 @@
 Use Diskpipe through its CSI adapter, Helm chart and Kubernetes policy resources.
 This path works on physical or virtual cluster nodes, including cloud clusters.
 
+Read [cost control for trials](../COST_CONTROL.md) before provisioning or
+moving trial data.
+
 ## Install and validate
 
 - [Getting started](../GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md): the narrated volatile-memory happy path.

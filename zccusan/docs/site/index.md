@@ -7,6 +7,11 @@ one deployment and integration choice.
 The implementation currently lives under `zccusan/` in the zcutils repository.
 Binary names, API paths and installation commands retain their existing names.
 
+## Before you start
+
+Read the [cost-control guide](../COST_CONTROL.md) to agree on a trial budget,
+review bandwidth costs, and plan cleanup.
+
 ## Choose your deployment
 
 | Documentation | Use it when |
