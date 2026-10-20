@@ -6,6 +6,10 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[cfg(feature = "full-markdown")]
+#[path = "zc-md-full.rs"]
+mod full_docs;
+
 type Result<T> = std::result::Result<T, String>;
 type Linker<'a> = dyn Fn(&str) -> Result<String> + 'a;
 
@@ -540,7 +544,14 @@ fn run() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("--site") if args.len() == 3 => site(Path::new(&args[1]), Path::new(&args[2]), false),
         Some("--diskpipe-site") if args.len() == 3 => {
-            site(Path::new(&args[1]), Path::new(&args[2]), true)
+            #[cfg(feature = "full-markdown")]
+            {
+                full_docs::site(Path::new(&args[1]), Path::new(&args[2]))
+            }
+            #[cfg(not(feature = "full-markdown"))]
+            {
+                Err("--diskpipe-site requires the tools/zc-docs Cargo build".into())
+            }
         }
         Some("--check") if args.len() > 1 => {
             for file in &args[1..] {

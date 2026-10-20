@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/docs-site.yml'
       - 'scripts/zc-md.rs'
+      - 'scripts/zc-md-full.rs'
+      - 'tools/zc-docs/**'
       - 'scripts/check-docs-site.sh'
       - 'scripts/publish-docs-pages.sh'
       - 'scripts/publish-diskpipe-docs.sh'
@@ -13,12 +15,18 @@ on:
       - 'docs-site/**'
       - 'docs/saml-realtime-revocation-debug.md'
       - 'docs/federated-identity-breakglass-debug.md'
-      - 'zccusan/docs/**'
+      - 'zccusan/**'
+      - 'docs/**'
+      - '**/*.md'
+      - 'scripts/**'
+      - 'kmod/**'
   push:
     branches: [main]
     paths:
       - '.github/workflows/docs-site.yml'
       - 'scripts/zc-md.rs'
+      - 'scripts/zc-md-full.rs'
+      - 'tools/zc-docs/**'
       - 'scripts/check-docs-site.sh'
       - 'scripts/publish-docs-pages.sh'
       - 'scripts/publish-diskpipe-docs.sh'
@@ -27,7 +35,11 @@ on:
       - 'docs-site/**'
       - 'docs/saml-realtime-revocation-debug.md'
       - 'docs/federated-identity-breakglass-debug.md'
-      - 'zccusan/docs/**'
+      - 'zccusan/**'
+      - 'docs/**'
+      - '**/*.md'
+      - 'scripts/**'
+      - 'kmod/**'
   workflow_dispatch:
 
 permissions:

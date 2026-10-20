@@ -1,0 +1,18 @@
+[package]
+name = "zc-docs"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "zc-docs"
+path = "../../scripts/zc-md.rs"
+
+[features]
+default = ["full-markdown"]
+full-markdown = ["dep:pulldown-cmark"]
+
+[dependencies]
+pulldown-cmark = { version = "=0.10.3", default-features = false, features = ["html"], optional = true }

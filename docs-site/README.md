@@ -1,27 +1,70 @@
-# Documentation site
+# Documentation sites
 
-Build and validate the project documentation with the system Rust compiler:
+Run the same validation and rendering used by CI:
 
 ```bash
 bash scripts/check-docs-site.sh
 ```
 
-The script runs the renderer's focused tests, validates the eight allowlisted
-Markdown pages and their local links/anchors, and emits `docs-site/dist`.
-It uses only `rustc` and the Rust standard library; no Cargo dependencies,
-JavaScript packages, cloud resources or storage-service build are needed.
-An optional argument selects another output directory. CI uses the same script.
+The Rust tool in [tools/zc-docs](../tools/zc-docs/Cargo.toml) has a committed
+Cargo lockfile and a pinned CommonMark parser. The build uses two compilation
+jobs and temporary build storage. It does not build the storage services.
+An optional argument chooses the output directory. The outputs are the zcutils
+site at `docs-site/dist/` and the Diskpipe site at `docs-site/dist/diskpipe/`.
 
-The supported subset is ATX headings, paragraphs with wrapped lines, single-level
-dash/numbered lists, pipe tables, horizontal rules, inline code, asterisk emphasis,
-inline links and three-backtick code fences. Mermaid fences are shown as escaped
-diagram source. One title, consistent heading levels and unique anchors are
-required. Raw HTML, images, reference links, nested lists, block quotes and
-indented code are unsupported; use the declared subset. HTML/code text is escaped
-and link schemes are restricted. Local published-guide links become HTML links;
-other existing repository targets link to GitHub.
+## Diskpipe documentation discovery
 
-For just a file check or an HTML fragment:
+Every Git-tracked Markdown file beneath `zccusan/` is rendered automatically.
+No page allowlist needs updating when a guide is added. The builder follows
+Markdown links recursively into shared repository documentation and copies
+linked repository assets. Untracked laboratories, credentials and local test
+outputs are excluded. Commit a new page before expecting CI to publish it;
+local builds also include staged new files.
+
+Links to Markdown become relative HTML links, including links with heading
+fragments and links written as GitHub URLs to this repository's `main` branch.
+An introductory page links to the complete generated documentation library.
+Referenced source directories can still link to the repository, and external
+projects retain their external URLs. Documentation links stay on Diskpipe.
+
+Nested lists, block quotes, reference links, images, tables and fenced code
+are supported through CommonMark. Heading anchors come from visible heading
+text and receive deterministic suffixes when repeated. Raw HTML is escaped;
+HTML comments are omitted. Mermaid fences remain readable source code.
+Unfilled template links are displayed as text until their values and generated
+artifacts exist. Missing ordinary local targets or heading fragments fail the
+build before new output is emitted.
+
+The landing pages live in `zccusan/docs/site/`. Stable homepage, Kubernetes,
+standalone and day-two URLs are retained. Other storage pages keep their source
+hierarchy, such as `docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.html`.
+Shared documents live beneath `reference/`. The builder writes a
+`site-manifest.txt` containing exactly the public files generated for deployment.
+
+## Publication
+
+GitHub Actions validates pull requests. Pushes to `main` and manual runs on
+`main` publish both sites. Markdown changes anywhere, storage documentation and
+its assets, shared docs, build-tool changes and source examples trigger this
+workflow. The workflow is `.github/workflows/docs-site.yml`.
+
+Diskpipe publishes at [diskpipe.com](https://diskpipe.com/) using the dedicated
+`robjcaskey/diskpipe-docs` Pages repository and its `gh-pages` branch.
+`scripts/publish-diskpipe-docs.sh` copies the generated manifest, publishes
+nested pages and removes previously generated pages that have been deleted.
+It preserves `CNAME`, repository configuration and the HTTPS provisioning
+workflow. A repository-scoped deploy key is stored in the source repository's
+`DISKPIPE_DOCS_DEPLOY_KEY` Actions secret.
+
+The independent [zcutils site](https://robjcaskey.github.io/zcutils/) retains its
+small curated landing-page set. Its publisher preserves Helm chart archives,
+`index.yaml` and signatures on the existing `gh-pages` branch. The old day-two
+URL continues forwarding to the storage documentation. The
+[Zero Copy Cinematic Universe](universe.md) connects the two projects.
+
+## Local subset checks
+
+The small dependency-free validator remains available for the curated pages:
 
 ```bash
 rustc --edition=2024 scripts/zc-md.rs -o /tmp/zc-md
@@ -29,45 +72,15 @@ rustc --edition=2024 scripts/zc-md.rs -o /tmp/zc-md
 /tmp/zc-md --render docs/saml-realtime-revocation-debug.md /tmp/saml.html
 ```
 
-GitHub Actions publishes this site at https://robjcaskey.github.io/zcutils/.
-Pull requests validate and build; pushes to `main` and manual runs on `main`
-also publish. `scripts/publish-docs-pages.sh` updates only the explicitly allowlisted generated
-HTML/CSS files and `.nojekyll` on the existing `gh-pages` branch, preserving
-`index.yaml`, chart archives and signatures. It explicitly requests a Pages
-build using the workflow's `pages: write` permission, because commits pushed
-with `GITHUB_TOKEN` do not automatically start a branch-based Pages build.
+That strict subset supports ATX headings, wrapped paragraphs, single-level
+lists, pipe tables, inline code, asterisk emphasis, inline links and backtick
+fences. It requires one title and consistent heading levels. Full Diskpipe
+site generation uses the Cargo build to support existing CommonMark guides.
 
-Pages must remain configured to deploy `gh-pages` at `/`. This is the existing
-repository setting and also serves the Helm chart repository. No S3 bucket,
-Terraform, access-key secret or external hosting service is required.
-Never publish private laboratory directories, `lab.json`, credentials or SQLite
-databases. Only the generated allowlisted HTML and CSS are deployed.
+## Shared appearance
 
-The zcutils home is at `/zcutils/`; zccusan owns its documentation home at
-`/zcutils/zccusan/`, with separate with-Kubernetes and without-Kubernetes pages.
-Its landing-page sources live under `zccusan/docs/site/` so they can move with
-that project. Shared project relationships live in `docs-site/universe.md`.
-The old `/day-2.html` URL forwards to `/zccusan/day-2.html`, preserving fragments.
-Each project has its own brand and navigation. Published links and stylesheet
-paths are relative, so the site also works beneath the GitHub project prefix.
-
-The visual baseline is the existing published docs layout: cool white and slate-gray surfaces, dark
-blue-green text and teal links. Both projects share `docs-site/site.css`.
-CSS `prefers-color-scheme` follows the system setting automatically, including
-changes while the page is open. The dark variant covers text, links, code,
-tables, navigation and focus states. Print keeps the light palette. No theme
-script, cookie or saved override is needed.
-
-Diskpipe is the public name of the storage project currently under `zccusan/`.
-`check-docs-site.sh` also builds a standalone Diskpipe site in `dist/diskpipe/`.
-The `--diskpipe-site` renderer mode publishes those pages at the domain root,
-with links back to the independent zcutils site. The legacy `zccusan/` pages
-remain available in the zcutils publication.
-
-CI publishes the standalone site to `robjcaskey/diskpipe-docs`, branch `gh-pages`,
-using `scripts/publish-diskpipe-docs.sh`. Its repository-scoped SSH deploy key is
-stored in the source repository's `DISKPIPE_DOCS_DEPLOY_KEY` Actions secret.
-The deployment repository contains generated public HTML/CSS only. Its Pages
-custom domain is `diskpipe.com`; GitHub provisions HTTPS. This keeps the existing
-zcutils Pages site and Helm repository independent. Domain registration and DNS
-are managed in Route 53; the website uses no AWS compute or S3 hosting.
+Both projects use the existing layout and `docs-site/site.css`: cool white,
+slate-gray surfaces and teal links. System light/dark preference is followed
+automatically, including changes while the page is open. Code, tables,
+navigation and focus states have a dark variant. Print keeps the light palette.
+There is no theme script or saved override.
