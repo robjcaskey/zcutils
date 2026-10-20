@@ -1,8 +1,11 @@
-# zccusan
+# Diskpipe
 
-Zero Copy Cinematic Universe Storage Area Network. Storage services for volumes,
+Storage services for volumes,
 snapshots, replication, tenant policy and regional failover, with Kubernetes as
 one deployment and integration choice.
+
+The implementation currently lives under `zccusan/` in the zcutils repository.
+Binary names, API paths and installation commands retain their existing names.
 
 ## Choose your deployment
 

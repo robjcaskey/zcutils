@@ -57,3 +57,17 @@ CSS `prefers-color-scheme` follows the system setting automatically, including
 changes while the page is open. The dark variant covers text, links, code,
 tables, navigation and focus states. Print keeps the light palette. No theme
 script, cookie or saved override is needed.
+
+Diskpipe is the public name of the storage project currently under `zccusan/`.
+`check-docs-site.sh` also builds a standalone Diskpipe site in `dist/diskpipe/`.
+The `--diskpipe-site` renderer mode publishes those pages at the domain root,
+with links back to the independent zcutils site. The legacy `zccusan/` pages
+remain available in the zcutils publication.
+
+CI publishes the standalone site to `robjcaskey/diskpipe-docs`, branch `gh-pages`,
+using `scripts/publish-diskpipe-docs.sh`. Its repository-scoped SSH deploy key is
+stored in the source repository's `DISKPIPE_DOCS_DEPLOY_KEY` Actions secret.
+The deployment repository contains generated public HTML/CSS only. Its Pages
+custom domain is `diskpipe.com`; GitHub provisions HTTPS. This keeps the existing
+zcutils Pages site and Helm repository independent. Domain registration and DNS
+are managed in Route 53; the website uses no AWS compute or S3 hosting.

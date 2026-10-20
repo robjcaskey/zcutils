@@ -1,6 +1,6 @@
-# zccusan with Kubernetes
+# Diskpipe with Kubernetes
 
-Use zccusan through its CSI adapter, Helm chart and Kubernetes policy resources.
+Use Diskpipe through its CSI adapter, Helm chart and Kubernetes policy resources.
 This path works on physical or virtual cluster nodes, including cloud clusters.
 
 ## Install and validate
@@ -33,4 +33,4 @@ See the [Helm chart reference](../../charts/zcblock-csi/README.md) and
 
 ## Other deployment choices
 
-Start at [zccusan](index.md) or explore [zccusan without Kubernetes](standalone.md).
+Start at [Diskpipe](index.md) or explore [Diskpipe without Kubernetes](standalone.md).

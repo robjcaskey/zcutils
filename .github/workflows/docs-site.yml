@@ -7,6 +7,8 @@ on:
       - 'scripts/zc-md.rs'
       - 'scripts/check-docs-site.sh'
       - 'scripts/publish-docs-pages.sh'
+      - 'scripts/publish-diskpipe-docs.sh'
+      - 'scripts/test-publish-diskpipe-docs.sh'
       - 'scripts/test-publish-docs-pages.sh'
       - 'docs-site/**'
       - 'docs/saml-realtime-revocation-debug.md'
@@ -19,6 +21,8 @@ on:
       - 'scripts/zc-md.rs'
       - 'scripts/check-docs-site.sh'
       - 'scripts/publish-docs-pages.sh'
+      - 'scripts/publish-diskpipe-docs.sh'
+      - 'scripts/test-publish-diskpipe-docs.sh'
       - 'scripts/test-publish-docs-pages.sh'
       - 'docs-site/**'
       - 'docs/saml-realtime-revocation-debug.md'
@@ -39,6 +43,8 @@ jobs:
         run: bash scripts/check-docs-site.sh
       - name: Verify Pages publishing preserves existing chart assets
         run: bash scripts/test-publish-docs-pages.sh
+      - name: Verify independent Diskpipe publication
+        run: bash scripts/test-publish-diskpipe-docs.sh
       - name: Upload the generated static website
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -65,3 +71,29 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/publish-docs-pages.sh
+
+  publish-diskpipe:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: validate-and-render
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    concurrency:
+      group: diskpipe-docs-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
+      - name: Build both validated documentation sites
+        run: bash source/scripts/check-docs-site.sh
+      - name: Check out the dedicated Diskpipe Pages repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: robjcaskey/diskpipe-docs
+          ref: gh-pages
+          path: diskpipe-pages
+          ssh-key: ${{ secrets.DISKPIPE_DOCS_DEPLOY_KEY }}
+      - name: Publish Diskpipe documentation
+        run: bash source/scripts/publish-diskpipe-docs.sh source/docs-site/dist/diskpipe diskpipe-pages

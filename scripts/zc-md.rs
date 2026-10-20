@@ -356,7 +356,7 @@ const PAGES: [(&str, &str, &str); 8] = [
     (
         "zccusan/docs/site/index.md",
         "zccusan/index.html",
-        "zccusan",
+        "Diskpipe",
     ),
     (
         "zccusan/docs/site/kubernetes.md",
@@ -402,8 +402,20 @@ fn normalized(base: &Path, target: &str) -> Result<PathBuf> {
     Ok(out)
 }
 
-fn site(root: &Path, output: &Path) -> Result<()> {
-    let sources: Vec<_> = PAGES
+fn site(root: &Path, output: &Path, diskpipe: bool) -> Result<()> {
+    let pages: Vec<_> = PAGES
+        .iter()
+        .filter_map(|&(source, file, label)| {
+            if diskpipe {
+                file.strip_prefix("zccusan/")
+                    .map(|file| (source, file, label))
+                    .or_else(|| (file == "universe.html").then_some((source, file, label)))
+            } else {
+                Some((source, file, label))
+            }
+        })
+        .collect();
+    let sources: Vec<_> = pages
         .iter()
         .map(|(path, _, _)| fs::read_to_string(root.join(path)).map_err(|e| format!("{path}: {e}")))
         .collect::<Result<_>>()?;
@@ -411,14 +423,16 @@ fn site(root: &Path, output: &Path) -> Result<()> {
     let docs: Vec<_> = sources
         .iter()
         .enumerate()
-        .map(|(i, source)| render(source, &safe_link).map_err(|e| format!("{}: {e}", PAGES[i].0)))
+        .map(|(i, source)| render(source, &safe_link).map_err(|e| format!("{}: {e}", pages[i].0)))
         .collect::<Result<_>>()?;
     let mut rendered = Vec::new();
-    for (i, (path, filename, _)) in PAGES.iter().enumerate() {
-        let is_zccusan = filename.starts_with("zccusan/");
-        let prefix = if is_zccusan { "../" } else { "" };
-        let brand = if is_zccusan { "zccusan" } else { "zcutils" };
-        let home = if is_zccusan {
+    for (i, (path, filename, _)) in pages.iter().enumerate() {
+        let is_zccusan = diskpipe || filename.starts_with("zccusan/");
+        let prefix = if is_zccusan && !diskpipe { "../" } else { "" };
+        let brand = if is_zccusan { "Diskpipe" } else { "zcutils" };
+        let home = if diskpipe {
+            "index.html"
+        } else if is_zccusan {
             "zccusan/index.html"
         } else {
             "index.html"
@@ -429,9 +443,9 @@ fn site(root: &Path, output: &Path) -> Result<()> {
             "ZERO-COPY TOOLS / GUIDES"
         };
         let project_link = if is_zccusan {
-            ""
+            "<a class=\"project-link\" href=\"https://robjcaskey.github.io/zcutils/\">zcutils docs ↗</a>"
         } else {
-            "<a class=\"project-link\" href=\"zccusan/index.html\">zccusan docs ↗</a>"
+            "<a class=\"project-link\" href=\"https://diskpipe.com/\">Diskpipe docs ↗</a>"
         };
         let linker = |href: &str| -> Result<String> {
             if href.starts_with("http://") || href.starts_with("https://") {
@@ -452,7 +466,7 @@ fn site(root: &Path, output: &Path) -> Result<()> {
             if !absolute.starts_with(root.canonicalize().map_err(|e| e.to_string())?) {
                 return Err("link resolves outside repository".into());
             }
-            if let Some(j) = PAGES.iter().position(|p| Path::new(p.0) == resolved) {
+            if let Some(j) = pages.iter().position(|p| Path::new(p.0) == resolved) {
                 if let Some(id) = fragment {
                     if !docs[j].html.contains(&format!("id=\"{}\"", escape(id))) {
                         return Err(format!("missing heading: {href}"));
@@ -461,7 +475,13 @@ fn site(root: &Path, output: &Path) -> Result<()> {
                 return Ok(format!(
                     "{}{}{}",
                     prefix,
-                    PAGES[j].1,
+                    pages[j].1,
+                    fragment.map_or(String::new(), |f| format!("#{f}"))
+                ));
+            }
+            if let Some((_, file, _)) = PAGES.iter().find(|p| Path::new(p.0) == resolved) {
+                return Ok(format!(
+                    "https://robjcaskey.github.io/zcutils/{file}{}",
                     fragment.map_or(String::new(), |f| format!("#{f}"))
                 ));
             }
@@ -472,10 +492,10 @@ fn site(root: &Path, output: &Path) -> Result<()> {
             ))
         };
         let doc = render(&sources[i], &linker).map_err(|e| format!("{path}: {e}"))?;
-        let nav = PAGES
+        let nav = pages
             .iter()
             .filter(|(_, file, _)| {
-                file.starts_with("zccusan/") == is_zccusan || *file == "universe.html"
+                diskpipe || file.starts_with("zccusan/") == is_zccusan || *file == "universe.html"
             })
             .map(|(_, file, label)| {
                 format!(
@@ -502,12 +522,14 @@ fn site(root: &Path, output: &Path) -> Result<()> {
         fs::create_dir_all(output.join(name).parent().unwrap()).map_err(|e| e.to_string())?;
         fs::write(output.join(name), html).map_err(|e| e.to_string())?;
     }
-    fs::write(output.join("day-2.html"), "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0;url=zccusan/day-2.html\"><title>zccusan day-two operations</title><a href=\"zccusan/day-2.html\">Continue to zccusan day-two operations</a><script>location.replace('zccusan/day-2.html'+location.hash)</script></html>").map_err(|e| e.to_string())?;
+    if !diskpipe {
+        fs::write(output.join("day-2.html"), "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0;url=zccusan/day-2.html\"><title>zccusan day-two operations</title><a href=\"zccusan/day-2.html\">Continue to zccusan day-two operations</a><script>location.replace('zccusan/day-2.html'+location.hash)</script></html>").map_err(|e| e.to_string())?;
+    }
     fs::copy(root.join("docs-site/site.css"), output.join("site.css"))
         .map_err(|e| e.to_string())?;
     println!(
         "DOCS_SITE_PASS pages={} output={}",
-        PAGES.len(),
+        pages.len(),
         output.display()
     );
     Ok(())
@@ -516,7 +538,10 @@ fn site(root: &Path, output: &Path) -> Result<()> {
 fn run() -> Result<()> {
     let args: Vec<_> = env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        Some("--site") if args.len() == 3 => site(Path::new(&args[1]), Path::new(&args[2])),
+        Some("--site") if args.len() == 3 => site(Path::new(&args[1]), Path::new(&args[2]), false),
+        Some("--diskpipe-site") if args.len() == 3 => {
+            site(Path::new(&args[1]), Path::new(&args[2]), true)
+        }
         Some("--check") if args.len() > 1 => {
             for file in &args[1..] {
                 let source = fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;

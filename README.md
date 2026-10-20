@@ -23,7 +23,7 @@ streams, lane-multiplexed TCP transfer, and low-level io_uring storage/network
 benchmarks. It builds one umbrella binary plus direct command binaries for the
 main pipeline tools.
 
-Looking for zccusan? Visit the [zccusan documentation](https://robjcaskey.github.io/zcutils/zccusan/)
+Looking for Diskpipe? Visit the [Diskpipe documentation](https://diskpipe.com/)
 for deployment [with Kubernetes](zccusan/docs/site/kubernetes.md) or
 [without Kubernetes](zccusan/docs/site/standalone.md). The
 [Zero Copy Cinematic Universe](docs-site/universe.md) explains the project relationships.

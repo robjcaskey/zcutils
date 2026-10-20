@@ -1,4 +1,4 @@
-# zccusan without Kubernetes
+# Diskpipe without Kubernetes
 
 Use the storage services and their direct interfaces without a Kubernetes
 control plane or CSI adapter. This describes an orchestration choice, whether
@@ -39,5 +39,5 @@ coalescing workflow are not available end to end in the current release.
 
 ## Other deployment choices
 
-Start at [zccusan](index.md) or use [zccusan with Kubernetes](kubernetes.md) for
+Start at [Diskpipe](index.md) or use [Diskpipe with Kubernetes](kubernetes.md) for
 the documented CSI installation and cluster validation path.

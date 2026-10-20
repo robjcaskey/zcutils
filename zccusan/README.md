@@ -1,6 +1,7 @@
-# zccusan
+# Diskpipe
 
-`zccusan` means Zero Copy Cinematic Universe Storage Area Network.
+Diskpipe is the storage project formerly presented as zccusan. Source paths,
+binary names and deployment commands retain their current names during the transition.
 
 Canonical chain:
 
