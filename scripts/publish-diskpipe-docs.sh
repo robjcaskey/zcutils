@@ -11,7 +11,7 @@ import shutil, subprocess, sys
 source, target = map(Path, sys.argv[1:])
 def safe(name):
     path = PurePosixPath(name)
-    if not name or str(path) != name or path.is_absolute() or any(p in ('.', '..') or p.startswith('.') for p in path.parts):
+    if not name or str(path) != name or path.is_absolute() or any(p in ('.', '..', '.git') for p in path.parts) or path.parts[0].startswith('.'):
         raise SystemExit(f'unsafe site manifest path: {name!r}')
     if any(c in name for c in '\\\r\n\t') or name in ('CNAME', 'README.md', 'site-manifest.txt'):
         raise SystemExit(f'protected site manifest path: {name!r}')

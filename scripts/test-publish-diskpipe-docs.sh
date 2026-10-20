@@ -10,14 +10,16 @@ git -C "${test_root}/target" add README.md
 git -C "${test_root}/target" -c user.name=fixture -c user.email=fixture@example.invalid commit --quiet -m seed
 git -C "${test_root}/target" remote add origin "${test_root}/remote.git"
 git -C "${test_root}/target" push --quiet origin gh-pages
-mkdir -p "${test_root}/site/docs"
+mkdir -p "${test_root}/site/docs" "${test_root}/site/assets/repository/.github/workflows"
+printf 'public workflow example\n' > "${test_root}/site/assets/repository/.github/workflows/example.yml"
 printf 'nested guide\n' > "${test_root}/site/docs/exercise.html"
 for file in index.html kubernetes.html standalone.html day-2.html universe.html site.css; do
   printf 'generated %s\n' "${file}" > "${test_root}/site/${file}"
 done
-printf '%s\n' index.html kubernetes.html standalone.html day-2.html universe.html site.css docs/exercise.html > "${test_root}/site/site-manifest.txt"
+printf '%s\n' index.html kubernetes.html standalone.html day-2.html universe.html site.css docs/exercise.html assets/repository/.github/workflows/example.yml > "${test_root}/site/site-manifest.txt"
 bash "${repo_root}/scripts/publish-diskpipe-docs.sh" "${test_root}/site" "${test_root}/target" > "${test_root}/publish.log" 2>&1
 first="$(git --git-dir="${test_root}/remote.git" rev-parse gh-pages)"
+[[ "$(git --git-dir="${test_root}/remote.git" show gh-pages:assets/repository/.github/workflows/example.yml)" == 'public workflow example' ]]
 for file in index.html kubernetes.html standalone.html day-2.html universe.html site.css; do
   cmp "${test_root}/site/${file}" <(git --git-dir="${test_root}/remote.git" show "gh-pages:${file}")
 done
