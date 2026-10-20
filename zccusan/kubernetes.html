@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="zccusan documentation and operating guides."><title>zccusan with Kubernetes · zccusan</title><link rel="stylesheet" href="../site.css"></head><body><a class="skip" href="#content">Skip to content</a><header><a class="brand" href="../zccusan/index.html">zccusan<span>STORAGE / OPERATIONS</span></a><a class="repo" href="https://github.com/robjcaskey/zcutils">Repository ↗</a></header><div class="layout"><aside><p class="eyebrow">The guides</p><nav aria-label="Guides"><a href="../universe.html">Zero Copy Cinematic Universe</a><a href="../zccusan/index.html">zccusan</a><a href="../zccusan/kubernetes.html" aria-current="page">With Kubernetes</a><a href="../zccusan/standalone.html">Without Kubernetes</a><a href="../zccusan/day-2.html">Day-two operations</a></nav><div class="scope">Executable laboratories.<br>Explicit production boundaries.</div></aside><main id="content"><h1 id="zccusan-with-kubernetes">zccusan with Kubernetes</h1>
+<p>Use zccusan through its CSI adapter, Helm chart and Kubernetes policy resources. This path works on physical or virtual cluster nodes, including cloud clusters.</p>
+<h2 id="install-and-validate">Install and validate</h2>
+<ul>
+<li><a href="https://github.com/robjcaskey/zcutils/blob/main/zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md">Getting started</a>: the narrated volatile-memory happy path.</li>
+<li><a href="https://github.com/robjcaskey/zcutils/blob/main/zccusan/docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES_DETAILED.md">Detailed installation</a>: configuration, validation and troubleshooting.</li>
+<li><a href="https://github.com/robjcaskey/zcutils/blob/main/zccusan/docs/BUILD_KERNEL_MODULE.md">Custom kernel build</a>: build the client edge for a kernel outside the supplied matrix.</li>
+<li><a href="https://github.com/robjcaskey/zcutils/blob/main/zccusan/docs/VALIDATING_SINGLE_REGION_HA_ON_KUBERNETES.md">Single-region HA checks</a>: graded fault checks with the optional chaos toolbox.</li>
+</ul>
+<p>The getting-started memory example is volatile. Follow the guide&#39;s durability choices before using storage for data that must survive restart.</p>
+<h2 id="replication-and-failover">Replication and failover</h2>
+<ul>
+<li><a href="https://github.com/robjcaskey/zcutils/blob/main/zccusan/docs/GETTING_STARTED_WITH_CROSS_REGION_REPLICATION_ON_KUBERNETES.md">Cross-region replication</a>.</li>
+<li><a href="https://github.com/robjcaskey/zcutils/blob/main/zccusan/docs/GETTING_STARTED_WITH_CROSS_REGION_POLICY_ON_KUBERNETES.md">Cross-region policy</a>.</li>
+<li><a href="https://github.com/robjcaskey/zcutils/blob/main/zccusan/docs/GETTING_STARTED_WITH_CROSS_REGION_FAILOVER_ON_KUBERNETES.md">Cross-region failover</a>.</li>
+<li><a href="https://github.com/robjcaskey/zcutils/blob/main/zccusan/docs/GETTING_STARTED_WITH_TIERING_ON_KUBERNETES.md">Tiering</a>.</li>
+<li><a href="https://github.com/robjcaskey/zcutils/blob/main/zccusan/docs/GETTING_STARTED_WITH_UNTRUSTED_FEDERATION_STORAGE_ON_KUBERNETES.md">Untrusted storage</a> and <a href="https://github.com/robjcaskey/zcutils/blob/main/zccusan/docs/GETTING_STARTED_WITH_UNTRUSTED_FEDERATION_HOSTING_ON_KUBERNETES.md">untrusted hosting</a>.</li>
+</ul>
+<h2 id="day-two-operations">Day-two operations</h2>
+<p><a href="../zccusan/day-2.html">Identity and failover operations</a> explains native Kubernetes identity alongside OAuth and IAM, tenant-scoped permissions, approval and teardown checks. Kubernetes credentials authenticate a principal; storage authorization still follows explicit role bindings.</p>
+<p>See the <a href="https://github.com/robjcaskey/zcutils/blob/main/zccusan/charts/zcblock-csi/README.md">Helm chart reference</a> and <a href="https://github.com/robjcaskey/zcutils/blob/main/zccusan/deploy/zcblock-csi/README.md">raw deployment reference</a> for packaging.</p>
+<h2 id="other-deployment-choices">Other deployment choices</h2>
+<p>Start at <a href="../zccusan/index.html">zccusan</a> or explore <a href="../zccusan/standalone.html">zccusan without Kubernetes</a>.</p>
+<footer>Built from Markdown with a small Rust renderer. No client-side dependencies.</footer></main><nav class="toc" aria-label="On this page"><p class="eyebrow">On this page</p><a href="#install-and-validate">Install and validate</a><a href="#replication-and-failover">Replication and failover</a><a href="#day-two-operations">Day-two operations</a><a href="#other-deployment-choices">Other deployment choices</a></nav></div></body></html>

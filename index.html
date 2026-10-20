@@ -1,21 +1,19 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="zcutils guides for federated identity, scoped failover, SAML and real-time revocation."><title>Identity with explicit boundaries · zcutils</title><link rel="stylesheet" href="site.css"></head><body><a class="skip" href="#content">Skip to content</a><header><a class="brand" href="index.html">zcutils<span>FIELD GUIDES / IDENTITY</span></a><a class="repo" href="https://github.com/robjcaskey/zcutils">Repository ↗</a></header><div class="layout"><aside><p class="eyebrow">The guides</p><nav aria-label="Guides"><a href="index.html" aria-current="page">Overview</a><a href="saml.html">SAML &amp; revocation</a><a href="day-2.html">Day-two operations</a><a href="federation.html">Federation laboratory</a></nav><div class="scope">Executable laboratories.<br>Explicit production boundaries.</div></aside><main id="content"><h1 id="identity-with-explicit-boundaries">Identity with explicit boundaries</h1>
-<p>Operating guides for federated access, scoped regional failover and revocation in zcutils. Start with a local laboratory, follow the permissions through a real request, and inspect the evidence before choosing a production integration.</p>
-<h2 id="choose-your-exercise">Choose your exercise</h2>
-<div class="table-scroll"><table><thead><tr><th>Guide</th><th>What you will demonstrate</th></tr></thead><tbody>
-<tr><td><a href="saml.html">SAML and real-time revocation</a></td><td>An OAuth-backed SAML IdP, two nginx auth proxies, group changes on existing sessions and signed logout.</td></tr>
-<tr><td><a href="day-2.html">Day-two identity operations</a></td><td>OAuth, AWS IAM and native Kubernetes identities; tenant boundaries, approval, failover and cleanup.</td></tr>
-<tr><td><a href="federation.html">The federation laboratory</a></td><td>Two independent OAuth issuers, scoped replication, workload handoffs and a supplementary approval workflow.</td></tr>
-</tbody></table></div>
-<h2 id="the-permission-model">The permission model</h2>
-<p>An identity is qualified by its issuer. The same name at another issuer does not inherit access. An administrator grants explicit actions on regions, tenants and resources; switching login method does not reset a resource budget.</p>
-<p>Sensitive operations can require a second, time-limited approval. That approval is bound to the requesting principal and exact operation. Workload failover checks the complete consistency group at both endpoints.</p>
-<h2 id="revocation-on-the-next-request">Revocation on the next request</h2>
-<p>The SAML exercise checks current authorization on each protected request. Removing an operator group changes what an existing session can do. Signed Global Token Revocation requests remove sessions and deny otherwise unexpired OAuth access tokens for the selected issuer and subject.</p>
-<p>Group snapshots use a separate debug protocol. The Global Token Revocation profile follows <a href="https://developer.okta.com/docs/guides/oin-universal-logout-overview/">Okta&#39;s documented Universal Logout flow</a>; the underlying GTR specification remains an evolving draft.</p>
-<h2 id="know-what-the-laboratory-proves">Know what the laboratory proves</h2>
-<p>These are executable debug integrations. Local logical regions and ordinary worker processes exercise the real Rust authorization, limiter and failover code. The SAML lab uses local SQLite authorization logs and loopback HTTP.</p>
-<p>Production Raft event delivery, production SAML hosting and live Okta interoperability remain separate work. The guides distinguish local IAM fixtures from opt-in real AWS verification, and explain resource teardown explicitly.</p>
-<h2 id="run-without-cloud-resources">Run without cloud resources</h2>
-<p>Start with the <a href="saml.html#run-locally">SAML local run</a> or the <a href="day-2.html#native-kubernetes-identity-without-aws-or-vault">native Kubernetes exercise</a>. The default local exercises create no AWS resources. Real EKS verification is an explicit, separate option with temporary charges and a cleanup audit.</p>
-<footer>Built from Markdown with a small Rust renderer. No client-side dependencies.</footer></main><nav class="toc" aria-label="On this page"><p class="eyebrow">On this page</p><a href="#choose-your-exercise">Choose your exercise</a><a href="#the-permission-model">The permission model</a><a href="#revocation-on-the-next-request">Revocation on the next request</a><a href="#know-what-the-laboratory-proves">Know what the laboratory proves</a><a href="#run-without-cloud-resources">Run without cloud resources</a></nav></div></body></html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="zcutils documentation and operating guides."><title>zcutils · zcutils</title><link rel="stylesheet" href="site.css"></head><body><a class="skip" href="#content">Skip to content</a><header><a class="brand" href="index.html">zcutils<span>ZERO-COPY TOOLS / GUIDES</span></a><a class="repo" href="https://github.com/robjcaskey/zcutils">Repository ↗</a></header><div class="layout"><aside><p class="eyebrow">The guides</p><nav aria-label="Guides"><a href="index.html" aria-current="page">zcutils</a><a href="universe.html">Zero Copy Cinematic Universe</a><a href="saml.html">SAML &amp; revocation</a><a href="federation.html">Federation laboratory</a></nav><div class="scope">Executable laboratories.<br>Explicit production boundaries.</div></aside><main id="content"><h1 id="zcutils">zcutils</h1>
+<p>Zero-copy stream tools, lane-multiplexed TCP transport, encryption filters and Linux storage/network experiments. Start with the tools and their contracts in the <a href="https://github.com/robjcaskey/zcutils/blob/main/README.md">repository guide</a>.</p>
+<h2 id="looking-for-zccusan">Looking for zccusan?</h2>
+<p>Visit the <a href="zccusan/index.html">zccusan documentation</a> for the storage area network, volume lifecycle, replication and failover. Choose <a href="zccusan/kubernetes.html">zccusan with Kubernetes</a> or <a href="zccusan/standalone.html">zccusan without Kubernetes</a>.</p>
+<h2 id="tools-and-contracts">Tools and contracts</h2>
+<ul>
+<li><a href="https://github.com/robjcaskey/zcutils/blob/main/README.md">Commands, builds and examples</a>: the umbrella binary and direct pipeline commands.</li>
+<li><a href="https://github.com/robjcaskey/zcutils/blob/main/docs/zero-copy-descriptor.md">Descriptor protocol</a>: descriptor-native transport and its implementation boundaries.</li>
+<li><a href="universe.html">Zero Copy Cinematic Universe</a>: how the related projects fit together.</li>
+</ul>
+<h2 id="identity-laboratories">Identity laboratories</h2>
+<p>These shared debug integrations exercise issuer boundaries, scoped permissions, supplementary approvals and revocation. The storage operating procedures belong to <a href="zccusan/day-2.html">zccusan day-two operations</a>.</p>
+<ul>
+<li><a href="saml.html">SAML and real-time revocation</a>: an OAuth-backed IdP and two nginx auth proxies.</li>
+<li><a href="federation.html">Federated identity laboratory</a>: independent OAuth issuers and time-limited approval.</li>
+</ul>
+<p>The laboratories describe their local evidence and production limitations. Local exercises create no AWS resources; opt-in real AWS checks have separate cost and teardown instructions.</p>
+<footer>Built from Markdown with a small Rust renderer. No client-side dependencies.</footer></main><nav class="toc" aria-label="On this page"><p class="eyebrow">On this page</p><a href="#looking-for-zccusan">Looking for zccusan?</a><a href="#tools-and-contracts">Tools and contracts</a><a href="#identity-laboratories">Identity laboratories</a></nav></div></body></html>
