@@ -2,6 +2,7 @@ name: Windows storage build
 on:
   push:
     branches: [codex/macos-driverkit]
+    paths: ['src/**', 'Cargo.*', 'build.rs', 'windows/**', 'scripts/windows/**', 'scripts/test-windows-storage.py', '.github/workflows/windows-storage.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -29,6 +30,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Library tests failed' }
           cargo test --locked --bin zcnblk-client --bin zcnblk-portable-target --bin zcnblk-windows-client
           if ($LASTEXITCODE -ne 0) { throw 'Storage tests failed' }
+      - name: Exercise WAL recovery and backup restore over real TCP
+        run: python scripts/test-windows-storage.py
       - name: Build native Storport driver
         run: ./scripts/windows/build-driver.ps1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
