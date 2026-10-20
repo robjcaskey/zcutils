@@ -7,11 +7,11 @@ arch=${DRIVERKIT_ARCH:-$(uname -m)}
 out=${DRIVERKIT_OUT:-target/macos-driverkit}
 mkdir -p "$out/generated"
 for cls in ZcController; do
-  xcrun iig --def "macos/driverkit/$cls.iig" --header "$out/generated/$cls.h" --impl "$out/generated/$cls.cpp" --deployment-target 23.0 -- -isysroot "$sdk" -I macos/driverkit
+  xcrun iig --def "macos/driverkit/$cls.iig" --header "$out/generated/$cls.h" --impl "$out/generated/$cls.cpp" --deployment-target 23.0 --log "$out/iig.log" -- -target "$arch-apple-driverkit23.0" -isysroot "$sdk" -I macos/driverkit || { cat "$out/iig.log"; exit 1; }
  done
 bundle="$out/ZcStorage.app/Contents/Library/SystemExtensions/org.zcutils.storage.dext"
 mkdir -p "$bundle/Contents/MacOS" "$out/ZcStorage.app/Contents/MacOS"
-xcrun --sdk driverkit clang++ -std=c++17 -arch "$arch" -isysroot "$sdk" -mmacosx-version-min=14.0 \
+xcrun --sdk driverkit clang++ -std=c++17 -target "$arch-apple-driverkit23.0" -isysroot "$sdk" \
   -I "$out/generated" -I macos/driverkit -fno-exceptions -fno-rtti \
   macos/driverkit/ZcController.cpp "$out/generated/ZcController.cpp" \
   -framework DriverKit -framework SCSIControllerDriverKit -o "$bundle/Contents/MacOS/org.zcutils.storage"
