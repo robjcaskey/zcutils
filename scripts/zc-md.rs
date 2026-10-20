@@ -428,6 +428,11 @@ fn site(root: &Path, output: &Path) -> Result<()> {
         } else {
             "ZERO-COPY TOOLS / GUIDES"
         };
+        let project_link = if is_zccusan {
+            ""
+        } else {
+            "<a class=\"project-link\" href=\"zccusan/index.html\">zccusan docs ↗</a>"
+        };
         let linker = |href: &str| -> Result<String> {
             if href.starts_with("http://") || href.starts_with("https://") {
                 return Ok(href.into());
@@ -489,7 +494,7 @@ fn site(root: &Path, output: &Path) -> Result<()> {
             .iter()
             .map(|(id, label)| format!("<a href=\"#{}\">{}</a>", escape(id), escape(label)))
             .collect::<String>();
-        rendered.push((filename, format!("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"description\" content=\"{brand} documentation and operating guides.\"><title>{} · {brand}</title><link rel=\"stylesheet\" href=\"{prefix}site.css\"></head><body><a class=\"skip\" href=\"#content\">Skip to content</a><header><a class=\"brand\" href=\"{prefix}{home}\">{brand}<span>{subtitle}</span></a><a class=\"repo\" href=\"https://github.com/robjcaskey/zcutils\">Repository ↗</a></header><div class=\"layout\"><aside><p class=\"eyebrow\">The guides</p><nav aria-label=\"Guides\">{nav}</nav><div class=\"scope\">Executable laboratories.<br>Explicit production boundaries.</div></aside><main id=\"content\">{}<footer>Built from Markdown with a small Rust renderer. No client-side dependencies.</footer></main><nav class=\"toc\" aria-label=\"On this page\"><p class=\"eyebrow\">On this page</p>{toc}</nav></div></body></html>\n", escape(&doc.title), doc.html)));
+        rendered.push((filename, format!("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"description\" content=\"{brand} documentation and operating guides.\"><title>{} · {brand}</title><link rel=\"stylesheet\" href=\"{prefix}site.css\"></head><body><a class=\"skip\" href=\"#content\">Skip to content</a><header><a class=\"brand\" href=\"{prefix}{home}\">{brand}<span>{subtitle}</span></a><nav class=\"header-links\" aria-label=\"Project links\">{project_link}<a class=\"repo\" href=\"https://github.com/robjcaskey/zcutils\">Repository ↗</a></nav></header><div class=\"layout\"><aside><p class=\"eyebrow\">The guides</p><nav aria-label=\"Guides\">{nav}</nav><div class=\"scope\">Executable laboratories.<br>Explicit production boundaries.</div></aside><main id=\"content\">{}<footer>Built from Markdown with a small Rust renderer. No client-side dependencies.</footer></main><nav class=\"toc\" aria-label=\"On this page\"><p class=\"eyebrow\">On this page</p>{toc}</nav></div></body></html>\n", escape(&doc.title), doc.html)));
     }
     // Never emit a partly validated site.
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
