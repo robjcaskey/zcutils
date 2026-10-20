@@ -1,0 +1,24 @@
+name: DriverKit
+on:
+  push:
+    branches: [codex/macos-driverkit]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Inspect SDK
+        run: |
+          mkdir -p sdk-inspect
+          xcrun --sdk driverkit --show-sdk-path > sdk-inspect/path.txt
+          SDK=$(xcrun --sdk driverkit --show-sdk-path)
+          cp -R "$SDK/System/DriverKit/System/Library/Frameworks/SCSIControllerDriverKit.framework/Headers" sdk-inspect/SCSI || cp -R "$SDK/System/Library/Frameworks/SCSIControllerDriverKit.framework/Headers" sdk-inspect/SCSI
+          xcrun iig --help > sdk-inspect/iig.txt 2>&1 || true
+          find "$SDK" -name IOUserClient.iig -o -name IOMemoryDescriptor.iig -o -name IOService.iig -o -name OSObject.iig -o -name IOTimerDispatchSource.iig | while read file; do cp "$file" sdk-inspect/; done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: driverkit-sdk-inspect
+          path: sdk-inspect
