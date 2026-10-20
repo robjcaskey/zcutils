@@ -3,7 +3,7 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 site_dir="${1:-${repo_root}/docs-site/dist}"
-files=(index.html saml.html day-2.html federation.html site.css)
+files=(index.html universe.html saml.html day-2.html federation.html zccusan/index.html zccusan/kubernetes.html zccusan/standalone.html zccusan/day-2.html site.css)
 for file in "${files[@]}"; do
   [[ -f "${site_dir}/${file}" && ! -L "${site_dir}/${file}" ]] || {
     printf 'missing regular site file: %s\n' "${file}" >&2
@@ -26,6 +26,7 @@ for attempt in 1 2 3; do
   git -C "${repo_root}" fetch origin gh-pages
   git -C "${publish_root}/tree" reset --hard refs/remotes/origin/gh-pages
   for file in "${files[@]}"; do
+    mkdir -p "$(dirname "${publish_root}/tree/${file}")"
     cp "${site_dir}/${file}" "${publish_root}/tree/${file}"
   done
   touch "${publish_root}/tree/.nojekyll"

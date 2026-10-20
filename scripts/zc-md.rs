@@ -346,8 +346,28 @@ fn render(source: &str, link: &Linker) -> Result<Document> {
     })
 }
 
-const PAGES: [(&str, &str, &str); 4] = [
-    ("docs-site/index.md", "index.html", "Overview"),
+const PAGES: [(&str, &str, &str); 8] = [
+    ("docs-site/index.md", "index.html", "zcutils"),
+    (
+        "docs-site/universe.md",
+        "universe.html",
+        "Zero Copy Cinematic Universe",
+    ),
+    (
+        "zccusan/docs/site/index.md",
+        "zccusan/index.html",
+        "zccusan",
+    ),
+    (
+        "zccusan/docs/site/kubernetes.md",
+        "zccusan/kubernetes.html",
+        "With Kubernetes",
+    ),
+    (
+        "zccusan/docs/site/standalone.md",
+        "zccusan/standalone.html",
+        "Without Kubernetes",
+    ),
     (
         "docs/saml-realtime-revocation-debug.md",
         "saml.html",
@@ -355,7 +375,7 @@ const PAGES: [(&str, &str, &str); 4] = [
     ),
     (
         "zccusan/docs/DAY_2_FEDERATED_IDENTITY_AND_FAILOVER.md",
-        "day-2.html",
+        "zccusan/day-2.html",
         "Day-two operations",
     ),
     (
@@ -395,6 +415,19 @@ fn site(root: &Path, output: &Path) -> Result<()> {
         .collect::<Result<_>>()?;
     let mut rendered = Vec::new();
     for (i, (path, filename, _)) in PAGES.iter().enumerate() {
+        let is_zccusan = filename.starts_with("zccusan/");
+        let prefix = if is_zccusan { "../" } else { "" };
+        let brand = if is_zccusan { "zccusan" } else { "zcutils" };
+        let home = if is_zccusan {
+            "zccusan/index.html"
+        } else {
+            "index.html"
+        };
+        let subtitle = if is_zccusan {
+            "STORAGE / OPERATIONS"
+        } else {
+            "ZERO-COPY TOOLS / GUIDES"
+        };
         let linker = |href: &str| -> Result<String> {
             if href.starts_with("http://") || href.starts_with("https://") {
                 return Ok(href.into());
@@ -421,7 +454,8 @@ fn site(root: &Path, output: &Path) -> Result<()> {
                     }
                 }
                 return Ok(format!(
-                    "{}{}",
+                    "{}{}{}",
+                    prefix,
                     PAGES[j].1,
                     fragment.map_or(String::new(), |f| format!("#{f}"))
                 ));
@@ -435,9 +469,12 @@ fn site(root: &Path, output: &Path) -> Result<()> {
         let doc = render(&sources[i], &linker).map_err(|e| format!("{path}: {e}"))?;
         let nav = PAGES
             .iter()
+            .filter(|(_, file, _)| {
+                file.starts_with("zccusan/") == is_zccusan || *file == "universe.html"
+            })
             .map(|(_, file, label)| {
                 format!(
-                    "<a href=\"{file}\"{}>{}</a>",
+                    "<a href=\"{prefix}{file}\"{}>{}</a>",
                     if file == filename {
                         " aria-current=\"page\""
                     } else {
@@ -452,13 +489,15 @@ fn site(root: &Path, output: &Path) -> Result<()> {
             .iter()
             .map(|(id, label)| format!("<a href=\"#{}\">{}</a>", escape(id), escape(label)))
             .collect::<String>();
-        rendered.push((filename, format!("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"description\" content=\"zcutils guides for federated identity, scoped failover, SAML and real-time revocation.\"><title>{} · zcutils</title><link rel=\"stylesheet\" href=\"site.css\"></head><body><a class=\"skip\" href=\"#content\">Skip to content</a><header><a class=\"brand\" href=\"index.html\">zcutils<span>FIELD GUIDES / IDENTITY</span></a><a class=\"repo\" href=\"https://github.com/robjcaskey/zcutils\">Repository ↗</a></header><div class=\"layout\"><aside><p class=\"eyebrow\">The guides</p><nav aria-label=\"Guides\">{nav}</nav><div class=\"scope\">Executable laboratories.<br>Explicit production boundaries.</div></aside><main id=\"content\">{}<footer>Built from Markdown with a small Rust renderer. No client-side dependencies.</footer></main><nav class=\"toc\" aria-label=\"On this page\"><p class=\"eyebrow\">On this page</p>{toc}</nav></div></body></html>\n", escape(&doc.title), doc.html)));
+        rendered.push((filename, format!("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"description\" content=\"{brand} documentation and operating guides.\"><title>{} · {brand}</title><link rel=\"stylesheet\" href=\"{prefix}site.css\"></head><body><a class=\"skip\" href=\"#content\">Skip to content</a><header><a class=\"brand\" href=\"{prefix}{home}\">{brand}<span>{subtitle}</span></a><a class=\"repo\" href=\"https://github.com/robjcaskey/zcutils\">Repository ↗</a></header><div class=\"layout\"><aside><p class=\"eyebrow\">The guides</p><nav aria-label=\"Guides\">{nav}</nav><div class=\"scope\">Executable laboratories.<br>Explicit production boundaries.</div></aside><main id=\"content\">{}<footer>Built from Markdown with a small Rust renderer. No client-side dependencies.</footer></main><nav class=\"toc\" aria-label=\"On this page\"><p class=\"eyebrow\">On this page</p>{toc}</nav></div></body></html>\n", escape(&doc.title), doc.html)));
     }
     // Never emit a partly validated site.
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
     for (name, html) in rendered {
+        fs::create_dir_all(output.join(name).parent().unwrap()).map_err(|e| e.to_string())?;
         fs::write(output.join(name), html).map_err(|e| e.to_string())?;
     }
+    fs::write(output.join("day-2.html"), "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"0;url=zccusan/day-2.html\"><title>zccusan day-two operations</title><a href=\"zccusan/day-2.html\">Continue to zccusan day-two operations</a><script>location.replace('zccusan/day-2.html'+location.hash)</script></html>").map_err(|e| e.to_string())?;
     fs::copy(root.join("docs-site/site.css"), output.join("site.css"))
         .map_err(|e| e.to_string())?;
     println!(

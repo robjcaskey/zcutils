@@ -1,12 +1,12 @@
 # Documentation site
 
-Build and validate the published auth guides with the system Rust compiler:
+Build and validate the project documentation with the system Rust compiler:
 
 ```bash
 bash scripts/check-docs-site.sh
 ```
 
-The script runs the renderer's focused tests, validates the four allowlisted
+The script runs the renderer's focused tests, validates the eight allowlisted
 Markdown pages and their local links/anchors, and emits `docs-site/dist`.
 It uses only `rustc` and the Rust standard library; no Cargo dependencies,
 JavaScript packages, cloud resources or storage-service build are needed.
@@ -31,7 +31,7 @@ rustc --edition=2024 scripts/zc-md.rs -o /tmp/zc-md
 
 GitHub Actions publishes this site at https://robjcaskey.github.io/zcutils/.
 Pull requests validate and build; pushes to `main` and manual runs on `main`
-also publish. `scripts/publish-docs-pages.sh` updates only the five generated
+also publish. `scripts/publish-docs-pages.sh` updates only the explicitly allowlisted generated
 HTML/CSS files and `.nojekyll` on the existing `gh-pages` branch, preserving
 `index.yaml`, chart archives and signatures. It explicitly requests a Pages
 build using the workflow's `pages: write` permission, because commits pushed
@@ -42,3 +42,11 @@ repository setting and also serves the Helm chart repository. No S3 bucket,
 Terraform, access-key secret or external hosting service is required.
 Never publish private laboratory directories, `lab.json`, credentials or SQLite
 databases. Only the generated allowlisted HTML and CSS are deployed.
+
+The zcutils home is at `/zcutils/`; zccusan owns its documentation home at
+`/zcutils/zccusan/`, with separate with-Kubernetes and without-Kubernetes pages.
+Its landing-page sources live under `zccusan/docs/site/` so they can move with
+that project. Shared project relationships live in `docs-site/universe.md`.
+The old `/day-2.html` URL forwards to `/zccusan/day-2.html`, preserving fragments.
+Each project has its own brand and navigation. Published links and stylesheet
+paths are relative, so the site also works beneath the GitHub project prefix.

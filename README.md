@@ -23,6 +23,11 @@ streams, lane-multiplexed TCP transfer, and low-level io_uring storage/network
 benchmarks. It builds one umbrella binary plus direct command binaries for the
 main pipeline tools.
 
+Looking for zccusan? Visit the [zccusan documentation](https://robjcaskey.github.io/zcutils/zccusan/)
+for deployment [with Kubernetes](zccusan/docs/site/kubernetes.md) or
+[without Kubernetes](zccusan/docs/site/standalone.md). The
+[Zero Copy Cinematic Universe](docs-site/universe.md) explains the project relationships.
+
 ## Status
 
 The current release is `1.0.0`. This repository declares descriptor protocol

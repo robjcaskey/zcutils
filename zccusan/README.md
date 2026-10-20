@@ -18,6 +18,16 @@ Rust binary names, Cargo targets, container entrypoints, or in-cluster paths.
 
 ## Documentation
 
+zccusan has its own [documentation home](docs/site/index.md).
+Choose [with Kubernetes](docs/site/kubernetes.md) or
+[without Kubernetes](docs/site/standalone.md). Either can run on physical
+servers, virtual machines or cloud instances.
+
+The [Zero Copy Cinematic Universe](../docs-site/universe.md) connects this
+project with the underlying zcutils tools.
+
+## Reference library
+
 - `docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES.md`: narrated,
   volatile-RAM Kubernetes happy path.
 - `docs/GETTING_STARTED_WITH_ZCCUSAN_ON_KUBERNETES_DETAILED.md`: the complete

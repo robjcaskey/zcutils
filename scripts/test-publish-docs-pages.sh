@@ -17,7 +17,8 @@ git -C "${test_root}/seed" push --quiet origin gh-pages
 git clone --quiet --branch gh-pages "${test_root}/remote.git" "${test_root}/source"
 mkdir -p "${test_root}/source/scripts" "${test_root}/source/docs-site/dist" "${test_root}/bin"
 cp "${repo_root}/scripts/publish-docs-pages.sh" "${test_root}/source/scripts/"
-for file in index.html saml.html day-2.html federation.html site.css; do
+for file in index.html universe.html saml.html day-2.html federation.html zccusan/index.html zccusan/kubernetes.html zccusan/standalone.html zccusan/day-2.html site.css; do
+  mkdir -p "$(dirname "${test_root}/source/docs-site/dist/${file}")"
   printf 'generated %s\n' "${file}" > "${test_root}/source/docs-site/dist/${file}"
 done
 cat > "${test_root}/bin/gh" <<'SH'
@@ -33,7 +34,7 @@ first="$(git --git-dir="${test_root}/remote.git" rev-parse gh-pages)"
 for file in index.yaml chart.tgz chart.tgz.sig keep.txt; do
   cmp "${test_root}/seed/${file}" <(git --git-dir="${test_root}/remote.git" show "gh-pages:${file}")
 done
-for file in index.html saml.html day-2.html federation.html site.css; do
+for file in index.html universe.html saml.html day-2.html federation.html zccusan/index.html zccusan/kubernetes.html zccusan/standalone.html zccusan/day-2.html site.css; do
   cmp "${test_root}/source/docs-site/dist/${file}" <(git --git-dir="${test_root}/remote.git" show "gh-pages:${file}")
 done
 git --git-dir="${test_root}/remote.git" cat-file -e gh-pages:.nojekyll
