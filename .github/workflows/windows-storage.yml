@@ -1,9 +1,10 @@
 name: Windows storage build
+# Users should build locally. This workflow was exercised only to validate
+# the build infrastructure; keep automatic push/PR/scheduled builds disabled.
+# It is also disabled in GitHub after validation. See docs/native-desktop-builds.md.
 on:
-  push:
-    branches: [codex/macos-driverkit]
-    paths: ['src/**', 'Cargo.*', 'build.rs', 'windows/**', 'scripts/windows/**', 'scripts/test-windows-storage.py', '.github/workflows/windows-storage.yml']
   workflow_dispatch:
+
 permissions:
   contents: read
 concurrency:
