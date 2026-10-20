@@ -175,3 +175,11 @@ from the main stream and pipeline documentation. Start with
 
 `zcutils` is multi-licensed under your choice of MIT, Apache-2.0, or
 BSD-2-Clause. See `LICENSE.md`.
+
+## Identity documentation website
+
+[Read the published guides](https://robjcaskey.github.io/zcutils/).
+GitHub Actions validates and builds the Markdown with a small dependency-free
+Rust renderer, then publishes static HTML to the existing Pages site while
+preserving the Helm chart index and archives. Run
+`bash scripts/check-docs-site.sh` locally; see [site build and publishing](docs-site/README.md).

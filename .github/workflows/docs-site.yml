@@ -1,0 +1,67 @@
+name: Markdown validation and documentation site
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/docs-site.yml'
+      - 'scripts/zc-md.rs'
+      - 'scripts/check-docs-site.sh'
+      - 'scripts/publish-docs-pages.sh'
+      - 'scripts/test-publish-docs-pages.sh'
+      - 'docs-site/**'
+      - 'docs/saml-realtime-revocation-debug.md'
+      - 'docs/federated-identity-breakglass-debug.md'
+      - 'zccusan/docs/DAY_2_FEDERATED_IDENTITY_AND_FAILOVER.md'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/docs-site.yml'
+      - 'scripts/zc-md.rs'
+      - 'scripts/check-docs-site.sh'
+      - 'scripts/publish-docs-pages.sh'
+      - 'scripts/test-publish-docs-pages.sh'
+      - 'docs-site/**'
+      - 'docs/saml-realtime-revocation-debug.md'
+      - 'docs/federated-identity-breakglass-debug.md'
+      - 'zccusan/docs/DAY_2_FEDERATED_IDENTITY_AND_FAILOVER.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Markdown subset, local links and renderer safety
+        run: bash scripts/check-docs-site.sh
+      - name: Verify Pages publishing preserves existing chart assets
+        run: bash scripts/test-publish-docs-pages.sh
+      - name: Upload the generated static website
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: federated-identity-docs
+          path: docs-site/dist/
+          if-no-files-found: error
+
+  publish:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: validate-and-render
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    concurrency:
+      group: gh-pages-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build validated static pages
+        run: bash scripts/check-docs-site.sh
+      - name: Publish documentation while retaining Helm charts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/publish-docs-pages.sh

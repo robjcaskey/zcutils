@@ -25,6 +25,9 @@ jobs:
   promote_chart:
     name: Promote latest chart RC to stable chart version
     runs-on: ubuntu-latest
+    concurrency:
+      group: gh-pages-publish
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4
