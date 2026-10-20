@@ -1,4 +1,4 @@
-name: DriverKit
+name: DriverKit development build
 on:
   push:
     branches: [codex/macos-driverkit]
@@ -8,17 +8,24 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      PROTOC: protoc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Inspect SDK
+      - name: Build native extension and activation app
+        run: bash scripts/build-macos-driverkit.sh
+      - name: Install protocol compiler
+        run: brew list protobuf >/dev/null 2>&1 || brew install protobuf
+      - name: Build and test userspace broker
         run: |
-          mkdir -p sdk-inspect
-          xcrun --sdk driverkit --show-sdk-path > sdk-inspect/path.txt
-          SDK=$(xcrun --sdk driverkit --show-sdk-path)
-          cp -R "$SDK/System/DriverKit/System/Library/Frameworks/SCSIControllerDriverKit.framework/Headers" sdk-inspect/SCSI || cp -R "$SDK/System/Library/Frameworks/SCSIControllerDriverKit.framework/Headers" sdk-inspect/SCSI
-          xcrun iig --help > sdk-inspect/iig.txt 2>&1 || true
-          find "$SDK" -name IOUserClient.iig -o -name IOMemoryDescriptor.iig -o -name IOService.iig -o -name OSObject.iig -o -name IOTimerDispatchSource.iig | while read file; do cp "$file" sdk-inspect/; done
+          cargo build --locked --bin zcnblk-macos-client
+          cargo test --locked --bin zcnblk-macos-client
+          codesign --force --sign - --entitlements macos/driverkit/Broker.entitlements target/debug/zcnblk-macos-client
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: driverkit-sdk-inspect
-          path: sdk-inspect
+          name: zcutils-driverkit-development
+          path: |
+            target/macos-driverkit/ZcStorage.app
+            target/debug/zcnblk-macos-client
+          retention-days: 7
