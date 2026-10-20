@@ -247,10 +247,32 @@ fn local_file(root: &Path, tracked: &BTreeSet<PathBuf>, target: &mut Target) -> 
     }
     Ok(())
 }
+fn strip_comments(raw: &str, inside: &mut bool) -> String {
+    let mut out = String::new();
+    let mut rest = raw;
+    loop {
+        if *inside {
+            let Some(end) = rest.find("-->") else {
+                break;
+            };
+            rest = &rest[end + 3..];
+            *inside = false;
+        } else if let Some(start) = rest.find("<!--") {
+            out.push_str(&rest[..start]);
+            rest = &rest[start + 4..];
+            *inside = true;
+        } else {
+            out.push_str(rest);
+            break;
+        }
+    }
+    out
+}
 fn render_doc(doc: &Doc, link: &dyn Fn(&str) -> Result<String>) -> Result<String> {
     let mut events = Vec::new();
     let mut heading = 0;
     let mut placeholder_links = Vec::new();
+    let mut inside_comment = false;
     for e in Parser::new_ext(&doc.text, options()) {
         let e = match e {
             Event::Start(Tag::Heading {
@@ -303,14 +325,15 @@ fn render_doc(doc: &Doc, link: &dyn Fn(&str) -> Result<String>) -> Result<String
                 id,
             }),
             Event::Html(raw) | Event::InlineHtml(raw) => {
+                let raw = strip_comments(&raw, &mut inside_comment);
                 let trimmed = raw.trim();
-                if trimmed.starts_with("<!--") {
+                if trimmed.is_empty() {
                     continue;
                 }
                 if matches!(trimmed, "<br>" | "<br/>" | "<br />") {
                     Event::HardBreak
                 } else {
-                    Event::Text(raw)
+                    Event::Text(raw.into())
                 }
             }
             Event::Start(Tag::Table(align)) => {
@@ -511,11 +534,12 @@ mod tests {
     use super::*;
     #[test]
     fn commonmark_and_html_are_safe() {
-        let d=Doc::new(Path::new("sample.md"),"# Sample\n\n> **Warning**\n\n- parent\n  - child\n\n<!-- hidden -->\n\n<script>alert(1)</script>\n\n```html\n<img onerror=bad>\n```".into());
+        let d=Doc::new(Path::new("sample.md"),"# Sample\n\n> **Warning**\n\n- parent\n  - child\n\n<!-- hidden\nsecond comment line\n-->\n\n<script>alert(1)</script>\n\n```html\n<img onerror=bad>\n```".into());
         let html = render_doc(&d, &|s| Ok(s.into())).unwrap();
         assert!(html.contains("<blockquote>"));
         assert!(html.contains("<ul>"));
         assert!(!html.contains("<!-- hidden"));
+        assert!(!html.contains("second comment line"));
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;"));
     }
