@@ -64,11 +64,17 @@ impl FileLogStream {
             fs::create_dir_all(parent)?;
         }
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .append(true)
-            .open(&path)?;
+        let mut options = OpenOptions::new();
+        options.create(true).read(true).append(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Windows append-only handles cannot truncate a torn log tail.
+            // Request read/write access and explicitly seek before appending
+            // under this log's existing single-writer mutex.
+            options.access_mode(0x8000_0000 | 0x4000_0000);
+        }
+        let mut file = options.open(&path)?;
         let recovery = read_entries(&mut file)?;
         if recovery.valid_len != file.metadata()?.len() {
             file.set_len(recovery.valid_len)?;
@@ -146,6 +152,8 @@ impl DurableLogStream for FileLogStream {
         validate_record_field(key, "key")?;
 
         let mut state = self.state.lock().expect("logstream mutex poisoned");
+        #[cfg(windows)]
+        state.file.seek(SeekFrom::End(0))?;
         let offset = state.file.metadata()?.len();
         let entry = ZccusanLogEntry {
             schema_version: 1,

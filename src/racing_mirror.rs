@@ -9,11 +9,38 @@ use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
+use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[cfg(target_os = "linux")]
+const PAYLOAD_COPY_REPORT: &str = "0";
+#[cfg(target_os = "macos")]
+const PAYLOAD_COPY_REPORT: &str = "buffered-copy";
+
+fn sync_terminal(file: &File) -> io::Result<()> {
+    file.sync_data()?;
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn copy_payload(from: &mut impl Read, to: &mut impl Write, length: usize) -> io::Result<()> {
+    let mut bytes = vec![0; length];
+    from.read_exact(&mut bytes)?;
+    to.write_all(&bytes)
+}
 
 pub const HEADER_LEN: usize = 64;
 pub const MAX_PAYLOAD: usize = 32 * 1024;
@@ -144,6 +171,7 @@ pub fn mirror_highwater(local: &ContiguousHighwater, remote: &ContiguousHighwate
     local.next().min(remote.next())
 }
 
+#[cfg(target_os = "linux")]
 fn pipe_pair() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [-1; 2];
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -153,6 +181,7 @@ fn pipe_pair() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
+#[cfg(target_os = "linux")]
 fn pipe_capacity(fd: RawFd) -> io::Result<usize> {
     let capacity = unsafe { libc::fcntl(fd, libc::F_GETPIPE_SZ) };
     if capacity < 0 {
@@ -162,6 +191,7 @@ fn pipe_capacity(fd: RawFd) -> io::Result<usize> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn cvt_count(result: libc::ssize_t) -> io::Result<usize> {
     if result < 0 {
         Err(io::Error::last_os_error())
@@ -170,6 +200,7 @@ fn cvt_count(result: libc::ssize_t) -> io::Result<usize> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn splice_exact(from: RawFd, to: RawFd, mut len: usize) -> io::Result<()> {
     while len != 0 {
         let done = match cvt_count(unsafe {
@@ -194,6 +225,7 @@ fn splice_exact(from: RawFd, to: RawFd, mut len: usize) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn splice_some(from: RawFd, to: RawFd, max_len: usize) -> io::Result<usize> {
     loop {
         match cvt_count(unsafe {
@@ -214,6 +246,7 @@ fn splice_some(from: RawFd, to: RawFd, max_len: usize) -> io::Result<usize> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn tee_exact(from: RawFd, to: RawFd, mut len: usize) -> io::Result<()> {
     while len != 0 {
         let done = cvt_count(unsafe { libc::tee(from, to, len, libc::SPLICE_F_NONBLOCK) });
@@ -227,6 +260,7 @@ fn tee_exact(from: RawFd, to: RawFd, mut len: usize) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn vmsplice_all(
     socket: RawFd,
     bytes: &[u8],
@@ -288,6 +322,11 @@ pub struct ScanResult {
 
 pub fn scan_log(path: &Path, verify_payload: bool) -> io::Result<ScanResult> {
     let mut file = OpenOptions::new().read(true).open(path)?;
+    scan_open_log(&mut file, verify_payload)
+}
+
+fn scan_open_log(file: &mut File, verify_payload: bool) -> io::Result<ScanResult> {
+    file.seek(std::io::SeekFrom::Start(0))?;
     let total = file.metadata()?.len();
     let mut parsed_bytes = 0u64;
     let mut parsed_frames = 0u64;
@@ -304,7 +343,7 @@ pub fn scan_log(path: &Path, verify_payload: bool) -> io::Result<ScanResult> {
                 incomplete_tail_bytes: total - committed_bytes,
             });
         }
-        let Some(header) = read_header(&mut file)? else {
+        let Some(header) = read_header(file)? else {
             break;
         };
         if header.kind != KIND_DATA || header.sequence != parsed_frames {
@@ -358,28 +397,42 @@ pub fn scan_log(path: &Path, verify_payload: bool) -> io::Result<ScanResult> {
 }
 
 fn open_terminal_log(path: &Path) -> io::Result<(File, u64)> {
-    let scan = if path.exists() {
-        scan_log(path, false)?
-    } else {
-        ScanResult::default()
-    };
     let mut file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
+    // One userspace writer owns each terminal file before scanning or repair.
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "mirror log must be a regular terminal file",
+        ));
+    }
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let scan = scan_open_log(&mut file, false)?;
     if scan.incomplete_tail_bytes != 0 {
         file.set_len(scan.valid_bytes)?;
     }
     file.seek(std::io::SeekFrom::Start(scan.valid_bytes))?;
-    file.sync_data()?;
+    sync_terminal(&file)?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    File::open(parent)?.sync_all()?;
     Ok((file, scan.frames))
 }
 
 fn replay_suffix(local: &File, start: u64, end: u64, remote: &mut TcpStream) -> io::Result<()> {
     let mut source = local.try_clone()?;
     source.seek(std::io::SeekFrom::Start(0))?;
+    #[cfg(target_os = "linux")]
     let (read_pipe, write_pipe) = pipe_pair()?;
+    #[cfg(target_os = "linux")]
     let splice_chunk = pipe_capacity(write_pipe.as_raw_fd())?;
     for expected in 0..end {
         let header = read_header(&mut source)?.ok_or_else(|| {
@@ -396,13 +449,17 @@ fn replay_suffix(local: &File, start: u64, end: u64, remote: &mut TcpStream) -> 
             continue;
         }
         remote.write_all(&header.encode())?;
+        #[cfg(target_os = "linux")]
         let mut remaining = header.payload_len as usize;
+        #[cfg(target_os = "linux")]
         while remaining != 0 {
             let chunk = remaining.min(splice_chunk);
             let moved = splice_some(source.as_raw_fd(), write_pipe.as_raw_fd(), chunk)?;
             splice_exact(read_pipe.as_raw_fd(), remote.as_raw_fd(), moved)?;
             remaining -= moved;
         }
+        #[cfg(target_os = "macos")]
+        copy_payload(&mut source, remote, header.payload_len as usize)?;
         if header.ends_sync_batch() {
             let ack = read_header(remote)?.ok_or_else(|| {
                 io::Error::new(ErrorKind::UnexpectedEof, "remote closed during replay")
@@ -452,7 +509,9 @@ pub fn run_leaf(listen: &str, path: &Path, delay_ms: u64) -> io::Result<()> {
     let session_start = expected;
     let mut durable_hwm = expected;
     let mut sync_batches = 0u64;
+    #[cfg(target_os = "linux")]
     let (read_pipe, write_pipe) = pipe_pair()?;
+    #[cfg(target_os = "linux")]
     let splice_chunk = pipe_capacity(write_pipe.as_raw_fd())?;
     stream.write_all(&FrameHeader::ack(HANDSHAKE_SEQUENCE, expected).encode())?;
     loop {
@@ -466,16 +525,20 @@ pub fn run_leaf(listen: &str, path: &Path, delay_ms: u64) -> io::Result<()> {
             ));
         }
         log.write_all(&header.encode())?;
+        #[cfg(target_os = "linux")]
         let mut remaining = header.payload_len as usize;
+        #[cfg(target_os = "linux")]
         while remaining != 0 {
             let chunk = remaining.min(splice_chunk);
             let moved = splice_some(stream.as_raw_fd(), write_pipe.as_raw_fd(), chunk)?;
             splice_exact(read_pipe.as_raw_fd(), log.as_raw_fd(), moved)?;
             remaining -= moved;
         }
+        #[cfg(target_os = "macos")]
+        copy_payload(&mut stream, &mut log, header.payload_len as usize)?;
         expected += 1;
         if header.ends_sync_batch() {
-            log.sync_data()?;
+            sync_terminal(&log)?;
             if delay_ms != 0 {
                 thread::sleep(Duration::from_millis(delay_ms));
             }
@@ -490,9 +553,9 @@ pub fn run_leaf(listen: &str, path: &Path, delay_ms: u64) -> io::Result<()> {
             "remote stream ended inside a sync batch",
         ));
     }
-    log.sync_data()?;
+    sync_terminal(&log)?;
     eprintln!(
-        "RACING_MIRROR_LEAF_PASS peer={peer} durable_hwm={durable_hwm} appended_frames={} sync_batches={sync_batches} payload_userspace_copy_bytes=0 header_copy_bytes={}",
+        "RACING_MIRROR_LEAF_PASS peer={peer} durable_hwm={durable_hwm} appended_frames={} sync_batches={sync_batches} payload_userspace_copy_bytes={PAYLOAD_COPY_REPORT} header_copy_bytes={}",
         expected - session_start,
         HEADER_LEN as u64
             + (expected - session_start) * HEADER_LEN as u64 * 2
@@ -526,7 +589,7 @@ pub fn run_first_hop(listen: &str, remote: &str, local_path: &Path) -> io::Resul
     if remote_start.value < local_start {
         replay_suffix(&local, remote_start.value, local_start, &mut remote_stream)?;
         eprintln!(
-            "RACING_MIRROR_REPLAY_PASS from_hwm={} to_hwm={} payload_userspace_copy_bytes=0",
+            "RACING_MIRROR_REPLAY_PASS from_hwm={} to_hwm={} payload_userspace_copy_bytes={PAYLOAD_COPY_REPORT}",
             remote_start.value, local_start
         );
     }
@@ -546,15 +609,18 @@ pub fn run_first_hop(listen: &str, remote: &str, local_path: &Path) -> io::Resul
     let sync_thread = thread::spawn(move || {
         while let Ok(highwater) = sync_request_rx.recv() {
             if sync_done_tx
-                .send((highwater, sync_file.sync_data()))
+                .send((highwater, sync_terminal(&sync_file)))
                 .is_err()
             {
                 break;
             }
         }
     });
+    #[cfg(target_os = "linux")]
     let (source_read, source_write) = pipe_pair()?;
+    #[cfg(target_os = "linux")]
     let (remote_read, remote_write) = pipe_pair()?;
+    #[cfg(target_os = "linux")]
     let relay_chunk =
         pipe_capacity(source_write.as_raw_fd())?.min(pipe_capacity(remote_write.as_raw_fd())?);
     loop {
@@ -571,7 +637,9 @@ pub fn run_first_hop(listen: &str, remote: &str, local_path: &Path) -> io::Resul
         remote_stream.write_all(&header.encode())?;
 
         let payload_len = header.payload_len as usize;
+        #[cfg(target_os = "linux")]
         let mut remaining = payload_len;
+        #[cfg(target_os = "linux")]
         while remaining != 0 {
             let chunk = remaining.min(relay_chunk);
             let moved = splice_some(client.as_raw_fd(), source_write.as_raw_fd(), chunk)?;
@@ -579,6 +647,13 @@ pub fn run_first_hop(listen: &str, remote: &str, local_path: &Path) -> io::Resul
             splice_exact(source_read.as_raw_fd(), local.as_raw_fd(), moved)?;
             splice_exact(remote_read.as_raw_fd(), remote_stream.as_raw_fd(), moved)?;
             remaining -= moved;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let mut payload = vec![0; payload_len];
+            client.read_exact(&mut payload)?;
+            local.write_all(&payload)?;
+            remote_stream.write_all(&payload)?;
         }
         expected += 1;
         if header.ends_sync_batch() {
@@ -629,7 +704,7 @@ pub fn run_first_hop(listen: &str, remote: &str, local_path: &Path) -> io::Resul
         .join()
         .map_err(|_| io::Error::other("local sync worker panicked"))?;
     eprintln!(
-        "RACING_MIRROR_FIRST_HOP_PASS peer={peer} durable_hwm={} appended_frames={} sync_batches={sync_batches} payload_userspace_copy_bytes=0 header_copy_bytes={}",
+        "RACING_MIRROR_FIRST_HOP_PASS peer={peer} durable_hwm={} appended_frames={} sync_batches={sync_batches} payload_userspace_copy_bytes={PAYLOAD_COPY_REPORT} header_copy_bytes={}",
         mirror_highwater(&local_hwm, &remote_hwm),
         expected - local_start,
         HEADER_LEN as u64 * 2
@@ -685,6 +760,7 @@ pub fn run_client_window(
         ));
     }
     let first_sequence = handshake.value;
+    #[cfg(target_os = "linux")]
     let (source_read, source_write) = pipe_pair()?;
     let start = Instant::now();
     let final_sequence = first_sequence
@@ -701,12 +777,15 @@ pub fn run_client_window(
             stream.write_all(
                 &FrameHeader::data_with_more(sequence, payload_len as u32, seed, more).encode(),
             )?;
+            #[cfg(target_os = "linux")]
             vmsplice_all(
                 stream.as_raw_fd(),
                 &payload,
                 source_read.as_raw_fd(),
                 source_write.as_raw_fd(),
             )?;
+            #[cfg(target_os = "macos")]
+            stream.write_all(&payload)?;
             payload_leases.push(payload);
             sequence += 1;
         }
@@ -763,6 +842,21 @@ mod tests {
         assert_eq!(mirror_highwater(&local, &remote), 1);
         remote.complete(1).unwrap();
         assert_eq!(mirror_highwater(&local, &remote), 2);
+    }
+
+    #[test]
+    fn terminal_custody_precedes_tail_repair() {
+        let path = temp_path("custody");
+        let (mut first, _) = open_terminal_log(&path).unwrap();
+        first.write_all(b"incomplete").unwrap();
+        assert!(open_terminal_log(&path).is_err());
+        assert_eq!(first.metadata().unwrap().len(), 10);
+        drop(first);
+        let (second, frames) = open_terminal_log(&path).unwrap();
+        assert_eq!(frames, 0);
+        assert_eq!(second.metadata().unwrap().len(), 0);
+        drop(second);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -1,0 +1,73 @@
+name: macOS storage and regional participation
+
+on:
+  push:
+    branches: [main, codex/macos-storage]
+    paths: ['src/**', 'Cargo.*', 'build.rs', 'scripts/build-macos-userspace.sh', 'scripts/test-portable-storage.py', '.github/workflows/macos-storage.yml']
+  pull_request:
+    paths: ['src/**', 'Cargo.*', 'build.rs', 'scripts/build-macos-userspace.sh', 'scripts/test-portable-storage.py', '.github/workflows/macos-storage.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-storage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      PROTOC: protoc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install protocol compiler
+        run: brew list protobuf >/dev/null 2>&1 || brew install protobuf
+      - name: Build storage and regional tools
+        run: bash scripts/build-macos-userspace.sh
+      - name: Test shared WAL, regional policy, HA, and transport contracts
+        run: cargo test --locked --lib --bin zcglobal-policy-node --bin zcglobal-kubernetes-adapter
+      - name: Exercise durable recovery, backup restore, and mirror restart
+        run: python3 scripts/test-portable-storage.py
+      - name: Package macOS tools
+        run: |
+          mkdir -p dist/bin
+          for binary in zcnblk-client zcnblk-portable-target zcracing-mirror zcglobal-policy-node zcglobal-kubernetes-adapter zccusan-crdgen zccusan-operator zccusan-telemetry-server; do
+            cp "target/debug/$binary" dist/bin/
+          done
+          cp docs/macos-storage.md dist/
+          tar -czf "zcutils-${{ runner.arch }}-macos.tar.gz" -C dist .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zcutils-${{ runner.arch }}-macos
+          path: zcutils-*-macos.tar.gz
+          retention-days: 7
+
+  linux-protocol:
+    name: Linux protocol and shared-core regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PROTOC: protoc
+      ZCUTILS_DISABLE_LIBFABRIC: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install protocol compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
+      - name: Build portable protocol tools
+        run: cargo build --locked --bin zcnblk-client --bin zcnblk-portable-target --bin zcracing-mirror --bin zcglobal-policy-node
+      - name: Test shared contracts
+        run: |
+          cargo test --locked --lib persistent_wal::
+          cargo test --locked --lib block::
+          cargo test --locked --lib racing_mirror::
+          cargo test --locked --bin zcglobal-policy-node
+      - name: Exercise durable recovery, backup restore, mirror catch-up, and regional quorum
+        run: python3 scripts/test-portable-storage.py

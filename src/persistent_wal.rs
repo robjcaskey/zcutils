@@ -1,9 +1,13 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io;
+#[cfg(target_os = "linux")]
 use std::mem;
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,12 +28,19 @@ const FRAME_FIXED: usize = 64;
 pub const MAX_APPEND_RECORDS: usize = (BLOCK - FRAME_FIXED - 4) / 8;
 const MAX_RECORDS: usize = MAX_APPEND_RECORDS;
 const FLAG_PAYLOAD_CRC32C: u32 = 1;
+#[cfg(target_os = "linux")]
 const BLKGETSIZE64: libc::c_ulong = 0x8008_1272;
+#[cfg(target_os = "linux")]
 const FS_IOC_FIEMAP: libc::c_ulong = 0xc020_660b;
+#[cfg(target_os = "linux")]
 const FIEMAP_FLAG_SYNC: u32 = 1;
+#[cfg(target_os = "linux")]
 const FIEMAP_EXTENT_LAST: u32 = 1;
+#[cfg(target_os = "linux")]
 const FIEMAP_EXTENT_UNKNOWN: u32 = 2;
+#[cfg(target_os = "linux")]
 const FIEMAP_EXTENT_DELALLOC: u32 = 4;
+#[cfg(target_os = "linux")]
 const FIEMAP_BATCH: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,6 +88,8 @@ pub enum AllocationEvidence {
     NotApplicable,
     Fiemap,
     AllocatedBlockCount,
+    WindowsAllocation,
+    MacOsPreallocation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -271,14 +284,7 @@ impl PersistentWalRuntime {
     /// This is admission-time validation, not work performed for each I/O.
     pub fn validate_persistent_backings(&self) -> io::Result<()> {
         for file in [&self.wal.journal, &self.wal.base] {
-            let mut stat = mem::MaybeUninit::<libc::statfs>::uninit();
-            if unsafe { libc::fstatfs(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let kind = unsafe { stat.assume_init() }.f_type as u64;
-            if kind == 0x01021994 || kind == 0x858458f6 {
-                return Err(invalid("volatile filesystem cannot supply a persistent replica receipt"));
-            }
+            validate_persistent_file(file)?;
         }
         Ok(())
     }
@@ -448,10 +454,14 @@ impl PersistentWal {
             (&wal.base, base_path.as_ref(), wal.base_backing.kind),
         ] {
             if kind == BackingKind::RegularFile {
-                file.sync_all()?;
+                sync_backing(file)?;
+                #[cfg(unix)]
                 let parent = path.parent().filter(|p| !p.as_os_str().is_empty())
                     .unwrap_or_else(|| Path::new("."));
+                #[cfg(unix)]
                 File::open(parent)?.sync_all()?;
+                #[cfg(windows)]
+                let _ = path; // Windows file flush; journal also uses WRITE_THROUGH.
             }
         }
         Ok(wal)
@@ -556,7 +566,7 @@ impl PersistentWal {
         // writes and drains the alternate superblock. A crash can therefore
         // expose either the old prefix or a prefix whose payload is complete;
         // it cannot expose a commit record ahead of its payload.
-        self.journal.sync_data()?;
+        sync_backing(&self.journal)?;
         hook();
         state.durable_tail = state.tail;
         state.durable_sequence = state.next_sequence.saturating_sub(1);
@@ -613,7 +623,7 @@ impl PersistentWal {
                 write_all_at(&self.base, &page.0, logical_page * BLOCK as u64)?;
             }
         }
-        self.base.sync_data()?;
+        sync_backing(&self.base)?;
 
         let mut state = self.state.lock().expect("persistent WAL mutex poisoned");
         let mut reduced = 0usize;
@@ -814,7 +824,7 @@ impl PersistentWal {
             integrity: self.integrity,
         });
         write_all_at(&self.journal, &bytes.0, (slot * BLOCK) as u64)?;
-        self.journal.sync_data()?;
+        sync_backing(&self.journal)?;
         state.active_super_slot = slot;
         Ok(())
     }
@@ -1116,6 +1126,7 @@ fn decode_integrity(flags: u32) -> io::Result<IntegrityMode> {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(target_os = "linux")]
 struct FiemapHeader {
     start: u64,
     length: u64,
@@ -1127,6 +1138,7 @@ struct FiemapHeader {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(target_os = "linux")]
 struct FiemapExtent {
     logical: u64,
     physical: u64,
@@ -1137,11 +1149,13 @@ struct FiemapExtent {
 }
 
 #[repr(C)]
+#[cfg(target_os = "linux")]
 struct FiemapRequest {
     header: FiemapHeader,
     extents: [FiemapExtent; FIEMAP_BATCH],
 }
 
+#[cfg(target_os = "linux")]
 fn open_backing(
     path: &Path,
     required_bytes: u64,
@@ -1255,6 +1269,7 @@ fn open_backing(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn reject_same_backing(journal: &File, base: &File) -> io::Result<()> {
     let journal_meta = journal.metadata()?;
     let base_meta = base.metadata()?;
@@ -1273,6 +1288,7 @@ fn reject_same_backing(journal: &File, base: &File) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn verify_fiemap(file: &File, required_bytes: u64) -> io::Result<u32> {
     let mut cursor = 0u64;
     let mut total_extents = 0u32;
@@ -1333,6 +1349,7 @@ fn verify_fiemap(file: &File, required_bytes: u64) -> io::Result<u32> {
     Ok(total_extents)
 }
 
+#[cfg(target_os = "linux")]
 fn verify_regular_file_allocation(
     file: &File,
     required_bytes: u64,
@@ -1357,6 +1374,7 @@ fn verify_regular_file_allocation(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn pwritev_all(file: &File, offset: u64, header: &[u8], payload: &[u8]) -> io::Result<()> {
     let iovecs = [
         libc::iovec {
@@ -1389,9 +1407,56 @@ fn pwritev_all(file: &File, offset: u64, header: &[u8], payload: &[u8]) -> io::R
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn validate_persistent_file(file: &File) -> io::Result<()> {
+    let mut stat = mem::MaybeUninit::<libc::statfs>::uninit();
+    if unsafe { libc::fstatfs(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let kind = unsafe { stat.assume_init() }.f_type as u64;
+    if kind == 0x01021994 || kind == 0x858458f6 {
+        return Err(invalid("volatile filesystem cannot supply a persistent replica receipt"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[path = "persistent_wal_macos.rs"]
+mod macos_backing;
+#[cfg(target_os = "macos")]
+use macos_backing::{open_backing, reject_same_backing, validate_persistent_file};
+
+#[cfg(windows)]
+#[path = "persistent_wal_windows.rs"]
+mod windows_backing;
+#[cfg(windows)]
+use windows_backing::{open_backing, reject_same_backing, validate_persistent_file};
+
+#[cfg(any(windows, target_os = "macos"))]
+fn pwritev_all(file: &File, offset: u64, header: &[u8], payload: &[u8]) -> io::Result<()> {
+    // The durable superblock is published only after both writes and a flush.
+    // Recovery therefore rejects an incomplete/torn frame without requiring
+    // gather I/O or pretending the two writes are atomic.
+    write_all_at(file, header, offset)?;
+    write_all_at(file, payload, offset + header.len() as u64)
+}
+
+/// Flush controller caches on macOS before publishing a durable prefix.
+pub(crate) fn sync_backing(file: &File) -> io::Result<()> {
+    file.sync_data()?;
+    #[cfg(target_os = "macos")]
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn read_exact_at(file: &File, mut out: &mut [u8], mut offset: u64) -> io::Result<()> {
     while !out.is_empty() {
+        #[cfg(unix)]
         let read = file.read_at(out, offset)?;
+        #[cfg(windows)]
+        let read = std::os::windows::fs::FileExt::seek_read(file, out, offset)?;
         if read == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short pread"));
         }
@@ -1403,7 +1468,10 @@ fn read_exact_at(file: &File, mut out: &mut [u8], mut offset: u64) -> io::Result
 
 fn write_all_at(file: &File, mut input: &[u8], mut offset: u64) -> io::Result<()> {
     while !input.is_empty() {
+        #[cfg(unix)]
         let written = file.write_at(input, offset)?;
+        #[cfg(windows)]
+        let written = std::os::windows::fs::FileExt::seek_write(file, input, offset)?;
         if written == 0 {
             return Err(io::Error::new(io::ErrorKind::WriteZero, "short pwrite"));
         }
@@ -1589,6 +1657,21 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_rejects_direct_io_before_creating_backings() {
+        let (journal, base) = paths("darwin-direct-rejected");
+        let error = PersistentWal::open_with_options(
+            &journal, &base, (BLOCK * 8) as u64, (BLOCK * 32) as u64,
+            IntegrityMode::Crc32c,
+            PersistentWalOpenOptions { io_mode: BackingIoMode::Direct, ..Default::default() },
+        ).err().expect("O_DIRECT must not silently become buffered I/O");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(!journal.exists() && !base.exists());
+        let _ = fs::remove_dir_all(journal.parent().unwrap());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
     fn direct_io_lifecycle_uses_aligned_caller_buffers_without_bounce_copy() {
         let (journal, base) = paths("direct-lifecycle");
         let options = PersistentWalOpenOptions {
@@ -1670,6 +1753,7 @@ mod tests {
         let journal_file = OpenOptions::new().write(true).open(&journal).unwrap();
         write_all_at(&journal_file, &[0xa5], DATA_START + BLOCK as u64).unwrap();
         journal_file.sync_data().unwrap();
+        drop(journal_file);
         let error = PersistentWal::open(&journal, &base, (BLOCK * 4) as u64, (BLOCK * 16) as u64)
             .err()
             .expect("corrupt payload must fail recovery");
@@ -1695,6 +1779,7 @@ mod tests {
         let journal_file = OpenOptions::new().write(true).open(&journal).unwrap();
         write_all_at(&journal_file, &[0xa5], DATA_START + BLOCK as u64).unwrap();
         journal_file.sync_data().unwrap();
+        drop(journal_file);
         let wal = PersistentWal::open_with_integrity(
             &journal,
             &base,
@@ -1797,6 +1882,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn sparse_presized_files_are_rejected_or_preallocated_by_policy() {
         let (journal, base) = paths("sparse-policy");
         File::create(&journal)

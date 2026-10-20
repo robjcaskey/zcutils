@@ -30,7 +30,6 @@ use zcutils::transport_security::{
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(80);
 const AUTHORITY_LEASE: Duration = Duration::from_millis(400);
-const RPC_TIMEOUT: Duration = Duration::from_millis(180);
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_RPC_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_ACTIVE_CONNECTIONS: usize = 64;
@@ -67,6 +66,8 @@ struct WitnessEntry {
 struct PersistedNodeState {
     #[serde(default)]
     federation_id: String,
+    #[serde(default)]
+    timing_scale: Option<u32>,
     current_term: u64,
     voted_for: Option<String>,
     committed: GlobalPolicyState,
@@ -93,6 +94,7 @@ struct VolatileState {
 }
 
 struct Node {
+    timing_scale: u32,
     federation_id: String,
     id: String,
     region_id: String,
@@ -106,6 +108,7 @@ struct Node {
     source_connections: Mutex<BTreeMap<IpAddr, usize>>,
     admin_credentials: Mutex<AdminCredentialCache>,
     rpc_transport: GlobalRpcTransport,
+    rpc_timeout: Duration,
     tls_identity: Option<TlsIdentityFiles>,
 }
 
@@ -248,6 +251,11 @@ enum Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequestEnvelope {
+    #[serde(
+        default = "default_timing_scale",
+        skip_serializing_if = "is_default_timing_scale"
+    )]
+    timing_scale: u32,
     federation_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     admin_token: Option<String>,
@@ -271,6 +279,7 @@ struct Response {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct NodeStatus {
+    timing_scale: u32,
     federation_id: String,
     node_id: String,
     region_id: String,
@@ -319,6 +328,8 @@ impl Node {
             admin_secret_policy_from_env()?,
             duration_env("ZCGLOBAL_ADMIN_RELOAD_INTERVAL", "250ms")?,
         )?;
+        let timing_scale = timing_scale_env()?;
+        let rpc_timeout = control_rpc_timeout()?;
         let rpc_transport = GlobalRpcTransport::from_env()?;
         let tls_identity = TlsIdentityFiles::from_env(rpc_transport)?;
         LinkTransportSecurity {
@@ -348,15 +359,23 @@ impl Node {
         } else {
             PersistedNodeState::default()
         };
+        let state_identity = persisted_federation_identity(&federation_id, timing_scale);
         if persisted.federation_id.is_empty() {
-            persisted.federation_id = federation_id.clone();
-        } else if persisted.federation_id != federation_id {
+            persisted.federation_id = state_identity.clone();
+        } else if persisted.federation_id != state_identity {
             return Err(invalid(
                 "global Raft state belongs to a different federation",
             ));
         }
+        if state_path.exists() && persisted.timing_scale.unwrap_or(1) != timing_scale {
+            return Err(invalid(
+                "persisted regional timing profile differs; changing lease horizons requires a new, quiesced federation state",
+            ));
+        }
+        persisted.timing_scale = Some(timing_scale);
         let now = Instant::now();
         Ok(Arc::new(Self {
+            timing_scale,
             federation_id,
             id,
             region_id,
@@ -376,6 +395,7 @@ impl Node {
             source_connections: Mutex::new(BTreeMap::new()),
             admin_credentials: Mutex::new(admin_credentials),
             rpc_transport,
+            rpc_timeout,
             tls_identity,
         }))
     }
@@ -391,6 +411,14 @@ impl Node {
             .lock()
             .expect("global Raft admin credential lock")
             .accepts(provided.as_bytes())
+    }
+
+    fn authority_lease(&self) -> Duration {
+        AUTHORITY_LEASE * self.timing_scale
+    }
+
+    fn timing_compatible(&self, envelope: &RequestEnvelope) -> bool {
+        self.timing_scale == envelope.timing_scale
     }
 
     fn majority(&self) -> usize {
@@ -532,7 +560,7 @@ impl Node {
         // A follower cannot campaign until every previously renewed leader
         // authority lease is necessarily dead. Keep randomized election
         // timeout strictly beyond AUTHORITY_LEASE.
-        Duration::from_millis(560 + hash % 1_200)
+        Duration::from_millis((560 + hash % 1_200) * u64::from(self.timing_scale))
     }
 
     fn run_election_loop(self: Arc<Self>) {
@@ -543,7 +571,7 @@ impl Node {
             };
             if role == Role::Leader {
                 self.leader_heartbeat_round();
-                thread::sleep(HEARTBEAT_INTERVAL);
+                thread::sleep(HEARTBEAT_INTERVAL * self.timing_scale);
             } else if elapsed >= self.election_timeout() {
                 self.start_election();
             } else {
@@ -654,7 +682,7 @@ impl Node {
             if acknowledgements >= self.majority() {
                 // Anchor the lease at round start so slow/dead later peers can
                 // never extend it past a follower's election horizon.
-                state.authority_until = round_started + AUTHORITY_LEASE;
+                state.authority_until = round_started + self.authority_lease();
                 state.last_leader_contact = Instant::now();
             } else if Instant::now() >= state.authority_until {
                 state.role = Role::Follower;
@@ -827,7 +855,7 @@ impl Node {
             state.persisted.committed.applied_term = checkpoint.term;
             state.persisted.witness_pending = None;
         }
-        state.authority_until = Instant::now() + AUTHORITY_LEASE;
+        state.authority_until = Instant::now() + self.authority_lease();
         // Ordinary heartbeats renew only volatile authority. Persist when the
         // durable term or committed snapshot advances, never at heartbeat rate.
         if (term != prior_term || state.persisted.committed.applied_index != prior_index)
@@ -961,6 +989,7 @@ impl Node {
             .proposal_lock
             .lock()
             .expect("global Raft proposal lock");
+        let proposal_started = Instant::now();
         let entry = {
             let mut state = self.state.lock().expect("global Raft state lock");
             if state.role != Role::Leader {
@@ -1046,11 +1075,25 @@ impl Node {
 
         {
             let mut state = self.state.lock().expect("global Raft state lock");
+            if state.role != Role::Leader
+                || state.persisted.current_term != entry.term
+                || !state
+                    .persisted
+                    .pending
+                    .as_ref()
+                    .is_some_and(|p| p.index == entry.index && p.term == entry.term)
+                || proposal_started.elapsed() >= self.authority_lease()
+            {
+                let mut response = Self::base_response(&state);
+                response.ok = false;
+                response.error = Some("stale_or_expired_append_round".into());
+                return response;
+            }
             let pending = state
                 .persisted
                 .pending
                 .take()
-                .expect("leader pending entry");
+                .expect("validated pending entry");
             if let Err(error) =
                 state
                     .persisted
@@ -1068,7 +1111,7 @@ impl Node {
                 response.error = Some(error.to_string());
                 return response;
             }
-            state.authority_until = Instant::now() + AUTHORITY_LEASE;
+            state.authority_until = proposal_started + self.authority_lease();
         }
         let commit = Request::Commit {
             term: entry.term,
@@ -1120,6 +1163,7 @@ impl Node {
         };
         let mut response = Self::base_response(&state);
         response.status = Some(NodeStatus {
+            timing_scale: self.timing_scale,
             federation_id: self.federation_id.clone(),
             node_id: self.id.clone(),
             region_id: self.region_id.clone(),
@@ -1255,13 +1299,14 @@ fn persist_state(path: &Path, state: &PersistedNodeState) -> io::Result<()> {
 fn serve(node: Arc<Node>, bind: SocketAddr) -> io::Result<()> {
     let listener = TcpListener::bind(bind)?;
     println!(
-        "GLOBAL_RAFT_READY federation={} node={} region={} bind={} voters={} majority={} rpc_transport={} framing=public_envelope_v1 headline_performance_eligible={}",
+        "GLOBAL_RAFT_READY federation={} node={} region={} bind={} voters={} majority={} timing_scale={} rpc_transport={} framing=public_envelope_v1 headline_performance_eligible={}",
         node.federation_id,
         node.id,
         node.region_id,
         bind,
         node.peers.len(),
         node.majority(),
+        node.timing_scale,
         node.rpc_transport.label(),
         node.rpc_transport.headline_performance_eligible(),
     );
@@ -1271,8 +1316,9 @@ fn serve(node: Arc<Node>, bind: SocketAddr) -> io::Result<()> {
         match connection {
             Ok(stream) => {
                 if let Err(error) = stream
-                    .set_read_timeout(Some(RPC_TIMEOUT))
-                    .and_then(|_| stream.set_write_timeout(Some(RPC_TIMEOUT)))
+                    .set_nodelay(true)
+                    .and_then(|_| stream.set_read_timeout(Some(node.rpc_timeout)))
+                    .and_then(|_| stream.set_write_timeout(Some(node.rpc_timeout)))
                 {
                     eprintln!(
                         "GLOBAL_RAFT_RPC_REJECT node={} reason=timeout_setup error={error}",
@@ -1360,6 +1406,13 @@ fn handle_connection(node: &Node, source: IpAddr, mut stream: GlobalRpcIo) -> io
             &node.error_response("federation_mismatch"),
         );
     }
+    if !node.timing_compatible(&envelope) {
+        return write_response(
+            &mut stream,
+            &response_secret,
+            &node.error_response("regional_timing_profile_mismatch"),
+        );
+    }
     if !node.management_authorized(&envelope) {
         return write_response(
             &mut stream,
@@ -1385,8 +1438,59 @@ fn write_response(stream: &mut impl Write, secret: &str, response: &Response) ->
     write_encrypted_frame(stream, secret, FrameDirection::Response, &encoded)
 }
 
+fn persisted_federation_identity(federation_id: &str, scale: u32) -> String {
+    if scale == 1 {
+        federation_id.to_owned()
+    } else {
+        // Older binaries already reject another persisted federation ID. Keep
+        // them from reopening this longer-lease state with their short defaults.
+        format!("zcglobal-timing-v1/{scale}/{federation_id}")
+    }
+}
+
+fn default_timing_scale() -> u32 {
+    1
+}
+fn is_default_timing_scale(value: &u32) -> bool {
+    *value == 1
+}
+
+fn timing_scale_env() -> io::Result<u32> {
+    let scale = env::var("ZCGLOBAL_TIMING_SCALE")
+        .unwrap_or_else(|_| "1".into())
+        .parse::<u32>()
+        .map_err(|_| invalid("ZCGLOBAL_TIMING_SCALE must be 1..=100"))?;
+    if !(1..=100).contains(&scale) {
+        return Err(invalid("ZCGLOBAL_TIMING_SCALE must be 1..=100"));
+    }
+    Ok(scale)
+}
+
+fn control_rpc_timeout() -> io::Result<Duration> {
+    let scale = timing_scale_env()?;
+    let default = format!("{}ms", 180 * scale);
+    validate_control_rpc_timeout(duration_env("ZCGLOBAL_RPC_TIMEOUT", &default)?, scale)
+}
+
+fn validate_control_rpc_timeout(value: Duration, scale: u32) -> io::Result<Duration> {
+    // Scale every consensus horizon together. RPC tuning cannot consume the
+    // authority horizon, and peers with another profile reject these RPCs.
+    if value < Duration::from_millis(10) || value > (AUTHORITY_LEASE - HEARTBEAT_INTERVAL) * scale {
+        return Err(invalid(
+            "ZCGLOBAL_RPC_TIMEOUT exceeds the configured regional timing horizon",
+        ));
+    }
+    Ok(value)
+}
+
 fn rpc(address: SocketAddr, federation_id: &str, request: &Request) -> io::Result<Response> {
-    rpc_with_timeout(address, federation_id, None, request, RPC_TIMEOUT)
+    rpc_with_timeout(
+        address,
+        federation_id,
+        None,
+        request,
+        control_rpc_timeout()?,
+    )
 }
 
 fn rpc_with_timeout(
@@ -1401,6 +1505,7 @@ fn rpc_with_timeout(
         None => client_credential_candidates()?,
     };
     let encoded = serde_json::to_vec(&RequestEnvelope {
+        timing_scale: timing_scale_env()?,
         federation_id: federation_id.to_owned(),
         admin_token,
         request: request.clone(),
@@ -1414,7 +1519,10 @@ fn rpc_with_timeout(
     let mut last_error = None;
     for secret in candidates {
         let attempt = (|| {
+            // Small encrypted frames are split across writes. Nagle can otherwise
+            // add a full RTT before the body, exhausting the control RPC budget.
             let socket = TcpStream::connect_timeout(&address, timeout)?;
+            socket.set_nodelay(true)?;
             socket.set_read_timeout(Some(timeout))?;
             socket.set_write_timeout(Some(timeout))?;
             let mut stream = match transport {
@@ -1643,7 +1751,7 @@ fn send_cli(address: &str, request: Request) -> io::Result<()> {
             &federation_id,
             Some(admin_token),
             &request,
-            CLIENT_TIMEOUT,
+            CLIENT_TIMEOUT * timing_scale_env()?,
         ) {
             Ok(attempt) => attempt,
             Err(error) => {
@@ -2009,6 +2117,77 @@ mod tests {
     }
 
     #[test]
+    fn scaled_state_identity_fences_binaries_unaware_of_longer_leases() {
+        assert_eq!(persisted_federation_identity("estate", 1), "estate");
+        assert_ne!(persisted_federation_identity("estate", 5), "estate");
+        assert_ne!(
+            persisted_federation_identity("estate", 5),
+            persisted_federation_identity("estate", 4)
+        );
+    }
+
+    #[test]
+    fn timing_profiles_preserve_legacy_wire_and_reject_mixed_horizons() {
+        let node = test_node("us", "timing-profile");
+        let mut envelope = RequestEnvelope {
+            timing_scale: 1,
+            federation_id: "test-federation".into(),
+            admin_token: None,
+            request: Request::Status,
+        };
+        let wire = serde_json::to_value(&envelope).unwrap();
+        assert!(wire.get("timing_scale").is_none());
+        let legacy: RequestEnvelope = serde_json::from_value(wire).unwrap();
+        assert!(node.timing_compatible(&legacy));
+        envelope.timing_scale = 5;
+        assert!(!node.timing_compatible(&envelope));
+        assert_eq!(serde_json::to_value(&envelope).unwrap()["timing_scale"], 5);
+        assert!(validate_control_rpc_timeout(Duration::from_millis(900), 5).is_ok());
+        assert!(validate_control_rpc_timeout(Duration::from_millis(1601), 5).is_err());
+    }
+
+    #[test]
+    fn persisted_timing_profile_cannot_be_shortened_on_restart() {
+        let node = test_node("us", "timing-restart");
+        {
+            let mut state = node.state.lock().unwrap();
+            state.persisted.timing_scale = Some(5);
+            node.persist_locked(&state).unwrap();
+        }
+        let path = node.state_path.clone();
+        let credential_path = node.admin_credentials.lock().unwrap().path.clone();
+        let before = fs::read(&path).unwrap();
+        let result = Node::open(
+            node.federation_id.clone(),
+            node.id.clone(),
+            node.region_id.clone(),
+            node.peers.clone(),
+            path.clone(),
+            credential_path.clone(),
+        );
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("timing profile differs")
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        fs::remove_file(path).unwrap();
+        fs::remove_file(credential_path).unwrap();
+    }
+
+    #[test]
+    fn rpc_timeout_cannot_consume_the_authority_horizon() {
+        assert!(validate_control_rpc_timeout(Duration::ZERO, 1).is_err());
+        assert!(validate_control_rpc_timeout(Duration::from_millis(321), 1).is_err());
+        assert_eq!(
+            validate_control_rpc_timeout(Duration::from_millis(300), 1).unwrap(),
+            Duration::from_millis(300)
+        );
+    }
+
+    #[test]
     fn voting_only_member_never_campaigns() {
         let node = test_node("pottsylvania", "never-campaigns");
         node.start_election();
@@ -2061,6 +2240,7 @@ mod tests {
             credentials.bundle.credentials[0].secret.clone()
         };
         let authorized = RequestEnvelope {
+            timing_scale: 1,
             federation_id: "test-federation".into(),
             admin_token: Some(token),
             request: Request::Status,
@@ -2072,6 +2252,7 @@ mod tests {
         assert!(!node.management_authorized(&wrong));
 
         let consensus = RequestEnvelope {
+            timing_scale: 1,
             federation_id: "test-federation".into(),
             admin_token: None,
             request: Request::Heartbeat {
