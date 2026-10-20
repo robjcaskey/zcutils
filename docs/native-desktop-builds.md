@@ -69,7 +69,10 @@ Disk Utility formatting, filesystem readback, and disconnect/reconnect must be
 validated on a provisioned test Mac before calling the native edge usable.
 Never format a disk until its identity has been positively verified as the new
 zcutils virtual device. The developer Mac used for this work has SIP enabled
-and no valid signing identity; the build does not change that state.
+and no valid signing identity; the build does not change that state. The
+ad-hoc artifact passes signature-integrity verification, but its restricted
+broker entitlement causes launch rejection on that unprovisioned host. This is
+not an installation or mounting success.
 
 ## Windows userspace and native driver
 
