@@ -7,6 +7,9 @@ description = "Linux zero-copy descriptor stream and io_uring utility experiment
 readme = "README.md"
 license = "MIT OR Apache-2.0 OR BSD-2-Clause"
 
+[lib]
+path = "src/platform.rs"
+
 [features]
 # An enabled provider is not a certificate-backed validation claim. See FIPS.md.
 fips = ["aws-lc-rs/fips", "rustls/fips", "dep:aws-lc-fips-sys"]
@@ -38,6 +41,8 @@ zeroize = "1"
 tokio = { version = "1.0", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { version = "0.5", features = ["transport"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
 vhost = { version = "0.17", features = ["vhost-user-backend"] }
 vhost-user-backend = "0.23"
 virtio-bindings = "0.2.7"
@@ -298,6 +303,18 @@ path = "src/bin/zcglobal-kubernetes-adapter.rs"
 [[bin]]
 name = "zccusan-operator"
 path = "src/bin/zccusan-operator.rs"
+
+[[bin]]
+name = "zcnblk-client"
+path = "src/bin/zcnblk-client.rs"
+
+[[bin]]
+name = "zcnblk-portable-target"
+path = "src/bin/zcnblk-portable-target.rs"
+
+[[bin]]
+name = "zcnblk-windows-client"
+path = "src/bin/zcnblk-windows-client.rs"
 
 [[bin]]
 name = "zccusan-crdgen"

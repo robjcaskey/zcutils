@@ -31,8 +31,16 @@ fn main() -> io::Result<()> {
             let result = run_client_window(&addr, frames, payload, window)?;
             let seconds = result.elapsed.as_secs_f64();
             println!(
-                "RACING_MIRROR_CLIENT_PASS appended_frames={} recovered_from={} payload_bytes={} window={} durable_ack=both-legs elapsed_s={seconds:.6} representative_benchmark=false source_payload_copy=vmsplice first_hop_payload_userspace_copy_bytes=0 remote_payload_userspace_copy_bytes=0",
-                result.frames, result.recovered_from, result.payload_bytes, result.window
+                "RACING_MIRROR_CLIENT_PASS appended_frames={} recovered_from={} payload_bytes={} window={} durable_ack=both-legs elapsed_s={seconds:.6} representative_benchmark=false payload_transport={}",
+                result.frames,
+                result.recovered_from,
+                result.payload_bytes,
+                result.window,
+                if cfg!(target_os = "linux") {
+                    "vmsplice-zero-copy"
+                } else {
+                    "buffered-copy"
+                }
             );
         }
         Some("first-hop") => {

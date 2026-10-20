@@ -224,8 +224,12 @@ pub fn write_encrypted_frame(
             &mut ciphertext,
         )
         .map_err(|_| io::Error::other("encrypt global RPC frame"))?;
-    stream.write_all(&header)?;
-    stream.write_all(&ciphertext)?;
+    // Keep the small control frame in one transport write. Separate header
+    // and body writes can incur additional delayed-ACK rounds through a proxy.
+    let mut packet = Vec::with_capacity(header.len() + ciphertext.len());
+    packet.extend_from_slice(&header);
+    packet.extend_from_slice(&ciphertext);
+    stream.write_all(&packet)?;
     stream.flush()
 }
 
@@ -449,8 +453,12 @@ pub fn write_encrypted_frame(
 ) -> io::Result<()> {
     let cipher = frame_cipher(secret, direction)?;
     let (header, ciphertext) = encrypt_payload(&cipher, direction, plaintext)?;
-    stream.write_all(&header)?;
-    stream.write_all(&ciphertext)?;
+    // Keep the small control frame in one transport write. Separate header
+    // and body writes can incur additional delayed-ACK rounds through a proxy.
+    let mut packet = Vec::with_capacity(header.len() + ciphertext.len());
+    packet.extend_from_slice(&header);
+    packet.extend_from_slice(&ciphertext);
+    stream.write_all(&packet)?;
     stream.flush()
 }
 #[cfg(feature = "fips")]

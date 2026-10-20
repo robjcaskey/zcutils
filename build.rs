@@ -13,6 +13,11 @@ fn main() {
     println!("cargo:rerun-if-changed=/opt/amazon/efa/include/rdma/fi_ext_efa.h");
     println!("cargo:rustc-check-cfg=cfg(zc_has_libfabric)");
 
+    // Host headers and libraries cannot be used by a Windows cross build.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
+        return;
+    }
+
     // A cross build may intentionally produce a TCP-only helper for a stage
     // that never owns an OFI endpoint (for example, the local block onramp).
     // Native release builds leave this unset and retain the full libfabric
