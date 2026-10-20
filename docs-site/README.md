@@ -50,3 +50,10 @@ that project. Shared project relationships live in `docs-site/universe.md`.
 The old `/day-2.html` URL forwards to `/zccusan/day-2.html`, preserving fragments.
 Each project has its own brand and navigation. Published links and stylesheet
 paths are relative, so the site also works beneath the GitHub project prefix.
+
+The visual baseline is the existing published docs layout: warm paper, dark
+blue-green text and teal links. Both projects share `docs-site/site.css`.
+CSS `prefers-color-scheme` follows the system setting automatically, including
+changes while the page is open. The dark variant covers text, links, code,
+tables, navigation and focus states. Print keeps the light palette. No theme
+script, cookie or saved override is needed.
