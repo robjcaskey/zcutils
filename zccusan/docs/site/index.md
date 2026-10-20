@@ -7,7 +7,7 @@ Binary names, API paths and installation commands retain their existing names.
 
 ## Before you start
 
-Read the [cost-control guide](../COST_CONTROL.md) to agree on a trial budget,
+Read the [cost-control guide](../COST_CONTROL.md) to agree on a evaluation budget,
 review bandwidth costs, and plan cleanup.
 
 ## Choose your deployment

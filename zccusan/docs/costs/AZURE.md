@@ -1,8 +1,8 @@
-# Azure cost model for Diskpipe trials
+# Azure cost model for Diskpipe evaluations
 
 Start with the [general cost-control guide](../COST_CONTROL.md). Seek an existing
 cluster or suitable hosts, confirm the subscription and target resources, and
-agree on a small single-region trial. Cross-region evaluation and public internet
+agree on a small single-region evaluation. Cross-region evaluation and public internet
 storage traffic require explicit approval after reviewing estimated costs.
 
 ## Cluster and storage
@@ -36,13 +36,13 @@ exception does not establish that intermediaries are free. Estimate initial
 loading, reads, replication, recovery, and tier retrieval in both directions.
 Keep default storage traffic private and within one region. If the proposed
 route uses public endpoints or another region, obtain an explicit cost decision
-before moving trial data.
+before moving evaluation data.
 
 ## Build the estimate
 
 Separate existing capacity from incremental node runtime, cluster tier charges,
 managed disks, snapshots, network services, transfer, and monitoring. Record
-current pricing sources, region, currency, billing units, assumptions, trial
+current pricing sources, region, currency, billing units, assumptions, evaluation
 duration, and cost if left running. Do not assume credits or reserved capacity
 apply to newly requested resources.
 
@@ -51,6 +51,6 @@ apply to newly requested resources.
 Ask about cleanup at natural stopping points. After authorized teardown, inspect
 all created resource types, including disks, snapshots, public IPs, network
 interfaces, load balancers, NAT or gateway resources, and monitoring resources.
-Check any managed node resource group as well as the trial's resource group.
+Check any managed node resource group as well as the evaluation's resource group.
 Do not delete a shared resource group or pre-existing resources as a shortcut.
-Report remaining trial resources, ongoing costs, and exact cleanup steps.
+Report remaining evaluation resources, ongoing costs, and exact cleanup steps.

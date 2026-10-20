@@ -1,7 +1,7 @@
-# AWS cost model for Diskpipe trials
+# AWS cost model for Diskpipe evaluations
 
 Start with the [general cost-control guide](../COST_CONTROL.md). Reuse an existing
-cluster or host, agree on the spending profile, and keep the default trial in one
+cluster or host, agree on the spending profile, and keep the default evaluation in one
 region on verified private network paths. Cross-region evaluation and public
 internet storage traffic require explicit approval of their estimated costs.
 
@@ -10,7 +10,7 @@ internet storage traffic require explicit approval of their estimated costs.
 EBS bills provisioned capacity until it is released. Depending on the volume
 type, provisioned IOPS and throughput can add separate charges. For gp3, compare
 the included performance with the additional performance requested; do not pay
-for benchmark headroom the trial will not use. Snapshots have their own pricing.
+for benchmark headroom the evaluation will not use. Snapshots have their own pricing.
 Check the selected region and volume type in [EBS pricing](https://aws.amazon.com/ebs/pricing/).
 
 Offer user-provisioned EBS capacity where the documented Diskpipe setup supports
@@ -35,7 +35,7 @@ that a private subnet provides a cheap private data path.
 
 List incremental compute runtime, cluster charges if applicable, EBS capacity
 and performance, snapshots, transfer bytes by path, network intermediaries, and
-logs. Record the current rate source and estimate both trial-duration and
+logs. Record the current rate source and estimate both evaluation-duration and
 left-running costs. Review any proposed private CA, managed identity service,
 load balancer, gateway, or endpoint separately before approving it.
 

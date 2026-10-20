@@ -3,8 +3,8 @@
 Use Diskpipe through its CSI adapter, Helm chart and Kubernetes policy resources.
 This path works on physical or virtual cluster nodes, including cloud clusters.
 
-Read [cost control for trials](../COST_CONTROL.md) before provisioning or
-moving trial data.
+Read [cost control for evaluations](../COST_CONTROL.md) before provisioning or
+moving evaluation data.
 
 ## Install and validate
 

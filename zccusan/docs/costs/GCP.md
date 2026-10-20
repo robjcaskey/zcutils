@@ -1,7 +1,7 @@
-# Google Cloud cost model for Diskpipe trials
+# Google Cloud cost model for Diskpipe evaluations
 
 Start with the [general cost-control guide](../COST_CONTROL.md). Prefer existing
-capacity and a single-region trial over a new cluster. Cross-region evaluation
+capacity and a single-region evaluation over a new cluster. Cross-region evaluation
 and public internet storage traffic are excluded until the user explicitly
 approves a costed plan.
 
@@ -9,7 +9,7 @@ approves a costed plan.
 
 GKE pricing distinguishes cluster management from workload resources. Standard
 and Autopilot use different resource billing models; identify the existing
-cluster mode before estimating the incremental trial cost. Check eligibility
+cluster mode before estimating the incremental evaluation cost. Check eligibility
 before assuming credits apply. Use [GKE pricing](https://cloud.google.com/kubernetes-engine/pricing).
 
 Persistent Disk and Hyperdisk have different capacity and performance pricing.
@@ -40,7 +40,7 @@ if that requires additional paid infrastructure.
 Separate existing committed capacity from new charges. Include incremental
 workload resources, disk capacity and performance, snapshots, network bytes,
 intermediaries, and logs. Estimate initial loading, replication, reads, recovery,
-and tier retrieval. Record current price sources, assumptions, trial duration,
+and tier retrieval. Record current price sources, assumptions, evaluation duration,
 and the ongoing cost if resources remain.
 
 ## Cleanup evidence

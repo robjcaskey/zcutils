@@ -1,7 +1,7 @@
-# Cost control for Diskpipe trials
+# Cost control for Diskpipe evaluations
 
 Use this guide before installing, expanding, benchmarking, or tearing down a
-Diskpipe trial. It applies both to people following the documentation and to AI
+Diskpipe evaluation. It applies both to people following the documentation and to AI
 agents working on their behalf. A request to try Diskpipe does not by itself
 approve new infrastructure spending.
 
@@ -19,21 +19,21 @@ to price and link to official sources; they are not fixed-price quotes.
 Look for existing Kubernetes contexts or suitable hosts first. Inspect their
 capacity, permissions, storage classes, region, and availability zones without
 changing resources. Propose a target and confirm it with the user, along with a
-dedicated trial namespace or equivalent resource boundary.
+dedicated evaluation namespace or equivalent resource boundary.
 
-For a cloud trial, recommend one region and a small disposable workload. Do not
+For a cloud evaluation, recommend one region and a small disposable workload. Do not
 create a cluster by default. Reusing capacity can reduce incremental cost, but
-check whether the trial would trigger autoscaling, higher provisioned capacity,
+check whether the evaluation would trigger autoscaling, higher provisioned capacity,
 or other additional charges.
 
 ## Agree on the spending profile
 
 Before creating billable resources or increasing capacity, confirm:
 
-- The trial budget, currency, and expected duration.
+- The evaluation budget, currency, and expected duration.
 - Existing resources to reuse and new resources to create.
 - Expected data volume, request rate, and transfer volume.
-- Estimated incremental trial cost and ongoing cost if resources remain running.
+- Estimated incremental evaluation cost and ongoing cost if resources remain running.
 - When to stop, which resources to clean up, and who owns cleanup.
 
 Research current provider pricing for the actual region, resource configuration,
@@ -56,7 +56,7 @@ the environment actually provides and configures that enforcement.
 | Observability | Log ingestion, retention, high-cardinality metrics, and tracing volume. |
 | Supporting services | Fixed and usage-based charges for identity, certificate, DNS, and other services proposed by the setup. |
 
-Avoid adding paid supporting services merely to run a small trial. For example,
+Avoid adding paid supporting services merely to run a small evaluation. For example,
 do not provision a private certificate authority, managed identity service, NAT
 gateway, or load balancer without explaining why it is needed and obtaining
 approval for its costs.
@@ -72,7 +72,7 @@ retries, recovery, tiering, and any transfers needed during cleanup. Include
 per-request and processing charges where applicable. Record the calculation so
 the user can adjust the workload size and duration.
 
-Treat cross-region evaluation as too expensive for the default trial budget.
+Treat cross-region evaluation as too expensive for the default evaluation budget.
 Exclude it unless the user explicitly opts in after reviewing the estimated
 cost. Selecting an add-region workflow expresses interest; it does not approve
 an unknown bill.
@@ -83,7 +83,7 @@ This restriction concerns the storage workload being evaluated; ordinary
 documentation and package downloads are separate.
 
 Use verified private network paths within one region by default. Prefer avoiding
-cross-zone transfer charges for a basic trial where practical, and explain that
+cross-zone transfer charges for a basic evaluation where practical, and explain that
 co-locating resources does not validate resilience to an availability-zone outage.
 If a suitable private path is unavailable, present costed alternatives rather
 than silently switching to public endpoints. Encrypted traffic still needs the
@@ -114,11 +114,11 @@ block devices are terminal media, not mirror or stripe primitives.
 
 Keep an inventory of resources created or changed, including provider IDs,
 region, namespace, owner, purpose, ongoing charges, retention settings, and
-cleanup procedure. Distinguish trial-owned resources from pre-existing resources.
+cleanup procedure. Distinguish evaluation-owned resources from pre-existing resources.
 
 At every natural stopping point, after validation, and before ending the session,
 ask whether the user is done and ready to clean up. Name what would be removed,
-what data would be lost, and what would continue costing money. If the trial
+what data would be lost, and what would continue costing money. If the evaluation
 continues, ask again at the next stopping point. Respect an explicit decision to
 keep it and agree on the expected duration and remaining spend.
 
@@ -127,12 +127,12 @@ have actually been configured. An absent response is not permission to delete.
 
 ## Verify teardown, including retained resources
 
-After cleanup is authorized, remove only the agreed trial resources. Preserve
+After cleanup is authorized, remove only the agreed evaluation resources. Preserve
 pre-existing clusters, volumes, networks, and workloads unless their removal is
 explicitly authorized.
 
 Check PVC and PV reclaim policies before deleting claims. Review every resource
-type the trial created: volumes, snapshots, nodes, load balancers, addresses,
+type the evaluation created: volumes, snapshots, nodes, load balancers, addresses,
 gateways, endpoints, log groups, certificates, and any other supporting resources.
 Use the inventory and provider reads to identify leftovers and their owners.
 
