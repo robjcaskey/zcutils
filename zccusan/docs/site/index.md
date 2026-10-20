@@ -1,8 +1,6 @@
 # Diskpipe
 
-Storage services for volumes,
-snapshots, replication, tenant policy and regional failover, with Kubernetes as
-one deployment and integration choice.
+Diskpipe is high-performance storage for your Kubernetes cluster: multi-user, multi-tenant, multi-region, and rate-limited, designed for low unit costs and delivering 75 GB/s on a two-node cluster, with room to scale from there.
 
 The implementation currently lives under `zccusan/` in the zcutils repository.
 Binary names, API paths and installation commands retain their existing names.
