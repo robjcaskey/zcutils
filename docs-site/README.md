@@ -65,6 +65,9 @@ small curated landing-page set. Its publisher preserves Helm chart archives,
 URL continues forwarding to the storage documentation. The
 [Zero Copy Cinematic Universe](universe.md) connects the two projects.
 
+See [HTTPS infrastructure operations](../infra/diskpipe-docs/README.md) for the
+Terraform module, certificate renewal, DNS ownership, costs and public checks.
+
 ## Local subset checks
 
 The small dependency-free validator remains available for the curated pages:
