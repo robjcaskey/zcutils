@@ -7,7 +7,7 @@ arch=${DRIVERKIT_ARCH:-$(uname -m)}
 out=${DRIVERKIT_OUT:-target/macos-driverkit}
 mkdir -p "$out/generated"
 for cls in ZcController; do
-  xcrun iig --def "macos/driverkit/$cls.iig" --header "$out/generated/$cls.h" --impl "$out/generated/$cls.cpp" --deployment-target 23.0 --log "$out/iig.log" -- -target "$arch-apple-driverkit23.0" -isysroot "$sdk" -I macos/driverkit || { cat "$out/iig.log"; exit 1; }
+  xcrun iig --def "macos/driverkit/$cls.iig" --header "$out/generated/$cls.h" --impl "$out/generated/$cls.cpp" --deployment-target 23.0 --log "$out/iig.log" -- -isysroot "$sdk" -iframework "$sdk/System/DriverKit/System/Library/Frameworks" -isystem "$sdk/System/DriverKit/usr/include" -x c++ -std=c++17 -D__IIG=1 -DPLATFORM_DriverKit=1 -D__ENVIRONMENT_DRIVERKIT_VERSION_MIN_REQUIRED__=230000 -I macos/driverkit || { cat "$out/iig.log"; exit 1; }
  done
 bundle="$out/ZcStorage.app/Contents/Library/SystemExtensions/org.zcutils.storage.dext"
 mkdir -p "$bundle/Contents/MacOS" "$out/ZcStorage.app/Contents/MacOS"

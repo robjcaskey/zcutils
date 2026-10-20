@@ -2,6 +2,7 @@ name: DriverKit development build
 on:
   push:
     branches: [codex/macos-driverkit]
+    paths: ['macos/**', 'src/macos_scsi.rs', 'src/bin/zcnblk-macos-client.rs', 'Cargo.*', 'scripts/build-macos-driverkit.sh', '.github/workflows/driverkit.yml']
   workflow_dispatch:
 permissions:
   contents: read

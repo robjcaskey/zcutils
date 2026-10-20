@@ -57,11 +57,7 @@ kern_return_t IMPL(ZcController, UserInitializeController) {
     }
     auto ret=UserReportHBAConstraints(constraints);constraints->release();
     if (ret!=kIOReturnSuccess) return ret;
-    ret=IOBufferMemoryDescriptor::Create(kIOMemoryDirectionInOut,16384,16384,&ivars->staging);
-    if (ret!=kIOReturnSuccess) return ret;
-    IOAddressSegment range={};ret=ivars->staging->GetAddressRange(&range);
-    if (ret!=kIOReturnSuccess || range.length<kBlock) return kIOReturnNoMemory;
-    ivars->stagingAddress=range.address;ivars->nextToken=1;ivars->nextTask=1;
+    ivars->nextToken=1;ivars->nextTask=1;
     return kIOReturnSuccess;
 }
 kern_return_t IMPL(ZcController, UserStartController) { return kIOReturnSuccess; }
@@ -72,6 +68,14 @@ kern_return_t IMPL(ZcController, NewUserClient) {
     if (ret!=kIOReturnSuccess) return ret;
     auto client=OSDynamicCast(IOUserClient,service);
     if (!client) {service->release();return kIOReturnBadArgument;}
+    // A new owner gets new pages. Old mappings cannot observe a later session.
+    ret=IOBufferMemoryDescriptor::Create(kIOMemoryDirectionInOut,16384,16384,&ivars->staging);
+    if (ret!=kIOReturnSuccess) {service->release();return ret;}
+    IOAddressSegment range={};ret=ivars->staging->GetAddressRange(&range);
+    if (ret!=kIOReturnSuccess || range.length<kBlock) {
+        OSSafeReleaseNULL(ivars->staging);service->release();return kIOReturnNoMemory;
+    }
+    ivars->stagingAddress=range.address;
     ivars->owner=client;*userClient=client;
     return kIOReturnSuccess;
 }
@@ -100,6 +104,7 @@ void ZcController::Disconnect(IOUserClient *owner) {
     if (owner!=ivars->owner) return;
     ivars->online=false;Finish(0,2,0x3a);ivars->owner=nullptr;
     if (ivars->created) {UserDestroyTargetForID(0);ivars->created=false;}
+    OSSafeReleaseNULL(ivars->staging);ivars->stagingAddress=0;
 }
 kern_return_t ZcController::BrokerCall(uint64_t selector,IOUserClientMethodArguments *args,IOUserClient *owner) {
     if (owner!=ivars->owner) return kIOReturnNotPermitted;
