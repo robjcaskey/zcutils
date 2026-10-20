@@ -94,3 +94,19 @@ unsigned development outputs, not a production install package. Use
 `scripts/windows/package-zcnblk-driver.ps1` with your own signing certificate
 and official SignTool/Inf2Cat for separate packaging. Driver loading and I/O
 require a dedicated test machine and appropriate signing.
+
+## Recorded infrastructure validation
+
+All three workflows passed on October 20, 2026, and were then disabled in GitHub:
+
+- [macOS ARM64/Intel and Linux regression](https://github.com/robjcaskey/zcutils/actions/runs/39514725515): 145 tests passed and 2 ignored on each Mac; WAL recovery, backup/restore, mirror restart/catch-up and regional quorum smoke checks passed.
+- [Windows x64](https://github.com/robjcaskey/zcutils/actions/runs/39514180059): 55 library tests, TCP WAL recovery/backup/restore, six userspace executables, and the native MSVC/WDK Storport build passed (attempt 2).
+- [DriverKit](https://github.com/robjcaskey/zcutils/actions/runs/39514514040): ARM64 extension, activation app, broker, three SCSI behavior tests, and archive passed.
+
+Exact source revisions and job results are in [the evidence record](native-desktop-ci-evidence.json).
+The final source differs from these build revisions only in documentation and
+workflow trigger removal for the corresponding platform paths.
+
+API references: [SCSIControllerDriverKit](https://developer.apple.com/documentation/scsicontrollerdriverkit),
+[UserGetDataBuffer](https://developer.apple.com/documentation/scsicontrollerdriverkit/iouserscsiparallelinterfacecontroller/usergetdatabuffer),
+and [Apple DTS's software-backed storage discussion](https://developer.apple.com/forums/thread/837879).
