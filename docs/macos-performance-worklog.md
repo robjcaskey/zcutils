@@ -631,3 +631,75 @@ no attachment; physical same-AZ Linux/Mac and c8gn TCP/EFA tests remain pending
 because the pair is absent from the accessible account. No additional paid host
 was created. The original termination tag remains 2026-10-21 20:42:59 UTC, and
 macOS/Windows/DriverKit workflows remain disabled.
+
+The user subsequently authorized one temporary c8gn.48xlarge to close the physical
+Mac/Linux TCP gap. Spot instance i-0019afcd772fcda9c launched in **eu-west-1a**,
+on the Mac's existing subnet, private IP 172.31.7.17. Both ends used private
+addresses and MTU9001; the Mac required no extra NIC. Linux used one ENA network
+card. This M1 has no EFA/RDMA support, so the run makes no RDMA claim. A $5/h
+Spot bid ceiling, 20:25 UTC exact-instance cloud termination schedule, and the
+existing expiry-tag sweeper bounded the lease; no Mac renewal was requested.
+
+Eighteen iperf trials (three repeats per stream count/direction) measured receiver
+medians about 4.964 Gbit/s for one stream and 9.947 Gbit/s for four/eight streams
+in both directions. Full min/median/max values and original iperf JSON are saved.
+The following storage run used exact prior baseline/candidate binaries and fixed
+per-case counts: 144 trials over 24 cases in each direction, three alternating
+samples per variant. Minimum durations were 2.035 s Linux-to-Mac and 2.775 s in
+reverse, with no short trials or invalid RTT references. Linux-to-Mac had five
+cases faster across observed spread, one slower and eighteen inconclusive;
+Mac-to-Linux had one faster, one slower and twenty-two inconclusive. These use
+the existing 5%-beyond-all-samples rule, not statistical confidence intervals.
+
+For the two slower 4 KiB verified-read cases, each has **one lane and one worker**.
+The table takes RTT/ceiling/efficiency from the *same median-IOPS trial* in each
+variant, avoiding mixing independent medians. These are remote read responses.
+
+| Client → target | Per-worker QD = aggregate depth | Variant | IOPS | Raw echo RTT (us) | Matching IOPS ceiling | Actual/theoretical |
+|---|---:|---|---:|---:|---:|---:|
+| Linux → Mac | 1 | baseline | 5282 | 168.965 | 5918 | 89.2% |
+| Linux → Mac | 1 | coalesced | 4111 | 155.436 | 6434 | 63.9% |
+| Mac → Linux | 2 | baseline | 11590 | 111.750 | 17897 | 64.8% |
+| Mac → Linux | 2 | coalesced | 10799 | 111.708 | 17904 | 60.3% |
+
+The original median changes are -22.17% and -6.82%. Thirty focused follow-up
+trials then held counts fixed and sampled raw RTT immediately before each
+trial. The originally slower cases were inconclusive under wider observed
+spread; this does not establish absence of regression or a particular cause.
+The conservative header-only Mac alternative was also inconclusive at both
+follow-up depths. All focused trials passed duration/RTT checks (minimum 5.210 s).
+Original negative results remain intact; PR #5 stays draft.
+
+Peak observed candidate 4 KiB median rates were 256959 read IOPS (range
+254043–259902) and 231304 volatile-write-ACK IOPS (225343–232105) with Linux as
+client. The read case has four lanes/workers, per-worker QD256, aggregate1024;
+the write case has eight lanes/workers, per-worker QD64, aggregate512. In reverse,
+read reached 285847 IOPS (281022–287317), write 160309 IOPS (158905–161898), both
+four lanes/workers at per-worker QD256, aggregate1024. These are observed best
+cases within this grid, not maximum hardware capability or durable-write rates.
+
+The physical Linux standard block edge also completed 72 three-second fio
+io_uring trials, six alternating cycles with identical corrected kernel client.
+All twelve initial/final 8 MiB CRC phases passed and the module unloaded after
+every cycle. Three read cases were faster across spread, none slower, eight
+inconclusive. One write case was excluded from comparative acceptance because
+one RTT reference failed the consistency check. No short fio trials occurred
+(minimum 3.001 s). Timed read I/O did not verify CRC per request; the dedicated
+initial/final phases did. Linux fio ran on CPU2; lane0/connection0 kthread ran
+on CPU3, with actual affinity and hctx maps recorded. Read/write ACK semantics
+are remote responses/volatile visibility; RAM fixtures prove no power-loss
+persistence. Native portable workers map lane i to client worker i and target
+connection thread i, with CPUs OS-scheduled. The Mac stays OS-scheduled in all
+runs. hugetlb and locked payload arenas were not reserved; portable TCP has no
+io_uring, and fio used registered files/buffers, batch1, no SQPOLL. Accordingly,
+these are exploratory physical TCP measurements, not strict-topology acceptance.
+
+All 390 storage/fio/focused trials, 18 iperf trials, hashes, raw logs, comparison
+CSVs, matched RTT/depth audits and PNG/SVG curves are collected locally under
+`~/robs-macos-build-machine/same-az-20261021`. No owned services or kernel module
+remained loaded before teardown. AWS confirmed the Linux instance **terminated**
+at 18:33:20 UTC; its root EBS volume is absent, and its temporary SG, added ingress
+rules, schedule and IAM role were removed. The Mac's source checkout remains
+clean, its pre-existing demo target remains running, and its original shutdown
+is unchanged. Two-Linux-host c8gn TCP/EFA regression against the pre-port baseline
+still requires a separate pair; this single-host authorization did not create one.
