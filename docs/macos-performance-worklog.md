@@ -552,3 +552,63 @@ The Linux-to-Mac alternating private-vNIC comparison is now running. The guest
 started only after both native storage suites completed; it verified source/
 binary identities before producing trials. The reverse direction follows.
 These remain same-physical-M1 VZ results, not physical c8gn TCP/EFA acceptance.
+
+Both private-vNIC directions completed 96 trials each (16 cases, three samples
+per binary). Linux-to-Mac had three cases faster across observed spread, none
+slower and thirteen inconclusive; Mac-to-Linux had two faster, none slower and
+fourteen inconclusive. No duration/RTT exclusions occurred; minimum trials were
+1.221 and 1.173 s respectively. An audit verified configuration/repeat coverage,
+fixed per-case operation counts, source/binary provenance, outstanding-depth
+limits and every RTT ceiling/efficiency calculation. The VM was stopped after
+this run. These remain same-M1 VZ results; physical-host TCP/EFA is still pending.
+Raw data and CSVs are retained as `private-abba-*` and in `final-suites-collected`.
+
+The native QD2/4/8 repeat reproduced the coalesced-reply QD4 loss (-8.91%), while
+the historical header-only variant was +5.36% there across observed spread.
+CPU/stack captures completed with matching owned PIDs and call graphs; sampling
+was diagnostic and its timing was excluded. A separate contiguous-buffer reply
+prototype passed the existing native leaf suite but also regressed QD4 (-7.87%)
+in a 16-case alternating test, so it was not integrated. Its source and the
+original release executable were restored afterward. The first prototype build
+hit the dependency's x86 bundled protoc; retrying with the already-installed
+ARM-native `/opt/homebrew/bin/protoc` succeeded. That was a build-environment
+correction, with no crypto-policy change.
+
+An independent one-thread window client (no channel credit handoff) passed the
+bounded-depth, WRITE/SYNC correlation, strict-preflight and failed-connect tests
+on Linux and macOS. With the original coalesced target it was faster across
+spread at all three tested depths. At 4 KiB, one worker/lane, per-worker QD4
+(aggregate 4), baseline median was 129645 IOPS versus 148774 (+14.75%); median raw
+RTT 11.167 versus 10.834 us, ideal ceilings 358198 versus 369208 IOPS, and median
+actual/theoretical efficiency 36.2% versus 40.7%. This is an independent
+**diagnostic** client model, not a replacement that erases the original probe's
+negative result. It supports a client-scheduling/reply-coalescing interaction;
+it does not prove a single underlying mechanism.
+
+The standard Linux block edge was then compared with fio io_uring, holding the
+corrected kernel module identical for both Mac targets. Six alternating cycles
+passed 72 two-second trials, initial/final 8 MiB CRC checks every cycle, actual
+guest connection-thread affinity CPU1, and module unload after each cycle. Four
+read cases were faster across spread, none slower, eight inconclusive; all
+trials and RTT references passed (minimum 2.001 s). The guest was stopped. At
+one lane/worker, 4 KiB per-worker QD4 (aggregate 4), median IOPS were 20326 versus
+21840 (+7.45%, inconclusive under the 5%-beyond-all-samples rule). Median raw RTT
+was 61.667 versus 47.457 us, matching ideal ceilings 64865 versus 84287 IOPS,
+and median efficiency 31.3% versus 25.7%. Physical CPU scheduling is uncontrolled;
+these are supplementary VZ observations, not c8gn regression acceptance. Timed
+fio reads did not enable per-I/O CRC verification; initial/final CRC phases did.
+`block-abba-audit.json`, raw cycle data and `block-abba.csv` retain the evidence.
+
+The fresh-state WAL control also completed: identical new 64 MiB base/journal,
+identical prefill/SYNC and exactly 65536 measured random 4 KiB appends per trial.
+Both QD1 and QD16 comparisons were within spread (+0.41% and +0.62%), with twelve
+full restart readbacks and no timing/RTT exclusions. Thus the calibrated sweep's
+append loss did not reproduce with fixed count/state; the data show method or
+history sensitivity, not proof that one particular journal phase caused it.
+Benchmark readbacks validate the deterministic dataset after restart, not
+power-loss behavior or generation-changing overwrites.
+
+A full 84-case header-only alternative comparison is now running with the same
+immutable probe and calibration as the earlier full coalesced-reply run. This
+will make the throughput/latency tradeoff reviewable across the broader grid.
+No new cloud host was created, and the original Mac shutdown is unchanged.
