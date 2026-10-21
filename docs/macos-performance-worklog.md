@@ -405,3 +405,36 @@ within spread (+2.2% at one worker/lane per-worker QD64, +0.2% at QD256).
 This confirms the focused cleanup result; full-matrix and physical-host
 performance coverage remain pending. The canonical raw trials and comparison
 were copied locally before proceeding to the persistent-TCP capability audit.
+
+The persistent-TCP audit found two real completion-contract bugs, fixed in PR #6
+at `469c6625` and merged into this feature branch. Raw block RWF_DSYNC initially
+passed, so it was not used as evidence of a native-FUA failure. An ext4 O_DSYNC
+file write did expose the failure: tracefs recorded a native-FUA journal commit
+(`WFSM`, sector 184), but TCP sent only WRITE offset 94208 after the preceding
+SYNC and returned success without a post-write SYNC. Advertise native FUA only
+for SHM; TCP now gets Linux's postflush emulation. The final RAM fixture passes
+raw SYNC ACK withholding, ext4 journal postflush and unmount/remount readback.
+
+A second fixture received but deliberately held a write unapplied on one TCP
+connection. With early local ACKs, fsync on the other connection returned success
+while that write remained held. Flushes in this multi-connection, early-ACK mode
+now fail with EIO. An intermediate EOPNOTSUPP implementation was tested and
+rejected: raw block fsync converted it into success. The final EIO regression
+passes. This preserves ordinary volatile writes and SHM's userspace WAL FUA
+contract; no placement/mirror logic or weaker WAL drains were introduced.
+
+The final module again compiled on ARM64 Ubuntu 7.0.0-38 and local x86 7.2 headers.
+It passed the transport regression (SHM epochs required, offline-SHM read/write
+EIO, TCP 8 MiB CRC read/write plus fsync) after both corrections. All fixtures
+operate on a newly created userspace RAM target inside the owned Linux VZ guest;
+its module was unloaded afterward. RAM protocol tests do not establish physical
+persistence or a global durable fence across independent target processes/media.
+The detailed procedure and limits are in `docs/zcnblk-tcp-correctness.md`.
+
+At 12:19 UTC the Linux guest was stopped and an exact-binary 84-configuration
+A/B/B/A/A/B Mac RAM comparison started. `bench-portable-abba.py` now offers
+`--all-configurations` to reuse its fixed-operation-count approach over every
+configuration in a prior comparison. The baseline/final target and unchanged
+probe hashes were verified before launch. Full results remain pending; duration
+and RTT validity gates still apply. No extra EC2 instance was created, the Mac
+termination deadline is unchanged, and desktop workflows remain disabled.

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Alternate exact target binaries with fixed, adequately long RAM workloads."""
 import argparse,hashlib,json,os,pathlib,platform,socket,subprocess,time,traceback
-p=argparse.ArgumentParser();p.add_argument('--probe',required=True);p.add_argument('--baseline-target',required=True);p.add_argument('--candidate-target',required=True);p.add_argument('--comparison',required=True,type=pathlib.Path);p.add_argument('--out',required=True,type=pathlib.Path);p.add_argument('--seconds',type=float,default=4)
+p=argparse.ArgumentParser();p.add_argument('--probe',required=True);p.add_argument('--baseline-target',required=True);p.add_argument('--candidate-target',required=True);p.add_argument('--comparison',required=True,type=pathlib.Path);p.add_argument('--out',required=True,type=pathlib.Path);p.add_argument('--seconds',type=float,default=4);p.add_argument('--all-configurations',action='store_true',help='repeat every configuration in the comparison instead of the focused ten')
 a=p.parse_args()
 if a.seconds<2:p.error('confirmation runs require at least two seconds per case')
 a.out.mkdir(parents=True,exist_ok=False)
 comparison=json.loads(a.comparison.read_text())['configurations'];index={(r['io_bytes'],r['workers'],r['per_worker_qd'],r['operation']):r for r in comparison}
 keys=[(4096,1,1,'read-verify'),(4096,1,1,'write'),(4096,1,16,'read-verify'),(4096,1,16,'write'),(65536,1,64,'read-verify'),(65536,1,64,'write'),(1048576,1,64,'read-verify'),(1048576,1,256,'read-verify'),(1048576,4,4,'write'),(65536,1,8,'write')]
+if a.all_configurations:
+ keys=sorted(index)
 cases=[]
 for key in keys:
  r=index[key];rate=max(r['baseline_iops_min_median_max'][1],r['candidate_iops_min_median_max'][1]);ops=max(128,int(rate/key[1]*a.seconds));cases.append({'io_bytes':key[0],'workers':key[1],'per_worker_qd':key[2],'operation':key[3],'ops_per_worker':ops})
