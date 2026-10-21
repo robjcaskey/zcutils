@@ -281,3 +281,19 @@ physical cross-host and c8gn TCP/EFA checks remain separate and pending.
 The pinned guest setup follows Lima's official VZ networking and image
 configuration: https://lima-vm.io/docs/config/network/vmnet/ and
 https://github.com/lima-vm/lima/blob/v2.2.1/templates/_images/ubuntu.yaml.
+
+The vectored prototype's EBS-backed WAL confirmation also completed 216 trials
+and all six full-image reopen/readbacks. Across 36 cases, 11 were faster across
+observed spread, two slower, four too short and 19 inconclusive; no invalid RTT
+references were found. The two slower write-ACK cases were one lane/worker:
+4 KiB at per-worker QD16 (aggregate 16; -14.5% median), and 64 KiB at QD1
+(aggregate 1; -16.6%). WAL reset/reducer/backpressure and shared-system phases
+can affect these measurements; the observed ranges do not establish a root
+cause. These additional regressions reinforce keeping the PR draft and testing
+the framing-only variant. All raw data/calibrations/readbacks are retained
+locally, with backing images excluded from collection.
+
+The internal-SSD suite has now started with the same immutable baseline and
+vectored binaries, first for ordinary files and then WAL, under the existing
+mounted Data directory. Storage class remains explicit so EBS and internal-SSD
+measurements are not mixed in a single acceptance comparison.
