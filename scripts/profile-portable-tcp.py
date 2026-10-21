@@ -34,6 +34,10 @@ try:
   for sample in samples:
    sample.wait(timeout=45)
    if sample.returncode!=0:raise RuntimeError('stack sampler failed')
+  for name,pid in [('target',target.pid),('client',client.pid)]:
+   report=(a.out/(name+'-sample.txt')).read_text()
+   if 'Call graph:' not in report or ('(pid '+str(pid)+')') not in report:raise RuntimeError('missing or mismatched stack sample: '+name)
+  (a.out/'process-stats.txt').write_text(subprocess.check_output(['ps','-p',str(target.pid)+','+str(client.pid),'-o','pid=,etime=,%cpu=,time=,rss=,state=,comm='],text=True))
   client.wait(timeout=120)
   if client.returncode!=0:raise RuntimeError('profiled client failed')
  (a.out/'status.json').write_text(json.dumps({'returncode':0,'target_pid':target.pid,'client_pid':client.pid,'profiled_not_benchmark':True})+'\n')

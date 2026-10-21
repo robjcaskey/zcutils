@@ -499,3 +499,10 @@ stack sampling are queued after the existing storage/private-network sequence.
 Sampling timings will be discarded. The profiler now accepts I/O size, per-worker
 depth and operation count, and reports sampler failures instead of a false pass;
 its new Mac runtime verification is pending that queued diagnostic.
+
+The queued QD4 profiler now captures a process CPU/time snapshot alongside its
+stacks and requires both sample files to contain the expected PID and a call
+graph. The `ps` format was checked on the live M1, and the sample-file checks use
+the format of prior successful native captures. Full runtime validation of this
+extended profiler still awaits its turn after the existing measurements. This
+adds diagnostic evidence without changing target/probe binaries or live trials.
