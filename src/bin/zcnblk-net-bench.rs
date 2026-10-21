@@ -69,6 +69,7 @@ struct Stats {
 struct Config {
     addr: SocketAddr,
     write: bool,
+    sync_each: bool,
     verify: bool,
     random: bool,
     ops: u64,
@@ -104,7 +105,7 @@ fn worker(
                     } else {
                         ZCNBLK_OP_READ
                     },
-                    index + 1,
+                    index * (1 + u64::from(send.sync_each)) + 1,
                     pos,
                     send.bytes,
                     lane,
@@ -117,6 +118,11 @@ fn worker(
                 writer.write_all(&f.encode())?;
                 if send.write {
                     writer.write_all(&payload)?;
+                }
+                if send.sync_each {
+                    writer.write_all(
+                        &frame(ZCNBLK_OP_SYNC, index * 2 + 2, 0, 0, lane, send.workers)?.encode(),
+                    )?;
                 }
             }
             Ok(())
@@ -141,7 +147,7 @@ fn worker(
                 } else {
                     ZCNBLK_OP_READ_RESP
                 },
-                index + 1,
+                index * (1 + u64::from(c.sync_each)) + 1,
                 offset(index, c.slots, c.bytes, lane, c.random),
                 c.bytes,
                 lane,
@@ -159,6 +165,14 @@ fn worker(
                     }
                 }
             }
+            if c.sync_each {
+                reader.read_exact(&mut header)?;
+                let sync_expected =
+                    frame(ZCNBLK_OP_SYNC_ACK, index * 2 + 2, 0, 0, lane, c.workers)?;
+                if header != sync_expected.encode() {
+                    return Err(bad("per-write SYNC acknowledgement mismatch"));
+                }
+            }
             let elapsed = stamp.elapsed().as_secs_f64();
             sum += elapsed;
             max = max.max(elapsed);
@@ -168,7 +182,14 @@ fn worker(
             }
         }
         let elapsed = start.elapsed().as_secs_f64();
-        let sync = frame(ZCNBLK_OP_SYNC, c.ops + 1, 0, 0, lane, c.workers)?;
+        let sync = frame(
+            ZCNBLK_OP_SYNC,
+            c.ops * (1 + u64::from(c.sync_each)) + 1,
+            0,
+            0,
+            lane,
+            c.workers,
+        )?;
         let drain = Instant::now();
         reader.write_all(&sync.encode())?;
         reader.read_exact(&mut header)?;
@@ -223,56 +244,102 @@ fn run() -> io::Result<()> {
         }
         return Ok(());
     }
-    if args.len() == 4 && args[1] == "rtt" {
+    if args.len() == 4 && matches!(args[1].as_str(), "rtt" | "sync-rtt") {
         let mut s = connect(args[2].parse().map_err(io::Error::other)?)?;
         let n: usize = args[3].parse().map_err(io::Error::other)?;
-        if n < 3 {
+        if !(3..=1_000_000).contains(&n) {
             return Err(bad("RTT needs at least 3 samples"));
         }
         let mut samples = Vec::with_capacity(n);
-        let payload = [0xa5; 64];
+        let sync_probe = args[1] == "sync-rtt";
+        let mut payload = if sync_probe {
+            frame(ZCNBLK_OP_SYNC, 1, 0, 0, 0, 1)?.encode()
+        } else {
+            [0xa5; 64]
+        };
+        let mut expected = if sync_probe {
+            frame(ZCNBLK_OP_SYNC_ACK, 1, 0, 0, 0, 1)?.encode()
+        } else {
+            payload
+        };
         let mut b = [0; 64];
-        for _ in 0..200 {
+        let warmups = if sync_probe { 32 } else { 200 };
+        for index in 0..warmups {
+            if sync_probe {
+                payload = frame(ZCNBLK_OP_SYNC, index + 1, 0, 0, 0, 1)?.encode();
+                expected = frame(ZCNBLK_OP_SYNC_ACK, index + 1, 0, 0, 0, 1)?.encode();
+            }
             s.write_all(&payload)?;
             s.read_exact(&mut b)?;
-            if b != payload {
+            if b != expected {
                 return Err(bad("echo warmup mismatch"));
             }
         }
-        for _ in 0..n {
+        for index in 0..n {
+            if sync_probe {
+                let id = warmups + index as u64 + 1;
+                payload = frame(ZCNBLK_OP_SYNC, id, 0, 0, 0, 1)?.encode();
+                expected = frame(ZCNBLK_OP_SYNC_ACK, id, 0, 0, 0, 1)?.encode();
+            }
             let t = Instant::now();
             s.write_all(&payload)?;
             s.read_exact(&mut b)?;
-            if b != payload {
+            if b != expected {
                 return Err(bad("echo mismatch"));
             }
             samples.push(t.elapsed().as_secs_f64() * 1e6)
         }
         samples.sort_by(f64::total_cmp);
         println!(
-            "{{\"kind\":\"raw_tcp_echo_rtt\",\"samples\":{n},\"median_us\":{},\"min_us\":{},\"max_us\":{}}}",
+            "{{\"kind\":{:?},\"samples\":{n},\"median_us\":{},\"min_us\":{},\"max_us\":{}}}",
+            if sync_probe {
+                "endpoint_sync_roundtrip"
+            } else {
+                "raw_tcp_echo_rtt"
+            },
             samples[n / 2],
             samples[0],
             samples[n - 1]
         );
         return Ok(());
     }
-    if args.len() != 12 {
+    if args.len() != 12 && args.len() != 13 {
         return Err(bad(
-            "usage: zcnblk-net-bench run ADDRESS read|read-verify|write OPS_PER_WORKER WORKERS PER_WORKER_QD IO_BYTES CAPACITY_BYTES RAW_RTT_US sequential|random volatile-ram|file-write-ack|wal-append-ack\nOther modes: echo-server IP:PORT; rtt ADDRESS SAMPLES",
+            "usage: zcnblk-net-bench run ADDRESS read|read-verify|write|write-sync OPS_PER_WORKER WORKERS PER_WORKER_QD IO_BYTES CAPACITY_BYTES RAW_RTT_US sequential|random volatile-ram|file-write-ack|wal-append-ack|file-durable-sync|wal-durable-sync [MIN_SYNC_ROUNDTRIP_US (required for write-sync)]\nOther modes: echo-server IP:PORT; rtt ADDRESS SAMPLES; sync-rtt ADDRESS SAMPLES",
         ));
     }
     let parse = |i: usize| args[i].parse::<u64>().map_err(io::Error::other);
     let (ops, workers, qd, bytes, cap) = (parse(4)?, parse(5)?, parse(6)?, parse(7)?, parse(8)?);
     let rtt = args[9].parse::<f64>().map_err(io::Error::other)?;
+    let sync_each = args[3] == "write-sync";
+    let sync_reference = if sync_each && args.len() == 13 {
+        args[12].parse::<f64>().map_err(io::Error::other)?
+    } else {
+        0.0
+    };
+    let durable_label = matches!(args[11].as_str(), "file-durable-sync" | "wal-durable-sync");
     if args[1] != "run"
-        || !matches!(args[3].as_str(), "read" | "read-verify" | "write")
+        || !matches!(
+            args[3].as_str(),
+            "read" | "read-verify" | "write" | "write-sync"
+        )
         || !matches!(args[10].as_str(), "sequential" | "random")
         || !matches!(
             args[11].as_str(),
-            "volatile-ram" | "file-write-ack" | "wal-append-ack"
+            "volatile-ram"
+                | "file-write-ack"
+                | "wal-append-ack"
+                | "file-durable-sync"
+                | "wal-durable-sync"
         )
         || ops == 0
+        || ops > u64::MAX / 128
+        || (sync_each
+            && (args.len() != 13
+                || !sync_reference.is_finite()
+                || sync_reference <= 0.0
+                || (!durable_label && args[11] != "volatile-ram")))
+        || (!sync_each && (args.len() != 12 || durable_label))
         || !(1..=64).contains(&workers)
         || !(1..=4096).contains(&qd)
         || bytes == 0
@@ -304,7 +371,8 @@ fn run() -> io::Result<()> {
     }
     let c = Config {
         addr: args[2].parse().map_err(io::Error::other)?,
-        write: args[3] == "write",
+        write: matches!(args[3].as_str(), "write" | "write-sync"),
+        sync_each,
         verify: args[3] == "read-verify",
         random: args[10] == "random",
         ops,
@@ -344,9 +412,48 @@ fn run() -> io::Result<()> {
         completed += s.ops;
     }
     let iops = completed as f64 / elapsed;
-    let ceiling = (workers * qd) as f64 / (rtt / 1e6);
+    let completion_reference_us = if sync_each {
+        rtt.max(sync_reference)
+    } else {
+        rtt
+    };
+    let ceiling = (workers * qd) as f64 / (completion_reference_us / 1e6);
+    let ceiling_model = if sync_each {
+        "optimistic_same_endpoint_sync_roundtrip_floor"
+    } else {
+        "raw_tcp_echo_rtt_floor"
+    };
+    let completion_semantics = if sync_each {
+        if durable_label {
+            "remote_write_plus_durable_sync_ack"
+        } else {
+            "remote_write_plus_volatile_visibility_sync_ack"
+        }
+    } else if c.write {
+        "remote_write_ack_not_durable"
+    } else {
+        "remote_read_response"
+    };
+    // A clean SYNC probe does not model dirty-media drain and WAL commit
+    // service time. Keep its optimistic reference separate from a matching
+    // theoretical completion ceiling; do not claim network-RTT efficiency.
+    let matching_ceiling = if sync_each {
+        "null".to_owned()
+    } else {
+        ceiling.to_string()
+    };
+    let matching_efficiency = if sync_each {
+        "null".to_owned()
+    } else {
+        (iops / ceiling).to_string()
+    };
+    let sync_floor = if sync_each {
+        ceiling.to_string()
+    } else {
+        "null".to_owned()
+    };
     println!(
-        "{{\"kind\":\"zcnblk_tcp_probe\",\"representative\":false,\"operation\":{:?},\"backend_semantics\":{:?},\"pattern\":{:?},\"workers\":{workers},\"lanes\":{workers},\"per_worker_qd\":{qd},\"aggregate_outstanding_limit\":{},\"cpu_mapping\":\"os-scheduled\",\"io_bytes\":{bytes},\"operations\":{completed},\"elapsed_s\":{elapsed},\"iops\":{iops},\"mib_per_s\":{},\"mean_completion_us\":{},\"max_completion_us\":{},\"raw_tcp_echo_rtt_us\":{rtt},\"rtt_iops_ceiling\":{ceiling},\"actual_theoretical_efficiency\":{},\"final_sync_max_us\":{},\"sync_included_in_iops\":false}}",
+        "{{\"kind\":\"zcnblk_tcp_probe\",\"representative\":false,\"operation\":{:?},\"backend_semantics\":{:?},\"pattern\":{:?},\"workers\":{workers},\"lanes\":{workers},\"per_worker_qd\":{qd},\"aggregate_outstanding_limit\":{},\"cpu_mapping\":\"os-scheduled\",\"io_bytes\":{bytes},\"operations\":{completed},\"elapsed_s\":{elapsed},\"iops\":{iops},\"mib_per_s\":{},\"mean_completion_us\":{},\"max_completion_us\":{},\"raw_tcp_echo_rtt_us\":{rtt},\"rtt_iops_ceiling\":{matching_ceiling},\"optimistic_sync_reference_iops_ceiling\":{sync_floor},\"ceiling_model\":{ceiling_model:?},\"completion_reference_us\":{completion_reference_us},\"measured_sync_reference_us\":{sync_reference},\"completion_semantics\":{completion_semantics:?},\"aggregate_wire_request_limit\":{},\"actual_theoretical_efficiency\":{matching_efficiency},\"durable_ceiling_unavailable\":{sync_each},\"final_sync_max_us\":{},\"sync_included_in_iops\":{sync_each},\"final_sync_included_in_iops\":false}}",
         args[3],
         args[11],
         args[10],
@@ -354,7 +461,7 @@ fn run() -> io::Result<()> {
         iops * bytes as f64 / 1048576.0,
         sum / completed as f64 * 1e6,
         max * 1e6,
-        iops / ceiling,
+        workers * qd * (1 + u64::from(sync_each)),
         drain * 1e6
     );
     Ok(())

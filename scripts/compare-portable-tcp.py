@@ -8,7 +8,7 @@ def load(root):
   row=json.loads(line);key=(row['io_bytes'],row['workers'],row['per_worker_qd'],row['operation'])
   groups.setdefault(key,[]).append(row)
  meta=json.loads((root/'metadata.json').read_text())
- expected=4 if meta['args']['quick'] else 84
+ expected=meta.get('configuration_count',4 if meta['args']['quick'] else 84)
  if len(groups)!=expected or any(len(rows)!=meta['args']['repeats'] for rows in groups.values()):
   raise SystemExit(f'{root}: incomplete matrix; expected {expected} configurations and declared repeat count')
  return groups

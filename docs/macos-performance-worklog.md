@@ -79,3 +79,43 @@ Five Linux terminal-leaf tests pass, including WAL recovery, file reopen,
 fragmented/truncated header handling, and alternating request sizes around SYNC.
 Mac before/after performance and native regression results remain pending until
 the recorded runs complete. No performance improvement is claimed yet.
+
+## Initial complete RAM matrices
+
+Both source revisions completed 84 configurations and 252 trials each using
+identical client binary `5d59f5304e8f12e9e499dc19353f97e4c4c4469b4a5703d43ce47ecd4393b980`.
+The first candidate is `7b67459a579ebeb18272170ba127c36f31195f60`; its target
+binary is `d59a6600cea555332b25a39c14818b2d0f5a9ecf38d7adb7bc1a17fe46a6bdfb`.
+Baseline target binary: `ce5f81ed20c94bb78f14720c18358d35443ffd49efb55869f3025496e950906a`.
+Data verification passed throughout. Initial comparison found 29 cases faster
+across the observed spread by over 5%, and one case slower by over 5%. This is
+not sufficient to attribute gains or accept a regression: the long matrices
+ran sequentially and large transfers hit a per-run byte cap, making some
+trials shorter than the requested duration. Alternating confirmation uses
+identical operation counts per case and longer runs, without that byte cap.
+Results remain exploratory and unpinned.
+
+## Persistent-leaf and completion semantics probes
+
+The probe also supports `sync-rtt ADDRESS SAMPLES` and `write-sync`. The latter
+sends an ordered WRITE/SYNC pair for each logical operation and returns pipeline
+credit only after validating both acknowledgements. Reported QD counts logical
+operations; `aggregate_wire_request_limit` additionally reports the two-frame
+upper bound. `write-sync` requires a measured same-endpoint SYNC reference as
+its last argument and either file/WAL durable semantics or explicit volatile
+RAM semantics. An ordinary WRITE cannot be labeled as a durable completion.
+
+A clean endpoint SYNC reference is an optimistic service-time floor. It does
+not model dirty-data flush or WAL commit service time, so durable operations
+report their matching theoretical ceiling/efficiency as unavailable and keep
+the optimistic reference in a separate field. They are never compared to a
+network-only RTT denominator as though that modeled durable completion.
+
+`scripts/bench-portable-durability.py` alternates baseline/candidate file or
+shared-WAL targets in A/B/B/A/A/B order, with fresh ordinary files per cycle.
+It measures verified reads, write ACKs, and per-write SYNC separately, then
+terminates and reopens each leaf to verify the entire image after acknowledged
+SYNC. It retains logs/readback evidence and removes only its own disposable
+backing files after successful validation unless `--keep-backings` is given.
+Linux harness smoke checks passed for both file and WAL backends. Mac durable
+results remain pending; do not infer them from RAM or Linux smoke results.
