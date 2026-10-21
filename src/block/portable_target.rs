@@ -2,7 +2,7 @@
 //! Placement belongs in a separate userspace stage; this leaf owns one medium.
 use super::client::MAX_IO_BYTES;
 use super::zcnblk::*;
-use crate::persistent_wal::{PersistentWalRuntime, MAX_APPEND_RECORDS};
+use crate::persistent_wal::{MAX_APPEND_RECORDS, PersistentWalRuntime};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
@@ -118,11 +118,23 @@ impl Target {
         Ok(())
     }
 
-    fn process(&self, stream: &mut TcpStream, mut frame: ZcnblkFrameHeader) -> io::Result<()> {
+    fn process(
+        &self,
+        stream: &mut TcpStream,
+        mut frame: ZcnblkFrameHeader,
+        scratch: &mut Vec<u8>,
+    ) -> io::Result<()> {
         self.validate(frame)?;
-        let mut data = vec![0; frame.len as usize];
+        // Retain at most one protocol-sized buffer per connection. Reads and
+        // complete write payloads overwrite every exposed byte; no stale bytes
+        // cross a request boundary. SYNC never discards the allocation.
+        let len = frame.len as usize;
+        if scratch.len() < len {
+            scratch.resize(len, 0);
+        }
+        let data = &mut scratch[..len];
         if frame.op == ZCNBLK_OP_WRITE {
-            stream.read_exact(&mut data)?;
+            stream.read_exact(data)?;
         }
         {
             let mut medium = self
@@ -138,14 +150,14 @@ impl Target {
                     .copy_from_slice(&data),
                 (Medium::File(file), ZCNBLK_OP_READ) => {
                     file.seek(SeekFrom::Start(frame.offset))?;
-                    file.read_exact(&mut data)?;
+                    file.read_exact(data)?;
                 }
                 (Medium::File(file), ZCNBLK_OP_WRITE) => {
                     file.seek(SeekFrom::Start(frame.offset))?;
                     file.write_all(&data)?;
                 }
                 (Medium::File(file), ZCNBLK_OP_SYNC) => crate::persistent_wal::sync_backing(file)?,
-                (Medium::Wal(wal), ZCNBLK_OP_READ) => wal.read_at(frame.offset, &mut data)?,
+                (Medium::Wal(wal), ZCNBLK_OP_READ) => wal.read_at(frame.offset, data)?,
                 (Medium::Wal(wal), ZCNBLK_OP_WRITE) => {
                     // Split only to respect the WAL's bounded page table.
                     // Full journals apply backpressure while the reducer drains.
@@ -191,17 +203,19 @@ impl Target {
     fn connection(&self, mut stream: TcpStream) -> io::Result<()> {
         stream.set_nodelay(true)?;
         stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+        let mut scratch = Vec::new();
         loop {
             let mut header = [0; ZCNBLK_FRAME_HEADER_LEN];
-            // Distinguish a clean disconnect from a truncated request.
-            match stream.read(&mut header[..1])? {
-                0 => return Ok(()),
-                _ => (),
+            // Accept a complete header in one receive, while retaining clean
+            // EOF versus truncated-header detection for fragmented TCP input.
+            let received = stream.read(&mut header)?;
+            if received == 0 {
+                return Ok(());
             }
-            stream.read_exact(&mut header[1..])?;
+            stream.read_exact(&mut header[received..])?;
             let frame = ZcnblkFrameHeader::decode(&header)?;
             if frame.op != ZCNBLK_OP_BATCH {
-                self.process(&mut stream, frame)?;
+                self.process(&mut stream, frame, &mut scratch)?;
                 continue;
             }
             if frame.len == 0 || frame.len as usize > MAX_BATCH {
@@ -227,7 +241,7 @@ impl Target {
                 frames.push(member);
             }
             for member in frames {
-                self.process(&mut stream, member)?;
+                self.process(&mut stream, member, &mut scratch)?;
             }
         }
     }
@@ -272,13 +286,13 @@ mod tests {
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap().join("target"))
             .join(format!(
-            "zcutils-wal-leaf-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+                "zcutils-wal-leaf-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
         fs::create_dir_all(&root).unwrap();
         let expected = vec![0x3d; 4 * 1024 * 1024];
         for first in [true, false] {
@@ -354,5 +368,66 @@ mod tests {
             server.join().unwrap().unwrap();
         }
         fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn fragmented_header_and_truncated_header_keep_stream_boundaries() {
+        for truncated in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let target = Target::ram(8192).unwrap();
+            let server = thread::spawn(move || target.connection(listener.accept().unwrap().0));
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let header = ZcnblkFrameHeader::with_flags(ZCNBLK_OP_READ, 0, 0, 4096, 0)
+                .unwrap()
+                .encode();
+            stream.write_all(&header[..7]).unwrap();
+            if truncated {
+                stream.shutdown(std::net::Shutdown::Write).unwrap();
+                assert_eq!(
+                    server.join().unwrap().unwrap_err().kind(),
+                    io::ErrorKind::UnexpectedEof
+                );
+            } else {
+                stream.write_all(&header[7..]).unwrap();
+                let mut response = [0; 64];
+                stream.read_exact(&mut response).unwrap();
+                assert_eq!(
+                    ZcnblkFrameHeader::decode(&response).unwrap().op,
+                    ZCNBLK_OP_READ_RESP
+                );
+                let mut payload = [0xff; 4096];
+                stream.read_exact(&mut payload).unwrap();
+                assert_eq!(payload, [0; 4096]);
+                drop(stream);
+                server.join().unwrap().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn reused_buffer_does_not_leak_between_sizes_or_sync() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let target = Target::ram(65536).unwrap();
+        let server = thread::spawn(move || target.connection(listener.accept().unwrap().0));
+        let mut client = ZcnblkClient::connect(address, Duration::from_secs(5)).unwrap();
+        client.write_at(0, &vec![0xa5; 32768]).unwrap();
+        client.sync().unwrap();
+        client.write_at(0, &[0x31; 4096]).unwrap();
+        client.sync().unwrap();
+        let mut small = [0; 4096];
+        client.read_at(0, &mut small).unwrap();
+        assert_eq!(small, [0x31; 4096]);
+        client.read_at(32768, &mut small).unwrap();
+        assert_eq!(small, [0; 4096]);
+        let mut large = vec![0; 32768];
+        client.read_at(0, &mut large).unwrap();
+        assert!(large[..4096].iter().all(|&v| v == 0x31));
+        assert!(large[4096..].iter().all(|&v| v == 0xa5));
+        drop(client);
+        server.join().unwrap().unwrap();
     }
 }
