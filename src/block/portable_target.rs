@@ -4,7 +4,7 @@ use super::client::MAX_IO_BYTES;
 use super::zcnblk::*;
 use crate::persistent_wal::{MAX_APPEND_RECORDS, PersistentWalRuntime};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, IoSlice, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -28,6 +28,27 @@ pub struct Target {
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
+// Keep one response's header and payload in the same socket write when
+// possible. Handle partial vectored writes without repeating framing bytes.
+fn write_read_response(writer: &mut impl Write, header: &[u8], payload: &[u8]) -> io::Result<()> {
+    let mut slices = [IoSlice::new(header), IoSlice::new(payload)];
+    let mut pending = &mut slices[..];
+    while !pending.is_empty() {
+        match writer.write_vectored(pending) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "read response write made no progress",
+                ));
+            }
+            Ok(written) => IoSlice::advance_slices(&mut pending, written),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 impl Target {
@@ -120,9 +141,12 @@ impl Target {
 
     fn process(&self, stream: &mut TcpStream, mut frame: ZcnblkFrameHeader) -> io::Result<()> {
         self.validate(frame)?;
-        let mut data = vec![0; frame.len as usize];
+        // Keep payload storage local to this request. Retaining it across
+        // requests regressed large reads in the native Mac measurements.
+        let mut buffer = vec![0u8; frame.len as usize];
+        let data = &mut buffer[..];
         if frame.op == ZCNBLK_OP_WRITE {
-            stream.read_exact(&mut data)?;
+            stream.read_exact(data)?;
         }
         {
             let mut medium = self
@@ -138,14 +162,14 @@ impl Target {
                     .copy_from_slice(&data),
                 (Medium::File(file), ZCNBLK_OP_READ) => {
                     file.seek(SeekFrom::Start(frame.offset))?;
-                    file.read_exact(&mut data)?;
+                    file.read_exact(data)?;
                 }
                 (Medium::File(file), ZCNBLK_OP_WRITE) => {
                     file.seek(SeekFrom::Start(frame.offset))?;
                     file.write_all(&data)?;
                 }
                 (Medium::File(file), ZCNBLK_OP_SYNC) => crate::persistent_wal::sync_backing(file)?,
-                (Medium::Wal(wal), ZCNBLK_OP_READ) => wal.read_at(frame.offset, &mut data)?,
+                (Medium::Wal(wal), ZCNBLK_OP_READ) => wal.read_at(frame.offset, data)?,
                 (Medium::Wal(wal), ZCNBLK_OP_WRITE) => {
                     // Split only to respect the WAL's bounded page table.
                     // Full journals apply backpressure while the reducer drains.
@@ -181,9 +205,11 @@ impl Target {
             ZCNBLK_OP_SYNC => ZCNBLK_OP_SYNC_ACK,
             _ => unreachable!(),
         };
-        stream.write_all(&frame.encode())?;
+        let response = frame.encode();
         if read {
-            stream.write_all(&data)?;
+            write_read_response(stream, &response, data)?;
+        } else {
+            stream.write_all(&response)?;
         }
         Ok(())
     }
@@ -416,5 +442,61 @@ mod tests {
         assert!(large[4096..].iter().all(|&v| v == 0xa5));
         drop(client);
         server.join().unwrap().unwrap();
+    }
+    #[test]
+    fn vectored_reply_handles_interruption_and_cross_slice_partial_writes() {
+        struct PartialWriter {
+            bytes: Vec<u8>,
+            interrupted: bool,
+        }
+        impl Write for PartialWriter {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                self.write_vectored(&[IoSlice::new(data)])
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+            fn write_vectored(&mut self, slices: &[IoSlice<'_>]) -> io::Result<usize> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(io::Error::from(io::ErrorKind::Interrupted));
+                }
+                let mut written = 0;
+                for slice in slices {
+                    let count = slice.len().min(7 - written);
+                    self.bytes.extend_from_slice(&slice[..count]);
+                    written += count;
+                    if written == 7 {
+                        break;
+                    }
+                }
+                Ok(written)
+            }
+        }
+        let mut writer = PartialWriter {
+            bytes: Vec::new(),
+            interrupted: false,
+        };
+        write_read_response(&mut writer, b"hdr", b"payload123456789").unwrap();
+        assert_eq!(writer.bytes, b"hdrpayload123456789");
+    }
+
+    #[test]
+    fn vectored_reply_rejects_zero_progress() {
+        struct ClosedWriter;
+        impl Write for ClosedWriter {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Ok(0)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        assert_eq!(
+            write_read_response(&mut ClosedWriter, b"hdr", b"payload")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WriteZero
+        );
     }
 }
