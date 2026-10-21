@@ -88,15 +88,20 @@ occurs. Fingerprints detect stale inputs; they are not a signing certificate.
 
 Keep the matching DriverKit SDK separately in a private local cache; Apple SDK
 headers/tools are not vendored in this repository or automatically downloaded.
-LLVM Clang and the Mach-O linker `ld64.lld` are required on Linux. For example:
+LLVM Clang and a DriverKit-compatible Mach-O linker are required on Linux.
+Stock LLD 19 assumes a normal `main` entry point; see
+[the small compatibility patch and real linker tests](../tools/driverkit-lld/README.md).
+Build that tool once, then reuse it. For example:
 
 ```sh
+python3 tools/driverkit-lld/build.py --out /tmp/zc-driverkit-lld --jobs 4
+python3 tools/driverkit-lld/test.py --linker /tmp/zc-driverkit-lld/bin/ld64.lld
 python3 scripts/test-driverkit-cache.py
 python3 scripts/driverkit-interfaces.py verify \
   --sdk /path/to/DriverKit.sdk --arch arm64
 python3 scripts/build-driverkit-cached.py \
   --sdk /path/to/DriverKit.sdk --arch arm64 \
-  --clang clang++ --linker /path/to/ld64.lld \
+  --clang clang++-19 --linker /tmp/zc-driverkit-lld/bin/ld64.lld \
   --out target/linux-driverkit-arm64
 ```
 
@@ -108,6 +113,10 @@ A Linux-built Mach-O/ad-hoc signature does not grant DriverKit entitlements.
 The activation helper remains a separate build using the Apple SystemExtensions
 framework; the existing Mac script builds that helper and a development app.
 Runtime approval, signing and mounting requirements above remain unchanged.
+Validated builds used Xcode16.4/DriverKit SDK24.5 and Linux Clang19.1.7.
+[Recorded hashes and validation](driverkit-cached-build-evidence.json) include
+Apple/native format comparisons and Mac signature-integrity checks for both
+Linux-produced architectures. No extension was activated or filesystem mounted.
 
 To refresh after an intentional interface/SDK change, use Apple `iig` on a Mac
 with full Xcode. Generate into a new directory, review the source/manifest diff,

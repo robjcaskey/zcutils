@@ -24,6 +24,8 @@ jobs:
       PROTOC: protoc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Test cached-interface preflight
+        run: python3 scripts/test-driverkit-cache.py
       - name: Build native extension and activation app
         run: bash scripts/build-macos-driverkit.sh
       - name: Install protocol compiler

@@ -1,0 +1,23 @@
+--- a/MachO/Driver.cpp
++++ b/MachO/Driver.cpp
+@@ -1795,7 +1795,8 @@
+ 
+   config->undefinedSymbolTreatment = getUndefinedSymbolTreatment(args);
+ 
+-  if (config->outputType == MH_EXECUTE)
++  if (config->outputType == MH_EXECUTE &&
++      config->platform() != PLATFORM_DRIVERKIT)
+     config->entry = symtab->addUndefined(args.getLastArgValue(OPT_e, "_main"),
+                                          /*file=*/nullptr,
+                                          /*isWeakRef=*/false);
+--- a/MachO/Writer.cpp
++++ b/MachO/Writer.cpp
+@@ -845,7 +845,7 @@
+   }
+ 
+   // This is down here to match ld64's load command order.
+-  if (config->outputType == MH_EXECUTE)
++  if (config->entry)
+     in.header->addLoadCommand(make<LCMain>());
+ 
+   // See ld64's OutputFile::buildDylibOrdinalMapping for the corresponding
