@@ -235,3 +235,18 @@ completion/backing/access-pattern comparisons are rejected, and impossible RTT
 efficiency is flagged instead of being classified as an accepted gain. Existing
 RAM classifications were unchanged; checks covered rejected backing mismatches,
 invalid RTT references and unavailable durable ceilings.
+
+The corrected EBS-backed WAL suite completed 216 measured trials (36 cases per
+variant, three repeats) and all six full-image crash/reopen readbacks. Four
+comparisons were faster across observed spread, none slower, and five failed
+the one-second duration gate. The other 27 were inconclusive across spread.
+These are exploratory shared-system results for the original buffer/header
+candidate; they do not resolve its known RAM large-read regression. Corrected
+WAL raw data, calibration records, readback proofs and logs were copied locally;
+no backing images were included.
+
+The vectored prototype built successfully on the M1 and all seven native leaf
+tests passed. Its immutable binary SHA256 is
+`f2f101c3d4431d9d84241ce7771a8578c3428b5396d968954a30f2342e6f0c92`
+(source revision `66700841`; benchmark/report-only changes after the framing
+prototype). Alternating RAM confirmation is running before its WAL comparison.
