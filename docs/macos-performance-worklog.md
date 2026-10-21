@@ -65,6 +65,12 @@ must not replace the existing topology-strict Linux RDMA/mux regression suites.
 
 ## Candidate target changes
 
+The current candidate keeps complete-header receives and vectored read replies,
+and restores per-request payload allocation. Buffer reuse was withdrawn after
+the isolation results below; the early buffer/header figures describe historical
+prototypes, not the current implementation. The cleaned-up source passed seven
+Linux leaf tests; native Mac rebuild/confirmation follows.
+
 The first candidate keeps one bounded scratch buffer per connection, avoiding
 allocation/zeroing/free on every request. Its retained memory is bounded by the
 16 MiB maximum request and the existing 64-connection cap, and released when
@@ -309,3 +315,31 @@ separate optimistic reference. Source binary hashes matched the same baseline
 Raw data, calibration records, storage location and readbacks are retained
 locally. The internal-SSD WAL suite is running next. No overall performance win
 or physical Linux transport regression pass is inferred from these results.
+
+The internal-SSD WAL suite completed 216 trials and all six full-image
+reopen/readbacks. Its 36 comparisons show 11 faster across observed spread,
+none slower, five too short and 20 inconclusive. All eleven faster cases are
+verified reads. The framing-only variant (header receive + vectored replies,
+per-request allocation restored) then passed all seven native Mac leaf tests,
+built successfully, and entered alternating RAM confirmation. Its binary SHA256
+is `5974b37b9bba9f08679ae70c8f007a7a650153eeb3ee272f18f701ee204bb640`;
+the repository source and original release binary were restored after building.
+
+The WAL's commit path performs ordered payload and durable-tail-superblock
+drains. macOS uses `sync_data` plus `F_FULLFSYNC` for each drain; preserving this
+ordering is required for the existing crash-recovery contract. Descriptive
+same-binary observations across EBS/internal SSD are retained separately, with
+explicit shared-system/time/cache confounders and duration gates. They are not
+a controlled causal storage comparison or a reason to weaken flushing.
+
+The framing-only isolation completed all ten configurations with three samples
+per revision: four faster across observed spread, none slower, six inconclusive,
+with no short trials or invalid RTT references. Both 1 MiB read cases remained
+within spread (+1.1% and +1.7% median at one lane/worker, per-worker QD64/QD256).
+The implementation now removes per-connection scratch state and retains the
+framing changes. Seven Linux leaf tests passed after this change; payload
+isolation test naming now describes its invariant rather than buffer reuse.
+The Linux VZ guest booted and executed the cross-built full-source target;
+its kernel is Ubuntu 7.0.0-38-generic ARM64 and private IP 192.168.64.2.
+It was stopped cleanly for the native final-source build and to explicitly
+ignore automatic TCP **and** UDP port forwarding before direct private-IP tests.

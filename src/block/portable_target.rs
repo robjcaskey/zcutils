@@ -139,21 +139,12 @@ impl Target {
         Ok(())
     }
 
-    fn process(
-        &self,
-        stream: &mut TcpStream,
-        mut frame: ZcnblkFrameHeader,
-        scratch: &mut Vec<u8>,
-    ) -> io::Result<()> {
+    fn process(&self, stream: &mut TcpStream, mut frame: ZcnblkFrameHeader) -> io::Result<()> {
         self.validate(frame)?;
-        // Retain at most one protocol-sized buffer per connection. Reads and
-        // complete write payloads overwrite every exposed byte; no stale bytes
-        // cross a request boundary. SYNC never discards the allocation.
-        let len = frame.len as usize;
-        if scratch.len() < len {
-            scratch.resize(len, 0);
-        }
-        let data = &mut scratch[..len];
+        // Keep payload storage local to this request. Retaining it across
+        // requests regressed large reads in the native Mac measurements.
+        let mut buffer = vec![0u8; frame.len as usize];
+        let data = &mut buffer[..];
         if frame.op == ZCNBLK_OP_WRITE {
             stream.read_exact(data)?;
         }
@@ -226,7 +217,6 @@ impl Target {
     fn connection(&self, mut stream: TcpStream) -> io::Result<()> {
         stream.set_nodelay(true)?;
         stream.set_write_timeout(Some(Duration::from_secs(30)))?;
-        let mut scratch = Vec::new();
         loop {
             let mut header = [0; ZCNBLK_FRAME_HEADER_LEN];
             // Accept a complete header in one receive, while retaining clean
@@ -238,7 +228,7 @@ impl Target {
             stream.read_exact(&mut header[received..])?;
             let frame = ZcnblkFrameHeader::decode(&header)?;
             if frame.op != ZCNBLK_OP_BATCH {
-                self.process(&mut stream, frame, &mut scratch)?;
+                self.process(&mut stream, frame)?;
                 continue;
             }
             if frame.len == 0 || frame.len as usize > MAX_BATCH {
@@ -264,7 +254,7 @@ impl Target {
                 frames.push(member);
             }
             for member in frames {
-                self.process(&mut stream, member, &mut scratch)?;
+                self.process(&mut stream, member)?;
             }
         }
     }
@@ -431,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn reused_buffer_does_not_leak_between_sizes_or_sync() {
+    fn request_payloads_do_not_leak_between_sizes_or_sync() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let target = Target::ram(65536).unwrap();
