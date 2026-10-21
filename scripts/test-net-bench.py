@@ -2,6 +2,7 @@
 """Exercise bounded pipeline credit, correlation, and fail-closed topology checks."""
 import json,os,pathlib,socket,struct,subprocess,sys,threading
 binary=str(pathlib.Path(sys.argv[1]).resolve())
+if not pathlib.Path(binary).is_file():raise SystemExit('probe binary does not exist: '+binary)
 def exact(s,n):
  data=b''
  while len(data)<n:
@@ -11,7 +12,7 @@ def exact(s,n):
  return data
 def exercise(corrupt=False):
  with socket.socket() as listener:
-  listener.bind(('127.0.0.1',0));listener.listen();address='127.0.0.1:'+str(listener.getsockname()[1]);errors=[]
+  listener.bind(('127.0.0.1',0));listener.listen();listener.settimeout(3);address='127.0.0.1:'+str(listener.getsockname()[1]);errors=[]
   def serve():
    try:
     with listener.accept()[0] as stream:
