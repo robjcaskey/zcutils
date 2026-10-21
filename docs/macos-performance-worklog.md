@@ -250,3 +250,13 @@ tests passed. Its immutable binary SHA256 is
 `f2f101c3d4431d9d84241ce7771a8578c3428b5396d968954a30f2342e6f0c92`
 (source revision `66700841`; benchmark/report-only changes after the framing
 prototype). Alternating RAM confirmation is running before its WAL comparison.
+
+Vectored RAM confirmation completed ten cases with three samples per revision:
+six faster across observed spread, two slower, two inconclusive, no short trials
+or invalid RTT references. The remaining slower cases were 64 KiB writes with
+one lane/worker, per-worker QD8 (aggregate 8; -7.8% median), and 1 MiB verified
+reads with one lane/worker, per-worker QD64 (aggregate 64; -6.3%). Vectored replies
+improved small reads but did not remove all regressions when combined with
+buffer reuse. The 1 MiB per-worker-QD256 read case remained inconclusive across
+spread (-6.9% median). All runs remain exploratory and OS-scheduled. The PR
+stays draft; the queued variant without buffer reuse is still necessary.
