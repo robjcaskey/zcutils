@@ -2865,6 +2865,20 @@ static blk_status_t zcnblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 		return BLK_STS_OK;
 	}
 
+	/*
+	 * A TCP SYNC orders only its connection. With early local write
+	 * completion, another connection may still have unapplied writes.
+	 * Refuse a successful global flush until there is a cross-stream fence;
+	 * remotely acknowledged writes do not have that ordering gap.
+	 */
+	if (!dev->shm_transport && req_op(rq) == REQ_OP_FLUSH &&
+	    !write_acks && dev->total_conns > 1) {
+		pr_err_ratelimited("zcnblk: multi-connection TCP flush requires write_acks=1\n");
+		/* Raw block fsync treats unsupported flushes as success. */
+		blk_mq_end_request(rq, BLK_STS_IOERR);
+		return BLK_STS_OK;
+	}
+
 	INIT_LIST_HEAD(&pdu->entry);
 	pdu->rq = rq;
 
@@ -4323,8 +4337,10 @@ static int __init zcnblk_init(void)
 	lim.max_segments = USHRT_MAX;
 	lim.max_segment_size = UINT_MAX;
 	lim.max_hw_sectors = max_frame_bytes >> SECTOR_SHIFT;
-	/* Normal writes are cached; REQ_FUA is carried to the userspace WAL leaf. */
-	lim.features = BLK_FEAT_WRITE_CACHE | BLK_FEAT_FUA;
+	/* Only SHM carries REQ_FUA. TCP needs the block layer postflush. */
+	lim.features = BLK_FEAT_WRITE_CACHE;
+	if (zcnblk_dev->shm_transport)
+		lim.features |= BLK_FEAT_FUA;
 	zcnblk_dev->disk = blk_mq_alloc_disk(&zcnblk_dev->tag_set, &lim, zcnblk_dev);
 #else
 	zcnblk_dev->disk = blk_mq_alloc_disk(&zcnblk_dev->tag_set, zcnblk_dev);
@@ -4344,8 +4360,9 @@ static int __init zcnblk_init(void)
 	blk_queue_max_segment_size(zcnblk_dev->disk->queue, UINT_MAX);
 	blk_queue_max_hw_sectors(zcnblk_dev->disk->queue,
 				 max_frame_bytes >> SECTOR_SHIFT);
-	/* Normal writes are cached; REQ_FUA is carried to the userspace WAL leaf. */
-	blk_queue_write_cache(zcnblk_dev->disk->queue, true, true);
+	/* Only SHM carries REQ_FUA. TCP needs the block layer postflush. */
+	blk_queue_write_cache(zcnblk_dev->disk->queue, true,
+			      zcnblk_dev->shm_transport);
 #endif
 	zcnblk_dev->disk->flags |= GENHD_FL_NO_PART;
 	zcnblk_dev->disk->major = zcnblk_dev->major;
