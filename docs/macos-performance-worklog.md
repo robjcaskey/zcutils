@@ -226,3 +226,12 @@ read replies while restoring per-request allocation. It is queued after the
 internal-SSD suites, with native leaf tests and the same ten-case alternating
 RAM confirmation. It records source/binary hashes and restores the repository
 source and release binary in `finally`; it does not change the PR implementation.
+
+Comparison summaries now retain the completion semantics, backend/access pattern,
+lane count, CPU mapping, and the min/median/max raw RTT, matching ceiling and
+actual/theoretical efficiency for each variant. Durable SYNC's matching ceiling
+and efficiency remain null; its measured SYNC reference stays separate. Unlike
+completion/backing/access-pattern comparisons are rejected, and impossible RTT
+efficiency is flagged instead of being classified as an accepted gain. Existing
+RAM classifications were unchanged; checks covered rejected backing mismatches,
+invalid RTT references and unavailable durable ceilings.
