@@ -260,3 +260,24 @@ improved small reads but did not remove all regressions when combined with
 buffer reuse. The 1 MiB per-worker-QD256 read case remained inconclusive across
 spread (-6.9% median). All runs remain exploratory and OS-scheduled. The PR
 stays draft; the queued variant without buffer reuse is still necessary.
+
+A supplementary Linux guest is queued **after** the Mac benchmark suites. This
+uses the existing M1's reported virtualization support and pinned Lima v2.2.1 /
+Ubuntu 26.04 minimal ARM64 image hashes. Configuration: two vCPUs, 2 GiB RAM,
+an 8 GiB ordinary disk image, no host-directory mounts, private `vzNAT`, no
+automatic guest-port forwarding, and no container runtime. All guest state stays
+under this task's directory on the already-mounted internal Data volume. The
+Mac lease remains unchanged and no additional EC2 instance is provisioned.
+
+The Linux portable target, probe and client cross-built from the full repository
+with the locked dependencies for `aarch64-unknown-linux-gnu`; crypto-policy
+initialization is unchanged. `ZCUTILS_DISABLE_LIBFABRIC=1` explicitly produces
+TCP-only helpers for this supplementary path; these binaries cannot serve as
+EFA regression evidence. ELF hashes were checked after upload. Guest boot and
+network runtime remain unverified until the queued setup executes. Host/guest
+measurements will share the M1 CPU/memory and use a virtual NIC; the requested
+physical cross-host and c8gn TCP/EFA checks remain separate and pending.
+
+The pinned guest setup follows Lima's official VZ networking and image
+configuration: https://lima-vm.io/docs/config/network/vmnet/ and
+https://github.com/lima-vm/lima/blob/v2.2.1/templates/_images/ubuntu.yaml.
