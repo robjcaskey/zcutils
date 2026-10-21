@@ -204,3 +204,25 @@ Short bursts are exploratory correctness/latency evidence, never representative
 throughput or acceptance of the requested Linux TCP/EFA regression. Linux
 loopback smoke passed all 30 verified trials and budget/region rejection checks;
 that is harness validation, not a cross-host result.
+
+For the pending Linux regression, the pre-desktop-port reference is
+`5b2910174fb71a2df6ba675182b2366b0ffe7b51` (parent of the macOS storage port).
+The Mac portable-leaf baseline `a563ddf0` already includes that port, and the
+portable leaf did not exist at the earlier revision. Comparing only the two
+portable-leaf binaries therefore cannot establish that the desktop port left
+existing Linux performance unchanged. The common OFI Rust/C source blobs are
+unchanged from the pre-port revision, but this is source-review evidence only;
+shared-WAL adaptation, build/link effects, and actual hardware performance still
+need the matching Linux tests and controlled TCP/EFA runs. Keep both references
+and each build's lockfile/compiler/feature/binary identity in the run manifest.
+
+The current Linux shared-WAL test filter passed 13 tests, including direct-I/O
+buffer admission, durable recovery, unsynced-tail rejection, corruption detection,
+reduction/reset and backing custody. This is correctness coverage on the local
+Linux host, not performance evidence on c8gn hardware.
+
+An additional private source variant keeps complete-header receives and vectored
+read replies while restoring per-request allocation. It is queued after the
+internal-SSD suites, with native leaf tests and the same ten-case alternating
+RAM confirmation. It records source/binary hashes and restores the repository
+source and release binary in `finally`; it does not change the PR implementation.
