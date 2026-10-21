@@ -438,3 +438,23 @@ configuration in a prior comparison. The baseline/final target and unchanged
 probe hashes were verified before launch. Full results remain pending; duration
 and RTT validity gates still apply. No extra EC2 instance was created, the Mac
 termination deadline is unchanged, and desktop workflows remain disabled.
+
+The remaining exact-source validation is serialized to avoid adding guest load
+to native Mac measurements. After the full RAM run, the final target is queued
+for internal-SSD file and WAL comparisons (36 cases per backend, three alternating
+samples per binary, four-second calibration target, six full-image restart
+readbacks). Only ordinary task-owned backing files are involved. A collector
+copies terminal results locally, excludes backing images, and preserves failures.
+
+A full-source Linux ARM64 baseline also built successfully with locked
+dependencies, libfabric disabled, and unchanged crypto initialization. Its
+userspace source is identical to `a563ddf0`; the build worktree contains only
+additional kernel/docs/tests changes. Binary SHA256 is
+`7c1bd1f470379ca329f8129da56b25337075192d8bcf0700d63fa4aeec699be3`.
+The final Linux helpers remain separately preserved with their earlier manifest.
+A focused 16-case, six-cycle A/B/B/A/A/B comparison in each direction is queued
+after the persistent suite. It uses direct Mac bridge100/Linux lima0 TCP,
+calibrates fixed operation counts from the first baseline sample, and retains
+raw RTT, completion ceilings, efficiency, duration and spread. These will still
+be shared-M1 VZ measurements with OS-scheduled CPUs and a two-vCPU guest, not
+physical-host TCP or RDMA acceptance. Runtime results are pending.
