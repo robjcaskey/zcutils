@@ -608,7 +608,26 @@ history sensitivity, not proof that one particular journal phase caused it.
 Benchmark readbacks validate the deterministic dataset after restart, not
 power-loss behavior or generation-changing overwrites.
 
-A full 84-case header-only alternative comparison is now running with the same
-immutable probe and calibration as the earlier full coalesced-reply run. This
-will make the throughput/latency tradeoff reviewable across the broader grid.
-No new cloud host was created, and the original Mac shutdown is unchanged.
+The full header-only alternative comparison completed 504 trials over 84 cases,
+with three alternating samples per variant and the same immutable probe and
+per-case operation counts as the full coalesced-reply run. Thirteen cases were
+faster across observed spread, none slower, and 71 inconclusive; no duration or
+RTT exclusions occurred (minimum 3.805 s). This is shared-M1 exploratory evidence,
+with OS-scheduled physical CPUs, not physical-host performance acceptance.
+`header-full-audit.json`, raw trials, CSV and heatmap retain the evidence locally.
+
+The conservative header-receive change is now independently reviewable in draft
+PR #7, stacked on kernel correctness PR #6. Five Linux and five native Mac leaf
+tests passed. A clean rebuild produced exactly the tested header-only executable
+SHA256 e7e75846730bbcd64c2293c110add33022b7905849c7b8b72172352a2b662bb1.
+PR #5 is stacked on #7 and retains reply coalescing, benchmark tools, and its
+negative client-sensitive results. No change was merged into main.
+
+Final read-only checks confirmed the owned benchmark supervisors exited, the
+Linux guest is stopped with its module unloaded, and the native Mac checkout and
+original release executable were restored. The pre-existing demo target was left
+running. All result collections are local. The existing Mac private NIC requires
+no attachment; physical same-AZ Linux/Mac and c8gn TCP/EFA tests remain pending
+because the pair is absent from the accessible account. No additional paid host
+was created. The original termination tag remains 2026-10-21 20:42:59 UTC, and
+macOS/Windows/DriverKit workflows remain disabled.
