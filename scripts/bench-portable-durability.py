@@ -17,7 +17,7 @@ configs=len(sizes)*len(qds)*len(workers)*3;capacity=64*1024*1024
 variants={'baseline':str(pathlib.Path(a.baseline_target).resolve()),'candidate':str(pathlib.Path(a.candidate_target).resolve())}
 for name,target in variants.items():
  d=out/name;d.mkdir()
- meta={'configuration_count':configs,'backend':a.backend,'platform':platform.platform(),'cpu_count':os.cpu_count(),'representative':False,'source_binary_sha256':hashlib.sha256(pathlib.Path(target).read_bytes()).hexdigest(),'topology':'loopback TCP, OS-scheduled client sender/receiver per lane, OS-scheduled target thread per connection; no pinning/hugepages/memlock/io_uring; target is one terminal file or WAL','args':{'repeats':3,'quick':a.quick},'timing_order':'baseline,candidate,candidate,baseline,baseline,candidate'}
+ meta={'configuration_count':configs,'backend':a.backend,'platform':platform.platform(),'cpu_count':os.cpu_count(),'representative':False,'source_binary_sha256':hashlib.sha256(pathlib.Path(target).read_bytes()).hexdigest(),'topology':'loopback TCP, OS-scheduled client sender/receiver per lane, OS-scheduled target thread per connection; no pinning/hugepages/memlock/io_uring; target is one terminal file or WAL','args':{'repeats':3,'quick':a.quick,'target_seconds':a.seconds,'maximum_aggregate_bytes_per_trial':64*1024*1024*1024},'timing_order':'baseline,candidate,candidate,baseline,baseline,candidate'}
  (d/'metadata.json').write_text(json.dumps(meta,indent=2)+'\n')
 children=[];log=(out/'services.log').open('w');trace=(out/'probe-stderr.log').open('w')
 def address():
@@ -59,7 +59,7 @@ try:
      for mode in ['read-verify','write','write-sync']:
       calops=max(4,min(128,int(.15*1e6/max(sync['median_us'],1)/w))) if mode=='write-sync' else 128
       cal=call(leaf,mode,calops,w,qd,size,rtt['min_us'],sync['min_us'])
-      ops=max(4,min(500_000,2*capacity//size//w,int(calops*a.seconds/max(cal['elapsed_s'],.001))))
+      ops=max(4,min(500_000,64*1024*1024*1024//size//w,int(calops*a.seconds/max(cal['elapsed_s'],.001))))
       row=call(leaf,mode,ops,w,qd,size,rtt['min_us'],sync['min_us'])
       row.update(variant=name,cycle=cycle,backend=a.backend,rtt_reference_valid=(row['actual_theoretical_efficiency']<=1 if row['actual_theoretical_efficiency'] is not None else None))
       with (out/name/'results.jsonl').open('a') as f:f.write(json.dumps(row)+'\n')

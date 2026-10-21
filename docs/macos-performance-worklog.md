@@ -139,3 +139,15 @@ A subsequent prototype combines one response's header/payload using vectored
 writes. Linux tests cover interrupted writes, cross-slice partial progress, and
 zero-progress failure in addition to the prior leaf tests (seven passed total).
 Native Mac tests and performance results for that prototype remain pending.
+
+The header-only alternating comparison completed with four cases faster across
+spread and none slower across spread among its ten selected cases. Both large
+read confirmation cases stayed within spread. Buffer-only isolation is still
+running; this narrows the investigation without proving behavior on all hosts.
+
+The comparison tool now rejects trials shorter than one second for acceptance
+classification. Applying that rule to the original full matrix marks twelve
+cases as too short, while the longer alternating confirmation remains valid.
+The persistent-leaf harness's future runs use a larger byte cap so fast cached
+reads can reach their intended duration. Already-started runs retain their
+actual elapsed times and must be assessed by those recorded durations.
