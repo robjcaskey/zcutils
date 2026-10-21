@@ -506,3 +506,24 @@ graph. The `ps` format was checked on the live M1, and the sample-file checks us
 the format of prior successful native captures. Full runtime validation of this
 extended profiler still awaits its turn after the existing measurements. This
 adds diagnostic evidence without changing target/probe binaries or live trials.
+
+The exact-source internal-SSD file comparison completed 216 trials (36 cases,
+three alternating samples per binary): 13 faster across observed spread, none
+slower, 23 inconclusive. Eleven gains were verified reads and two nondurable
+write ACKs; all twelve durable write-and-SYNC cases stayed within spread. No
+short trials or invalid RTT references occurred; the minimum trial was 2.176 s.
+All six 64 MiB process-restart readbacks passed. A local audit checked binary
+identities, the configuration/repeat matrix, lane/worker and aggregate-depth
+fields, RTT references for reads/write ACKs, and unavailable theoretical ceilings
+for durable writes. Raw results and audit are retained locally under
+`canonical-final-file-collected`, `canonical-final-file-comparison.json`, and
+`canonical-final-file-audit.json`.
+
+These file/WAL suites calibrate operation counts independently per cycle toward
+the same duration; unlike the RAM confirmation, their operation counts are not
+fixed across variants. They remain exploratory, OS-scheduled shared-system
+measurements. The file one-lane 4 KiB per-worker-QD4 read comparison was within
+the 5% margin (+3.67%), but its backend and probe build differ from the RAM run;
+this does not isolate the cause of the RAM slowdown. The source/binary-controlled
+RAM QD2/4/8 follow-up is still required. The WAL suite is now running, with the
+Linux guest still stopped and the subsequent private comparisons queued.
