@@ -1,0 +1,128 @@
+{
+  "generation_run": "https://github.com/robjcaskey/zcutils/actions/runs/39659941491",
+  "generation_source_commit": "6ef24658efaaa375ff11a66dfaf0e5605403feb6",
+  "xcode": "16.4",
+  "driverkit_sdk": "24.5",
+  "sdk_tree_sha256": "340f2618dc303518b02b3e2f64bdb705b386f94369a1f8e47c2be27196d5c8b7",
+  "apple_iig_sha256": "ae3554f474b279a219adf59ab6780601aeb6873854cdf43d65fbd3b01e952e0d",
+  "linux_clang": "19.1.7",
+  "llvm_linker_build": {
+    "llvm_version": "19.1.7",
+    "archives": {
+      "lld": "630bf0f31b210e89fd7869bdfd6c376d010fc3b72ee42f08058435035c432e42",
+      "cmake": "11c5a28f90053b0c43d0dec3d0ad579347fc277199c005206b963c19aae514e3",
+      "libunwind": "10e650f436bc416674f01b5e01177405886f4d0f0b2568c6808044eacad52ea0"
+    },
+    "patch_sha256": "f6524e26c6432e223cd624346d1d088ce00ed34dee47bbcff37e5bad51ff7c98",
+    "launcher_sha256": "da95b720169a3865457b1f8f3674aa78e378cc32bc2a78f54d16f14b8d48e2fe",
+    "binary_sha256": "55fe8b6de25f66031224e74ca41b93777e5339b86f6204574fcb61f0f7ba9e9c",
+    "change": "DriverKit MH_EXECUTE has no _main reference and no LC_MAIN; other platforms retain upstream behavior",
+    "runtime_activation_verified": false
+  },
+  "tests": {
+    "stale_cache_and_image_validation": 10,
+    "actual_linker_cases": 6,
+    "apple_native_cached_build_architectures": [
+      "arm64",
+      "x86_64"
+    ],
+    "linux_cached_build_architectures": [
+      "arm64",
+      "x86_64"
+    ],
+    "cached_build_on_ec2_mac_without_iig": [
+      "arm64",
+      "x86_64"
+    ]
+  },
+  "architecture_checks": {
+    "arm64": {
+      "linux_image": {
+        "cpu_type": 16777228,
+        "file_type": 2,
+        "flags": 2195589,
+        "build_version": [
+          10,
+          1507328,
+          1574144
+        ],
+        "class_metadata_section": true,
+        "normal_entry_point": false,
+        "libraries": [
+          "/System/DriverKit/System/Library/Frameworks/DriverKit.framework/DriverKit",
+          "/System/DriverKit/System/Library/Frameworks/SCSIControllerDriverKit.framework/SCSIControllerDriverKit",
+          "/System/DriverKit/usr/lib/libc++.dylib"
+        ]
+      },
+      "apple_image": {
+        "cpu_type": 16777228,
+        "file_type": 2,
+        "flags": 2195589,
+        "build_version": [
+          10,
+          1507328,
+          1574144
+        ],
+        "class_metadata_section": true,
+        "normal_entry_point": false,
+        "libraries": [
+          "/System/DriverKit/System/Library/Frameworks/DriverKit.framework/DriverKit",
+          "/System/DriverKit/System/Library/Frameworks/SCSIControllerDriverKit.framework/SCSIControllerDriverKit",
+          "/System/DriverKit/usr/lib/libc++.dylib"
+        ]
+      },
+      "codesign_integrity_verified": true,
+      "binary_sha256": "dc1b38a1d4a284ad7c619f04572f64e5caf35d5c9f49feffbb9d4150d9df3579",
+      "runtime_activation_verified": false
+    },
+    "x86_64": {
+      "linux_image": {
+        "cpu_type": 16777223,
+        "file_type": 2,
+        "flags": 2195589,
+        "build_version": [
+          10,
+          1507328,
+          1574144
+        ],
+        "class_metadata_section": true,
+        "normal_entry_point": false,
+        "libraries": [
+          "/System/DriverKit/System/Library/Frameworks/DriverKit.framework/DriverKit",
+          "/System/DriverKit/System/Library/Frameworks/SCSIControllerDriverKit.framework/SCSIControllerDriverKit",
+          "/System/DriverKit/usr/lib/libc++.dylib"
+        ]
+      },
+      "apple_image": {
+        "cpu_type": 16777223,
+        "file_type": 2,
+        "flags": 2195589,
+        "build_version": [
+          10,
+          1507328,
+          1574144
+        ],
+        "class_metadata_section": true,
+        "normal_entry_point": false,
+        "libraries": [
+          "/System/DriverKit/System/Library/Frameworks/DriverKit.framework/DriverKit",
+          "/System/DriverKit/System/Library/Frameworks/SCSIControllerDriverKit.framework/SCSIControllerDriverKit",
+          "/System/DriverKit/usr/lib/libc++.dylib"
+        ]
+      },
+      "codesign_integrity_verified": true,
+      "binary_sha256": "9c81692dc7d2d2bb976fc0ff67e9f6a90fe59ab7913ded3569ce193b468e0901",
+      "runtime_activation_verified": false
+    }
+  },
+  "production_signed": false,
+  "runtime_activation_verified": false,
+  "source_hashes": {
+    "scripts/driverkit-interfaces.py": "9489ff10938257b66bf684c6d475d45d7d36d9bd915a121c3431bcd189fe775b",
+    "scripts/build-driverkit-cached.py": "3331268af6757bd16c1f692323a1739d566917566dfca96df387ab877d6bc203",
+    "scripts/build-macos-driverkit.sh": "2f36214b25dc84275f23678f98f3d250ee638321403d1e071566ee2ec24bf9af",
+    "tools/driverkit-lld/driverkit-entry.patch": "f6524e26c6432e223cd624346d1d088ce00ed34dee47bbcff37e5bad51ff7c98",
+    "tools/driverkit-lld/build.py": "c48c0260177810acd69e928276d814e9cde841d29835d2de337761ee1d86da50",
+    "tools/driverkit-lld/main.cpp": "da95b720169a3865457b1f8f3674aa78e378cc32bc2a78f54d16f14b8d48e2fe"
+  }
+}

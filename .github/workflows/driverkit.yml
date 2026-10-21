@@ -4,6 +4,11 @@ name: DriverKit development build
 # See docs/native-desktop-builds.md for local builds and signing requirements.
 on:
   workflow_dispatch:
+    inputs:
+      refresh_iig:
+        description: Generate pinned interfaces and SDK evidence once; no deployment
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -12,12 +17,15 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
+    if: ${{ !inputs.refresh_iig }}
     runs-on: macos-15
     timeout-minutes: 30
     env:
       PROTOC: protoc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Test cached-interface preflight
+        run: python3 scripts/test-driverkit-cache.py
       - name: Build native extension and activation app
         run: bash scripts/build-macos-driverkit.sh
       - name: Install protocol compiler
@@ -40,3 +48,31 @@ jobs:
           path: target/zcutils-driverkit-development.tar.gz
           if-no-files-found: error
           retention-days: 7
+  refresh-interfaces:
+    if: ${{ inputs.refresh_iig }}
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Generate with Apple iig and compile cached output for both architectures
+        run: |
+          set -euo pipefail
+          sdk=$(xcrun --sdk driverkit --show-sdk-path)
+          mkdir -p target/iig-export
+          cache="$PWD/target/iig-export/generated"
+          xcrun iig --help > target/iig-export/iig-help.txt 2>&1 || true
+          xcodebuild -version > target/iig-export/xcode-version.txt
+          xcrun --sdk driverkit --show-sdk-version > target/iig-export/sdk-version.txt
+          # SDK material stays in the authenticated, short-lived build artifact.
+          COPYFILE_DISABLE=1 tar -czf target/iig-export/DriverKit.sdk.tar.gz -C "$sdk" .
+          for arch in arm64 x86_64; do
+            python3 scripts/driverkit-interfaces.py generate --sdk "$sdk" --cache "$cache" --arch "$arch"
+            DRIVERKIT_CACHE="$cache" DRIVERKIT_ARCH="$arch" DRIVERKIT_OUT="target/iig-export/native-$arch" bash scripts/build-macos-driverkit.sh
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: driverkit-iig-cache-and-evidence
+          path: target/iig-export/
+          if-no-files-found: error
+          retention-days: 1

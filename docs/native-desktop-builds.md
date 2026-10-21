@@ -74,6 +74,69 @@ ad-hoc artifact passes signature-integrity verification, but its restricted
 broker entitlement causes launch rejection on that unprovisioned host. This is
 not an installation or mounting success.
 
+## Cached DriverKit interfaces and Linux builds
+
+Routine builds use checked-in Apple-generated headers/C++ under
+`macos/driverkit/generated/{arm64,x86_64}`. They do not invoke `iig`.
+Each architecture's manifest records both `.iig` input hashes, all four generated
+output hashes, the complete SDK tree hash (including inherited interfaces and
+link libraries), deployment target, generation options, Apple `iig` executable
+hash and Xcode version. Changing a `.cpp` implementation does not invalidate the
+cache. Changing an interface, generated output, SDK, architecture or deployment
+target fails preflight before compilation; no automatic regeneration/fallback
+occurs. Fingerprints detect stale inputs; they are not a signing certificate.
+
+Keep the matching DriverKit SDK separately in a private local cache; Apple SDK
+headers/tools are not vendored in this repository or automatically downloaded.
+LLVM Clang and a DriverKit-compatible Mach-O linker are required on Linux.
+Stock LLD 19 assumes a normal `main` entry point; see
+[the small compatibility patch and real linker tests](../tools/driverkit-lld/README.md).
+Build that tool once, then reuse it. For example:
+
+```sh
+python3 tools/driverkit-lld/build.py --out /tmp/zc-driverkit-lld --jobs 4
+python3 tools/driverkit-lld/test.py --linker /tmp/zc-driverkit-lld/bin/ld64.lld
+python3 scripts/test-driverkit-cache.py
+python3 scripts/driverkit-interfaces.py verify \
+  --sdk /path/to/DriverKit.sdk --arch arm64
+python3 scripts/build-driverkit-cached.py \
+  --sdk /path/to/DriverKit.sdk --arch arm64 \
+  --clang clang++-19 --linker /tmp/zc-driverkit-lld/bin/ld64.lld \
+  --out target/linux-driverkit-arm64
+```
+
+Repeat with `--arch x86_64` and a distinct output directory for Intel. Outputs
+include the development `.dext`, an archive, and a manifest containing source,
+SDK/interface and binary hashes plus the compiler command/version. The archive
+is an extension only, not a signed containing app or an activated device.
+A Linux-built Mach-O/ad-hoc signature does not grant DriverKit entitlements.
+The activation helper remains a separate build using the Apple SystemExtensions
+framework; the existing Mac script builds that helper and a development app.
+Runtime approval, signing and mounting requirements above remain unchanged.
+Validated builds used Xcode16.4/DriverKit SDK24.5 and Linux Clang19.1.7.
+[Recorded hashes and validation](driverkit-cached-build-evidence.json) include
+Apple/native format comparisons and Mac signature-integrity checks for both
+Linux-produced architectures. No extension was activated or filesystem mounted.
+
+To refresh after an intentional interface/SDK change, use Apple `iig` on a Mac
+with full Xcode. Generate into a new directory, review the source/manifest diff,
+and replace the corresponding checked-in cache:
+
+```sh
+sdk=$(xcrun --sdk driverkit --show-sdk-path)
+for arch in arm64 x86_64; do
+  python3 scripts/driverkit-interfaces.py generate \
+    --sdk "$sdk" --cache /tmp/zc-iig-refresh --arch "$arch"
+done
+```
+
+The disabled, manual-only DriverKit workflow also has a `refresh_iig` input for
+this maintenance step. It generates both architectures, compiles each with
+Apple's compiler, and exports the cache/SDK/native-build evidence in an
+authenticated artifact with one-day retention. Enable it explicitly for that
+single invocation and disable it after the run starts. There are no scheduled
+triggers and it never launches or renews an EC2 Mac.
+
 ## Windows userspace and native driver
 
 Install Rust (MSVC), Visual Studio C++ build tools, protobuf, NASM, and NuGet.
