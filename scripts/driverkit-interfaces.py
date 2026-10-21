@@ -48,7 +48,7 @@ def sources():
 def recipe(arch, deployment):
     return {'schema': 1, 'arch': arch, 'deployment_target': deployment,
             'target_triple': arch + '-apple-driverkit' + deployment,
-            'language': 'c++', 'standard': 'c++17',
+            'language': 'c++', 'standard': 'c++17', 'iig_arch_option': '--arch',
             'defines': ['__IIG=1', 'PLATFORM_DriverKit=1'], 'classes': list(CLASSES)}
 
 
@@ -56,8 +56,8 @@ def command(arch, deployment, sdk, cls, destination, iig):
     return [iig, '--def', 'macos/driverkit/' + cls + '.iig',
             '--header', str(destination / (cls + '.h')),
             '--impl', str(destination / (cls + '.cpp')),
-            '--deployment-target', deployment, '--log', str(destination / (cls + '.log')),
-            '--', '-target', recipe(arch, deployment)['target_triple'],
+            '--deployment-target', deployment, '--arch', arch, '--log', str(destination / (cls + '.log')),
+            '--',
             '-isysroot', str(sdk), '-iframework', str(sdk / 'System/DriverKit/System/Library/Frameworks'),
             '-isystem', str(sdk / 'System/DriverKit/usr/include'), '-x', 'c++', '-std=c++17',
             '-D__IIG=1', '-DPLATFORM_DriverKit=1', '-I', 'macos/driverkit']

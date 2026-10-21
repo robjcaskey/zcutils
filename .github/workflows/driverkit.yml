@@ -56,18 +56,19 @@ jobs:
         run: |
           set -euo pipefail
           sdk=$(xcrun --sdk driverkit --show-sdk-path)
-          cache="$RUNNER_TEMP/zc-iig-generated"
+          mkdir -p target/iig-export
+          cache="$PWD/target/iig-export/generated"
+          xcrun iig --help > target/iig-export/iig-help.txt 2>&1 || true
+          xcodebuild -version > target/iig-export/xcode-version.txt
+          xcrun --sdk driverkit --show-sdk-version > target/iig-export/sdk-version.txt
+          # SDK material stays in the authenticated, short-lived build artifact.
+          COPYFILE_DISABLE=1 tar -czf target/iig-export/DriverKit.sdk.tar.gz -C "$sdk" .
           for arch in arm64 x86_64; do
             python3 scripts/driverkit-interfaces.py generate --sdk "$sdk" --cache "$cache" --arch "$arch"
             DRIVERKIT_CACHE="$cache" DRIVERKIT_ARCH="$arch" DRIVERKIT_OUT="target/iig-export/native-$arch" bash scripts/build-macos-driverkit.sh
           done
-          mkdir -p target/iig-export/generated
-          cp -R "$cache/arm64" "$cache/x86_64" target/iig-export/generated/
-          # SDK material stays in the authenticated, short-lived build artifact.
-          COPYFILE_DISABLE=1 tar -czf target/iig-export/DriverKit.sdk.tar.gz -C "$sdk" .
-          xcodebuild -version > target/iig-export/xcode-version.txt
-          xcrun --sdk driverkit --show-sdk-version > target/iig-export/sdk-version.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
         with:
           name: driverkit-iig-cache-and-evidence
           path: target/iig-export/
