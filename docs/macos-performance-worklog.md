@@ -142,8 +142,12 @@ Native Mac tests and performance results for that prototype remain pending.
 
 The header-only alternating comparison completed with four cases faster across
 spread and none slower across spread among its ten selected cases. Both large
-read confirmation cases stayed within spread. Buffer-only isolation is still
-running; this narrows the investigation without proving behavior on all hosts.
+read confirmation cases stayed within spread. Buffer-only isolation completed
+with three cases faster and two slower across spread: 64 KiB, one worker,
+per-worker QD8 writes (-6.8% median) and 1 MiB, one worker, per-worker QD256
+verified reads (-11.5%). These exploratory results strengthen the case against
+merging buffer reuse without further changes; they do not establish behavior
+on other hosts.
 
 The comparison tool now rejects trials shorter than one second for acceptance
 classification. Applying that rule to the original full matrix marks twelve
@@ -151,3 +155,20 @@ cases as too short, while the longer alternating confirmation remains valid.
 The persistent-leaf harness's future runs use a larger byte cap so fast cached
 reads can reach their intended duration. Already-started runs retain their
 actual elapsed times and must be assessed by those recorded durations.
+
+The EBS-backed file suite completed all six cycles and full-image crash/reopen
+readbacks. Of 36 comparisons, 21 fail the minimum-duration gate; the other 15
+show no difference across observed spread. No file-performance gain is claimed.
+The first WAL suite timed out after a short, fast calibration extrapolated to
+187,282 writes and encountered slower sustained work. Partial results are
+retained as failed-run evidence, not a completed comparison. Calibration now
+grows by at most fourfold until it samples at least 250 ms and caps the final
+extrapolation at fourfold, with every calibration recorded. Corrected runs use
+new output directories; prior results are preserved.
+
+The Mac's private en4 interface already exists in the Ireland VPC; another NIC
+is unnecessary for a same-VPC Linux peer. Root/home benchmark files are on EBS.
+A separate ordinary directory on the already-mounted internal SSD Data volume
+is prepared for a storage comparison. No partitions, raw devices, EFI state,
+mounts, or source-device flags were changed. Linux peer/account or temporary-pair
+budget information is still needed before the cross-host tests can proceed.
