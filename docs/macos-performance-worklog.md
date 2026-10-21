@@ -172,3 +172,35 @@ A separate ordinary directory on the already-mounted internal SSD Data volume
 is prepared for a storage comparison. No partitions, raw devices, EFI state,
 mounts, or source-device flags were changed. Linux peer/account or temporary-pair
 budget information is still needed before the cross-host tests can proceed.
+
+## Bounded cross-host burst preparation
+
+`scripts/bench-portable-cross-host.py` supports either client direction against
+an independently started **disposable 8 MiB RAM leaf** plus the echo service on
+the same remote host. It overwrites the entire specified leaf capacity. The
+same-region check, numeric endpoint validation and protocol-byte budget run
+before connections; strict topology mode fails before the RTT probe. Default
+limits are 60 seconds overall and 10 seconds per probe. The plan includes
+initialization and all headers/drains: 40,939,008 application-protocol bytes for
+30 trials (three repeats of read/write at per-worker QD1/2/4/8/16, one worker).
+TCP/IP overhead and retransmissions are outside that byte accounting.
+
+Example after a private Linux peer exists, with an 8 MiB disposable Mac RAM leaf
+on port 19620 and echo on 19621, restricted to that peer's private IP:
+
+```sh
+python3 scripts/bench-portable-cross-host.py \
+  --probe ./zcnblk-net-bench --address 172.31.13.96:19620 \
+  --echo-address 172.31.13.96:19621 \
+  --local-region eu-west-1 --peer-region eu-west-1 \
+  --network-path private --direction linux-to-mac --out ./linux-to-mac-bursts
+```
+
+Use `--plan-only` to inspect the budget without connections. For the reverse
+direction, run the client on the Mac with the Linux leaf/echo addresses and
+`--direction mac-to-linux`. Private addressing and region labels must match
+actual routing and cloud inventory; argument labels alone do not prove either.
+Short bursts are exploratory correctness/latency evidence, never representative
+throughput or acceptance of the requested Linux TCP/EFA regression. Linux
+loopback smoke passed all 30 verified trials and budget/region rejection checks;
+that is harness validation, not a cross-host result.
