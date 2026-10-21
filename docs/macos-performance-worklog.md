@@ -297,3 +297,15 @@ The internal-SSD suite has now started with the same immutable baseline and
 vectored binaries, first for ordinary files and then WAL, under the existing
 mounted Data directory. Storage class remains explicit so EBS and internal-SSD
 measurements are not mixed in a single acceptance comparison.
+
+The internal-SSD ordinary-file suite completed 216 trials and all six full
+64 MiB sequential readbacks. All 36 comparisons met the one-second gate and had
+valid transport references: 14 faster across observed spread, one slower and
+21 inconclusive. The slower case was 64 KiB write-plus-durable-SYNC, four lanes /
+four workers at per-worker QD4 (aggregate 16; -11.9% median). Its matching durable
+completion ceiling/efficiency remain unavailable; clean-SYNC timing is only a
+separate optimistic reference. Source binary hashes matched the same baseline
+`ce5f81ed...` and vectored candidate `f2f101c3...` used in the preceding tests.
+Raw data, calibration records, storage location and readbacks are retained
+locally. The internal-SSD WAL suite is running next. No overall performance win
+or physical Linux transport regression pass is inferred from these results.
