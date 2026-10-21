@@ -13,6 +13,7 @@ p.add_argument('--address',required=True);p.add_argument('--echo-address',requir
 p.add_argument('--local-region',required=True);p.add_argument('--peer-region',required=True)
 p.add_argument('--network-path',choices=['private','public'],required=True)
 p.add_argument('--direction',choices=['linux-to-mac','mac-to-linux','local-smoke'],required=True)
+p.add_argument('--topology-note',default='')
 p.add_argument('--out',required=True,type=pathlib.Path)
 p.add_argument('--workers',type=int,default=1);p.add_argument('--ops-per-worker',type=int,default=256)
 p.add_argument('--capacity-mib',type=int,default=8);p.add_argument('--budget-mib',type=int,default=64)
@@ -45,7 +46,7 @@ protocol_bytes+=repeats*len(qds)*2*(a.ops_per_worker*a.workers*(io_bytes+128)+a.
 plan={'protocol_bytes_upper_bound':protocol_bytes,'protocol_budget_bytes':a.budget_mib*1024*1024,
  'budget_scope':'application protocol only; excludes TCP/IP overhead and retransmissions',
  'configuration_count':len(qds)*2,'repeats':repeats,'capacity_bytes':capacity,
- 'direction':a.direction,'network_path':a.network_path,'local_region':a.local_region,'peer_region':a.peer_region,
+ 'direction':a.direction,'network_path':a.network_path,'topology_note':a.topology_note,'local_region':a.local_region,'peer_region':a.peer_region,
  'workers':a.workers,'per_worker_qds':qds,'ops_per_worker':a.ops_per_worker,
  'per_invocation_timeout_seconds':a.timeout_seconds,'maximum_total_seconds':a.max_total_seconds,'representative':False,
  'topology':'OS-scheduled sender/receiver and target thread per lane; no CPU pinning, hugepages, memlock or io_uring',
@@ -76,7 +77,7 @@ with (a.out/'probe-stderr.log').open('w') as trace:
    for qd in qds:
     for operation in ['read-verify','write']:
      row=call('run',a.address,operation,a.ops_per_worker,a.workers,qd,io_bytes,capacity,rtt['min_us'],'random','volatile-ram',cost=a.ops_per_worker*a.workers*(io_bytes+128)+a.workers*128)
-     row.update(repeat=repeat,direction=a.direction,network_path=a.network_path,burst_only=True)
+     row.update(repeat=repeat,direction=a.direction,network_path=a.network_path,topology_note=a.topology_note,burst_only=True,rtt_reference_valid=row['actual_theoretical_efficiency']<=1)
      rows.append(row)
      with (a.out/'results.jsonl').open('a') as result:result.write(json.dumps(row)+'\n')
   summary=[]
@@ -84,7 +85,7 @@ with (a.out/'probe-stderr.log').open('w') as trace:
    for operation in ['read-verify','write']:
     group=[r for r in rows if r['operation']==operation and r['per_worker_qd']==qd]
     rates=[r['iops'] for r in group]
-    summary.append({'operation':operation,'workers':a.workers,'lanes':a.workers,'per_worker_qd':qd,'aggregate_depth':a.workers*qd,'iops_min_median_max':[min(rates),statistics.median(rates),max(rates)],'shortest_trial_seconds':min(r['elapsed_s'] for r in group),'raw_tcp_echo_rtt_us':rtt['min_us'],'rtt_iops_ceiling':group[0]['rtt_iops_ceiling'],'efficiency_min_median_max':[min(r['actual_theoretical_efficiency'] for r in group),statistics.median(r['actual_theoretical_efficiency'] for r in group),max(r['actual_theoretical_efficiency'] for r in group)],'completion_semantics':group[0]['completion_semantics'],'representative':False})
+    summary.append({'operation':operation,'workers':a.workers,'lanes':a.workers,'per_worker_qd':qd,'aggregate_depth':a.workers*qd,'iops_min_median_max':[min(rates),statistics.median(rates),max(rates)],'shortest_trial_seconds':min(r['elapsed_s'] for r in group),'raw_tcp_echo_rtt_us':rtt['min_us'],'rtt_iops_ceiling':group[0]['rtt_iops_ceiling'],'efficiency_min_median_max':[min(r['actual_theoretical_efficiency'] for r in group),statistics.median(r['actual_theoretical_efficiency'] for r in group),max(r['actual_theoretical_efficiency'] for r in group)],'completion_semantics':group[0]['completion_semantics'],'rtt_reference_valid':all(r['rtt_reference_valid'] for r in group),'representative':False})
   (a.out/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
   status={'returncode':0,'trials':len(rows),'charged_protocol_bytes':used,'elapsed_seconds':time.monotonic()-started}
  except BaseException as error:

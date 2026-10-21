@@ -343,3 +343,22 @@ The Linux VZ guest booted and executed the cross-built full-source target;
 its kernel is Ubuntu 7.0.0-38-generic ARM64 and private IP 192.168.64.2.
 It was stopped cleanly for the native final-source build and to explicitly
 ignore automatic TCP **and** UDP port forwarding before direct private-IP tests.
+
+The cleaned-up implementation at `634f33ea` passed all seven native Mac leaf
+tests and rebuilt successfully for both macOS ARM64 and Linux ARM64. Its Mac
+binary SHA256 is `387445373bf7e22d84ae1569b0e704874d9bcd145d137892444a3c9da66d4b91`.
+A direct private-vNIC guest/host smoke then passed 30 trials in **each** direction
+(read verification and write ACKs, one lane/worker, per-worker QD1/2/4/8/16,
+three repeats). Both directions charged 40,939,008 protocol bytes; no invalid RTT
+references were found. The guest uses Ubuntu 26.04 / kernel 7.0.0-38 ARM64 with
+two vCPUs and 2 GiB on the same physical M1; the data path is guest lima0
+192.168.64.2 to Mac bridge100 192.168.64.1, MTU1500. Lima control is separate from
+the measured TCP data path. No host-directory mounts or automatic TCP/UDP port
+forwarding are used. The guest's temporary staging directory was recreated after
+reboot, and final helper hashes were reverified before testing.
+
+These bursts are only milliseconds long, explicitly nonrepresentative and
+labeled with the shared-host VZ topology in every row. They prove mixed-OS wire
+compatibility and bounded-pipeline correctness; they do not replace sustained
+performance confirmation or the outstanding physical c8gn TCP/EFA regression.
+Full raw results, topology, source/binary manifests and logs are copied locally.
