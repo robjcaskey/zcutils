@@ -473,3 +473,29 @@ smoke with 36 trials and all six complete 64 MiB restart readbacks. This validat
 the harness and readback path, not a Linux before/after performance comparison.
 The queued Mac file/WAL harness and its recorded SHA were updated while that
 supervisor was still verified waiting for RAM; no active trial was altered.
+
+The exact-source full RAM comparison completed all 504 trials (84 configurations,
+three samples per binary, A/B/B/A/A/B). Thirty cases were faster across observed
+spread, one slower, and 53 inconclusive. No duration or RTT gates were rejected;
+the shortest trial was 2.274 s. A separate audit checked the full configuration
+grid, binary identities, identical fixed operation counts, aggregate outstanding
+depth, lane/worker counts, and every RTT ceiling/efficiency calculation. Results,
+audit, CSV and heatmap are retained locally as `canonical-full-*` artifacts.
+
+The slower case is 4 KiB verified random reads, one worker/lane, per-worker QD4
+(aggregate outstanding limit 4): baseline min/median/max 117735/118285/118462 IOPS,
+final 106863/107685/107827 IOPS, median -8.96%. Median raw echo RTT was 10.708 us
+baseline and 10.750 us final; corresponding median ideal ceilings were 373552 and
+372093 IOPS, with median actual/theoretical efficiency 31.7% and 28.9%. Mean
+completion latency remained nearly unchanged (27.84 versus 27.89 us), so credit
+handoff or scheduling deserves investigation; that is a hypothesis, not a proven
+cause. CPU mapping is OS-scheduled. This is not physical-host regression evidence.
+
+The earlier 1 MiB read problem did not recur in this exact-source full run:
+one-lane per-worker QD64 was +0.28% and QD256 +1.04%, both within observed spread.
+The QD4 loss nevertheless keeps the framing change in draft. A focused repeat
+at QD2/4/8, a source/binary-verified historical header-only diagnostic, and QD4
+stack sampling are queued after the existing storage/private-network sequence.
+Sampling timings will be discarded. The profiler now accepts I/O size, per-worker
+depth and operation count, and reports sampler failures instead of a false pass;
+its new Mac runtime verification is pending that queued diagnostic.
