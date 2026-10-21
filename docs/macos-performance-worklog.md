@@ -527,3 +527,28 @@ the 5% margin (+3.67%), but its backend and probe build differ from the RAM run;
 this does not isolate the cause of the RAM slowdown. The source/binary-controlled
 RAM QD2/4/8 follow-up is still required. The WAL suite is now running, with the
 Linux guest still stopped and the subsequent private comparisons queued.
+
+The final-source internal-SSD WAL suite completed all 216 trials and six complete
+64 MiB restart readbacks. Eleven cases were faster across observed spread (all
+verified reads), one slower, and 24 inconclusive. All twelve durable write-SYNC
+comparisons were within spread; no duration/RTT gates were rejected (minimum
+trial 1.958 s). Binary identities, configuration/repeat counts, completion
+semantics, unavailable durable ceilings, and complete readbacks passed a local
+audit. Data, audit and CSV are retained as `canonical-final-wal-*` artifacts.
+
+The slower point is 4 KiB nondurable WAL append ACKs, one lane/worker at per-worker
+QD16 (aggregate limit 16): baseline min/median/max 12588/12850/12854 IOPS versus
+final 11069/11164/11223, median -13.12%. Median raw echo RTT was 10.750 versus
+11.875 us; median matching ideal ceilings 1488372 versus 1347368 IOPS, with median
+actual/theoretical efficiency 0.864% versus 0.822%. These independently calibrated
+sweeps can encounter different journal-reset phases. A fresh-state, fixed-count
+control is queued after the RAM diagnostic: identical 64 MiB base/journal per
+case, identical sequential prefill and SYNC, then exactly 65536 random 4 KiB
+writes at QD1 or QD16, three alternating samples per binary. Each trial will end
+with process-restart/full-image verification; no WAL commit semantics change.
+The calibrated sweep's slower result remains open until that control is measured.
+
+The Linux-to-Mac alternating private-vNIC comparison is now running. The guest
+started only after both native storage suites completed; it verified source/
+binary identities before producing trials. The reverse direction follows.
+These remain same-physical-M1 VZ results, not physical c8gn TCP/EFA acceptance.
