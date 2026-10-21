@@ -119,3 +119,23 @@ SYNC. It retains logs/readback evidence and removes only its own disposable
 backing files after successful validation unless `--keep-backings` is given.
 Linux harness smoke checks passed for both file and WAL backends. Mac durable
 results remain pending; do not infer them from RAM or Linux smoke results.
+
+## Alternating confirmation and follow-up
+
+The first A/B/B/A/A/B confirmation completed ten configurations with three
+samples per source revision and identical operation counts. Five cases remained
+faster across observed spread; the 1 MiB, one-worker, per-worker-QD64 verified
+read remained slower (about 11% median). The PR stays draft. No overall Mac
+improvement or Linux regression pass is claimed from these results.
+
+Separate header-only and buffer-only builds passed all five native Mac leaf
+tests. They are being measured independently against the original binary.
+Stack samples of the problematic read case showed more socket send/receive
+samples in the combined candidate, while its per-request zeroing disappeared.
+This does not by itself distinguish kernel copy cost from socket waiting.
+Sampled workloads are diagnostic only; their performance output is discarded.
+
+A subsequent prototype combines one response's header/payload using vectored
+writes. Linux tests cover interrupted writes, cross-slice partial progress, and
+zero-progress failure in addition to the prior leaf tests (seven passed total).
+Native Mac tests and performance results for that prototype remain pending.
