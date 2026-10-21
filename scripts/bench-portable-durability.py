@@ -9,15 +9,17 @@ import argparse,hashlib,json,os,pathlib,platform,socket,statistics,subprocess,ti
 p=argparse.ArgumentParser()
 p.add_argument('--probe',required=True);p.add_argument('--baseline-target',required=True);p.add_argument('--candidate-target',required=True)
 p.add_argument('--out',required=True);p.add_argument('--backend',choices=['file','wal'],default='wal');p.add_argument('--seconds',type=float,default=2)
+p.add_argument('--minimum-calibration-seconds',type=float,default=1.0,help='minimum calibration duration before extrapolation (default: 1 second)')
 p.add_argument('--quick',action='store_true');p.add_argument('--keep-backings',action='store_true');a=p.parse_args()
 if a.seconds<=0:p.error('positive duration required')
+if not 0<a.minimum_calibration_seconds<=30:p.error('minimum calibration must be between zero and 30 seconds')
 out=pathlib.Path(a.out);out.mkdir(parents=True,exist_ok=False)
 sizes=[4096] if a.quick else [4096,65536];qds=[1,4] if a.quick else [1,4,16];workers=[1] if a.quick else [1,4]
 configs=len(sizes)*len(qds)*len(workers)*3;capacity=64*1024*1024
 variants={'baseline':str(pathlib.Path(a.baseline_target).resolve()),'candidate':str(pathlib.Path(a.candidate_target).resolve())}
 for name,target in variants.items():
  d=out/name;d.mkdir()
- meta={'configuration_count':configs,'backend':a.backend,'platform':platform.platform(),'cpu_count':os.cpu_count(),'representative':False,'source_binary_sha256':hashlib.sha256(pathlib.Path(target).read_bytes()).hexdigest(),'topology':'loopback TCP, OS-scheduled client sender/receiver per lane, OS-scheduled target thread per connection; no pinning/hugepages/memlock/io_uring; target is one terminal file or WAL','args':{'repeats':3,'quick':a.quick,'target_seconds':a.seconds,'maximum_aggregate_bytes_per_trial':64*1024*1024*1024,'calibration_growth_limit':4,'minimum_calibration_seconds':0.25},'timing_order':'baseline,candidate,candidate,baseline,baseline,candidate'}
+ meta={'configuration_count':configs,'backend':a.backend,'platform':platform.platform(),'cpu_count':os.cpu_count(),'representative':False,'source_binary_sha256':hashlib.sha256(pathlib.Path(target).read_bytes()).hexdigest(),'topology':'loopback TCP, OS-scheduled client sender/receiver per lane, OS-scheduled target thread per connection; no pinning/hugepages/memlock/io_uring; target is one terminal file or WAL','args':{'repeats':3,'quick':a.quick,'target_seconds':a.seconds,'maximum_aggregate_bytes_per_trial':64*1024*1024*1024,'calibration_growth_limit':4,'minimum_calibration_seconds':a.minimum_calibration_seconds},'timing_order':'baseline,candidate,candidate,baseline,baseline,candidate'}
  (d/'metadata.json').write_text(json.dumps(meta,indent=2)+'\n')
 children=[];log=(out/'services.log').open('w');trace=(out/'probe-stderr.log').open('w')
 def address():
@@ -60,12 +62,13 @@ try:
       calops=max(4,min(128,int(.15*1e6/max(sync['median_us'],1)/w))) if mode=='write-sync' else 128
       limit=min(500_000,64*1024*1024*1024//size//w)
       # A short warm-journal sample can miss a costly WAL reset. Grow in
-      # bounded steps instead of extrapolating a sub-millisecond sample to
+      # bounded steps, and sample at least a second by default, instead of
+      # extrapolating a sub-millisecond sample to
       # hundreds of thousands of writes and exceeding the probe timeout.
       while True:
        cal=call(leaf,mode,calops,w,qd,size,rtt['min_us'],sync['min_us'])
        with (directory/'calibration.jsonl').open('a') as f:f.write(json.dumps(cal)+'\n')
-       if cal['elapsed_s']>=.25 or calops>=limit:break
+       if cal['elapsed_s']>=a.minimum_calibration_seconds or calops>=limit:break
        calops=min(limit,calops*4)
       ops=max(4,min(limit,calops*4,int(calops*a.seconds/max(cal['elapsed_s'],.001))))
       row=call(leaf,mode,ops,w,qd,size,rtt['min_us'],sync['min_us'])

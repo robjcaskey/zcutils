@@ -458,3 +458,18 @@ calibrates fixed operation counts from the first baseline sample, and retains
 raw RTT, completion ceilings, efficiency, duration and spread. These will still
 be shared-M1 VZ measurements with OS-scheduled CPUs and a two-vCPU guest, not
 physical-host TCP or RDMA acceptance. Runtime results are pending.
+
+The kernel correction at `469c6625` passed all 14 build targets in the kernel ABI
+matrix (GitHub run `39598744555`, exact head SHA verified). These are compilation
+checks; the isolated-guest integration fixtures remain the runtime evidence.
+Live EC2 tags and EventBridge were rechecked: termination remains
+2026-10-21T20:42:59Z and the five-minute cleanup schedule is enabled.
+
+Persistent-leaf calibration now has a configurable minimum duration, defaulting
+to one second rather than 250 ms. This reduces the risk of selecting a short
+measured trial from an unusually cheap warm-journal sample; bounded growth and
+operation/byte caps remain. The updated harness passed a same-binary Linux WAL
+smoke with 36 trials and all six complete 64 MiB restart readbacks. This validates
+the harness and readback path, not a Linux before/after performance comparison.
+The queued Mac file/WAL harness and its recorded SHA were updated while that
+supervisor was still verified waiting for RAM; no active trial was altered.
