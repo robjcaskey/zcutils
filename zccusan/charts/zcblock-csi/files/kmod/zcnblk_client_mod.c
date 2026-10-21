@@ -383,6 +383,7 @@ struct zcnblk_dev {
 	u32 active_conns;
 	int major;
 	bool crypto_enabled;
+	bool shm_transport;
 	struct zcnblk_shm_state *shm;
 };
 
@@ -2856,8 +2857,10 @@ static blk_status_t zcnblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 		blk_mq_end_request(rq, zcnblk_null_complete_request(dev, rq));
 		return BLK_STS_OK;
 	}
-	if (!dev->shm ||
-	    !smp_load_acquire(&dev->shm->header->daemon_online)) {
+	/* TCP has no shared-memory daemon or ordering epoch. */
+	if (dev->shm_transport &&
+	    (!dev->shm ||
+	     !smp_load_acquire(&dev->shm->header->daemon_online))) {
 		blk_mq_end_request(rq, BLK_STS_IOERR);
 		return BLK_STS_OK;
 	}
@@ -2890,7 +2893,8 @@ static blk_status_t zcnblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 		return BLK_STS_OK;
 	}
 
-	if (shm_ordering_epochs && req_op(rq) == REQ_OP_FLUSH) {
+	if (dev->shm_transport && shm_ordering_epochs &&
+	    req_op(rq) == REQ_OP_FLUSH) {
 		/* Flushes are rare; serialize only their vector cuts. */
 		spin_lock(&dev->shm->ordering_flush_lock);
 		pdu->shm_ordering_epoch =
@@ -2905,7 +2909,8 @@ static blk_status_t zcnblk_queue_rq(struct blk_mq_hw_ctx *hctx,
 		spin_unlock(&dev->shm->ordering_flush_lock);
 	} else {
 		spin_lock(&conn->queue_lock);
-		pdu->shm_ordering_epoch = shm_ordering_epochs ?
+		pdu->shm_ordering_epoch = dev->shm_transport &&
+			shm_ordering_epochs ?
 			atomic64_read(&dev->shm->ordering_epoch) : 1;
 		conn->shm_admitted_tail++;
 		list_add_tail(&pdu->entry, &conn->pending);
@@ -4268,6 +4273,7 @@ static int __init zcnblk_init(void)
 	zcnblk_dev = kzalloc(sizeof(*zcnblk_dev), GFP_KERNEL);
 	if (!zcnblk_dev)
 		return -ENOMEM;
+	zcnblk_dev->shm_transport = zcnblk_shm_enabled();
 	zcnblk_dev->capacity_bytes = capacity_bytes;
 	zcnblk_dev->total_conns = total_conns;
 	atomic64_set(&zcnblk_dev->next_conn, 0);
