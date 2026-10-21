@@ -362,3 +362,46 @@ labeled with the shared-host VZ topology in every row. They prove mixed-OS wire
 compatibility and bounded-pipeline correctness; they do not replace sustained
 performance confirmation or the outstanding physical c8gn TCP/EFA regression.
 Full raw results, topology, source/binary manifests and logs are copied locally.
+
+The standard Linux block edge exposed a pre-existing direct-TCP admission bug:
+`queue_rq` required SHM daemon state even for TCP, rejecting every request with
+EIO before it reached the Mac. TCP also consulted SHM ordering state. The fix
+caches the validated transport at initialization and applies daemon/epoch checks
+only to SHM; the chart-packaged module source stays identical. This is isolated
+in draft PR #6 (`codex/tcp-admission-guard`, commit `5c7fc19b`); performance PR #5
+is based on that branch so the functional fix can be reviewed separately.
+
+The fixed module compiled natively against ARM64 Ubuntu 7.0.0-38 and against the
+local x86 7.2 headers. `scripts/test-zcnblk-client-transport.py` passed actual
+kernel tests for rejected SHM epochs=0, offline-SHM read/write EIO, and TCP with
+SHM epochs enabled completing 8 MiB CRC write/read plus visibility flush. These
+checks are correctness-only and use owned userspace RAM leaves. Existing host
+block devices were never loaded, unloaded, mounted or written by these tests.
+
+The guest `/dev/zcnblk0` then passed 36 two-second fio cases through the Mac's
+64 MiB RAM leaf: 4 KiB random read/write at per-worker QD1/2/4/8/16/256, one lane,
+one worker, three repeats, plus initial/final CRC readbacks. All trials reached
+at least two seconds and all RTT-reference comparisons were valid. fio ran on
+guest CPU0, connection worker on CPU1; hctx0 covered CPUs0/1. Physical VZ CPU
+placement and Mac threads remained OS-scheduled. Missing hugepages/reserved
+memlock, batch_depth=1 and no SQPOLL were warned explicitly; registered io_uring
+files/buffers were enabled. The guest kernel also reported a suspect-GRO warning
+for lima0. These remain shared-host observations, not physical TCP/EFA evidence.
+
+The failed original module/run, patched source hashes, corrected fio results,
+CPU/hctx mappings, RTT/ceiling/efficiency ranges and plots are retained locally.
+The guest module was unloaded and the guest stopped before final-source Mac
+RAM confirmation. Do not compare a broken direct-TCP baseline's zero IOPS with
+the restored path as a performance gain; hold this admission fix common to
+before/after performance controls. Persistent TCP FUA capability/flush semantics
+still need a dedicated audit before persistent-storage acceptance; current
+kernel runtime tests used volatile RAM and make no durability claim.
+
+The exact cleaned source/binary (`634f33ea`, Mac SHA256 `38744537...`) completed
+its own final ten-case A/B/B/A/A/B confirmation with the Linux guest stopped.
+Four cases were faster across observed spread, none slower, six inconclusive;
+no short trials or invalid RTT references occurred. Both 1 MiB read cases stayed
+within spread (+2.2% at one worker/lane per-worker QD64, +0.2% at QD256).
+This confirms the focused cleanup result; full-matrix and physical-host
+performance coverage remain pending. The canonical raw trials and comparison
+were copied locally before proceeding to the persistent-TCP capability audit.
